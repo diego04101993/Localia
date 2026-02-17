@@ -1,0 +1,97 @@
+Ahora sí: versión optimizada “por bloques” para Replit (para que no colapse)
+INSTRUCCIÓN IMPORTANTE PARA REPLIT
+No intentes construir todo de una sola vez.
+Vamos por “bloques” (fases). Tú vas pegando un prompt por fase.
+________________________________________
+PROMPT Replit — FASE 1 (Base sólida)
+Crea un proyecto fullstack con:
+•	Next.js (App Router) + TypeScript + Tailwind + shadcn/ui
+•	PostgreSQL + Prisma
+•	Auth email/password
+•	Roles: SUPER_ADMIN, BRANCH_ADMIN, CUSTOMER
+Requisitos:
+1.	Rutas:
+•	/superadmin (solo SUPER_ADMIN)
+•	/dashboard (solo BRANCH_ADMIN)
+•	/app/[slug] (vista pública PWA de sucursal)
+2.	DB models mínimos Prisma:
+•	User(id, email, passwordHash, role, branchId nullable)
+•	Branch(id, name, slug unique, status active|suspended|blacklisted, createdAt)
+3.	Superadmin UI:
+•	lista de sucursales
+•	crear sucursal (name, slug)
+•	cambiar status (active/suspended/blacklisted)
+4.	Middleware de seguridad:
+•	si branch status != active, bloquear acceso a dashboard y app y mostrar pantalla “Servicio no activo”
+5.	Seed:
+•	1 superadmin
+•	1 branch demo “Box Central”
+•	1 branch admin
+Entrega:
+•	README con pasos
+•	.env.example
+•	prisma migrate + prisma seed funcionando
+________________________________________
+PROMPT Replit — FASE 2 (Clientes + Invitación)
+Sobre la base anterior, agrega:
+1.	Modelos Prisma:
+•	CustomerProfile(id, branchId, userId, name, age optional, phone, createdAt)
+•	InviteToken(id, branchId, token unique, phone, email optional, expiresAt, usedAt)
+2.	Dashboard sucursal:
+•	CRUD clientes
+•	botón “Invitar” que genera link: /app/[slug]/invite/[token]
+•	integrar SMS por Twilio con modo mock (si no hay credenciales, solo log + muestra link en UI)
+3.	Flujo invite:
+•	cliente abre link, crea password, queda como CUSTOMER ligado a branchId
+4.	Seguridad:
+•	branch admin solo ve su branchId
+________________________________________
+PROMPT Replit — FASE 3 (Paquetes + Reservas + Descuento automático)
+Agregar:
+1.	Modelos Prisma:
+•	Package(id, branchId, name, type classes|unlimited, totalClasses optional)
+•	CustomerPackage(id, customerId, packageId, remainingClasses, status, startDate, expiryDate optional)
+•	Booking(id, branchId, customerId, startsAt, endsAt, type class|appointment, status booked|cancelled|attended|no_show, cancelTime optional, checkinTime optional, deductedAt optional)
+•	BranchSettings(branchId, graceMinutes default 1, lateCancelDeducts default true)
+2.	App cliente:
+•	pantalla Agenda (calendario + elegir horario)
+•	crear booking si tiene clases disponibles (si package type=unlimited, permitir)
+•	cancelar booking antes de inicio sin descuento
+3.	Dashboard sucursal:
+•	lista de reservas
+•	botón check-in
+4.	Descuento automático:
+•	función idempotente processPendingBookings(branchId):
+o	si booking ya pasó + graceMinutes y status booked:
+	si cancelTime < startsAt => no descuenta (status cancelled)
+	si no canceló => descuenta 1 clase (si type=class y package classes) y marca deductedAt
+•	Ejecutar processPendingBookings al entrar al dashboard y con endpoint /api/jobs/process (protegido)
+________________________________________
+PROMPT Replit — FASE 4 (PWA + Perfil sucursal + Reviews)
+Agregar:
+1.	Perfil sucursal en /app/[slug]:
+•	logo, carrusel fotos, ubicación (maps link), rating promedio
+2.	Reviews:
+•	Review(id, branchId, customerId, rating 1-5, comment optional, createdAt)
+•	UI para dejar review
+Convertir frontend cliente en PWA:
+•	manifest.json, service worker, icons, configuración para “Add to Home Screen”
+•	Asegurar que /app/[slug] funcione perfecto en móvil
+________________________________________
+PROMPT Replit — FASE 5 (Feed social + Posts fijos + Expiración + Media)
+Agregar:
+1.	Post(id, branchId, authorCustomerId optional, authorBranchId optional, caption, pinnedType none|promo|general, createdAt, expiresAt)
+2.	Reglas:
+•	máx 3 pinnedType=promo
+•	máx 2 pinnedType=general
+•	posts normales expiran 90 días
+3.	Likes y comentarios
+4.	Upload:
+•	imagen y video máximo 20 segundos
+•	validación server-side
+________________________________________
+PROMPT Replit — FASE 6 (Productos/Servicios + Rutina del día + Vista TV)
+Agregar:
+•	Product/Service con CTA “Pregunta en recepción”
+•	WorkoutDay + ejercicios + video 20s
+•	Vista TV: /app/[slug]/tv con lista de asistentes y rutina
