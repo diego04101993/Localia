@@ -79,7 +79,7 @@ export async function registerRoutes(
     if (!["active", "suspended", "blacklisted"].includes(status)) {
       return res.status(400).json({ message: "Estado inválido" });
     }
-    const branch = await storage.updateBranchStatus(id, status);
+    const branch = await storage.updateBranchStatus(id, status as string);
     if (!branch) return res.status(404).json({ message: "Sucursal no encontrada" });
     res.json(branch);
   });
