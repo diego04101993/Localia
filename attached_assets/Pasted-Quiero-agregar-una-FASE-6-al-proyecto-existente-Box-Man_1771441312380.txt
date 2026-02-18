@@ -1,0 +1,176 @@
+Quiero agregar una FASE 6 al proyecto existente “Box Manager” (ya tiene auth, roles, branches, PWA por sucursal en /app/[slug], branch dashboard, superadmin).
+Objetivo: Convertir el sistema en un marketplace tipo “sección amarilla” sin romper la lógica actual por sucursal. Mantener un solo backend y una sola DB.
+
+A) Nuevo concepto clave: Membership (inscripción a sucursal)
+
+Crear tabla memberships:
+
+memberships
+
+id (uuid)
+
+user_id (fk users.id)
+
+branch_id (fk branches.id)
+
+status: active | banned | left
+
+is_favorite boolean default false
+
+joined_at timestamp
+
+last_seen_at timestamp nullable
+
+source: invite | self_join | admin_created (default self_join)
+
+Constraints:
+
+unique(user_id, branch_id)
+
+RLS:
+
+El usuario CUSTOMER puede ver solo sus memberships
+
+Branch admin puede ver memberships de su branch
+
+Super admin puede ver todo
+
+B) Favoritos y “Sucursal principal” (PWA)
+
+Regla:
+
+Cuando un cliente entra por primera vez a /app/[slug] y se registra/acepta invitación (o se loguea), si no existe membership, crearla con:
+
+status=active
+
+is_favorite=true
+
+source=invite o self_join según flujo
+
+Si ya tiene membership, NO duplicar (usar unique).
+
+Permitir que un usuario tenga varias sucursales favoritas, pero en la UI mostrar:
+
+Favorito principal arriba (primera favorite o la más reciente)
+
+Lista de favoritos
+
+C) Marketplace: Explorar negocios cerca (Nearby)
+
+Agregar campos a branch_settings (si no existen):
+
+category (string) ej: "box", "crossfit", "estetica", "doctor", "abogado", "freelancer"
+
+subcategory (string nullable)
+
+latitude (float nullable)
+
+longitude (float nullable)
+
+city (string nullable)
+
+address (string nullable)
+
+cover_image_url (string nullable)
+
+Crear API:
+
+GET /api/branches/nearby?lat=..&lng=..&radius_km=..&category=..&q=..
+
+Devuelve branches active (no suspended/blacklisted)
+
+Ordenar por distancia (Haversine)
+
+Filtros opcionales: category, texto (q busca en name/description/city)
+
+Si lat/lng no se manda, fallback: ordenar por createdAt o city
+
+GET /api/branches/search?q=..&category=..&city=..
+
+UI:
+
+Crear página nueva: /explore
+
+Mobile-first
+
+Barra de búsqueda
+
+Filtros por categoría
+
+Botón “usar mi ubicación” (si el navegador permite)
+
+Cards con: nombre, categoría, distancia, rating promedio, botón “Ver” y “Favorito”
+
+D) Acciones de Membership
+
+API:
+
+POST /api/memberships/join
+Body: { branchSlug } o { branchId }
+
+Reglas:
+
+Si branch no está active => 403
+
+Si membership existe con status left => reactivar
+
+Si banned => 403
+
+Si no existe => crear
+
+POST /api/memberships/favorite
+Body: { branchId, isFavorite: true|false }
+
+Solo el dueño (customer) puede marcar favoritos
+
+Si marca true y no hay membership, crear membership active + favorite
+
+GET /api/memberships
+
+Lista memberships del usuario logueado con info de branch (name, slug, cover, rating)
+
+UI:
+
+En PWA /app/[slug] agregar botón “Explorar cerca” que manda a /explore
+
+En /explore, permitir “Favoritar” y “Abrir sucursal”
+
+Agregar vista /my/favorites o sección en perfil para ver favoritos
+
+E) Seguridad y consistencia
+
+Todas las queries deben filtrar branches status=active para marketplace público
+
+Si un branch se suspende, debe:
+
+no aparecer en explore
+
+si usuario intenta entrar por slug => service unavailable
+
+No romper dashboards existentes
+
+F) Seed / Demo
+
+Agregar datos demo:
+
+Branches de diferentes categorías: box, estetica, doctor, abogado
+
+Asignar lat/lng a algunos para probar nearby
+
+Crear memberships demo para un customer
+
+Entregable
+
+Migraciones + RLS + endpoints + UI explore
+
+README actualizado con cómo probar:
+
+login customer
+
+explorar
+
+favoritar
+
+abrir sucursal desde favoritos
+
+Construir en pasos y asegurar que el build pase al final.

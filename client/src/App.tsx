@@ -12,6 +12,8 @@ import SuperAdminPage from "@/pages/superadmin";
 import DashboardPage from "@/pages/dashboard";
 import BranchPublicPage from "@/pages/branch-public";
 import BlockedPage from "@/pages/blocked";
+import ExplorePage from "@/pages/explore";
+import FavoritesPage from "@/pages/favorites";
 
 function FullScreenLoader() {
   return (
@@ -29,6 +31,15 @@ function AuthenticatedRouter() {
   const [location] = useLocation();
 
   if (isLoading) return <FullScreenLoader />;
+
+  if (location === "/explore") {
+    return <ExplorePage />;
+  }
+
+  if (location === "/favorites") {
+    if (!user) return <LoginPage />;
+    return <FavoritesPage />;
+  }
 
   if (location.startsWith("/app/")) {
     return (
@@ -68,10 +79,13 @@ function AuthenticatedRouter() {
     if (user.branch && user.branch.status !== "active") {
       return <BlockedPage />;
     }
+    if (location === "/" || location === "") {
+      return <Redirect to="/explore" />;
+    }
     if (user.branch) {
       return <Redirect to={`/app/${user.branch.slug}`} />;
     }
-    return <NotFound />;
+    return <Redirect to="/explore" />;
   }
 
   return <LoginPage />;
