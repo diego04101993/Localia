@@ -1,4 +1,4 @@
-import { eq, and, sql, ilike, or, ne } from "drizzle-orm";
+import { eq, and, sql, ilike, or, ne, isNull, count, desc, asc } from "drizzle-orm";
 import { db } from "./db";
 import {
   users,
@@ -12,15 +12,25 @@ import {
   type InsertMembership,
 } from "@shared/schema";
 
+export interface BranchMetrics {
+  branchId: string;
+  customerCount: number;
+  activeMemberships: number;
+}
+
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
   createUser(user: InsertUser): Promise<User>;
-  getAllBranches(): Promise<Branch[]>;
+  updateUserPassword(id: string, passwordHash: string): Promise<User | undefined>;
+  getAllBranches(includeDeleted?: boolean): Promise<Branch[]>;
   getBranch(id: string): Promise<Branch | undefined>;
   getBranchBySlug(slug: string): Promise<Branch | undefined>;
   createBranch(branch: InsertBranch): Promise<Branch>;
   updateBranchStatus(id: string, status: string): Promise<Branch | undefined>;
+  softDeleteBranch(id: string): Promise<Branch | undefined>;
+  getBranchAdmins(branchId: string): Promise<User[]>;
+  getBranchMetrics(): Promise<BranchMetrics[]>;
   searchBranchesNearby(params: {
     lat?: number;
     lng?: number;
@@ -50,8 +60,30 @@ export class DatabaseStorage implements IStorage {
     return user;
   }
 
-  async getAllBranches(): Promise<Branch[]> {
-    return db.select().from(branches).orderBy(branches.createdAt);
+  async updateUserPassword(id: string, passwordHash: string): Promise<User | undefined> {
+    const [user] = await db
+      .update(users)
+      .set({ passwordHash })
+      .where(eq(users.id, id))
+      .returning();
+    return user;
+  }
+
+  async getAllBranches(includeDeleted = false): Promise<Branch[]> {
+    if (includeDeleted) {
+      return db.select().from(branches).orderBy(
+        asc(sql`CASE WHEN ${branches.status} = 'active' THEN 0 WHEN ${branches.status} = 'suspended' THEN 1 ELSE 2 END`),
+        desc(branches.createdAt)
+      );
+    }
+    return db
+      .select()
+      .from(branches)
+      .where(isNull(branches.deletedAt))
+      .orderBy(
+        asc(sql`CASE WHEN ${branches.status} = 'active' THEN 0 WHEN ${branches.status} = 'suspended' THEN 1 ELSE 2 END`),
+        desc(branches.createdAt)
+      );
   }
 
   async getBranch(id: string): Promise<Branch | undefined> {
@@ -78,6 +110,47 @@ export class DatabaseStorage implements IStorage {
     return branch;
   }
 
+  async softDeleteBranch(id: string): Promise<Branch | undefined> {
+    const [branch] = await db
+      .update(branches)
+      .set({
+        deletedAt: new Date(),
+        status: "blacklisted" as any,
+      })
+      .where(eq(branches.id, id))
+      .returning();
+    return branch;
+  }
+
+  async getBranchAdmins(branchId: string): Promise<User[]> {
+    return db
+      .select()
+      .from(users)
+      .where(
+        and(
+          eq(users.branchId, branchId),
+          eq(users.role, "BRANCH_ADMIN")
+        )
+      );
+  }
+
+  async getBranchMetrics(): Promise<BranchMetrics[]> {
+    const results = await db
+      .select({
+        branchId: memberships.branchId,
+        customerCount: count(memberships.id),
+        activeMemberships: sql<number>`COUNT(CASE WHEN ${memberships.status} = 'active' THEN 1 END)`.as("active_memberships"),
+      })
+      .from(memberships)
+      .groupBy(memberships.branchId);
+
+    return results.map((r) => ({
+      branchId: r.branchId,
+      customerCount: Number(r.customerCount),
+      activeMemberships: Number(r.activeMemberships),
+    }));
+  }
+
   async searchBranchesNearby(params: {
     lat?: number;
     lng?: number;
@@ -87,7 +160,10 @@ export class DatabaseStorage implements IStorage {
   }): Promise<(Branch & { distance_km?: number })[]> {
     const { lat, lng, radiusKm = 50, category, q } = params;
 
-    const conditions: any[] = [eq(branches.status, "active")];
+    const conditions: any[] = [
+      eq(branches.status, "active"),
+      isNull(branches.deletedAt),
+    ];
 
     if (category) {
       conditions.push(eq(branches.category, category));
@@ -127,6 +203,7 @@ export class DatabaseStorage implements IStorage {
           coverImageUrl: branches.coverImageUrl,
           description: branches.description,
           createdAt: branches.createdAt,
+          deletedAt: branches.deletedAt,
           distance_km: haversine.as("distance_km"),
         })
         .from(branches)
@@ -192,7 +269,8 @@ export class DatabaseStorage implements IStorage {
       .where(
         and(
           eq(memberships.userId, userId),
-          ne(memberships.status, "banned")
+          ne(memberships.status, "banned"),
+          isNull(branches.deletedAt)
         )
       )
       .orderBy(memberships.joinedAt);

@@ -1,0 +1,184 @@
+Quiero mejorar solo el panel de Super Admin del proyecto “Box Manager” (ya existe auth, roles, branches, branch dashboards, customers, invites, memberships, marketplace).
+IMPORTANTE: No rompas nada existente. No cambies rutas ya usadas. Haz cambios incrementales y seguros. Build debe pasar.
+
+1) Botón para ELIMINAR sucursal (pero seguro)
+
+En Super Admin, en cada tarjeta de sucursal agrega botón “Eliminar”.
+
+Regla clave: NO quiero que se rompa por FK/relaciones.
+Implementa “eliminación segura” con una de estas dos opciones (preferida la primera):
+
+Opción preferida (Archive / soft delete):
+
+Agrega campo en branches: deleted_at timestamptz null
+
+Cuando elimine una sucursal:
+
+set deleted_at = now()
+
+set status = 'blacklisted' (o suspended) para bloquear de inmediato
+
+En el Super Admin:
+
+Por default NO muestres sucursales con deleted_at != null
+
+Agrega filtro toggle “Ver eliminadas”
+
+Todas las listas públicas (/explore, /favorites, /app/[slug], /api/branches/nearby, /api/branches/search) deben ignorar sucursales con deleted_at != null.
+
+UI de confirmación fuerte:
+
+Modal: “Esto ocultará la sucursal y bloqueará acceso. ¿Seguro?”
+
+Requiere escribir el slug para confirmar (ej: escribir “box-norte”)
+
+Botón rojo “Eliminar sucursal”
+
+Nota: Si ya existe status blacklisted/suspended, esto además asegura que no aparezca y se bloquee.
+
+2) Crear Sucursal + Crear Usuario Admin de esa Sucursal
+
+Actualmente el modal crea sucursal (name + slug).
+Quiero que al crear sucursal también pueda crear al usuario BRANCH_ADMIN para esa sucursal.
+
+En el modal “Crear nueva sucursal” agrega un switch:
+✅ “Crear administrador de sucursal”
+
+Campos:
+
+Email admin
+
+Password (autogenerado si no lo escribo)
+
+Botón “Generar contraseña segura”
+
+Checkbox “Enviar credenciales por correo (solo mock si no hay proveedor)”
+
+Al dar “Crear”:
+
+Crear branch
+
+Crear user con role BRANCH_ADMIN ligado a esa sucursal
+
+Mostrar un modal final con:
+
+✅ Link completo de acceso al dashboard: https://DOMINIO/login (o el link correcto del login)
+
+✅ “Tu sucursal pública”: https://DOMINIO/app/[slug]
+
+✅ Usuario (email)
+
+✅ Contraseña
+
+Botón “Copiar todo” (copy to clipboard)
+
+Botón “Descargar” (opcional) un txt con las credenciales
+
+Reglas:
+
+Email debe ser único
+
+Si falla crear el usuario, revertir creación de la sucursal (transacción si es posible o rollback manual)
+
+No romper seeds existentes
+
+3) Resetear contraseña del Admin de Sucursal (desde Super Admin)
+
+En cada tarjeta de sucursal, agrega un botón:
+
+“Reset password Admin”
+
+Flujo:
+
+Encuentra el BRANCH_ADMIN de esa sucursal (si hay varios, escoger el principal o mostrar lista)
+
+Genera nueva password segura
+
+Actualiza hash bcrypt
+
+Muestra modal con:
+
+email + nueva password
+
+botón copiar
+
+4) Mostrar métricas por sucursal en el Super Admin (solo números)
+
+En cada tarjeta de sucursal (Box Central, Box Norte, etc.) quiero ver:
+
+Clientes (número)
+Usa la definición correcta del sistema actual (elige 1 y sé consistente):
+
+Preferido: customer_profiles count where branch_id = branch.id
+
+Si no existe customer_profiles: count de users role CUSTOMER con relación a la sucursal
+
+Membresías activas (número): count memberships status=active por branch
+
+Reservas del mes (número): count bookings del mes por branch (si existe bookings)
+
+Rating promedio (si reviews existe): avg(rating) por branch
+
+Arriba del todo, en cards de resumen del Super Admin, agrega:
+
+Total clientes (suma)
+
+Total memberships activas
+
+Total reservas este mes
+
+5) Botón rápido “Abrir sucursal” y “Abrir app”
+
+En cada tarjeta agrega botones pequeños:
+
+“Abrir Dashboard” (link a /dashboard pero solo para superadmin como vista? Si no existe, solo link al login)
+
+“Abrir App” => /app/[slug]
+
+6) No romper seguridad (RLS / filtros)
+
+Asegúrate de que las queries del marketplace y público filtren:
+
+branches.status = 'active'
+
+y deleted_at is null (si implementas soft delete)
+
+Si branch está suspended/blacklisted o deleted:
+
+/app/[slug] manda a service unavailable
+
+7) Entregable
+
+Migración DB (si agregas deleted_at)
+
+API endpoints si hacen falta:
+
+DELETE (soft) /api/superadmin/branches/:id
+
+POST /api/superadmin/branches que opcionalmente crea admin
+
+POST /api/superadmin/branches/:id/reset-admin-password
+
+GET /api/superadmin/branches/metrics
+
+UI actualizada del Super Admin con:
+
+eliminar, crear admin, reset password, métricas por sucursal
+
+Build exitoso
+
+IMPORTANTE: Si algo no existe (reviews/bookings), no falles: muestra “0” y sigue.
+
+Extra “de mi cosecha” (si lo puedes agregar sin romper)
+
+🔎 Buscador en superadmin por nombre/slug
+
+🧾 Columna “Fecha de alta”
+
+🟢🟡🔴 Badge de estado con color fuerte
+
+📌 Ordenar sucursales: activas primero
+
+Si Replit se atora, pégale este mini recordatorio al final:
+
+“Haz cambios mínimos, primero DB+migración, luego APIs, luego UI. No refactor masivo.”

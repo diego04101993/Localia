@@ -55,6 +55,7 @@ export const branches = pgTable("branches", {
   coverImageUrl: text("cover_image_url"),
   description: text("description"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
 });
 
 export const memberships = pgTable("memberships", {
