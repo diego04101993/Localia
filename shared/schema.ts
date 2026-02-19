@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, pgEnum, doublePrecision, boolean, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, pgEnum, doublePrecision, boolean, uniqueIndex, jsonb } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -77,6 +77,19 @@ export const memberships = pgTable("memberships", {
   uniqueIndex("memberships_user_branch_idx").on(table.userId, table.branchId),
 ]);
 
+export const auditLogs = pgTable("audit_logs", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  actorUserId: varchar("actor_user_id", { length: 36 })
+    .notNull()
+    .references(() => users.id),
+  action: text("action").notNull(),
+  branchId: varchar("branch_id", { length: 36 }),
+  metadata: jsonb("metadata"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
 export const insertUserSchema = createInsertSchema(users).omit({
   id: true,
   createdAt: true,
@@ -129,6 +142,7 @@ export type Membership = typeof memberships.$inferSelect;
 export type InsertMembership = z.infer<typeof insertMembershipSchema>;
 export type LoginData = z.infer<typeof loginSchema>;
 export type CreateBranchData = z.infer<typeof createBranchSchema>;
+export type AuditLog = typeof auditLogs.$inferSelect;
 
 export const BRANCH_CATEGORIES = [
   { value: "box", label: "Box / CrossFit" },

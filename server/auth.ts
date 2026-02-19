@@ -78,9 +78,29 @@ export function requireRole(...roles: string[]) {
       return res.status(401).json({ message: "No autenticado" });
     }
     const user = req.user as any;
+    const sess = req.session as any;
+    const impersonating = !!(sess.impersonating && sess.originalUserId);
+
+    if (impersonating) {
+      if (roles.includes("SUPER_ADMIN") || roles.includes(user.role)) {
+        return next();
+      }
+      return res.status(403).json({ message: "Acceso denegado" });
+    }
+
     if (!roles.includes(user.role)) {
       return res.status(403).json({ message: "Acceso denegado" });
     }
     next();
   };
+}
+
+export function isImpersonating(req: Request): boolean {
+  const sess = req.session as any;
+  return !!(sess.impersonating && sess.originalUserId);
+}
+
+export function getOriginalUserId(req: Request): string | null {
+  const sess = req.session as any;
+  return sess.originalUserId || null;
 }

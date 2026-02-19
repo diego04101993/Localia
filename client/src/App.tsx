@@ -58,14 +58,16 @@ function AuthenticatedRouter() {
     return <LoginPage />;
   }
 
-  if (user.role === "SUPER_ADMIN") {
+  const isImpersonating = !!(user as any).impersonating;
+
+  if (user.role === "SUPER_ADMIN" && !isImpersonating) {
     if (location !== "/superadmin" && !location.startsWith("/superadmin")) {
       return <Redirect to="/superadmin" />;
     }
     return <SuperAdminPage />;
   }
 
-  if (user.role === "BRANCH_ADMIN") {
+  if (user.role === "BRANCH_ADMIN" || isImpersonating) {
     if (user.branch && user.branch.status !== "active") {
       return <BlockedPage />;
     }

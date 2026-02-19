@@ -4,12 +4,14 @@ import {
   users,
   branches,
   memberships,
+  auditLogs,
   type User,
   type InsertUser,
   type Branch,
   type InsertBranch,
   type Membership,
   type InsertMembership,
+  type AuditLog,
 } from "@shared/schema";
 
 export interface BranchMetrics {
@@ -38,10 +40,14 @@ export interface IStorage {
     category?: string;
     q?: string;
   }): Promise<(Branch & { distance_km?: number })[]>;
+  updateUser(id: string, data: { name?: string; email?: string }): Promise<User | undefined>;
+  updateUserBranch(id: string, branchId: string): Promise<User | undefined>;
   getMembership(userId: string, branchId: string): Promise<Membership | undefined>;
   getUserMemberships(userId: string): Promise<(Membership & { branch: Branch })[]>;
   createMembership(data: InsertMembership): Promise<Membership>;
   updateMembership(id: string, data: Partial<InsertMembership>): Promise<Membership | undefined>;
+  createAuditLog(data: { actorUserId: string; action: string; branchId?: string; metadata?: any }): Promise<AuditLog>;
+  getAuditLogs(limit?: number): Promise<(AuditLog & { actorEmail?: string | null })[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -290,6 +296,47 @@ export class DatabaseStorage implements IStorage {
       .where(eq(memberships.id, id))
       .returning();
     return m;
+  }
+
+  async updateUser(id: string, data: { name?: string; email?: string }): Promise<User | undefined> {
+    const setData: any = {};
+    if (data.name !== undefined) setData.name = data.name;
+    if (data.email !== undefined) setData.email = data.email;
+    const [user] = await db.update(users).set(setData).where(eq(users.id, id)).returning();
+    return user;
+  }
+
+  async updateUserBranch(id: string, branchId: string): Promise<User | undefined> {
+    const [user] = await db.update(users).set({ branchId }).where(eq(users.id, id)).returning();
+    return user;
+  }
+
+  async createAuditLog(data: { actorUserId: string; action: string; branchId?: string; metadata?: any }): Promise<AuditLog> {
+    const [log] = await db.insert(auditLogs).values({
+      actorUserId: data.actorUserId,
+      action: data.action,
+      branchId: data.branchId || null,
+      metadata: data.metadata || null,
+    }).returning();
+    return log;
+  }
+
+  async getAuditLogs(limit = 50): Promise<(AuditLog & { actorEmail?: string | null })[]> {
+    const results = await db
+      .select({
+        id: auditLogs.id,
+        actorUserId: auditLogs.actorUserId,
+        action: auditLogs.action,
+        branchId: auditLogs.branchId,
+        metadata: auditLogs.metadata,
+        createdAt: auditLogs.createdAt,
+        actorEmail: users.email,
+      })
+      .from(auditLogs)
+      .leftJoin(users, eq(auditLogs.actorUserId, users.id))
+      .orderBy(desc(auditLogs.createdAt))
+      .limit(limit);
+    return results;
   }
 }
 

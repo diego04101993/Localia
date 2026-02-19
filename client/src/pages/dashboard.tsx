@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import {
   Building2,
   LogOut,
@@ -7,6 +7,8 @@ import {
   LayoutDashboard,
   Moon,
   Sun,
+  AlertTriangle,
+  X,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { useTheme } from "@/components/theme-provider";
@@ -14,18 +16,66 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
+import { useLocation } from "wouter";
 
 export default function DashboardPage() {
-  const { user, logout } = useAuth();
+  const { user, logout, refetch } = useAuth();
   const { theme, toggleTheme } = useTheme();
+  const { toast } = useToast();
+  const [, setLocation] = useLocation();
 
   const branchName = user?.branch?.name ?? "Tu Sucursal";
   const branchSlug = user?.branch?.slug ?? "";
   const branchStatus = user?.branch?.status ?? "active";
+  const isImpersonating = !!(user as any)?.impersonating;
+  const impersonatedBranchName = (user as any)?.impersonatedBranchName;
+
+  const endImpersonateMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("POST", "/api/superadmin/impersonate/end");
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
+      toast({ title: "Modo soporte finalizado" });
+      setTimeout(() => {
+        refetch();
+        setLocation("/superadmin");
+      }, 300);
+    },
+    onError: () => {
+      toast({ title: "Error", description: "No se pudo salir del modo soporte", variant: "destructive" });
+    },
+  });
 
   return (
     <div className="min-h-screen bg-background">
-      <header className="sticky top-0 z-50 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+      {isImpersonating && (
+        <div className="sticky top-0 z-[60] bg-amber-500 dark:bg-amber-600 text-white px-4 py-2">
+          <div className="max-w-5xl mx-auto flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              <span className="text-sm font-medium" data-testid="text-impersonation-banner">
+                Modo soporte: {impersonatedBranchName || branchName}
+              </span>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="bg-white/20 border-white/40 text-white"
+              onClick={() => endImpersonateMutation.mutate()}
+              disabled={endImpersonateMutation.isPending}
+              data-testid="button-end-impersonate"
+            >
+              <X className="h-3.5 w-3.5 mr-1" />
+              Salir de soporte
+            </Button>
+          </div>
+        </div>
+      )}
+
+      <header className="sticky top-0 z-50 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60" style={isImpersonating ? { top: '40px' } : {}}>
         <div className="max-w-5xl mx-auto flex items-center justify-between gap-3 p-4 flex-wrap">
           <div className="flex items-center gap-3">
             <div className="flex items-center justify-center w-9 h-9 rounded-md bg-primary">
@@ -45,10 +95,12 @@ export default function DashboardPage() {
             <Button size="icon" variant="ghost" onClick={toggleTheme} data-testid="button-theme-dashboard">
               {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </Button>
-            <Button variant="ghost" onClick={logout} data-testid="button-logout-dashboard">
-              <LogOut className="h-4 w-4 mr-2" />
-              Salir
-            </Button>
+            {!isImpersonating && (
+              <Button variant="ghost" onClick={logout} data-testid="button-logout-dashboard">
+                <LogOut className="h-4 w-4 mr-2" />
+                Salir
+              </Button>
+            )}
           </div>
         </div>
       </header>

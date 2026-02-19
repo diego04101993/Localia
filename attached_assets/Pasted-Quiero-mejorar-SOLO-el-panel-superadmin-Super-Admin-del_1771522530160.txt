@@ -1,0 +1,103 @@
+Quiero mejorar SOLO el panel /superadmin (Super Admin) del proyecto actual. NO refactor masivo. NO rompas rutas existentes. Cambios pequeños y seguros. Build debe pasar.
+
+OBJETIVO: Terminar el dashboard de Super Admin para operación real (soporte + administración), agregando:
+1) links correctos,
+2) edición del admin de sucursal (email/nombre),
+3) reset password + registro,
+4) impersonation (entrar como sucursal sin contraseña),
+5) auditoría básica de acciones (sin guardar contraseñas).
+
+A) Corregir y estandarizar LINKS mostrados en “Sucursal creada exitosamente”
+Actualmente el modal muestra:
+- URL pública (app)
+- “Login” (pero parece redundante o incorrecto)
+
+Quiero que el modal muestre EXACTAMENTE:
+1) URL pública (para clientes):
+   `${BASE_URL}/app/${slug}`
+2) URL marketplace:
+   `${BASE_URL}/explore`
+3) URL favoritos:
+   `${BASE_URL}/favorites`
+4) URL login (para admins de sucursal):
+   `${BASE_URL}/login`
+5) URL dashboard (solo como texto, porque requiere login):
+   `${BASE_URL}/dashboard`
+
+Agregar un botón “Copiar paquete de bienvenida” que copie un texto bonito con esos links y las credenciales del admin (si se creó en ese modal).
+
+BASE_URL debe salir de env o window.location.origin sin hardcode.
+
+B) El Super Admin NO debe crear tokens de clientes
+No muevas la invitación de clientes al superadmin. El superadmin solo ve métricas.
+En el superadmin, en cada sucursal agrega botón “Abrir app” y “Abrir dashboard (requiere login)”.
+
+C) Editar Admin de Sucursal (email + nombre) desde Super Admin
+Agregar botón en cada card: “Admin”
+Al abrir:
+- Mostrar admin actual (nombre/email) si existe
+- Permitir:
+  1) Cambiar nombre
+  2) Cambiar email (validar unique)
+  3) Reasignar a otro usuario existente (buscar por email)
+  4) Si no existe admin, permitir crear uno nuevo (igual que el modal de crear sucursal)
+
+IMPORTANTE:
+- NO guardar contraseña en texto plano.
+- Si el email cambia, actualizar el registro del usuario.
+
+Endpoints sugeridos:
+- GET /api/superadmin/branches/:id/admin
+- PATCH /api/superadmin/branches/:id/admin  (update name/email or reassign)
+- POST /api/superadmin/branches/:id/admin   (create new branch admin)
+
+D) Mejorar Reset Password (ya existe) + Auditoría
+Mantener reset password, pero agregar:
+- Mostrar en el modal el email del admin afectado
+- Después de generar nueva password, mostrar:
+  - email + nueva password
+  - botón “Copiar”
+  - botón “Descargar”
+- Registrar evento en una tabla audit_logs (ver sección F)
+
+E) Impersonate: “Entrar como esta sucursal” (soporte)
+Agregar botón por sucursal: “Entrar como Admin”
+Esto debe permitir que el Super Admin navegue al /dashboard viendo esa sucursal como si fuera el branch admin, SIN conocer su contraseña.
+
+Implementación segura:
+- Crear endpoint POST /api/superadmin/impersonate { branchId }
+- Validar que el usuario actual es SUPER_ADMIN
+- Generar un token/sesión temporal de impersonation (expira en 15 min)
+- Al activar impersonation, redirigir a /dashboard?impersonated=1
+- Mostrar banner arriba: “Estás en modo soporte (Sucursal X). Salir de soporte”
+- Botón “Salir de soporte” revoca el token y regresa a /superadmin
+
+No permitir acciones peligrosas en impersonation si es muy complejo (opcional):
+- al menos permitir ver panel y navegar.
+Si ya se puede todo, ok, pero dejar claro que es modo soporte.
+
+F) Auditoría básica (super útil)
+Crear tabla audit_logs:
+- id uuid
+- actor_user_id (superadmin)
+- action text (CREATE_BRANCH, UPDATE_STATUS, DELETE_BRANCH, RESET_ADMIN_PASSWORD, UPDATE_ADMIN_EMAIL, IMPERSONATE_START, IMPERSONATE_END)
+- branch_id nullable
+- metadata jsonb (ej: oldStatus/newStatus, emailAnterior/emailNuevo)
+- created_at timestamptz default now()
+
+Reglas:
+- NO guardar passwords en metadata.
+- Agregar endpoint GET /api/superadmin/audit?limit=50
+- En /superadmin agregar un tab o modal “Actividad reciente” que liste los últimos 50 eventos.
+
+G) Pequeñas mejoras UI (sin romper)
+- En cada card de sucursal, además de clientes/membresías, mostrar:
+  - “Reservas del mes” si existe bookings (si no, mostrar 0)
+  - “Rating promedio” si existe reviews (si no, 0)
+- Agregar tooltip a íconos (App, Admin, Eliminar, Reset)
+- Mantener “Ver eliminadas” y búsqueda ya existentes.
+
+IMPORTANTE: 
+- Todo debe ser incremental.
+- Si alguna tabla no existe (bookings, reviews), no fallar: usar 0 y seguir.
+- Build final debe pasar.

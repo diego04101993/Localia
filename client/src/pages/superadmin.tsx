@@ -22,8 +22,12 @@ import {
   EyeOff,
   RefreshCw,
   ClipboardCheck,
+  UserCog,
+  History,
+  LayoutDashboard,
+  UserCheck,
 } from "lucide-react";
-import { createBranchSchema, type CreateBranchData, type Branch, BRANCH_CATEGORIES } from "@shared/schema";
+import { createBranchSchema, type CreateBranchData, type Branch, BRANCH_CATEGORIES, type AuditLog } from "@shared/schema";
 import { useAuth } from "@/lib/auth";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useTheme } from "@/components/theme-provider";
@@ -58,9 +62,23 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
+import { useLocation } from "wouter";
 
 type BranchMetric = { branchId: string; customerCount: number; activeMemberships: number };
+type AdminInfo = { id: string; email: string; name: string; createdAt?: string } | null;
+
+function invalidateBranches() {
+  queryClient.invalidateQueries({ predicate: (q) => (q.queryKey[0] as string).startsWith("/api/branches") });
+  queryClient.invalidateQueries({ queryKey: ["/api/superadmin/branches/metrics"] });
+  queryClient.invalidateQueries({ predicate: (q) => (q.queryKey[0] as string).startsWith("/api/superadmin/audit") });
+}
 
 function StatusBadge({ status }: { status: string }) {
   const config: Record<string, { label: string; variant: "default" | "secondary" | "destructive" }> = {
@@ -72,7 +90,7 @@ function StatusBadge({ status }: { status: string }) {
   return <Badge variant={c.variant} data-testid={`badge-status-${status}`}>{c.label}</Badge>;
 }
 
-function DeleteBranchDialog({ branch, onDeleted }: { branch: Branch; onDeleted: () => void }) {
+function DeleteBranchDialog({ branch }: { branch: Branch }) {
   const [open, setOpen] = useState(false);
   const [confirmSlug, setConfirmSlug] = useState("");
   const { toast } = useToast();
@@ -83,11 +101,9 @@ function DeleteBranchDialog({ branch, onDeleted }: { branch: Branch; onDeleted: 
     },
     onSuccess: () => {
       toast({ title: "Sucursal eliminada" });
-      queryClient.invalidateQueries({ predicate: (q) => (q.queryKey[0] as string).startsWith("/api/branches") });
-      queryClient.invalidateQueries({ queryKey: ["/api/superadmin/branches/metrics"] });
+      invalidateBranches();
       setOpen(false);
       setConfirmSlug("");
-      onDeleted();
     },
     onError: () => {
       toast({ title: "Error", description: "No se pudo eliminar", variant: "destructive" });
@@ -97,9 +113,16 @@ function DeleteBranchDialog({ branch, onDeleted }: { branch: Branch; onDeleted: 
   return (
     <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) setConfirmSlug(""); }}>
       <DialogTrigger asChild>
-        <Button size="icon" variant="ghost" data-testid={`button-delete-${branch.id}`}>
-          <Trash2 className="h-4 w-4 text-destructive" />
-        </Button>
+        <span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button size="icon" variant="ghost" data-testid={`button-delete-${branch.id}`}>
+                <Trash2 className="h-4 w-4 text-destructive" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Eliminar sucursal</TooltipContent>
+          </Tooltip>
+        </span>
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
@@ -120,7 +143,7 @@ function DeleteBranchDialog({ branch, onDeleted }: { branch: Branch; onDeleted: 
           />
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => setOpen(false)}>Cancelar</Button>
+          <Button variant="outline" onClick={() => setOpen(false)} data-testid="button-cancel-delete">Cancelar</Button>
           <Button
             variant="destructive"
             disabled={confirmSlug !== branch.slug || mutation.isPending}
@@ -128,7 +151,7 @@ function DeleteBranchDialog({ branch, onDeleted }: { branch: Branch; onDeleted: 
             data-testid="button-confirm-delete"
           >
             {mutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
-            Eliminar sucursal
+            Eliminar
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -148,30 +171,54 @@ function ResetPasswordDialog({ branch }: { branch: Branch }) {
     },
     onSuccess: (data) => {
       setResult(data);
+      invalidateBranches();
       toast({ title: "Contraseña reseteada" });
     },
-    onError: (err: any) => {
-      toast({
-        title: "Error",
-        description: err.message?.includes("404") ? "No hay administrador para esta sucursal" : "Error al resetear",
-        variant: "destructive",
-      });
+    onError: () => {
+      toast({ title: "Error", description: "No hay admin para esta sucursal", variant: "destructive" });
     },
   });
 
+  const r = result;
   function copyAll() {
-    if (!result) return;
-    const text = `Email: ${result.email}\nContraseña: ${result.password}`;
-    navigator.clipboard.writeText(text);
+    if (!r) return;
+    navigator.clipboard.writeText(`Email: ${r.email}\nContraseña: ${r.password}`);
     toast({ title: "Copiado al portapapeles" });
+  }
+
+  function downloadTxt() {
+    if (!r) return;
+    const origin = window.location.origin;
+    const text = [
+      `Reset de contraseña - ${branch.name}`,
+      `==================================`,
+      `Login: ${origin}/`,
+      `Email: ${r.email}`,
+      `Nueva contraseña: ${r.password}`,
+      `==================================`,
+    ].join("\n");
+    const blob = new Blob([text], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `reset-${branch.slug}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   return (
     <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) setResult(null); }}>
       <DialogTrigger asChild>
-        <Button size="icon" variant="ghost" data-testid={`button-reset-pw-${branch.id}`}>
-          <KeyRound className="h-4 w-4" />
-        </Button>
+        <span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button size="icon" variant="ghost" data-testid={`button-reset-pw-${branch.id}`}>
+                <KeyRound className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Reset contraseña admin</TooltipContent>
+          </Tooltip>
+        </span>
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
@@ -186,14 +233,20 @@ function ResetPasswordDialog({ branch }: { branch: Branch }) {
               <p><strong>Email:</strong> {result.email}</p>
               <p><strong>Nueva contraseña:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{result.password}</code></p>
             </div>
-            <Button onClick={copyAll} className="w-full" data-testid="button-copy-reset">
-              <Copy className="h-4 w-4 mr-2" />
-              Copiar todo
-            </Button>
+            <div className="flex gap-2">
+              <Button onClick={copyAll} className="flex-1" data-testid="button-copy-reset">
+                <Copy className="h-4 w-4 mr-2" />
+                Copiar
+              </Button>
+              <Button variant="outline" onClick={downloadTxt} className="flex-1" data-testid="button-download-reset">
+                <Download className="h-4 w-4 mr-2" />
+                Descargar
+              </Button>
+            </div>
           </div>
         ) : (
           <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>Cancelar</Button>
+            <Button variant="outline" onClick={() => setOpen(false)} data-testid="button-cancel-reset">Cancelar</Button>
             <Button onClick={() => mutation.mutate()} disabled={mutation.isPending} data-testid="button-confirm-reset">
               {mutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
               Generar nueva contraseña
@@ -202,6 +255,275 @@ function ResetPasswordDialog({ branch }: { branch: Branch }) {
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+function AdminDialog({ branch }: { branch: Branch }) {
+  const [open, setOpen] = useState(false);
+  const [editName, setEditName] = useState("");
+  const [editEmail, setEditEmail] = useState("");
+  const [newAdminEmail, setNewAdminEmail] = useState("");
+  const [newAdminName, setNewAdminName] = useState("");
+  const [newAdminPassword, setNewAdminPassword] = useState("");
+  const [showNewPw, setShowNewPw] = useState(false);
+  const [createdCreds, setCreatedCreds] = useState<{ email: string; password: string } | null>(null);
+  const { toast } = useToast();
+
+  const { data: admin, isLoading: loadingAdmin } = useQuery<AdminInfo>({
+    queryKey: ["/api/superadmin/branches", branch.id, "admin"],
+    queryFn: async () => {
+      const resp = await fetch(`/api/superadmin/branches/${branch.id}/admin`, { credentials: "include" });
+      if (!resp.ok) return null;
+      return resp.json();
+    },
+    enabled: open,
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: async (data: { name?: string; email?: string }) => {
+      const resp = await apiRequest("PATCH", `/api/superadmin/branches/${branch.id}/admin`, data);
+      return resp.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Admin actualizado" });
+      queryClient.invalidateQueries({ queryKey: ["/api/superadmin/branches", branch.id, "admin"] });
+      invalidateBranches();
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message?.includes("409") ? "Email ya en uso" : "Error al actualizar", variant: "destructive" });
+    },
+  });
+
+  const createMutation = useMutation({
+    mutationFn: async (data: { email: string; name: string; password?: string }) => {
+      const resp = await apiRequest("POST", `/api/superadmin/branches/${branch.id}/admin`, data);
+      return resp.json();
+    },
+    onSuccess: (result) => {
+      setCreatedCreds({ email: result.admin.email, password: result.password });
+      toast({ title: "Admin creado" });
+      queryClient.invalidateQueries({ queryKey: ["/api/superadmin/branches", branch.id, "admin"] });
+      invalidateBranches();
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message?.includes("409") ? "Email ya registrado" : "Error al crear", variant: "destructive" });
+    },
+  });
+
+  function handleOpen(isOpen: boolean) {
+    setOpen(isOpen);
+    if (!isOpen) {
+      setEditName("");
+      setEditEmail("");
+      setNewAdminEmail("");
+      setNewAdminName("");
+      setNewAdminPassword("");
+      setCreatedCreds(null);
+    }
+  }
+
+  function handleOpenChange(isOpen: boolean) {
+    handleOpen(isOpen);
+    if (isOpen && admin) {
+      setEditName(admin.name);
+      setEditEmail(admin.email);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogTrigger asChild>
+        <span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button size="icon" variant="ghost" data-testid={`button-admin-${branch.id}`}>
+                <UserCog className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Gestionar admin</TooltipContent>
+          </Tooltip>
+        </span>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Admin de {branch.name}</DialogTitle>
+          <DialogDescription>Gestiona el administrador de esta sucursal.</DialogDescription>
+        </DialogHeader>
+
+        {loadingAdmin ? (
+          <div className="space-y-2 py-4">
+            <Skeleton className="h-4 w-48" />
+            <Skeleton className="h-4 w-32" />
+          </div>
+        ) : createdCreds ? (
+          <div className="space-y-3 py-2">
+            <div className="p-3 bg-muted rounded-md space-y-2 text-sm">
+              <p><strong>Email:</strong> {createdCreds.email}</p>
+              <p><strong>Contraseña:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{createdCreds.password}</code></p>
+            </div>
+            <Button
+              className="w-full"
+              onClick={() => {
+                navigator.clipboard.writeText(`Email: ${createdCreds.email}\nContraseña: ${createdCreds.password}`);
+                toast({ title: "Copiado" });
+              }}
+              data-testid="button-copy-new-admin"
+            >
+              <Copy className="h-4 w-4 mr-2" />
+              Copiar credenciales
+            </Button>
+          </div>
+        ) : admin ? (
+          <div className="space-y-4 py-2">
+            <div>
+              <Label className="text-sm">Nombre</Label>
+              <Input
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                className="mt-1"
+                data-testid="input-edit-admin-name"
+              />
+            </div>
+            <div>
+              <Label className="text-sm">Email</Label>
+              <Input
+                type="email"
+                value={editEmail}
+                onChange={(e) => setEditEmail(e.target.value)}
+                className="mt-1"
+                data-testid="input-edit-admin-email"
+              />
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setOpen(false)} data-testid="button-cancel-admin-edit">Cancelar</Button>
+              <Button
+                disabled={updateMutation.isPending || (editName === admin.name && editEmail === admin.email)}
+                onClick={() => updateMutation.mutate({ name: editName, email: editEmail })}
+                data-testid="button-save-admin"
+              >
+                {updateMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+                Guardar
+              </Button>
+            </DialogFooter>
+          </div>
+        ) : (
+          <div className="space-y-4 py-2">
+            <p className="text-sm text-muted-foreground">No hay admin asignado. Crea uno nuevo:</p>
+            <div>
+              <Label className="text-sm">Nombre</Label>
+              <Input
+                value={newAdminName}
+                onChange={(e) => setNewAdminName(e.target.value)}
+                placeholder="Juan Pérez"
+                className="mt-1"
+                data-testid="input-new-admin-name"
+              />
+            </div>
+            <div>
+              <Label className="text-sm">Email</Label>
+              <Input
+                type="email"
+                value={newAdminEmail}
+                onChange={(e) => setNewAdminEmail(e.target.value)}
+                placeholder="admin@sucursal.com"
+                className="mt-1"
+                data-testid="input-new-admin-email"
+              />
+            </div>
+            <div>
+              <Label className="text-sm">Contraseña</Label>
+              <div className="flex gap-1 mt-1">
+                <div className="relative flex-1">
+                  <Input
+                    type={showNewPw ? "text" : "password"}
+                    placeholder="Dejar vacío para autogenerar"
+                    value={newAdminPassword}
+                    onChange={(e) => setNewAdminPassword(e.target.value)}
+                    data-testid="input-new-admin-password"
+                  />
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    className="absolute right-0 top-0"
+                    onClick={() => setShowNewPw(!showNewPw)}
+                  >
+                    {showNewPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </Button>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={() => {
+                    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%";
+                    let pw = "";
+                    for (let i = 0; i < 14; i++) pw += chars.charAt(Math.floor(Math.random() * chars.length));
+                    setNewAdminPassword(pw);
+                    setShowNewPw(true);
+                  }}
+                  data-testid="button-generate-new-admin-pw"
+                >
+                  <RefreshCw className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setOpen(false)} data-testid="button-cancel-create-admin">Cancelar</Button>
+              <Button
+                disabled={createMutation.isPending || !newAdminEmail}
+                onClick={() => createMutation.mutate({ email: newAdminEmail, name: newAdminName || `Admin ${branch.name}`, password: newAdminPassword || undefined })}
+                data-testid="button-create-admin"
+              >
+                {createMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+                Crear admin
+              </Button>
+            </DialogFooter>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ImpersonateButton({ branch }: { branch: Branch }) {
+  const { toast } = useToast();
+  const { refetch } = useAuth();
+  const [, setLocation] = useLocation();
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const resp = await apiRequest("POST", "/api/superadmin/impersonate", { branchId: branch.id });
+      return resp.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
+      toast({ title: `Modo soporte: ${branch.name}` });
+      setTimeout(() => {
+        refetch();
+        setLocation("/dashboard");
+      }, 300);
+    },
+    onError: () => {
+      toast({ title: "Error", description: "No se puede iniciar modo soporte. Verifica que existe un admin.", variant: "destructive" });
+    },
+  });
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          size="icon"
+          variant="ghost"
+          onClick={() => mutation.mutate()}
+          disabled={mutation.isPending}
+          data-testid={`button-impersonate-${branch.id}`}
+        >
+          {mutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserCheck className="h-4 w-4" />}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>Entrar como admin</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -220,64 +542,86 @@ function CredentialsModal({
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const d = data;
 
-  function copyAll() {
+  const links = {
+    publicUrl: `${origin}/app/${d.branchSlug}`,
+    marketplace: `${origin}/explore`,
+    favorites: `${origin}/favorites`,
+    login: `${origin}/`,
+    dashboard: `${origin}/dashboard`,
+  };
+
+  function copyWelcome() {
     const text = [
-      `Sucursal: ${d.branchName}`,
-      `URL pública: ${origin}/app/${d.branchSlug}`,
-      `Login: ${origin}/`,
-      `Email: ${d.adminEmail}`,
-      `Contraseña: ${d.adminPassword}`,
+      `Paquete de bienvenida - ${d.branchName}`,
+      ``,
+      `URLs importantes:`,
+      `  Página pública (para clientes): ${links.publicUrl}`,
+      `  Marketplace: ${links.marketplace}`,
+      `  Favoritos: ${links.favorites}`,
+      `  Login (admin): ${links.login}`,
+      `  Dashboard (requiere login): ${links.dashboard}`,
+      ``,
+      `Credenciales del administrador:`,
+      `  Email: ${d.adminEmail}`,
+      `  Contraseña: ${d.adminPassword}`,
     ].join("\n");
     navigator.clipboard.writeText(text);
-    toast({ title: "Copiado al portapapeles" });
+    toast({ title: "Paquete de bienvenida copiado" });
   }
 
   function downloadTxt() {
     const text = [
-      `Credenciales - ${d.branchName}`,
+      `Paquete de bienvenida - ${d.branchName}`,
       `==================================`,
-      `URL pública: ${origin}/app/${d.branchSlug}`,
-      `Login: ${origin}/`,
-      `Email: ${d.adminEmail}`,
-      `Contraseña: ${d.adminPassword}`,
+      ``,
+      `URLs importantes:`,
+      `  Página pública: ${links.publicUrl}`,
+      `  Marketplace: ${links.marketplace}`,
+      `  Favoritos: ${links.favorites}`,
+      `  Login: ${links.login}`,
+      `  Dashboard: ${links.dashboard}`,
+      ``,
+      `Credenciales del administrador:`,
+      `  Email: ${d.adminEmail}`,
+      `  Contraseña: ${d.adminPassword}`,
+      ``,
       `==================================`,
     ].join("\n");
     const blob = new Blob([text], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `credenciales-${d.branchSlug}.txt`;
+    a.download = `bienvenida-${d.branchSlug}.txt`;
     a.click();
     URL.revokeObjectURL(url);
   }
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
-      <DialogContent>
+      <DialogContent className="max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Sucursal creada exitosamente</DialogTitle>
+          <DialogDescription>Guarda esta información antes de cerrar.</DialogDescription>
         </DialogHeader>
         <div className="space-y-3 py-2">
           <div className="p-3 bg-muted rounded-md space-y-2 text-sm">
-            <p><strong>Sucursal:</strong> {data.branchName}</p>
-            <p>
-              <strong>URL pública:</strong>{" "}
-              <code className="text-xs bg-background px-1 py-0.5 rounded">{origin}/app/{data.branchSlug}</code>
-            </p>
-            <p>
-              <strong>Login:</strong>{" "}
-              <code className="text-xs bg-background px-1 py-0.5 rounded">{origin}/</code>
-            </p>
-            <p><strong>Email admin:</strong> {data.adminEmail}</p>
-            <p>
-              <strong>Contraseña:</strong>{" "}
-              <code className="text-xs bg-background px-1 py-0.5 rounded">{data.adminPassword}</code>
-            </p>
+            <p className="font-semibold">{d.branchName}</p>
+            <div className="space-y-1 pt-1">
+              <p><strong>URL pública:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{links.publicUrl}</code></p>
+              <p><strong>Marketplace:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{links.marketplace}</code></p>
+              <p><strong>Favoritos:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{links.favorites}</code></p>
+              <p><strong>Login (admin):</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{links.login}</code></p>
+              <p><strong>Dashboard:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{links.dashboard}</code></p>
+            </div>
+            <div className="border-t pt-2 mt-2 space-y-1">
+              <p><strong>Email admin:</strong> {d.adminEmail}</p>
+              <p><strong>Contraseña:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{d.adminPassword}</code></p>
+            </div>
           </div>
           <div className="flex gap-2">
-            <Button onClick={copyAll} className="flex-1" data-testid="button-copy-credentials">
+            <Button onClick={copyWelcome} className="flex-1" data-testid="button-copy-welcome">
               <Copy className="h-4 w-4 mr-2" />
-              Copiar todo
+              Copiar paquete de bienvenida
             </Button>
             <Button variant="outline" onClick={downloadTxt} className="flex-1" data-testid="button-download-credentials">
               <Download className="h-4 w-4 mr-2" />
@@ -290,16 +634,7 @@ function CredentialsModal({
   );
 }
 
-function generatePassword(length = 14): string {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%";
-  let pw = "";
-  for (let i = 0; i < length; i++) {
-    pw += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return pw;
-}
-
-function CreateBranchDialog({ onCreated }: { onCreated: () => void }) {
+function CreateBranchDialog() {
   const [open, setOpen] = useState(false);
   const [createAdmin, setCreateAdmin] = useState(false);
   const [adminEmail, setAdminEmail] = useState("");
@@ -337,8 +672,7 @@ function CreateBranchDialog({ onCreated }: { onCreated: () => void }) {
       return resp.json();
     },
     onSuccess: (result) => {
-      queryClient.invalidateQueries({ predicate: (q) => (q.queryKey[0] as string).startsWith("/api/branches") });
-      queryClient.invalidateQueries({ queryKey: ["/api/superadmin/branches/metrics"] });
+      invalidateBranches();
       if (result.admin) {
         setCredentials({
           branchName: result.branch.name,
@@ -355,7 +689,6 @@ function CreateBranchDialog({ onCreated }: { onCreated: () => void }) {
       setAdminName("");
       setCreateAdmin(false);
       setOpen(false);
-      onCreated();
     },
     onError: (err: any) => {
       toast({
@@ -391,6 +724,7 @@ function CreateBranchDialog({ onCreated }: { onCreated: () => void }) {
         <DialogContent className="max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Crear nueva sucursal</DialogTitle>
+            <DialogDescription>Completa los datos de la nueva sucursal.</DialogDescription>
           </DialogHeader>
           <Form {...form}>
             <form onSubmit={form.handleSubmit((d) => mutation.mutate(d))} className="space-y-4">
@@ -441,7 +775,7 @@ function CreateBranchDialog({ onCreated }: { onCreated: () => void }) {
 
               <div className="border rounded-md p-3 space-y-3">
                 <div className="flex items-center justify-between gap-2">
-                  <Label className="text-sm font-medium">Crear administrador de sucursal</Label>
+                  <Label className="text-sm font-medium">Crear administrador</Label>
                   <Switch
                     checked={createAdmin}
                     onCheckedChange={setCreateAdmin}
@@ -498,7 +832,9 @@ function CreateBranchDialog({ onCreated }: { onCreated: () => void }) {
                           variant="outline"
                           size="icon"
                           onClick={() => {
-                            const pw = generatePassword();
+                            const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%";
+                            let pw = "";
+                            for (let i = 0; i < 14; i++) pw += chars.charAt(Math.floor(Math.random() * chars.length));
                             setAdminPassword(pw);
                             setShowPw(true);
                           }}
@@ -535,6 +871,82 @@ function CreateBranchDialog({ onCreated }: { onCreated: () => void }) {
         data={credentials}
       />
     </>
+  );
+}
+
+const ACTION_LABELS: Record<string, string> = {
+  CREATE_BRANCH: "Crear sucursal",
+  UPDATE_STATUS: "Cambiar estado",
+  DELETE_BRANCH: "Eliminar sucursal",
+  RESET_ADMIN_PASSWORD: "Reset contraseña",
+  UPDATE_ADMIN: "Editar admin",
+  REASSIGN_ADMIN: "Reasignar admin",
+  CREATE_ADMIN: "Crear admin",
+  IMPERSONATE_START: "Iniciar soporte",
+  IMPERSONATE_END: "Fin soporte",
+};
+
+function AuditLogPanel() {
+  const { data: logs, isLoading } = useQuery<(AuditLog & { actorEmail?: string | null })[]>({
+    queryKey: ["/api/superadmin/audit"],
+  });
+
+  if (isLoading) {
+    return (
+      <div className="space-y-3">
+        {[1, 2, 3].map((i) => (
+          <div key={i} className="flex gap-3 items-start">
+            <Skeleton className="w-8 h-8 rounded-md" />
+            <div className="space-y-1 flex-1"><Skeleton className="h-4 w-48" /><Skeleton className="h-3 w-32" /></div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (!logs || logs.length === 0) {
+    return (
+      <div className="text-center py-12">
+        <History className="h-10 w-10 text-muted-foreground/30 mx-auto mb-3" />
+        <p className="text-sm text-muted-foreground">No hay actividad registrada</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2 max-h-[500px] overflow-y-auto">
+      {logs.map((log) => {
+        const meta = (log.metadata || {}) as Record<string, any>;
+        let detail = "";
+        if (meta.branchName) detail = meta.branchName;
+        if (meta.oldStatus && meta.newStatus) detail = `${meta.oldStatus} → ${meta.newStatus}`;
+        if (meta.adminEmail) detail = meta.adminEmail;
+        if (meta.newEmail) detail = `${meta.oldEmail} → ${meta.newEmail}`;
+
+        return (
+          <div key={log.id} className="flex gap-3 items-start p-2 rounded-md hover-elevate" data-testid={`audit-log-${log.id}`}>
+            <div className="flex items-center justify-center w-8 h-8 rounded-md bg-muted shrink-0">
+              <History className="h-4 w-4 text-muted-foreground" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <Badge variant="secondary" className="text-xs">{ACTION_LABELS[log.action] || log.action}</Badge>
+                {detail && <span className="text-xs text-muted-foreground truncate">{detail}</span>}
+              </div>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {log.actorEmail} &middot;{" "}
+                {new Date(log.createdAt).toLocaleString("es-MX", {
+                  month: "short",
+                  day: "numeric",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}
+              </p>
+            </div>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -575,22 +987,20 @@ function BranchCard({
           </div>
         </div>
 
-        {metrics && (
-          <div className="grid grid-cols-2 gap-2 mt-3">
-            <div className="text-center p-2 bg-muted/50 rounded-md">
-              <p className="text-lg font-bold" data-testid={`text-customers-${branch.id}`}>
-                {metrics.customerCount}
-              </p>
-              <p className="text-xs text-muted-foreground">Clientes</p>
-            </div>
-            <div className="text-center p-2 bg-muted/50 rounded-md">
-              <p className="text-lg font-bold" data-testid={`text-memberships-${branch.id}`}>
-                {metrics.activeMemberships}
-              </p>
-              <p className="text-xs text-muted-foreground">Membresías activas</p>
-            </div>
+        <div className="grid grid-cols-2 gap-2 mt-3">
+          <div className="text-center p-2 bg-muted/50 rounded-md">
+            <p className="text-lg font-bold" data-testid={`text-customers-${branch.id}`}>
+              {metrics?.customerCount ?? 0}
+            </p>
+            <p className="text-xs text-muted-foreground">Clientes</p>
           </div>
-        )}
+          <div className="text-center p-2 bg-muted/50 rounded-md">
+            <p className="text-lg font-bold" data-testid={`text-memberships-${branch.id}`}>
+              {metrics?.activeMemberships ?? 0}
+            </p>
+            <p className="text-xs text-muted-foreground">Membresías</p>
+          </div>
+        </div>
 
         <div className="flex items-center justify-between mt-3 pt-3 border-t gap-2 flex-wrap">
           <p className="text-xs text-muted-foreground">
@@ -619,19 +1029,40 @@ function BranchCard({
 
         {!isDeleted && (
           <div className="flex items-center gap-1 mt-3 pt-3 border-t flex-wrap">
-            <Button
-              size="sm"
-              variant="ghost"
-              asChild
-              data-testid={`button-open-app-${branch.id}`}
-            >
-              <a href={`/app/${branch.slug}`} target="_blank" rel="noopener noreferrer">
-                <ExternalLink className="h-3.5 w-3.5 mr-1" />
-                App
-              </a>
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  asChild
+                  data-testid={`button-open-app-${branch.id}`}
+                >
+                  <a href={`/app/${branch.slug}`} target="_blank" rel="noopener noreferrer">
+                    <ExternalLink className="h-4 w-4" />
+                  </a>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Abrir app pública</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  asChild
+                  data-testid={`button-open-dashboard-${branch.id}`}
+                >
+                  <a href="/dashboard" target="_blank" rel="noopener noreferrer">
+                    <LayoutDashboard className="h-4 w-4" />
+                  </a>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Dashboard (requiere login)</TooltipContent>
+            </Tooltip>
+            <ImpersonateButton branch={branch} />
+            <AdminDialog branch={branch} />
             <ResetPasswordDialog branch={branch} />
-            <DeleteBranchDialog branch={branch} onDeleted={() => {}} />
+            <DeleteBranchDialog branch={branch} />
           </div>
         )}
       </CardContent>
@@ -660,8 +1091,7 @@ export default function SuperAdminPage() {
       await apiRequest("PATCH", `/api/branches/${id}/status`, { status });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ predicate: (q) => (q.queryKey[0] as string).startsWith("/api/branches") });
-      queryClient.invalidateQueries({ queryKey: ["/api/superadmin/branches/metrics"] });
+      invalidateBranches();
       toast({ title: "Estado actualizado" });
     },
     onError: () => {
@@ -762,75 +1192,93 @@ export default function SuperAdminPage() {
           </Card>
         </div>
 
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <h2 className="text-lg font-semibold">Sucursales</h2>
-          <div className="flex items-center gap-2 flex-wrap">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                type="search"
-                placeholder="Buscar..."
-                className="pl-9 w-48"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                data-testid="input-search-branches"
-              />
-            </div>
-            <div className="flex items-center gap-1">
-              <Switch
-                checked={showDeleted}
-                onCheckedChange={setShowDeleted}
-                data-testid="switch-show-deleted"
-              />
-              <Label className="text-xs text-muted-foreground whitespace-nowrap">Ver eliminadas</Label>
-            </div>
-            <CreateBranchDialog onCreated={() => {}} />
-          </div>
-        </div>
+        <Tabs defaultValue="branches" className="w-full">
+          <TabsList data-testid="tabs-superadmin">
+            <TabsTrigger value="branches" data-testid="tab-branches">Sucursales</TabsTrigger>
+            <TabsTrigger value="activity" data-testid="tab-activity">Actividad</TabsTrigger>
+          </TabsList>
 
-        {isLoading ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {[1, 2, 3].map((i) => (
-              <Card key={i}>
-                <CardContent className="p-4 space-y-3">
-                  <div className="flex items-center gap-3">
-                    <Skeleton className="w-10 h-10 rounded-md" />
-                    <div className="space-y-2 flex-1">
-                      <Skeleton className="h-4 w-32" />
-                      <Skeleton className="h-3 w-20" />
-                    </div>
-                  </div>
-                  <Skeleton className="h-8 w-full" />
+          <TabsContent value="branches" className="space-y-4 mt-4">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <h2 className="text-lg font-semibold">Sucursales</h2>
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    type="search"
+                    placeholder="Buscar..."
+                    className="pl-9 w-48"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    data-testid="input-search-branches"
+                  />
+                </div>
+                <div className="flex items-center gap-1">
+                  <Switch
+                    checked={showDeleted}
+                    onCheckedChange={setShowDeleted}
+                    data-testid="switch-show-deleted"
+                  />
+                  <Label className="text-xs text-muted-foreground whitespace-nowrap">Ver eliminadas</Label>
+                </div>
+                <CreateBranchDialog />
+              </div>
+            </div>
+
+            {isLoading ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {[1, 2, 3].map((i) => (
+                  <Card key={i}>
+                    <CardContent className="p-4 space-y-3">
+                      <div className="flex items-center gap-3">
+                        <Skeleton className="w-10 h-10 rounded-md" />
+                        <div className="space-y-2 flex-1">
+                          <Skeleton className="h-4 w-32" />
+                          <Skeleton className="h-3 w-20" />
+                        </div>
+                      </div>
+                      <Skeleton className="h-8 w-full" />
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            ) : filteredBranches && filteredBranches.length > 0 ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {filteredBranches.map((branch) => (
+                  <BranchCard
+                    key={branch.id}
+                    branch={branch}
+                    metrics={metricsMap.get(branch.id)}
+                    onStatusChange={(id, status) => statusMutation.mutate({ id, status })}
+                  />
+                ))}
+              </div>
+            ) : (
+              <Card>
+                <CardContent className="p-12 text-center">
+                  <Building2 className="h-12 w-12 text-muted-foreground/30 mx-auto mb-4" />
+                  <h3 className="font-semibold text-lg mb-1">
+                    {searchQuery ? "Sin resultados" : "Sin sucursales"}
+                  </h3>
+                  <p className="text-sm text-muted-foreground">
+                    {searchQuery
+                      ? "No se encontraron sucursales con esa búsqueda"
+                      : "Crea tu primera sucursal para comenzar"}
+                  </p>
                 </CardContent>
               </Card>
-            ))}
-          </div>
-        ) : filteredBranches && filteredBranches.length > 0 ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {filteredBranches.map((branch) => (
-              <BranchCard
-                key={branch.id}
-                branch={branch}
-                metrics={metricsMap.get(branch.id)}
-                onStatusChange={(id, status) => statusMutation.mutate({ id, status })}
-              />
-            ))}
-          </div>
-        ) : (
-          <Card>
-            <CardContent className="p-12 text-center">
-              <Building2 className="h-12 w-12 text-muted-foreground/30 mx-auto mb-4" />
-              <h3 className="font-semibold text-lg mb-1">
-                {searchQuery ? "Sin resultados" : "Sin sucursales"}
-              </h3>
-              <p className="text-sm text-muted-foreground">
-                {searchQuery
-                  ? "No se encontraron sucursales con esa búsqueda"
-                  : "Crea tu primera sucursal para comenzar"}
-              </p>
-            </CardContent>
-          </Card>
-        )}
+            )}
+          </TabsContent>
+
+          <TabsContent value="activity" className="mt-4">
+            <Card>
+              <CardContent className="p-4">
+                <h2 className="font-semibold text-lg mb-4" data-testid="text-activity-title">Actividad reciente</h2>
+                <AuditLogPanel />
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
       </main>
     </div>
   );
