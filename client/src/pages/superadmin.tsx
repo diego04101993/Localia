@@ -74,6 +74,30 @@ import { useLocation } from "wouter";
 type BranchMetric = { branchId: string; customerCount: number; activeMemberships: number };
 type AdminInfo = { id: string; email: string; name: string; createdAt?: string } | null;
 
+function extractErrorMessage(err: any, fallback: string): string {
+  try {
+    const msg = err?.message || "";
+    const jsonPart = msg.indexOf("{");
+    if (jsonPart >= 0) {
+      const parsed = JSON.parse(msg.substring(jsonPart));
+      return parsed.message || fallback;
+    }
+    const colonIdx = msg.indexOf(": ");
+    if (colonIdx >= 0) {
+      const afterColon = msg.substring(colonIdx + 2);
+      try {
+        const parsed = JSON.parse(afterColon);
+        return parsed.message || fallback;
+      } catch {
+        return afterColon || fallback;
+      }
+    }
+    return msg || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function invalidateBranches() {
   queryClient.invalidateQueries({ predicate: (q) => (q.queryKey[0] as string).startsWith("/api/branches") });
   queryClient.invalidateQueries({ queryKey: ["/api/superadmin/branches/metrics"] });
@@ -159,7 +183,7 @@ function DeleteBranchDialog({ branch }: { branch: Branch }) {
   );
 }
 
-function ResetPasswordDialog({ branch }: { branch: Branch }) {
+function ResetPasswordDialog({ branch, hasAdmin }: { branch: Branch; hasAdmin?: boolean }) {
   const [open, setOpen] = useState(false);
   const [result, setResult] = useState<{ email: string; password: string; name: string } | null>(null);
   const { toast } = useToast();
@@ -174,8 +198,8 @@ function ResetPasswordDialog({ branch }: { branch: Branch }) {
       invalidateBranches();
       toast({ title: "Contraseña reseteada" });
     },
-    onError: () => {
-      toast({ title: "Error", description: "No hay admin para esta sucursal", variant: "destructive" });
+    onError: (err: any) => {
+      toast({ title: "Error", description: extractErrorMessage(err, "No hay admin para esta sucursal"), variant: "destructive" });
     },
   });
 
@@ -212,11 +236,11 @@ function ResetPasswordDialog({ branch }: { branch: Branch }) {
         <span>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button size="icon" variant="ghost" data-testid={`button-reset-pw-${branch.id}`}>
+              <Button size="icon" variant="ghost" disabled={hasAdmin === false} data-testid={`button-reset-pw-${branch.id}`}>
                 <KeyRound className="h-4 w-4" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Reset contraseña admin</TooltipContent>
+            <TooltipContent>{hasAdmin === false ? "Primero crea o asigna un admin" : "Reset contraseña admin"}</TooltipContent>
           </Tooltip>
         </span>
       </DialogTrigger>
@@ -258,7 +282,7 @@ function ResetPasswordDialog({ branch }: { branch: Branch }) {
   );
 }
 
-function AdminDialog({ branch }: { branch: Branch }) {
+function AdminDialog({ branch, onAdminChanged }: { branch: Branch; onAdminChanged?: () => void }) {
   const [open, setOpen] = useState(false);
   const [editName, setEditName] = useState("");
   const [editEmail, setEditEmail] = useState("");
@@ -266,7 +290,8 @@ function AdminDialog({ branch }: { branch: Branch }) {
   const [newAdminName, setNewAdminName] = useState("");
   const [newAdminPassword, setNewAdminPassword] = useState("");
   const [showNewPw, setShowNewPw] = useState(false);
-  const [createdCreds, setCreatedCreds] = useState<{ email: string; password: string } | null>(null);
+  const [createdCreds, setCreatedCreds] = useState<{ email: string; password: string | null; reassigned?: boolean } | null>(null);
+  const [showReassign, setShowReassign] = useState(false);
   const { toast } = useToast();
 
   const { data: admin, isLoading: loadingAdmin } = useQuery<AdminInfo>({
@@ -295,18 +320,26 @@ function AdminDialog({ branch }: { branch: Branch }) {
   });
 
   const createMutation = useMutation({
-    mutationFn: async (data: { email: string; name: string; password?: string }) => {
+    mutationFn: async (data: { email: string; name: string; password?: string; reassign?: boolean }) => {
       const resp = await apiRequest("POST", `/api/superadmin/branches/${branch.id}/admin`, data);
       return resp.json();
     },
     onSuccess: (result) => {
-      setCreatedCreds({ email: result.admin.email, password: result.password });
-      toast({ title: "Admin creado" });
+      setCreatedCreds({ email: result.admin.email, password: result.password, reassigned: result.reassigned });
+      setShowReassign(false);
+      toast({ title: result.reassigned ? "Admin reasignado" : "Admin creado" });
       queryClient.invalidateQueries({ queryKey: ["/api/superadmin/branches", branch.id, "admin"] });
       invalidateBranches();
+      onAdminChanged?.();
     },
     onError: (err: any) => {
-      toast({ title: "Error", description: err.message?.includes("409") ? "Email ya registrado" : "Error al crear", variant: "destructive" });
+      const errorMsg = extractErrorMessage(err, "Error al crear admin");
+      if (errorMsg.includes("reasignar")) {
+        setShowReassign(true);
+        toast({ title: "Usuario existente", description: errorMsg, variant: "default" });
+      } else {
+        toast({ title: "Error", description: errorMsg, variant: "destructive" });
+      }
     },
   });
 
@@ -319,6 +352,7 @@ function AdminDialog({ branch }: { branch: Branch }) {
       setNewAdminName("");
       setNewAdminPassword("");
       setCreatedCreds(null);
+      setShowReassign(false);
     }
   }
 
@@ -357,21 +391,31 @@ function AdminDialog({ branch }: { branch: Branch }) {
           </div>
         ) : createdCreds ? (
           <div className="space-y-3 py-2">
-            <div className="p-3 bg-muted rounded-md space-y-2 text-sm">
-              <p><strong>Email:</strong> {createdCreds.email}</p>
-              <p><strong>Contraseña:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{createdCreds.password}</code></p>
-            </div>
-            <Button
-              className="w-full"
-              onClick={() => {
-                navigator.clipboard.writeText(`Email: ${createdCreds.email}\nContraseña: ${createdCreds.password}`);
-                toast({ title: "Copiado" });
-              }}
-              data-testid="button-copy-new-admin"
-            >
-              <Copy className="h-4 w-4 mr-2" />
-              Copiar credenciales
-            </Button>
+            {createdCreds.reassigned ? (
+              <div className="p-3 bg-muted rounded-md space-y-2 text-sm">
+                <p className="font-semibold text-green-600">Usuario reasignado como admin</p>
+                <p><strong>Email:</strong> {createdCreds.email}</p>
+                <p className="text-xs text-muted-foreground">El usuario conserva su contraseña actual.</p>
+              </div>
+            ) : (
+              <>
+                <div className="p-3 bg-muted rounded-md space-y-2 text-sm">
+                  <p><strong>Email:</strong> {createdCreds.email}</p>
+                  <p><strong>Contraseña:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{createdCreds.password}</code></p>
+                </div>
+                <Button
+                  className="w-full"
+                  onClick={() => {
+                    navigator.clipboard.writeText(`Email: ${createdCreds.email}\nContraseña: ${createdCreds.password}`);
+                    toast({ title: "Copiado" });
+                  }}
+                  data-testid="button-copy-new-admin"
+                >
+                  <Copy className="h-4 w-4 mr-2" />
+                  Copiar credenciales
+                </Button>
+              </>
+            )}
           </div>
         ) : admin ? (
           <div className="space-y-4 py-2">
@@ -408,7 +452,7 @@ function AdminDialog({ branch }: { branch: Branch }) {
           </div>
         ) : (
           <div className="space-y-4 py-2">
-            <p className="text-sm text-muted-foreground">No hay admin asignado. Crea uno nuevo:</p>
+            <p className="text-sm text-muted-foreground">No hay admin asignado. Crea uno nuevo o asigna un usuario existente:</p>
             <div>
               <Label className="text-sm">Nombre</Label>
               <Input
@@ -424,60 +468,73 @@ function AdminDialog({ branch }: { branch: Branch }) {
               <Input
                 type="email"
                 value={newAdminEmail}
-                onChange={(e) => setNewAdminEmail(e.target.value)}
+                onChange={(e) => { setNewAdminEmail(e.target.value); setShowReassign(false); }}
                 placeholder="admin@sucursal.com"
                 className="mt-1"
                 data-testid="input-new-admin-email"
               />
             </div>
-            <div>
-              <Label className="text-sm">Contraseña</Label>
-              <div className="flex gap-1 mt-1">
-                <div className="relative flex-1">
-                  <Input
-                    type={showNewPw ? "text" : "password"}
-                    placeholder="Dejar vacío para autogenerar"
-                    value={newAdminPassword}
-                    onChange={(e) => setNewAdminPassword(e.target.value)}
-                    data-testid="input-new-admin-password"
-                  />
+            {!showReassign && (
+              <div>
+                <Label className="text-sm">Contraseña</Label>
+                <div className="flex gap-1 mt-1">
+                  <div className="relative flex-1">
+                    <Input
+                      type={showNewPw ? "text" : "password"}
+                      placeholder="Dejar vacío para autogenerar"
+                      value={newAdminPassword}
+                      onChange={(e) => setNewAdminPassword(e.target.value)}
+                      data-testid="input-new-admin-password"
+                    />
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      className="absolute right-0 top-0"
+                      onClick={() => setShowNewPw(!showNewPw)}
+                    >
+                      {showNewPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </Button>
+                  </div>
                   <Button
                     type="button"
+                    variant="outline"
                     size="icon"
-                    variant="ghost"
-                    className="absolute right-0 top-0"
-                    onClick={() => setShowNewPw(!showNewPw)}
+                    onClick={() => {
+                      const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%";
+                      let pw = "";
+                      for (let i = 0; i < 14; i++) pw += chars.charAt(Math.floor(Math.random() * chars.length));
+                      setNewAdminPassword(pw);
+                      setShowNewPw(true);
+                    }}
+                    data-testid="button-generate-new-admin-pw"
                   >
-                    {showNewPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    <RefreshCw className="h-4 w-4" />
                   </Button>
                 </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="icon"
-                  onClick={() => {
-                    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%";
-                    let pw = "";
-                    for (let i = 0; i < 14; i++) pw += chars.charAt(Math.floor(Math.random() * chars.length));
-                    setNewAdminPassword(pw);
-                    setShowNewPw(true);
-                  }}
-                  data-testid="button-generate-new-admin-pw"
-                >
-                  <RefreshCw className="h-4 w-4" />
-                </Button>
               </div>
-            </div>
-            <DialogFooter>
+            )}
+            <DialogFooter className="flex gap-2">
               <Button variant="outline" onClick={() => setOpen(false)} data-testid="button-cancel-create-admin">Cancelar</Button>
-              <Button
-                disabled={createMutation.isPending || !newAdminEmail}
-                onClick={() => createMutation.mutate({ email: newAdminEmail, name: newAdminName || `Admin ${branch.name}`, password: newAdminPassword || undefined })}
-                data-testid="button-create-admin"
-              >
-                {createMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
-                Crear admin
-              </Button>
+              {showReassign ? (
+                <Button
+                  disabled={createMutation.isPending || !newAdminEmail}
+                  onClick={() => createMutation.mutate({ email: newAdminEmail, name: newAdminName || `Admin ${branch.name}`, reassign: true })}
+                  data-testid="button-reassign-admin"
+                >
+                  {createMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+                  Reasignar como admin
+                </Button>
+              ) : (
+                <Button
+                  disabled={createMutation.isPending || !newAdminEmail}
+                  onClick={() => createMutation.mutate({ email: newAdminEmail, name: newAdminName || `Admin ${branch.name}`, password: newAdminPassword || undefined })}
+                  data-testid="button-create-admin"
+                >
+                  {createMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+                  Crear admin
+                </Button>
+              )}
             </DialogFooter>
           </div>
         )}
@@ -486,7 +543,7 @@ function AdminDialog({ branch }: { branch: Branch }) {
   );
 }
 
-function ImpersonateButton({ branch }: { branch: Branch }) {
+function ImpersonateButton({ branch, hasAdmin }: { branch: Branch; hasAdmin?: boolean }) {
   const { toast } = useToast();
   const { refetch } = useAuth();
   const [, setLocation] = useLocation();
@@ -504,8 +561,8 @@ function ImpersonateButton({ branch }: { branch: Branch }) {
         setLocation("/dashboard");
       }, 300);
     },
-    onError: () => {
-      toast({ title: "Error", description: "No se puede iniciar modo soporte. Verifica que existe un admin.", variant: "destructive" });
+    onError: (err: any) => {
+      toast({ title: "Error", description: extractErrorMessage(err, "No se puede iniciar modo soporte"), variant: "destructive" });
     },
   });
 
@@ -516,13 +573,13 @@ function ImpersonateButton({ branch }: { branch: Branch }) {
           size="icon"
           variant="ghost"
           onClick={() => mutation.mutate()}
-          disabled={mutation.isPending}
+          disabled={mutation.isPending || hasAdmin === false}
           data-testid={`button-impersonate-${branch.id}`}
         >
           {mutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserCheck className="h-4 w-4" />}
         </Button>
       </TooltipTrigger>
-      <TooltipContent>Entrar como admin</TooltipContent>
+      <TooltipContent>{hasAdmin === false ? "Primero crea o asigna un admin" : "Entrar como admin"}</TooltipContent>
     </Tooltip>
   );
 }
@@ -961,6 +1018,16 @@ function BranchCard({
 }) {
   const isDeleted = !!branch.deletedAt;
 
+  const { data: adminData, refetch: refetchAdmin } = useQuery<AdminInfo>({
+    queryKey: ["/api/superadmin/branches", branch.id, "admin"],
+    queryFn: async () => {
+      const resp = await fetch(`/api/superadmin/branches/${branch.id}/admin`, { credentials: "include" });
+      if (!resp.ok) return null;
+      return resp.json();
+    },
+  });
+  const hasAdmin = adminData !== undefined ? !!adminData : undefined;
+
   return (
     <Card
       className={isDeleted ? "opacity-50" : ""}
@@ -992,13 +1059,13 @@ function BranchCard({
             <p className="text-lg font-bold" data-testid={`text-customers-${branch.id}`}>
               {metrics?.customerCount ?? 0}
             </p>
-            <p className="text-xs text-muted-foreground">Clientes</p>
+            <p className="text-xs text-muted-foreground">Clientes (activos)</p>
           </div>
           <div className="text-center p-2 bg-muted/50 rounded-md">
             <p className="text-lg font-bold" data-testid={`text-memberships-${branch.id}`}>
               {metrics?.activeMemberships ?? 0}
             </p>
-            <p className="text-xs text-muted-foreground">Membresías</p>
+            <p className="text-xs text-muted-foreground">Membresías activas</p>
           </div>
         </div>
 
@@ -1059,9 +1126,9 @@ function BranchCard({
               </TooltipTrigger>
               <TooltipContent>Dashboard (requiere login)</TooltipContent>
             </Tooltip>
-            <ImpersonateButton branch={branch} />
-            <AdminDialog branch={branch} />
-            <ResetPasswordDialog branch={branch} />
+            <ImpersonateButton branch={branch} hasAdmin={hasAdmin} />
+            <AdminDialog branch={branch} onAdminChanged={() => refetchAdmin()} />
+            <ResetPasswordDialog branch={branch} hasAdmin={hasAdmin} />
             <DeleteBranchDialog branch={branch} />
           </div>
         )}
@@ -1088,14 +1155,29 @@ export default function SuperAdminPage() {
 
   const statusMutation = useMutation({
     mutationFn: async ({ id, status }: { id: string; status: string }) => {
-      await apiRequest("PATCH", `/api/branches/${id}/status`, { status });
+      const resp = await apiRequest("PATCH", `/api/branches/${id}/status`, { status });
+      return resp.json();
     },
     onSuccess: () => {
       invalidateBranches();
       toast({ title: "Estado actualizado" });
     },
-    onError: () => {
-      toast({ title: "Error", description: "No se pudo actualizar", variant: "destructive" });
+    onError: async (err: any, variables) => {
+      const errorMsg = extractErrorMessage(err, "No se pudo actualizar el estado");
+      const is5xx = err?.message?.startsWith("5");
+      if (is5xx) {
+        toast({ title: "Reintentando...", description: "Error de servidor, reintentando..." });
+        try {
+          await apiRequest("PATCH", `/api/branches/${variables.id}/status`, { status: variables.status });
+          invalidateBranches();
+          toast({ title: "Estado actualizado (reintento exitoso)" });
+          return;
+        } catch {
+          // retry failed, fall through to error toast
+        }
+      }
+      invalidateBranches();
+      toast({ title: "Error", description: errorMsg, variant: "destructive" });
     },
   });
 
@@ -1175,7 +1257,7 @@ export default function SuperAdminPage() {
               </div>
               <div>
                 <p className="text-2xl font-bold" data-testid="text-total-customers">{totalCustomers}</p>
-                <p className="text-xs text-muted-foreground">Clientes</p>
+                <p className="text-xs text-muted-foreground">Clientes (activos)</p>
               </div>
             </CardContent>
           </Card>
@@ -1186,7 +1268,7 @@ export default function SuperAdminPage() {
               </div>
               <div>
                 <p className="text-2xl font-bold" data-testid="text-total-memberships">{totalActiveMemberships}</p>
-                <p className="text-xs text-muted-foreground">Membresías</p>
+                <p className="text-xs text-muted-foreground">Membresías activas</p>
               </div>
             </CardContent>
           </Card>

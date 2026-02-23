@@ -32,6 +32,11 @@ export default function DashboardPage() {
   const isImpersonating = !!(user as any)?.impersonating;
   const impersonatedBranchName = (user as any)?.impersonatedBranchName;
 
+  const { data: branchStats } = useQuery<{ activeMemberships: number; uniqueActiveCustomers: number }>({
+    queryKey: ["/api/branch/stats"],
+    enabled: !!user?.branchId,
+  });
+
   const endImpersonateMutation = useMutation({
     mutationFn: async () => {
       await apiRequest("POST", "/api/superadmin/impersonate/end");
@@ -113,8 +118,8 @@ export default function DashboardPage() {
                 <Users className="h-5 w-5 text-primary" />
               </div>
               <div>
-                <p className="text-2xl font-bold" data-testid="text-clients-count">0</p>
-                <p className="text-xs text-muted-foreground">Clientes</p>
+                <p className="text-2xl font-bold" data-testid="text-clients-count">{branchStats?.uniqueActiveCustomers ?? 0}</p>
+                <p className="text-xs text-muted-foreground">Clientes (miembros activos)</p>
               </div>
             </CardContent>
           </Card>
@@ -124,8 +129,8 @@ export default function DashboardPage() {
                 <CalendarDays className="h-5 w-5 text-green-500" />
               </div>
               <div>
-                <p className="text-2xl font-bold" data-testid="text-reservations-count">0</p>
-                <p className="text-xs text-muted-foreground">Reservas hoy</p>
+                <p className="text-2xl font-bold" data-testid="text-memberships-count">{branchStats?.activeMemberships ?? 0}</p>
+                <p className="text-xs text-muted-foreground">Membresías activas</p>
               </div>
             </CardContent>
           </Card>

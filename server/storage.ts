@@ -20,6 +20,11 @@ export interface BranchMetrics {
   activeMemberships: number;
 }
 
+export interface BranchStats {
+  activeMemberships: number;
+  uniqueActiveCustomers: number;
+}
+
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
@@ -33,6 +38,7 @@ export interface IStorage {
   softDeleteBranch(id: string): Promise<Branch | undefined>;
   getBranchAdmins(branchId: string): Promise<User[]>;
   getBranchMetrics(): Promise<BranchMetrics[]>;
+  getBranchStats(branchId: string): Promise<BranchStats>;
   searchBranchesNearby(params: {
     lat?: number;
     lng?: number;
@@ -42,6 +48,7 @@ export interface IStorage {
   }): Promise<(Branch & { distance_km?: number })[]>;
   updateUser(id: string, data: { name?: string; email?: string }): Promise<User | undefined>;
   updateUserBranch(id: string, branchId: string): Promise<User | undefined>;
+  updateUserRole(id: string, role: string): Promise<User | undefined>;
   getMembership(userId: string, branchId: string): Promise<Membership | undefined>;
   getUserMemberships(userId: string): Promise<(Membership & { branch: Branch })[]>;
   createMembership(data: InsertMembership): Promise<Membership>;
@@ -144,7 +151,7 @@ export class DatabaseStorage implements IStorage {
     const results = await db
       .select({
         branchId: memberships.branchId,
-        customerCount: count(memberships.id),
+        customerCount: sql<number>`COUNT(DISTINCT CASE WHEN ${memberships.status} = 'active' THEN ${memberships.userId} END)`.as("customer_count"),
         activeMemberships: sql<number>`COUNT(CASE WHEN ${memberships.status} = 'active' THEN 1 END)`.as("active_memberships"),
       })
       .from(memberships)
@@ -152,9 +159,24 @@ export class DatabaseStorage implements IStorage {
 
     return results.map((r) => ({
       branchId: r.branchId,
-      customerCount: Number(r.customerCount),
-      activeMemberships: Number(r.activeMemberships),
+      customerCount: Number(r.customerCount) || 0,
+      activeMemberships: Number(r.activeMemberships) || 0,
     }));
+  }
+
+  async getBranchStats(branchId: string): Promise<BranchStats> {
+    const [result] = await db
+      .select({
+        activeMemberships: sql<number>`COUNT(CASE WHEN ${memberships.status} = 'active' THEN 1 END)`.as("active_memberships"),
+        uniqueActiveCustomers: sql<number>`COUNT(DISTINCT CASE WHEN ${memberships.status} = 'active' THEN ${memberships.userId} END)`.as("unique_active_customers"),
+      })
+      .from(memberships)
+      .where(eq(memberships.branchId, branchId));
+
+    return {
+      activeMemberships: Number(result?.activeMemberships) || 0,
+      uniqueActiveCustomers: Number(result?.uniqueActiveCustomers) || 0,
+    };
   }
 
   async searchBranchesNearby(params: {
@@ -308,6 +330,11 @@ export class DatabaseStorage implements IStorage {
 
   async updateUserBranch(id: string, branchId: string): Promise<User | undefined> {
     const [user] = await db.update(users).set({ branchId }).where(eq(users.id, id)).returning();
+    return user;
+  }
+
+  async updateUserRole(id: string, role: string): Promise<User | undefined> {
+    const [user] = await db.update(users).set({ role: role as any }).where(eq(users.id, id)).returning();
     return user;
   }
 

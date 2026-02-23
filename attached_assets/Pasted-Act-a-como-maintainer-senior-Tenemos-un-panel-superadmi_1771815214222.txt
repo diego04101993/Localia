@@ -1,0 +1,105 @@
+Actúa como maintainer senior. Tenemos un panel /superadmin y un dashboard /dashboard por sucursal.
+
+IMPORTANTE:
+- No refactors grandes.
+- No cambies el diseño general.
+- No rompas marketplace (/explore, /favorites, /app/:slug).
+- Trabaja por fases y en cada fase deja el sistema compilando y funcionando.
+- Si detectas ambigüedad, agrega logs (console/server) y elige la solución más segura.
+
+CONTEXTO (bugs reproducidos):
+A) En /superadmin, la sucursal "Hyrox" muestra 1 Cliente y 1 Membresía (tarjetas dentro de la sucursal),
+pero al entrar al dashboard de Hyrox (/dashboard) muestra 0 clientes. Necesitamos que los conteos sean coherentes.
+Definición deseada:
+- "Membresías" = número de registros en memberships con status='active' para esa branch.
+- "Clientes" = número de usuarios únicos con memberships.status='active' para esa branch (unique user_id).
+Ambos paneles deben usar EXACTAMENTE la misma definición y consulta.
+
+B) En /superadmin, botón "Entrar como admin / modo soporte" (impersonation) falla con:
+"No se puede iniciar modo soporte. Verifica que existe un admin."
+Queremos:
+- Si no hay admin asignado, mostrar mensaje claro y botón para "Crear admin" / "Asignar admin existente".
+- Si sí hay admin, iniciar impersonation correctamente y redirigir a /dashboard en modo soporte.
+
+C) En /superadmin, al abrir "Admin de Hyrox" y crear admin, a veces sale "Error al crear".
+Necesitamos:
+- Mostrar el error real (ej. email duplicado) en el toast.
+- Validar y manejar duplicados: si el email ya existe como usuario, permitir "Reasignar ese usuario como admin de esta sucursal" (si rol/permiso lo permite) o sugerir otro email.
+- Asegurar que al crear admin:
+  - se crea/actualiza el usuario con role='branch_admin' (o el rol equivalente)
+  - se asocia a la sucursal (branch_admin.branch_id o branch_settings.admin_user_id, según modelo)
+  - se guarda contraseña hasheada
+  - se registra en audit_log
+
+D) Reset contraseña (icono llave) falla con "No hay admin para esta sucursal".
+Queremos:
+- Si no hay admin asignado, deshabilitar el botón y tooltip "Primero crea/asigna un admin".
+- Si hay admin, reset debe generar nueva contraseña, actualizar hash, y mostrar modal con "Copiar" y "Descargar".
+
+E) Cambiar estado Activa/Suspendida/Bloqueada a veces falla con toast rojo "No se pudo actualizar".
+Queremos:
+- Agregar logging server-side del endpoint de update status: payload recibido, branch_id, nuevo status, usuario actor, error stack.
+- En frontend, evitar updates optimistas si el backend falla: revertir el select al estado anterior si hay error.
+- Asegurar que el request manda branchId correcto y status correcto.
+- Asegurar que super admin tiene permisos (RLS/authorization) para actualizar.
+
+FASE 1: Diagnóstico y logs (sin cambios funcionales grandes)
+1) Ubica endpoints usados por /superadmin:
+- update status
+- create/edit/reassign admin
+- reset password
+- impersonation start/end
+- metrics (clientes/membresías)
+2) Agrega logs claros en backend SOLO para esas rutas (con try/catch):
+- request body
+- branchId/adminId
+- resultado de queries
+- errors con stack
+3) En frontend, captura error message del backend y muéstralo en toast (no solo "Error").
+
+FASE 2: Unificar conteos (fix del bug A)
+1) Crea una función reutilizable en backend:
+getBranchStats(branchId): { activeMemberships, uniqueActiveCustomers }
+usando:
+- activeMemberships = count(*) where memberships.branch_id=... and status='active'
+- uniqueActiveCustomers = count(distinct user_id) con status='active'
+2) Usa esa misma función tanto para:
+- cards de sucursal en /superadmin
+- cards de /dashboard (si /dashboard hoy usa otra tabla)
+3) Ajusta etiquetas en UI para que quede claro: "Clientes (miembros activos)" y "Membresías activas"
+4) Agrega test manual: al presionar "Unirme" en /app/hyrox debe subir en ambos paneles.
+
+FASE 3: Admin management robusto (fix B, C, D)
+1) Define claramente dónde se guarda el admin asignado:
+- preferir un campo admin_user_id en branch_settings o branches, o tabla branch_admins.
+2) En "Admin de sucursal" modal:
+- Si hay admin asignado: mostrar Nombre/Email y acciones: Editar, Reset contraseña, Reasignar admin.
+- Si no hay admin: mostrar formulario Crear admin + opción "Asignar admin existente por email".
+3) Crear admin:
+- valida email
+- si email existe:
+  - opción de reasignar ese usuario como admin de la sucursal (si permitido)
+  - si no permitido, error claro
+- si email no existe: crear user con rol admin sucursal, hash password, asignar a branch
+- siempre registrar audit_log
+4) Reset contraseña:
+- deshabilitar si no hay admin
+- si hay admin: generar password, guardar hash, retornar password para modal
+5) Impersonation:
+- deshabilitar si no hay admin
+- si hay admin: start impersonation y redirigir a /dashboard
+- banner "Modo soporte" y botón "Terminar soporte" debe limpiar sesión y regresar a /superadmin
+
+FASE 4: Fix update status intermitente (bug E)
+1) Revisa endpoint update status: valida branch_id y status enum.
+2) Asegura transacción/await correcto y respuesta consistente.
+3) Frontend: al cambiar select:
+- guarda estado anterior
+- intenta actualizar
+- si falla: revertir select y mostrar error real
+4) Agrega retry opcional (1 intento extra) SOLO si error es 5xx.
+
+ENTREGABLES:
+- Lista exacta de archivos tocados.
+- Confirmación de que build pasa.
+- Instrucciones rápidas para probar: (1) crear sucursal con admin, (2) unirse como usuario, (3) ver conteos en ambos paneles, (4) reset password, (5) iniciar/terminar modo soporte, (6) cambiar status 10 veces sin error.

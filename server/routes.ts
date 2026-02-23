@@ -164,22 +164,36 @@ export async function registerRoutes(
   app.patch("/api/branches/:id/status", requireRole("SUPER_ADMIN"), async (req, res) => {
     const id = req.params.id as string;
     const { status } = req.body;
-    if (!["active", "suspended", "blacklisted"].includes(status)) {
-      return res.status(400).json({ message: "Estado inválido" });
-    }
-    const oldBranch = await storage.getBranch(id);
-    const branch = await storage.updateBranchStatus(id, status as string);
-    if (!branch) return res.status(404).json({ message: "Sucursal no encontrada" });
-
     const actor = req.user as any;
-    await storage.createAuditLog({
-      actorUserId: actor.id,
-      action: "UPDATE_STATUS",
-      branchId: id,
-      metadata: { oldStatus: oldBranch?.status, newStatus: status },
-    });
+    console.log(`[UPDATE_STATUS] branchId=${id}, newStatus=${status}, actor=${actor.email}`);
 
-    res.json(branch);
+    if (!["active", "suspended", "blacklisted"].includes(status)) {
+      console.log(`[UPDATE_STATUS] Invalid status: ${status}`);
+      return res.status(400).json({ message: `Estado inválido: ${status}. Válidos: active, suspended, blacklisted` });
+    }
+
+    try {
+      const oldBranch = await storage.getBranch(id);
+      if (!oldBranch) {
+        console.log(`[UPDATE_STATUS] Branch not found: ${id}`);
+        return res.status(404).json({ message: "Sucursal no encontrada" });
+      }
+
+      const branch = await storage.updateBranchStatus(id, status as string);
+      console.log(`[UPDATE_STATUS] Success: ${oldBranch.status} -> ${status}`);
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "UPDATE_STATUS",
+        branchId: id,
+        metadata: { oldStatus: oldBranch.status, newStatus: status },
+      });
+
+      res.json(branch);
+    } catch (err: any) {
+      console.error(`[UPDATE_STATUS] Error:`, err.stack || err);
+      res.status(500).json({ message: `Error al actualizar estado: ${err.message || "error desconocido"}` });
+    }
   });
 
   // Soft delete
@@ -292,84 +306,161 @@ export async function registerRoutes(
     res.json({ id: updated!.id, email: updated!.email, name: updated!.name });
   });
 
-  // Create branch admin
   app.post("/api/superadmin/branches/:id/admin", requireRole("SUPER_ADMIN"), async (req, res) => {
     const id = req.params.id as string;
-    const branch = await storage.getBranch(id);
-    if (!branch) return res.status(404).json({ message: "Sucursal no encontrada" });
-
-    const admins = await storage.getBranchAdmins(id);
-    if (admins.length > 0) {
-      return res.status(409).json({ message: "Ya existe un admin para esta sucursal" });
-    }
-
-    const { email, name, password } = req.body;
-    if (!email) return res.status(400).json({ message: "Email es requerido" });
-
-    const existingUser = await storage.getUserByEmail(email);
-    if (existingUser) {
-      return res.status(409).json({ message: "Ese correo ya está registrado" });
-    }
-
-    const plainPassword = password || generateSecurePassword();
-    const hash = await bcrypt.hash(plainPassword, 10);
-    const adminUser = await storage.createUser({
-      email,
-      passwordHash: hash,
-      role: "BRANCH_ADMIN",
-      branchId: id,
-      name: name || `Admin ${branch.name}`,
-    });
-
     const actor = req.user as any;
-    await storage.createAuditLog({
-      actorUserId: actor.id,
-      action: "CREATE_ADMIN",
-      branchId: id,
-      metadata: { adminEmail: email },
-    });
+    const { email, name, password, reassign } = req.body;
+    console.log(`[CREATE_ADMIN] branchId=${id}, email=${email}, reassign=${!!reassign}, actor=${actor.email}`);
 
-    res.status(201).json({
-      admin: { id: adminUser.id, email: adminUser.email, name: adminUser.name },
-      password: plainPassword,
-    });
+    try {
+      const branch = await storage.getBranch(id);
+      if (!branch) return res.status(404).json({ message: "Sucursal no encontrada" });
+
+      const admins = await storage.getBranchAdmins(id);
+      if (admins.length > 0) {
+        return res.status(409).json({ message: "Ya existe un admin para esta sucursal. Usa reasignar si quieres cambiar." });
+      }
+
+      if (!email) return res.status(400).json({ message: "Email es requerido" });
+
+      const existingUser = await storage.getUserByEmail(email);
+
+      if (existingUser) {
+        if (reassign) {
+          if (existingUser.role === "SUPER_ADMIN") {
+            return res.status(400).json({ message: "No se puede reasignar un Super Admin como admin de sucursal" });
+          }
+          if (existingUser.branchId && existingUser.role === "BRANCH_ADMIN") {
+            const otherBranch = await storage.getBranch(existingUser.branchId);
+            if (otherBranch && !otherBranch.deletedAt) {
+              return res.status(409).json({ message: `Ese usuario ya es admin de "${otherBranch.name}". Primero desasígnalo de ahí.` });
+            }
+          }
+          await storage.updateUserBranch(existingUser.id, id);
+          await storage.updateUser(existingUser.id, { name: name || existingUser.name });
+          if (existingUser.role !== "BRANCH_ADMIN") {
+            await storage.updateUserRole(existingUser.id, "BRANCH_ADMIN");
+          }
+
+          await storage.createAuditLog({
+            actorUserId: actor.id,
+            action: "REASSIGN_ADMIN",
+            branchId: id,
+            metadata: { adminEmail: email, reassigned: true },
+          });
+
+          console.log(`[CREATE_ADMIN] Reassigned existing user ${email} as admin`);
+          return res.status(200).json({
+            admin: { id: existingUser.id, email: existingUser.email, name: name || existingUser.name },
+            password: null,
+            reassigned: true,
+          });
+        }
+
+        return res.status(409).json({
+          message: "Ese correo ya está registrado. ¿Deseas reasignar ese usuario como admin?",
+          canReassign: existingUser.role !== "SUPER_ADMIN",
+          existingUserRole: existingUser.role,
+        });
+      }
+
+      const plainPassword = password || generateSecurePassword();
+      const hash = await bcrypt.hash(plainPassword, 10);
+      const adminUser = await storage.createUser({
+        email,
+        passwordHash: hash,
+        role: "BRANCH_ADMIN",
+        branchId: id,
+        name: name || `Admin ${branch.name}`,
+      });
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "CREATE_ADMIN",
+        branchId: id,
+        metadata: { adminEmail: email },
+      });
+
+      console.log(`[CREATE_ADMIN] Created new admin ${email} for branch ${branch.name}`);
+      res.status(201).json({
+        admin: { id: adminUser.id, email: adminUser.email, name: adminUser.name },
+        password: plainPassword,
+      });
+    } catch (err: any) {
+      console.error(`[CREATE_ADMIN] Error:`, err.stack || err);
+      res.status(500).json({ message: `Error al crear admin: ${err.message || "error desconocido"}` });
+    }
   });
 
-  // Reset admin password
   app.post("/api/superadmin/branches/:id/reset-admin-password", requireRole("SUPER_ADMIN"), async (req, res) => {
     const id = req.params.id as string;
-    const branch = await storage.getBranch(id);
-    if (!branch) return res.status(404).json({ message: "Sucursal no encontrada" });
-
-    const admins = await storage.getBranchAdmins(id);
-    if (admins.length === 0) {
-      return res.status(404).json({ message: "No hay administrador para esta sucursal" });
-    }
-
-    const admin = admins[0];
-    const newPassword = generateSecurePassword();
-    const hash = await bcrypt.hash(newPassword, 10);
-    await storage.updateUserPassword(admin.id, hash);
-
     const actor = req.user as any;
-    await storage.createAuditLog({
-      actorUserId: actor.id,
-      action: "RESET_ADMIN_PASSWORD",
-      branchId: id,
-      metadata: { adminEmail: admin.email },
-    });
+    console.log(`[RESET_PASSWORD] branchId=${id}, actor=${actor.email}`);
 
-    res.json({
-      email: admin.email,
-      password: newPassword,
-      name: admin.name,
-    });
+    try {
+      const branch = await storage.getBranch(id);
+      if (!branch) return res.status(404).json({ message: "Sucursal no encontrada" });
+
+      const admins = await storage.getBranchAdmins(id);
+      if (admins.length === 0) {
+        console.log(`[RESET_PASSWORD] No admin for branch ${id}`);
+        return res.status(404).json({ message: "No hay administrador para esta sucursal. Primero crea o asigna un admin." });
+      }
+
+      const admin = admins[0];
+      const newPassword = generateSecurePassword();
+      const hash = await bcrypt.hash(newPassword, 10);
+      await storage.updateUserPassword(admin.id, hash);
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "RESET_ADMIN_PASSWORD",
+        branchId: id,
+        metadata: { adminEmail: admin.email },
+      });
+
+      console.log(`[RESET_PASSWORD] Success for ${admin.email}`);
+      res.json({
+        email: admin.email,
+        password: newPassword,
+        name: admin.name,
+      });
+    } catch (err: any) {
+      console.error(`[RESET_PASSWORD] Error:`, err.stack || err);
+      res.status(500).json({ message: `Error al resetear contraseña: ${err.message || "error desconocido"}` });
+    }
   });
 
-  // Metrics
   app.get("/api/superadmin/branches/metrics", requireRole("SUPER_ADMIN"), async (_req, res) => {
-    const metrics = await storage.getBranchMetrics();
-    res.json(metrics);
+    try {
+      const metrics = await storage.getBranchMetrics();
+      res.json(metrics);
+    } catch (err: any) {
+      console.error(`[METRICS] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al obtener métricas" });
+    }
+  });
+
+  app.get("/api/superadmin/branches/:id/stats", requireRole("SUPER_ADMIN"), async (req, res) => {
+    try {
+      const stats = await storage.getBranchStats(req.params.id as string);
+      res.json(stats);
+    } catch (err: any) {
+      console.error(`[BRANCH_STATS] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al obtener estadísticas" });
+    }
+  });
+
+  app.get("/api/branch/stats", requireAuth, async (req, res) => {
+    const user = req.user as any;
+    if (!user.branchId) return res.status(400).json({ message: "No hay sucursal asignada" });
+    try {
+      const stats = await storage.getBranchStats(user.branchId);
+      res.json(stats);
+    } catch (err: any) {
+      console.error(`[BRANCH_STATS] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al obtener estadísticas" });
+    }
   });
 
   // Branch admins (list)
@@ -385,51 +476,59 @@ export async function registerRoutes(
     );
   });
 
-  // Impersonate: start
   app.post("/api/superadmin/impersonate", requireRole("SUPER_ADMIN"), async (req, res) => {
     const { branchId } = req.body;
+    const actor = req.user as any;
+    console.log(`[IMPERSONATE] branchId=${branchId}, actor=${actor.email}`);
+
     if (!branchId) return res.status(400).json({ message: "branchId requerido" });
 
-    const branch = await storage.getBranch(branchId);
-    if (!branch) return res.status(404).json({ message: "Sucursal no encontrada" });
+    try {
+      const branch = await storage.getBranch(branchId);
+      if (!branch) return res.status(404).json({ message: "Sucursal no encontrada" });
 
-    const admins = await storage.getBranchAdmins(branchId);
-    if (admins.length === 0) {
-      return res.status(404).json({ message: "No hay admin para esta sucursal" });
+      const admins = await storage.getBranchAdmins(branchId);
+      if (admins.length === 0) {
+        console.log(`[IMPERSONATE] No admin for branch ${branchId}`);
+        return res.status(404).json({ message: "No hay admin asignado a esta sucursal. Primero crea o asigna un admin.", noAdmin: true });
+      }
+
+      const actorId = actor.id;
+      const targetAdmin = admins[0];
+
+      await new Promise<void>((resolve, reject) => {
+        req.logIn(targetAdmin, (err) => {
+          if (err) return reject(err);
+          resolve();
+        });
+      });
+
+      const sess = req.session as any;
+      sess.originalUserId = actorId;
+      sess.impersonating = true;
+      sess.impersonatedBranchName = branch.name;
+      sess.impersonateExpires = Date.now() + 15 * 60 * 1000;
+
+      await new Promise<void>((resolve, reject) => {
+        req.session.save((err: any) => {
+          if (err) return reject(err);
+          resolve();
+        });
+      });
+
+      await storage.createAuditLog({
+        actorUserId: actorId,
+        action: "IMPERSONATE_START",
+        branchId,
+        metadata: { branchName: branch.name, adminEmail: targetAdmin.email },
+      });
+
+      console.log(`[IMPERSONATE] Started impersonating ${targetAdmin.email} at ${branch.name}`);
+      res.json({ message: "Impersonation active", branchName: branch.name });
+    } catch (err: any) {
+      console.error(`[IMPERSONATE] Error:`, err.stack || err);
+      res.status(500).json({ message: `Error al iniciar modo soporte: ${err.message || "error desconocido"}` });
     }
-
-    const actor = req.user as any;
-    const actorId = actor.id;
-    const targetAdmin = admins[0];
-
-    await new Promise<void>((resolve, reject) => {
-      req.logIn(targetAdmin, (err) => {
-        if (err) return reject(err);
-        resolve();
-      });
-    });
-
-    const sess = req.session as any;
-    sess.originalUserId = actorId;
-    sess.impersonating = true;
-    sess.impersonatedBranchName = branch.name;
-    sess.impersonateExpires = Date.now() + 15 * 60 * 1000;
-
-    await new Promise<void>((resolve, reject) => {
-      req.session.save((err: any) => {
-        if (err) return reject(err);
-        resolve();
-      });
-    });
-
-    await storage.createAuditLog({
-      actorUserId: actorId,
-      action: "IMPERSONATE_START",
-      branchId,
-      metadata: { branchName: branch.name, adminEmail: targetAdmin.email },
-    });
-
-    res.json({ message: "Impersonation active", branchName: branch.name });
   });
 
   // Impersonate: end
