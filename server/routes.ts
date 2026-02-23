@@ -431,6 +431,28 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/superadmin/branches/:id/welcome-package", requireRole("SUPER_ADMIN"), async (req, res) => {
+    const id = req.params.id as string;
+    try {
+      const branch = await storage.getBranch(id);
+      if (!branch) return res.status(404).json({ message: "Sucursal no encontrada" });
+
+      const admins = await storage.getBranchAdmins(id);
+      const admin = admins.length > 0 ? admins[0] : null;
+
+      res.json({
+        branchName: branch.name,
+        branchSlug: branch.slug,
+        adminEmail: admin?.email || null,
+        adminName: admin?.name || null,
+        hasAdmin: !!admin,
+      });
+    } catch (err: any) {
+      console.error(`[WELCOME_PACKAGE] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al obtener datos del paquete" });
+    }
+  });
+
   app.get("/api/superadmin/branches/metrics", requireRole("SUPER_ADMIN"), async (_req, res) => {
     try {
       const metrics = await storage.getBranchMetrics();

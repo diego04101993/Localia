@@ -26,6 +26,7 @@ import {
   History,
   LayoutDashboard,
   UserCheck,
+  Send,
 } from "lucide-react";
 import { createBranchSchema, type CreateBranchData, type Branch, BRANCH_CATEGORIES, type AuditLog } from "@shared/schema";
 import { useAuth } from "@/lib/auth";
@@ -584,6 +585,158 @@ function ImpersonateButton({ branch, hasAdmin }: { branch: Branch; hasAdmin?: bo
   );
 }
 
+function ResendWelcomeButton({ branch, hasAdmin }: { branch: Branch; hasAdmin?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const { toast } = useToast();
+
+  const { data: pkg, isLoading } = useQuery<{
+    branchName: string;
+    branchSlug: string;
+    adminEmail: string | null;
+    adminName: string | null;
+    hasAdmin: boolean;
+  }>({
+    queryKey: ["/api/superadmin/branches", branch.id, "welcome-package"],
+    queryFn: async () => {
+      const resp = await fetch(`/api/superadmin/branches/${branch.id}/welcome-package`, { credentials: "include" });
+      if (!resp.ok) throw new Error("Error al obtener paquete");
+      return resp.json();
+    },
+    enabled: open,
+  });
+
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+
+  function getLinks(slug: string) {
+    return {
+      publicUrl: `${origin}/app/${slug}`,
+      marketplace: `${origin}/explore`,
+      favorites: `${origin}/favorites`,
+      login: `${origin}/`,
+      dashboard: `${origin}/dashboard`,
+    };
+  }
+
+  function copyWelcome() {
+    if (!pkg) return;
+    const links = getLinks(pkg.branchSlug);
+    const lines = [
+      `Paquete de bienvenida - ${pkg.branchName}`,
+      ``,
+      `URLs importantes:`,
+      `  Página pública (para clientes): ${links.publicUrl}`,
+      `  Marketplace: ${links.marketplace}`,
+      `  Favoritos: ${links.favorites}`,
+      `  Login (admin): ${links.login}`,
+      `  Dashboard (requiere login): ${links.dashboard}`,
+    ];
+    if (pkg.adminEmail) {
+      lines.push(``, `Admin:`, `  Email: ${pkg.adminEmail}`);
+      if (pkg.adminName) lines.push(`  Nombre: ${pkg.adminName}`);
+      lines.push(`  (Contraseña no incluida — usa "Reset contraseña" si necesitas regenerarla)`);
+    } else {
+      lines.push(``, `AVISO: No hay admin asignado aún.`);
+    }
+    navigator.clipboard.writeText(lines.join("\n"));
+    toast({ title: "Paquete de bienvenida copiado" });
+  }
+
+  function downloadTxt() {
+    if (!pkg) return;
+    const links = getLinks(pkg.branchSlug);
+    const lines = [
+      `Paquete de bienvenida - ${pkg.branchName}`,
+      `==================================`,
+      ``,
+      `URLs importantes:`,
+      `  Página pública: ${links.publicUrl}`,
+      `  Marketplace: ${links.marketplace}`,
+      `  Favoritos: ${links.favorites}`,
+      `  Login: ${links.login}`,
+      `  Dashboard: ${links.dashboard}`,
+    ];
+    if (pkg.adminEmail) {
+      lines.push(``, `Admin:`, `  Email: ${pkg.adminEmail}`);
+      if (pkg.adminName) lines.push(`  Nombre: ${pkg.adminName}`);
+      lines.push(`  (Contraseña no incluida)`);
+    } else {
+      lines.push(``, `Sin admin asignado.`);
+    }
+    lines.push(``, `==================================`);
+    const blob = new Blob([lines.join("\n")], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `bienvenida-${pkg.branchSlug}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button size="icon" variant="ghost" data-testid={`button-resend-welcome-${branch.id}`}>
+                <Send className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Reenviar paquete de bienvenida</TooltipContent>
+          </Tooltip>
+        </span>
+      </DialogTrigger>
+      <DialogContent className="max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Paquete de bienvenida</DialogTitle>
+          <DialogDescription>URLs y datos de la sucursal. Puedes copiar o descargar.</DialogDescription>
+        </DialogHeader>
+        {isLoading || !pkg ? (
+          <div className="space-y-2 py-4">
+            <Skeleton className="h-4 w-48" />
+            <Skeleton className="h-4 w-32" />
+            <Skeleton className="h-4 w-40" />
+          </div>
+        ) : (
+          <div className="space-y-3 py-2">
+            <div className="p-3 bg-muted rounded-md space-y-2 text-sm">
+              <p className="font-semibold">{pkg.branchName}</p>
+              <div className="space-y-1 pt-1">
+                <p><strong>URL pública:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{getLinks(pkg.branchSlug).publicUrl}</code></p>
+                <p><strong>Marketplace:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{getLinks(pkg.branchSlug).marketplace}</code></p>
+                <p><strong>Favoritos:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{getLinks(pkg.branchSlug).favorites}</code></p>
+                <p><strong>Login:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{getLinks(pkg.branchSlug).login}</code></p>
+                <p><strong>Dashboard:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{getLinks(pkg.branchSlug).dashboard}</code></p>
+              </div>
+              {pkg.adminEmail ? (
+                <div className="border-t pt-2 mt-2 space-y-1">
+                  <p><strong>Email admin:</strong> {pkg.adminEmail}</p>
+                  {pkg.adminName && <p><strong>Nombre:</strong> {pkg.adminName}</p>}
+                  <p className="text-xs text-muted-foreground">La contraseña no se muestra. Usa "Reset contraseña" si necesitas regenerarla.</p>
+                </div>
+              ) : (
+                <div className="border-t pt-2 mt-2">
+                  <p className="text-amber-500 text-sm">No hay admin asignado a esta sucursal.</p>
+                </div>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <Button onClick={copyWelcome} className="flex-1" data-testid="button-copy-resend-welcome">
+                <Copy className="h-4 w-4 mr-2" />
+                Copiar
+              </Button>
+              <Button variant="outline" onClick={downloadTxt} className="flex-1" data-testid="button-download-resend-welcome">
+                <Download className="h-4 w-4 mr-2" />
+                Descargar
+              </Button>
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function CredentialsModal({
   open,
   onClose,
@@ -1046,6 +1199,13 @@ function BranchCard({
               <p className="text-sm text-muted-foreground" data-testid={`text-branch-slug-${branch.id}`}>
                 /{branch.slug}
               </p>
+              <p className="text-xs text-muted-foreground" data-testid={`text-admin-email-${branch.id}`}>
+                {adminData ? (
+                  <span className="text-green-600 dark:text-green-400">Admin: {adminData.email}</span>
+                ) : adminData === null ? (
+                  <span className="text-amber-500">Sin admin asignado</span>
+                ) : null}
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-1">
@@ -1082,13 +1242,13 @@ function BranchCard({
               value={branch.status}
               onValueChange={(val) => onStatusChange(branch.id, val)}
             >
-              <SelectTrigger className="w-[130px]" data-testid={`select-status-${branch.id}`}>
+              <SelectTrigger className="w-[160px]" data-testid={`select-status-${branch.id}`}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="active">Activa</SelectItem>
-                <SelectItem value="suspended">Suspendida</SelectItem>
-                <SelectItem value="blacklisted">Bloqueada</SelectItem>
+                <SelectItem value="active">Activa — Todo funciona</SelectItem>
+                <SelectItem value="suspended">Suspendida — Admin ve banner "Pago pendiente"</SelectItem>
+                <SelectItem value="blacklisted">Bloqueada — No permite acceso</SelectItem>
               </SelectContent>
             </Select>
           )}
@@ -1129,6 +1289,7 @@ function BranchCard({
             <ImpersonateButton branch={branch} hasAdmin={hasAdmin} />
             <AdminDialog branch={branch} onAdminChanged={() => refetchAdmin()} />
             <ResetPasswordDialog branch={branch} hasAdmin={hasAdmin} />
+            <ResendWelcomeButton branch={branch} hasAdmin={hasAdmin} />
             <DeleteBranchDialog branch={branch} />
           </div>
         )}

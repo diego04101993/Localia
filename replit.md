@@ -16,7 +16,7 @@ Multi-tenant gym management platform with role-based access (SUPER_ADMIN, BRANCH
 - `/app/:slug` - Public branch page (anyone) with join/favorite for authenticated users
 - `/explore` - Marketplace directory with search, category filters, nearby sort (public)
 - `/favorites` - User favorites and memberships (CUSTOMER, authenticated)
-- `/blocked` - Shown when branch is suspended/blacklisted
+- `/blocked` - Shown when branch is blacklisted (blocked login)
 
 ## API Endpoints
 - `POST /api/auth/login` - Login with email/password
@@ -31,6 +31,9 @@ Multi-tenant gym management platform with role-based access (SUPER_ADMIN, BRANCH
 - `POST /api/superadmin/branches/:id/admin` - Create new admin for branch (SUPER_ADMIN)
 - `POST /api/superadmin/branches/:id/reset-admin-password` - Reset admin password (SUPER_ADMIN)
 - `GET /api/superadmin/branches/metrics` - Branch membership metrics (SUPER_ADMIN)
+- `GET /api/superadmin/branches/:id/welcome-package` - Get welcome package info (SUPER_ADMIN)
+- `GET /api/superadmin/branches/:id/stats` - Per-branch stats (SUPER_ADMIN)
+- `GET /api/branch/stats` - Dashboard branch stats (BRANCH_ADMIN, authenticated)
 - `POST /api/superadmin/impersonate` - Start impersonation {branchId} (SUPER_ADMIN)
 - `POST /api/superadmin/impersonate/end` - End impersonation (authenticated)
 - `GET /api/superadmin/audit` - Audit logs (SUPER_ADMIN)
@@ -46,13 +49,20 @@ Multi-tenant gym management platform with role-based access (SUPER_ADMIN, BRANCH
 - **memberships**: id, userId, branchId, status (active/banned/left), isFavorite, joinedAt, lastSeenAt, source (invite/self_join/admin_created)
 - **audit_logs**: id, actorUserId, action, branchId, metadata (jsonb), createdAt
 
+## Branch Status Rules
+- **Activa (active)**: Todo funciona normalmente
+- **Suspendida (suspended)**: Admin puede entrar al dashboard pero ve banner "Pago pendiente". Clientes ven pantalla de bloqueo.
+- **Bloqueada (blacklisted)**: No permite login, muestra pantalla de bloqueo para todos.
+
 ## Super Admin Features
 - Dashboard with branch metrics (total, active, customers, memberships)
 - Branch management: create with optional admin, status updates, soft delete
 - Admin management: view, edit name/email, create, reset password, reassign
+- Admin email shown on each branch card for quick visibility
 - Impersonation: temporarily act as branch admin (15-min sessions, amber banner)
 - Audit logging: all admin actions tracked with actor, action, metadata
 - Welcome package: credentials modal with URLs, copy/download options
+- Resend welcome package: regenerate modal with URLs + admin email (no password change)
 - Search and filter branches, show/hide deleted
 
 ## Branch Categories

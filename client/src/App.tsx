@@ -68,7 +68,7 @@ function AuthenticatedRouter() {
   }
 
   if (user.role === "BRANCH_ADMIN" || isImpersonating) {
-    if (user.branch && user.branch.status !== "active") {
+    if (user.branch && user.branch.status === "blacklisted") {
       return <BlockedPage />;
     }
     if (location !== "/dashboard" && !location.startsWith("/dashboard")) {

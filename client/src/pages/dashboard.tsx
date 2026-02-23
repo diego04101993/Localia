@@ -56,6 +56,17 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-background">
+      {branchStatus === "suspended" && (
+        <div className="sticky top-0 z-[60] bg-orange-500 dark:bg-orange-600 text-white px-4 py-2">
+          <div className="max-w-5xl mx-auto flex items-center justify-center gap-2">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            <span className="text-sm font-medium" data-testid="text-suspended-banner">
+              Pago pendiente — Tu sucursal está suspendida. Contacta al administrador para reactivarla.
+            </span>
+          </div>
+        </div>
+      )}
+
       {isImpersonating && (
         <div className="sticky top-0 z-[60] bg-amber-500 dark:bg-amber-600 text-white px-4 py-2">
           <div className="max-w-5xl mx-auto flex items-center justify-between gap-3 flex-wrap">
@@ -80,7 +91,7 @@ export default function DashboardPage() {
         </div>
       )}
 
-      <header className="sticky top-0 z-50 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60" style={isImpersonating ? { top: '40px' } : {}}>
+      <header className="sticky top-0 z-50 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60" style={{ top: (branchStatus === "suspended" && isImpersonating) ? '80px' : (branchStatus === "suspended" || isImpersonating) ? '40px' : undefined }}>
         <div className="max-w-5xl mx-auto flex items-center justify-between gap-3 p-4 flex-wrap">
           <div className="flex items-center gap-3">
             <div className="flex items-center justify-center w-9 h-9 rounded-md bg-primary">
