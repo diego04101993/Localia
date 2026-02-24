@@ -1,0 +1,319 @@
+Objetivo: Mejorar el “Dashboard del Admin de Sucursal” (Branch Admin) en Box Manager. No tocar ni romper Super Admin (ya está aprobado). Implementar funcionalidades por fases, con cambios pequeños, probables, y testeables.
+
+Reglas estrictas (para no romper nada)
+
+NO borres archivos ni re-estructures el proyecto completo.
+
+NO cambies rutas existentes (endpoints y páginas actuales) salvo que sea imprescindible; si algo falta, agrega endpoints nuevos con nombres consistentes.
+
+Trabaja por fases: termina una fase, prueba manualmente, y solo entonces pasas a la siguiente.
+
+Mantén compatibilidad con:
+
+estados de sucursal (Activa / Suspendida / Bloqueada)
+
+auditoría/logging
+
+impersonation
+
+soft delete
+
+Siempre respeta autorización: Branch Admin solo ve lo de su sucursal. Super Admin puede ver todo y puede impersonar.
+
+CONTEXTO ACTUAL
+
+Ya existe Super Admin completo y aprobado.
+
+El Branch Admin dashboard existe pero está muy básico (solo tarjetas de conteos y bienvenida).
+
+Queremos que el Branch Admin pueda:
+
+gestionar clientes
+
+gestionar membresías/paquetes y clases restantes
+
+agendar citas/reservas en calendario con horarios
+
+gestionar contenido de su perfil público (fotos, instalaciones, posts fijos, productos, videos cortos)
+
+un modo “TV / Monitor” (pantalla para recepción) con lista de alumnos del día + rutina por horario (solo dashboard, NO app pública)
+
+FASE 0 — Diagnóstico seguro (sin cambios grandes)
+
+Revisa cómo se obtiene el branchId / currentBranch del usuario autenticado.
+
+Identifica dónde viven estas páginas:
+
+Branch dashboard (por ejemplo /dashboard cuando eres admin de sucursal)
+
+Perfil público (por ejemplo /app/:slug)
+
+Lista los archivos principales donde se implementarán cambios:
+
+UI del dashboard de sucursal
+
+API de branch admin
+
+modelos/tablas existentes relevantes
+
+Confirma qué base de datos se usa y cómo está el ORM/queries.
+
+No implementes nada todavía, solo deja notas mínimas en comentarios o un checklist interno.
+
+Entrega de Fase 0:
+
+Un plan corto en bullets (qué archivos tocarás y por qué) y lista de endpoints nuevos que crearás.
+
+FASE 1 — Dashboard “vendible” (Home) + Navegación interna
+UI requerida
+
+En el dashboard de sucursal, agrega tabs/secciones internas:
+
+Resumen
+
+Clientes
+
+Membresías
+
+Reservas / Calendario
+
+Contenido / Perfil público
+
+TV Mode (Recepción)
+
+En Resumen mostrar:
+
+Clientes activos (reales)
+
+Membresías activas (reales)
+
+Reservas de hoy (count)
+
+Próxima reserva (hora/nombre)
+
+Estado de sucursal (Activa/Suspendida/Bloqueada) con el banner que ya definimos (si aplica)
+
+Entrega Fase 1:
+
+Solo UI + endpoints básicos para cargar counts reales.
+
+FASE 2 — Clientes (CRM básico)
+Funcionalidades
+
+Lista de clientes de la sucursal con foto, nombre, correo/teléfono (si existe), estatus (activo/inactivo), última visita, membresía activa.
+
+Crear cliente (manual) y también “invitar cliente”:
+
+Generar link/QR para que el cliente se registre y quede asociado a esa sucursal.
+
+El link debe mandar a la app web pública y completar asociación a sucursal.
+
+Perfil de cliente (modal o página):
+
+Membresías: historial y activa
+
+Clases restantes / vigencia
+
+Notas internas (solo admin)
+
+Botón “Registrar asistencia” (esto descuenta clase si corresponde)
+
+Reglas:
+
+Un cliente puede estar asociado a varias sucursales (si tu modelo lo permite), pero aquí solo importa la relación con esta sucursal.
+
+Auditoría: loggear crear/editar cliente y asistencia.
+
+Entrega Fase 2:
+
+CRUD mínimo de clientes + invitación (link/QR) + asistencia manual.
+
+FASE 3 — Membresías / Paquetes y control de clases
+Funcionalidades
+
+Crear “paquetes” (en la sucursal):
+
+nombre (Ej: 8 clases)
+
+número de clases (o ilimitado mensual)
+
+precio (opcional)
+
+vigencia (días) opcional
+
+Asignar membresía a cliente:
+
+fecha inicio / fin (o expiración calculada)
+
+clases totales y clases restantes
+
+Reglas de descuento:
+
+Al registrar asistencia o reserva completada → descuenta 1 clase (si no es ilimitado).
+
+Si está vencida → no permitir reservar/asistir (mostrar mensaje claro).
+
+Vista:
+
+Tabla de membresías activas, vencidas, por vencer (7 días)
+
+Filtros
+
+Entrega Fase 3:
+
+Paquetes + asignación + cálculo de clases restantes + validaciones.
+
+FASE 4 — Reservas / Calendario (día y hora)
+UI
+
+Calendario semanal + vista diaria
+
+Crear reserva:
+
+seleccionar cliente
+
+día/hora
+
+duración (default 60 min)
+
+tipo: clase / cita / sesión
+
+Reglas:
+
+No permitir colisiones en el mismo horario (si aplica)
+
+Recordatorios (solo futuro: por ahora guardar y listar)
+
+Estado reserva: programada / completada / cancelada / no-show
+
+Integración con clases:
+
+Si se marca “completada” → descuenta clase
+
+Si se cancela a tiempo → no descuenta
+
+Si no-show → descuenta (configurable)
+
+En app pública el cliente puede ver sus reservas (si ya existe app del cliente), y agendar si tiene membresía válida.
+
+Entrega Fase 4:
+
+Calendario + CRUD reservas + descuento automático al completar.
+
+FASE 5 — Contenido / Perfil público (lo que el cliente ve)
+
+Crear una sección dentro del dashboard para administrar el perfil público de la sucursal.
+
+Reglas de contenido
+
+Foto de perfil (1)
+
+Fotos de instalaciones (máximo 5)
+
+Posts fijos (máximo 3)
+
+cada post: texto + 1 imagen o 1 video (video máximo 10s)
+
+Productos (catálogo)
+
+fotos de productos (varias)
+
+nombre, precio, descripción (opcional)
+
+Entrenamientos / servicios (mini videos) (máximo 10s c/u)
+
+como “reels” o cards
+
+UI
+
+Subida de archivos con preview
+
+Validación de límites (3 posts, 10s video, 5 instalaciones)
+
+Reordenar (drag & drop si es fácil, si no botones ↑ ↓)
+
+Todo debe reflejarse en la app pública /app/:slug sin romper el layout actual.
+
+Entrega Fase 5:
+
+CRUD completo de perfil + límites + previews.
+
+FASE 6 — TV Mode (pantalla para recepción / monitor)
+
+Sección solo dentro del dashboard, pensada para abrir en pantalla completa.
+
+Funcionalidades
+
+“Hoy”:
+
+lista de alumnos del día por hora
+
+quién ya llegó (check-in)
+
+quién falta
+
+Rutina por horario:
+
+El admin define rutina para cada slot de horario (texto + opcional imagen)
+
+Solo visible en TV Mode y dashboard, NO en app pública
+
+Botón “Modo pantalla completa”
+
+Entrega Fase 6:
+
+Vista TV funcional con datos reales.
+
+FASE 7 — Extras (mi cosecha) para hacerlo más pro y vendible
+
+Implementa solo si todo lo anterior ya está estable:
+
+Mensajes rápidos / anuncios: banner interno para “Hoy hay clase especial / promo”
+
+Export: exportar clientes a CSV
+
+Alertas:
+
+membresías por vencer
+
+clientes inactivos 30 días
+
+Roles internos de sucursal (opcional):
+
+coach (solo ve calendario + asistencia)
+
+recepcionista (solo check-in + lista de hoy)
+
+Plantillas de horarios:
+
+crear horarios recurrentes semanalmente
+
+Calidad y pruebas (obligatorio)
+
+Cada fase debe incluir:
+
+endpoint(s) con validación
+
+manejo de errores con mensajes claros
+
+UI con loading / empty states
+
+logs de auditoría en acciones importantes
+
+No “hardcodear” datos.
+
+No romper navegación ni auth.
+
+Si algo falla, mostrar el error real del servidor (no “Error genérico”).
+
+Entrega final esperada
+
+Implementación fase por fase sin borrar nada.
+
+Lista de endpoints nuevos creados.
+
+Checklist de pruebas manuales (paso a paso) para que yo valide.
+
+Confirmación de que Super Admin sigue intacto.
+
+Empieza por Fase 0 y Fase 1. NO hagas todo de golpe.

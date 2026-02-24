@@ -65,6 +65,13 @@ Multi-tenant gym management platform with role-based access (SUPER_ADMIN, BRANCH
 - Resend welcome package: regenerate modal with URLs + admin email (no password change)
 - Search and filter branches, show/hide deleted
 
+## Branch Admin Dashboard (Fase 1 completada)
+- Tab navigation with 6 sections: Resumen, Clientes, Membresías, Reservas, Contenido, TV Mode
+- Resumen tab: real counts (active clients, active memberships), branch status with description, public URL link, placeholder cards for reservations (will be real in Fase 4)
+- Other tabs show placeholder "coming soon" UI (to be implemented in Fases 2-6)
+- StatusBadge component reused in header and summary with unique testIds
+- Preserves: suspended banner, impersonation banner, theme toggle, logout
+
 ## Branch Categories
 box, gym, yoga, estetica, doctor, abogado, freelancer, otro
 
