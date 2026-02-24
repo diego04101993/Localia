@@ -1,0 +1,278 @@
+Contexto del proyecto:
+Tenemos un dashboard Super Admin con tarjetas de sucursal. Cada tarjeta tiene iconos de acciones. Ya existe audit log, soft delete, creación de sucursal con paquete de bienvenida, modo oscuro, etc.
+Ahorita quedan 4 bugs específicos que deben quedar al 100.
+
+Reglas para NO romper el proyecto
+
+No refactor masivo. Solo cambios mínimos y puntuales.
+
+No cambies rutas existentes ni nombres de endpoints sin necesidad.
+
+Antes de tocar código: localiza exactamente dónde vive cada acción (componente UI + función API + endpoint backend).
+
+Si un endpoint devuelve error, mostrar el mensaje real (status + body) en el toast.
+
+Cada fix debe venir con prueba manual y si hay tests, agregar/ajustar test.
+
+FASE 0 — Diagnóstico rápido (OBLIGATORIO)
+
+Identifica en el frontend:
+
+Componente que renderiza cada “Branch card” en Super Admin (lista de sucursales).
+
+Archivo donde están los handlers de los iconos:
+
+Entrar como admin (icono persona #1)
+
+Editar admin (icono persona #2)
+
+Reset contraseña (icono llave)
+
+Reenviar paquete (icono avión/triángulo)
+
+Identifica en el backend:
+
+Endpoints para:
+
+Impersonation / support mode
+
+Update admin (name/email)
+
+Reset password admin
+
+Get welcome package / resend welcome package (sin cambiar password)
+
+Agrega logs temporales (solo en dev) para ver:
+
+URL llamada
+
+status code
+
+body del error
+
+Entrega de esta fase: lista concreta de archivos tocados/analizados + endpoints involucrados.
+
+FASE 1 — BUG #1: “Entrar como admin” da Acceso denegado
+Qué debe hacer este botón
+
+Debe iniciar modo soporte/impersonación para actuar como el admin de esa sucursal (sesión temporal, ej. 15 min) y redirigir al dashboard como ese admin.
+Si la sucursal no tiene admin, el botón debe estar disabled con tooltip.
+
+Problema actual
+
+Aunque la sucursal tiene admin, el toast marca “Acceso denegado”.
+
+Pasos para arreglar
+
+Revisa qué endpoint llama ese botón. Asegura que:
+
+Se mande el token del Super Admin (Authorization header).
+
+Se mande correctamente branchId o adminUserId (lo que el backend espera).
+
+En backend:
+
+Verifica la autorización: solo SUPER_ADMIN puede impersonar.
+
+Verifica que la sucursal tenga admin asignado.
+
+Si existe admin: crear sesión de impersonación y devolver payload consistente.
+
+En frontend:
+
+Si success: guardar estado de impersonación (en el lugar ya definido por el sistema: localStorage / cookie / store) y redirigir.
+
+Si error: mostrar mensaje real del backend, no “Acceso denegado” genérico.
+
+Prueba manual
+
+Sucursal con admin: click → entra modo soporte y te manda al dashboard del branch.
+
+Sucursal sin admin: botón deshabilitado + tooltip “Esta sucursal no tiene admin asignado”.
+
+FASE 2 — BUG #2: Editar admin (nombre/email) guarda y da “Error al actualizar”
+Qué debe pasar
+
+En el modal “Admin de {Sucursal}” debe poder:
+
+Editar nombre
+
+Editar email (si aplica)
+Y guardar correctamente, actualizando la card.
+
+Problemas típicos a revisar
+
+Endpoint incorrecto o payload con nombres distintos (email vs adminEmail, etc.)
+
+Backend restringe cambio de email por unicidad (409) y frontend lo muestra como genérico.
+
+Estás editando admin pero en realidad el backend guarda “branch admin assignment”, no el user.
+
+Fix
+
+Asegura que el endpoint correcto se use para:
+
+update user admin: { name, email }
+
+Maneja errores:
+
+409 → “Ese email ya existe”
+
+400 → “Datos inválidos”
+
+403 → “No autorizado”
+
+Después de guardar:
+
+Refrescar branch card (re-fetch o update local state)
+
+Confirmación toast “Admin actualizado”
+
+Prueba manual
+
+Cambiar nombre: guardar → se refleja en la tarjeta.
+
+Cambiar email a uno nuevo: guardar → se refleja.
+
+Intentar email existente: mostrar error claro.
+
+FASE 3 — BUG #3: Reset password da Acceso denegado
+Qué debe pasar
+
+Al abrir modal “Reset contraseña admin” y confirmar:
+
+Backend genera nueva contraseña
+
+Devuelve contraseña (o token temporal)
+
+Frontend muestra modal con copiar/descargar
+
+Problema actual
+
+Dice Acceso denegado, incluso cuando hay admin.
+
+Fix
+
+Confirmar que el reset:
+
+Requiere SUPER_ADMIN (o rol permitido)
+
+Está mandando el token correctamente
+
+Revisar backend:
+
+Si están validando el rol contra el “usuario impersonado” en vez del real.
+
+Si hay middleware que bloquea cuando impersonation=true.
+
+Frontend:
+
+Si success, renderizar el resultado y permitir copiar/descargar
+
+Si error, mostrar mensaje real del backend
+
+Prueba manual
+
+Reset en sucursal con admin: devuelve nueva contraseña.
+
+Reset en sucursal sin admin: botón disabled con tooltip.
+
+FASE 4 — BUG #4: Reenviar paquete (avión) se queda cargando y no muestra info
+Qué debe hacer
+
+Abrir modal “Paquete de bienvenida” con:
+
+URLs (pública, marketplace, favoritos, login, dashboard)
+
+email admin
+
+NO debe cambiar contraseña
+
+Botones copiar / descargar
+
+Problema actual
+
+El modal aparece pero se queda “cargando” y no llena datos.
+
+Fix
+
+Confirmar endpoint y respuesta esperada:
+
+¿Existe endpoint tipo /branches/:id/welcome-package?
+
+¿O se reutiliza el de “created successfully” y solo falta fetch?
+
+Frontend:
+
+Implementar loading/error/success states bien
+
+Si falla fetch: mostrar error (y no dejar skeleton infinito)
+
+Si success: renderiza el contenido completo
+
+Backend:
+
+Asegurar que el endpoint devuelve:
+
+branch slug
+
+baseUrl
+
+urls derivadas
+
+admin email (si existe)
+
+Si branch sin admin: debe mostrar “Sin admin” pero igual mostrar URLs.
+
+Prueba manual
+
+Branch con admin: abre modal con todo.
+
+Branch sin admin: abre modal con URLs + “Sin admin asignado”.
+
+FASE 5 — End-to-end checklist (NO opcional)
+
+Después de arreglar, correr este checklist en UI:
+
+✅ Icono “Abrir app pública” funciona en todas las cards
+
+✅ Icono “Dashboard branch” abre bien
+
+✅ Icono “Entrar como admin”:
+
+funciona en branch con admin
+
+disabled en branch sin admin
+
+✅ Icono “Editar admin” guarda bien
+
+✅ Icono “Reset contraseña” funciona en branch con admin
+
+✅ Icono “Reenviar paquete” abre modal y muestra datos (sin password change)
+
+✅ No se rompe dark mode
+
+✅ Audit log registra acciones relevantes (impersonation, admin update, reset password)
+
+Entrega final obligatoria:
+
+Lista de archivos modificados
+
+Qué endpoints se tocaron
+
+Evidencia: screenshots o logs de cada flujo OK
+
+Sin errores en consola
+
+Extra (mejoras pequeñas que valen oro, sin romper)
+
+Si todo lo anterior queda OK, agrega SOLO si es simple:
+
+En toasts, incluir: Error (403): Acceso denegado / Error (409): Email ya existe (sin mostrar datos sensibles).
+
+En modal de paquete de bienvenida: botón “Copiar todo” + “Descargar .txt” (si ya existe, verificar que funcione siempre).
+
+Nota importante
+
+No cambies passwords cuando sea “reenviar paquete”. Solo muestra URLs + admin email.
+Para password nueva, se usa “reset”.

@@ -78,22 +78,31 @@ type AdminInfo = { id: string; email: string; name: string; createdAt?: string }
 function extractErrorMessage(err: any, fallback: string): string {
   try {
     const msg = err?.message || "";
-    const jsonPart = msg.indexOf("{");
-    if (jsonPart >= 0) {
-      const parsed = JSON.parse(msg.substring(jsonPart));
-      return parsed.message || fallback;
-    }
-    const colonIdx = msg.indexOf(": ");
-    if (colonIdx >= 0) {
-      const afterColon = msg.substring(colonIdx + 2);
-      try {
-        const parsed = JSON.parse(afterColon);
-        return parsed.message || fallback;
-      } catch {
-        return afterColon || fallback;
+    const statusMatch = msg.match(/^(\d{3}):\s*/);
+    const statusCode = statusMatch ? statusMatch[1] : "";
+    const body = statusMatch ? msg.substring(statusMatch[0].length) : msg;
+
+    let message = fallback;
+
+    try {
+      const parsed = JSON.parse(body);
+      message = parsed.message || fallback;
+    } catch {
+      if (body.trim()) {
+        message = body;
       }
     }
-    return msg || fallback;
+
+    if (statusCode === "403") {
+      return `Acceso denegado (${statusCode}). Tu sesión puede haber expirado. Recarga la página.`;
+    }
+    if (statusCode === "401") {
+      return `No autenticado (${statusCode}). Inicia sesión nuevamente.`;
+    }
+    if (statusCode && statusCode !== "200") {
+      return `${message} (${statusCode})`;
+    }
+    return message;
   } catch {
     return fallback;
   }
@@ -316,7 +325,7 @@ function AdminDialog({ branch, onAdminChanged }: { branch: Branch; onAdminChange
       invalidateBranches();
     },
     onError: (err: any) => {
-      toast({ title: "Error", description: err.message?.includes("409") ? "Email ya en uso" : "Error al actualizar", variant: "destructive" });
+      toast({ title: "Error", description: extractErrorMessage(err, "Error al actualizar"), variant: "destructive" });
     },
   });
 
@@ -589,7 +598,7 @@ function ResendWelcomeButton({ branch, hasAdmin }: { branch: Branch; hasAdmin?: 
   const [open, setOpen] = useState(false);
   const { toast } = useToast();
 
-  const { data: pkg, isLoading } = useQuery<{
+  const { data: pkg, isLoading, isError, error } = useQuery<{
     branchName: string;
     branchSlug: string;
     adminEmail: string | null;
@@ -599,10 +608,14 @@ function ResendWelcomeButton({ branch, hasAdmin }: { branch: Branch; hasAdmin?: 
     queryKey: ["/api/superadmin/branches", branch.id, "welcome-package"],
     queryFn: async () => {
       const resp = await fetch(`/api/superadmin/branches/${branch.id}/welcome-package`, { credentials: "include" });
-      if (!resp.ok) throw new Error("Error al obtener paquete");
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => "");
+        throw new Error(`${resp.status}: ${text || resp.statusText}`);
+      }
       return resp.json();
     },
     enabled: open,
+    retry: false,
   });
 
   const origin = typeof window !== "undefined" ? window.location.origin : "";
@@ -691,7 +704,14 @@ function ResendWelcomeButton({ branch, hasAdmin }: { branch: Branch; hasAdmin?: 
           <DialogTitle>Paquete de bienvenida</DialogTitle>
           <DialogDescription>URLs y datos de la sucursal. Puedes copiar o descargar.</DialogDescription>
         </DialogHeader>
-        {isLoading || !pkg ? (
+        {isError ? (
+          <div className="py-4 text-center space-y-2">
+            <p className="text-sm text-destructive font-medium">No se pudo cargar el paquete de bienvenida</p>
+            <p className="text-xs text-muted-foreground">
+              {extractErrorMessage(error, "Error desconocido")}
+            </p>
+          </div>
+        ) : isLoading || !pkg ? (
           <div className="space-y-2 py-4">
             <Skeleton className="h-4 w-48" />
             <Skeleton className="h-4 w-32" />

@@ -1,7 +1,14 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
+function handleSessionError(status: number) {
+  if (status === 401 || status === 403) {
+    queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
+  }
+}
+
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
+    handleSessionError(res.status);
     const text = (await res.text()) || res.statusText;
     throw new Error(`${res.status}: ${text}`);
   }
@@ -35,6 +42,10 @@ export const getQueryFn: <T>(options: {
 
     if (unauthorizedBehavior === "returnNull" && res.status === 401) {
       return null;
+    }
+
+    if (res.status === 403) {
+      handleSessionError(403);
     }
 
     await throwIfResNotOk(res);
