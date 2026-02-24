@@ -32,6 +32,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
 import ClientesTab from "@/components/clientes-tab";
+import MembresiasTab from "@/components/membresias-tab";
 
 const DASHBOARD_TABS = [
   { value: "resumen", label: "Resumen", icon: LayoutDashboard },
@@ -345,12 +346,7 @@ export default function DashboardPage() {
           </TabsContent>
 
           <TabsContent value="membresias" className="mt-4">
-            <PlaceholderTab
-              tabId="membresias"
-              icon={CreditCard}
-              title="Membresías y Paquetes"
-              description="Crea paquetes de clases, asigna membresías a clientes y controla clases restantes. Disponible próximamente."
-            />
+            <MembresiasTab />
           </TabsContent>
 
           <TabsContent value="reservas" className="mt-4">

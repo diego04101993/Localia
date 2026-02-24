@@ -74,9 +74,28 @@ export const memberships = pgTable("memberships", {
   joinedAt: timestamp("joined_at").defaultNow().notNull(),
   lastSeenAt: timestamp("last_seen_at"),
   source: membershipSourceEnum("source").notNull().default("self_join"),
+  planId: varchar("plan_id", { length: 36 }),
+  classesRemaining: integer("classes_remaining"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
 }, (table) => [
   uniqueIndex("memberships_user_branch_idx").on(table.userId, table.branchId),
 ]);
+
+export const membershipPlans = pgTable("membership_plans", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  name: text("name").notNull(),
+  description: text("description"),
+  price: integer("price").notNull().default(0),
+  durationDays: integer("duration_days"),
+  classLimit: integer("class_limit"),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
 
 export const auditLogs = pgTable("audit_logs", {
   id: varchar("id", { length: 36 })
@@ -192,6 +211,26 @@ export type ClientNote = typeof clientNotes.$inferSelect;
 export type InsertClientNote = z.infer<typeof insertClientNoteSchema>;
 export type Attendance = typeof attendances.$inferSelect;
 export type InsertAttendance = z.infer<typeof insertAttendanceSchema>;
+
+export const insertMembershipPlanSchema = createInsertSchema(membershipPlans).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const createPlanSchema = z.object({
+  name: z.string().min(1, "El nombre es obligatorio"),
+  description: z.string().optional(),
+  price: z.number().int().min(0, "El precio no puede ser negativo"),
+  durationDays: z.number().int().min(1).nullable().optional(),
+  classLimit: z.number().int().min(1).nullable().optional(),
+});
+
+export const assignPlanSchema = z.object({
+  planId: z.string().min(1, "Se requiere un plan"),
+});
+
+export type MembershipPlan = typeof membershipPlans.$inferSelect;
+export type InsertMembershipPlan = z.infer<typeof insertMembershipPlanSchema>;
 
 export const createClientSchema = z.object({
   name: z.string().min(1, "El nombre es obligatorio"),

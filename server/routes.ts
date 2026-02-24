@@ -12,6 +12,8 @@ import {
   joinBranchSchema,
   favoriteBranchSchema,
   createClientSchema,
+  createPlanSchema,
+  assignPlanSchema,
 } from "@shared/schema";
 import { z } from "zod";
 
@@ -759,6 +761,10 @@ export async function registerRoutes(
         registeredBy: actor.id,
       });
 
+      if (membership.classesRemaining !== null && membership.classesRemaining > 0) {
+        await storage.decrementClassesRemaining(membership.id);
+      }
+
       await storage.createAuditLog({
         actorUserId: actor.id,
         action: "REGISTER_ATTENDANCE",
@@ -786,6 +792,181 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error(`[INVITE_LINK] Error:`, err.stack || err);
       res.status(500).json({ message: "Error al generar link de invitación" });
+    }
+  });
+
+  // --- Membership Plans ---
+  app.get("/api/branch/plans", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    try {
+      const plans = await storage.getBranchPlans(user.branchId);
+      res.json(plans);
+    } catch (err: any) {
+      console.error(`[PLANS] Error listing:`, err.stack || err);
+      res.status(500).json({ message: "Error al obtener planes" });
+    }
+  });
+
+  app.post("/api/branch/plans", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const data = createPlanSchema.parse(req.body);
+      const plan = await storage.createPlan({
+        branchId: actor.branchId,
+        name: data.name,
+        description: data.description || null,
+        price: data.price,
+        durationDays: data.durationDays ?? null,
+        classLimit: data.classLimit ?? null,
+      });
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "CREATE_PLAN",
+        branchId: actor.branchId,
+        metadata: { planId: plan.id, name: plan.name },
+      });
+
+      console.log(`[PLAN] Created "${plan.name}" by ${actor.email}`);
+      res.status(201).json(plan);
+    } catch (err: any) {
+      if (err.name === "ZodError") {
+        return res.status(400).json({ message: err.errors[0]?.message || "Datos inválidos" });
+      }
+      console.error(`[PLAN] Error creating:`, err.stack || err);
+      res.status(500).json({ message: "Error al crear plan" });
+    }
+  });
+
+  app.patch("/api/branch/plans/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const planId = req.params.id as string;
+    try {
+      const existing = await storage.getPlan(planId);
+      if (!existing || existing.branchId !== actor.branchId) {
+        return res.status(404).json({ message: "Plan no encontrado" });
+      }
+
+      const updatePlanSchema = createPlanSchema.partial().extend({ isActive: z.boolean().optional() });
+      const data = updatePlanSchema.parse(req.body);
+      const updated = await storage.updatePlan(planId, {
+        ...(data.name !== undefined && { name: data.name }),
+        ...(data.description !== undefined && { description: data.description || null }),
+        ...(data.price !== undefined && { price: data.price }),
+        ...(data.durationDays !== undefined && { durationDays: data.durationDays ?? null }),
+        ...(data.classLimit !== undefined && { classLimit: data.classLimit ?? null }),
+        ...(data.isActive !== undefined && { isActive: data.isActive }),
+      });
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "UPDATE_PLAN",
+        branchId: actor.branchId,
+        metadata: { planId, changes: data },
+      });
+
+      console.log(`[PLAN] Updated "${planId}" by ${actor.email}`);
+      res.json(updated);
+    } catch (err: any) {
+      if (err.name === "ZodError") {
+        return res.status(400).json({ message: err.errors[0]?.message || "Datos inválidos" });
+      }
+      console.error(`[PLAN] Error updating:`, err.stack || err);
+      res.status(500).json({ message: "Error al actualizar plan" });
+    }
+  });
+
+  app.delete("/api/branch/plans/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const planId = req.params.id as string;
+    try {
+      const existing = await storage.getPlan(planId);
+      if (!existing || existing.branchId !== actor.branchId) {
+        return res.status(404).json({ message: "Plan no encontrado" });
+      }
+
+      const plan = await storage.deactivatePlan(planId);
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "DEACTIVATE_PLAN",
+        branchId: actor.branchId,
+        metadata: { planId, name: existing.name },
+      });
+
+      console.log(`[PLAN] Deactivated "${existing.name}" by ${actor.email}`);
+      res.json(plan);
+    } catch (err: any) {
+      console.error(`[PLAN] Error deactivating:`, err.stack || err);
+      res.status(500).json({ message: "Error al desactivar plan" });
+    }
+  });
+
+  app.post("/api/branch/memberships/:id/assign-plan", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const membershipId = req.params.id as string;
+    try {
+      const { planId } = assignPlanSchema.parse(req.body);
+
+      const plan = await storage.getPlan(planId);
+      if (!plan || plan.branchId !== actor.branchId) {
+        return res.status(404).json({ message: "Plan no encontrado" });
+      }
+      if (!plan.isActive) {
+        return res.status(400).json({ message: "Este plan está desactivado" });
+      }
+
+      const classesRemaining = plan.classLimit ?? null;
+      let expiresAt: Date | null = null;
+      if (plan.durationDays) {
+        expiresAt = new Date();
+        expiresAt.setDate(expiresAt.getDate() + plan.durationDays);
+      }
+
+      const membership = await storage.assignPlanToMembership(membershipId, planId, classesRemaining, expiresAt);
+      if (!membership) {
+        return res.status(404).json({ message: "Membresía no encontrada" });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "ASSIGN_PLAN",
+        branchId: actor.branchId,
+        metadata: { membershipId, planId, planName: plan.name },
+      });
+
+      console.log(`[PLAN] Assigned "${plan.name}" to membership ${membershipId} by ${actor.email}`);
+      res.json(membership);
+    } catch (err: any) {
+      if (err.name === "ZodError") {
+        return res.status(400).json({ message: err.errors[0]?.message || "Datos inválidos" });
+      }
+      console.error(`[PLAN] Error assigning:`, err.stack || err);
+      res.status(500).json({ message: "Error al asignar plan" });
+    }
+  });
+
+  app.delete("/api/branch/memberships/:id/plan", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const membershipId = req.params.id as string;
+    try {
+      const membership = await storage.removePlanFromMembership(membershipId);
+      if (!membership) {
+        return res.status(404).json({ message: "Membresía no encontrada" });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "REMOVE_PLAN",
+        branchId: actor.branchId,
+        metadata: { membershipId },
+      });
+
+      console.log(`[PLAN] Removed plan from membership ${membershipId} by ${actor.email}`);
+      res.json(membership);
+    } catch (err: any) {
+      console.error(`[PLAN] Error removing:`, err.stack || err);
+      res.status(500).json({ message: "Error al quitar plan" });
     }
   });
 

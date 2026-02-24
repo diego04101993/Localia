@@ -14,6 +14,9 @@ import {
   Check,
   Loader2,
   ChevronRight,
+  Package,
+  Hash,
+  XCircle,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -45,11 +48,25 @@ interface BranchClient {
   source: string;
   isFavorite: boolean;
   lastAttendance: string | null;
+  planId: string | null;
+  planName: string | null;
+  classesRemaining: number | null;
+  expiresAt: string | null;
+}
+
+interface MembershipPlan {
+  id: string;
+  name: string;
+  price: number;
+  durationDays: number | null;
+  classLimit: number | null;
+  isActive: boolean;
 }
 
 interface ClientProfile {
   user: { id: string; name: string; email: string; phone: string | null; createdAt: string };
-  membership: { id: string; status: string; joinedAt: string; lastSeenAt: string | null; source: string };
+  membership: { id: string; status: string; joinedAt: string; lastSeenAt: string | null; source: string; planId: string | null; classesRemaining: number | null; expiresAt: string | null };
+  plan: { id: string; name: string; price: number; durationDays: number | null; classLimit: number | null } | null;
   notes: { id: string; content: string; createdAt: string; createdByName?: string }[];
   recentAttendances: { id: string; checkedInAt: string }[];
   totalAttendances: number;
@@ -261,10 +278,16 @@ function ClientProfileDialog({ clientId, open, onOpenChange }: {
 }) {
   const { toast } = useToast();
   const [noteContent, setNoteContent] = useState("");
+  const [showPlanSelect, setShowPlanSelect] = useState(false);
 
   const { data: profile, isLoading } = useQuery<ClientProfile>({
     queryKey: ["/api/branch/clients", clientId],
     enabled: open && !!clientId,
+  });
+
+  const { data: plans } = useQuery<MembershipPlan[]>({
+    queryKey: ["/api/branch/plans"],
+    enabled: open && showPlanSelect,
   });
 
   const noteMutation = useMutation({
@@ -296,6 +319,39 @@ function ClientProfileDialog({ clientId, open, onOpenChange }: {
       toast({ title: "Error", description: err.message || "Error al registrar asistencia", variant: "destructive" });
     },
   });
+
+  const assignPlanMutation = useMutation({
+    mutationFn: async (planId: string) => {
+      const resp = await apiRequest("POST", `/api/branch/memberships/${profile!.membership.id}/assign-plan`, { planId });
+      return resp.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients", clientId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
+      setShowPlanSelect(false);
+      toast({ title: "Plan asignado" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message || "Error al asignar plan", variant: "destructive" });
+    },
+  });
+
+  const removePlanMutation = useMutation({
+    mutationFn: async () => {
+      const resp = await apiRequest("DELETE", `/api/branch/memberships/${profile!.membership.id}/plan`);
+      return resp.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients", clientId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
+      toast({ title: "Plan removido" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message || "Error al remover plan", variant: "destructive" });
+    },
+  });
+
+  const activePlans = (plans || []).filter(p => p.isActive);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -337,6 +393,91 @@ function ClientProfileDialog({ clientId, open, onOpenChange }: {
               <span className="text-xs text-muted-foreground">
                 Membresía desde {formatDate(profile.membership.joinedAt)} · {profile.membership.source === "admin_created" ? "Creado por admin" : profile.membership.source === "invite" ? "Por invitación" : "Auto-registro"}
               </span>
+            </div>
+
+            <div className="bg-muted/50 rounded-md p-3 space-y-2">
+              <h4 className="text-sm font-medium flex items-center gap-1.5">
+                <Package className="h-3.5 w-3.5" />
+                Plan de membresía
+              </h4>
+              {profile.plan ? (
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium" data-testid="text-profile-plan">{profile.plan.name}</span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-2 text-xs"
+                      onClick={() => removePlanMutation.mutate()}
+                      disabled={removePlanMutation.isPending}
+                      data-testid="button-remove-plan"
+                    >
+                      <XCircle className="h-3 w-3 mr-1" />
+                      Quitar
+                    </Button>
+                  </div>
+                  <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                    {profile.membership.classesRemaining !== null && (
+                      <span className="flex items-center gap-1" data-testid="text-classes-remaining">
+                        <Hash className="h-3 w-3" />
+                        {profile.membership.classesRemaining} clases restantes
+                      </span>
+                    )}
+                    {profile.membership.expiresAt && (
+                      <span data-testid="text-plan-expires">
+                        Vence: {formatDate(profile.membership.expiresAt)}
+                      </span>
+                    )}
+                    {profile.membership.classesRemaining === null && !profile.membership.expiresAt && (
+                      <span>Ilimitado</span>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-xs text-muted-foreground" data-testid="text-no-plan">Sin plan asignado</p>
+                  {!showPlanSelect ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowPlanSelect(true)}
+                      data-testid="button-assign-plan"
+                    >
+                      <Package className="h-3.5 w-3.5 mr-1" />
+                      Asignar plan
+                    </Button>
+                  ) : (
+                    <div className="space-y-2">
+                      {activePlans.length === 0 ? (
+                        <p className="text-xs text-muted-foreground">No hay planes activos. Crea uno en la pestaña Membresías.</p>
+                      ) : (
+                        activePlans.map((plan) => (
+                          <button
+                            key={plan.id}
+                            onClick={() => assignPlanMutation.mutate(plan.id)}
+                            disabled={assignPlanMutation.isPending}
+                            className="w-full text-left p-2 rounded-md border bg-background hover:bg-muted/50 transition-colors text-sm"
+                            data-testid={`button-select-plan-${plan.id}`}
+                          >
+                            <div className="flex justify-between items-center">
+                              <span className="font-medium">{plan.name}</span>
+                              <span className="text-xs text-muted-foreground">
+                                ${(plan.price / 100).toFixed(2)}
+                              </span>
+                            </div>
+                            <div className="text-xs text-muted-foreground mt-0.5">
+                              {plan.durationDays ? `${plan.durationDays} días` : "Sin límite"} · {plan.classLimit ? `${plan.classLimit} clases` : "Ilimitadas"}
+                            </div>
+                          </button>
+                        ))
+                      )}
+                      <Button variant="ghost" size="sm" onClick={() => setShowPlanSelect(false)} data-testid="button-cancel-assign-plan">
+                        Cancelar
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="flex gap-2">
@@ -546,6 +687,11 @@ export default function ClientesTab() {
                     <div className="flex items-center gap-3 text-xs text-muted-foreground mt-0.5">
                       <span className="truncate">{client.email}</span>
                       {client.phone && <span>{client.phone}</span>}
+                      {client.planName && (
+                        <Badge variant="outline" className="text-[10px] px-1.5 py-0" data-testid={`badge-plan-${client.userId}`}>
+                          {client.planName}
+                        </Badge>
+                      )}
                     </div>
                   </div>
                   <div className="hidden sm:flex flex-col items-end gap-0.5 shrink-0">

@@ -4,6 +4,7 @@ import {
   users,
   branches,
   memberships,
+  membershipPlans,
   auditLogs,
   clientNotes,
   attendances,
@@ -18,6 +19,8 @@ import {
   type InsertClientNote,
   type Attendance,
   type InsertAttendance,
+  type MembershipPlan,
+  type InsertMembershipPlan,
 } from "@shared/schema";
 
 export interface BranchMetrics {
@@ -68,6 +71,14 @@ export interface IStorage {
   createAttendance(data: InsertAttendance): Promise<Attendance>;
   getClientAttendances(userId: string, branchId: string, limit?: number): Promise<Attendance[]>;
   updateUserPhone(id: string, phone: string | null): Promise<User | undefined>;
+  getBranchPlans(branchId: string): Promise<MembershipPlan[]>;
+  createPlan(data: InsertMembershipPlan): Promise<MembershipPlan>;
+  updatePlan(id: string, data: Partial<InsertMembershipPlan>): Promise<MembershipPlan | undefined>;
+  deactivatePlan(id: string): Promise<MembershipPlan | undefined>;
+  getPlan(id: string): Promise<MembershipPlan | undefined>;
+  assignPlanToMembership(membershipId: string, planId: string, classesRemaining: number | null, expiresAt: Date | null): Promise<Membership | undefined>;
+  removePlanFromMembership(membershipId: string): Promise<Membership | undefined>;
+  decrementClassesRemaining(membershipId: string): Promise<Membership | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -392,9 +403,14 @@ export class DatabaseStorage implements IStorage {
         lastSeenAt: memberships.lastSeenAt,
         source: memberships.source,
         isFavorite: memberships.isFavorite,
+        planId: memberships.planId,
+        classesRemaining: memberships.classesRemaining,
+        expiresAt: memberships.expiresAt,
+        planName: membershipPlans.name,
       })
       .from(memberships)
       .innerJoin(users, eq(memberships.userId, users.id))
+      .leftJoin(membershipPlans, eq(memberships.planId, membershipPlans.id))
       .where(eq(memberships.branchId, branchId))
       .orderBy(desc(memberships.joinedAt));
 
@@ -437,6 +453,12 @@ export class DatabaseStorage implements IStorage {
     const [user] = await db.select().from(users).where(eq(users.id, userId));
     if (!user) return null;
 
+    let plan: MembershipPlan | null = null;
+    if (membership.planId) {
+      const [p] = await db.select().from(membershipPlans).where(eq(membershipPlans.id, membership.planId));
+      plan = p || null;
+    }
+
     const notes = await this.getClientNotes(userId, branchId);
     const recentAttendances = await this.getClientAttendances(userId, branchId, 10);
 
@@ -448,6 +470,7 @@ export class DatabaseStorage implements IStorage {
     return {
       user: { id: user.id, name: user.name, email: user.email, phone: user.phone, createdAt: user.createdAt },
       membership,
+      plan,
       notes,
       recentAttendances,
       totalAttendances: Number(attendanceCount?.count) || 0,
@@ -498,6 +521,69 @@ export class DatabaseStorage implements IStorage {
   async updateUserPhone(id: string, phone: string | null): Promise<User | undefined> {
     const [user] = await db.update(users).set({ phone }).where(eq(users.id, id)).returning();
     return user;
+  }
+
+  async getBranchPlans(branchId: string): Promise<MembershipPlan[]> {
+    return db
+      .select()
+      .from(membershipPlans)
+      .where(eq(membershipPlans.branchId, branchId))
+      .orderBy(desc(membershipPlans.isActive), asc(membershipPlans.name));
+  }
+
+  async createPlan(data: InsertMembershipPlan): Promise<MembershipPlan> {
+    const [plan] = await db.insert(membershipPlans).values(data).returning();
+    return plan;
+  }
+
+  async updatePlan(id: string, data: Partial<InsertMembershipPlan>): Promise<MembershipPlan | undefined> {
+    const [plan] = await db
+      .update(membershipPlans)
+      .set(data)
+      .where(eq(membershipPlans.id, id))
+      .returning();
+    return plan;
+  }
+
+  async deactivatePlan(id: string): Promise<MembershipPlan | undefined> {
+    const [plan] = await db
+      .update(membershipPlans)
+      .set({ isActive: false })
+      .where(eq(membershipPlans.id, id))
+      .returning();
+    return plan;
+  }
+
+  async getPlan(id: string): Promise<MembershipPlan | undefined> {
+    const [plan] = await db.select().from(membershipPlans).where(eq(membershipPlans.id, id));
+    return plan;
+  }
+
+  async assignPlanToMembership(membershipId: string, planId: string, classesRemaining: number | null, expiresAt: Date | null): Promise<Membership | undefined> {
+    const [m] = await db
+      .update(memberships)
+      .set({ planId, classesRemaining, expiresAt })
+      .where(eq(memberships.id, membershipId))
+      .returning();
+    return m;
+  }
+
+  async removePlanFromMembership(membershipId: string): Promise<Membership | undefined> {
+    const [m] = await db
+      .update(memberships)
+      .set({ planId: null, classesRemaining: null, expiresAt: null })
+      .where(eq(memberships.id, membershipId))
+      .returning();
+    return m;
+  }
+
+  async decrementClassesRemaining(membershipId: string): Promise<Membership | undefined> {
+    const [m] = await db
+      .update(memberships)
+      .set({ classesRemaining: sql`GREATEST(${memberships.classesRemaining} - 1, 0)` })
+      .where(and(eq(memberships.id, membershipId), sql`${memberships.classesRemaining} IS NOT NULL AND ${memberships.classesRemaining} > 0`))
+      .returning();
+    return m;
   }
 }
 

@@ -40,6 +40,12 @@ Multi-tenant gym management platform with role-based access (SUPER_ADMIN, BRANCH
 - `POST /api/branch/clients/:id/notes` - Add internal note (BRANCH_ADMIN)
 - `POST /api/branch/clients/:id/attendance` - Register attendance (BRANCH_ADMIN)
 - `GET /api/branch/invite-link` - Get branch invite URL (BRANCH_ADMIN)
+- `GET /api/branch/plans` - List branch membership plans (BRANCH_ADMIN)
+- `POST /api/branch/plans` - Create membership plan (BRANCH_ADMIN)
+- `PATCH /api/branch/plans/:id` - Update plan (BRANCH_ADMIN)
+- `DELETE /api/branch/plans/:id` - Deactivate plan (BRANCH_ADMIN)
+- `POST /api/branch/memberships/:id/assign-plan` - Assign plan to membership (BRANCH_ADMIN)
+- `DELETE /api/branch/memberships/:id/plan` - Remove plan from membership (BRANCH_ADMIN)
 - `POST /api/superadmin/impersonate` - Start impersonation {branchId} (SUPER_ADMIN)
 - `POST /api/superadmin/impersonate/end` - End impersonation (authenticated)
 - `GET /api/superadmin/audit` - Audit logs (SUPER_ADMIN)
@@ -52,7 +58,8 @@ Multi-tenant gym management platform with role-based access (SUPER_ADMIN, BRANCH
 ## Database Schema
 - **users**: id, email, passwordHash, role (SUPER_ADMIN/BRANCH_ADMIN/CUSTOMER), branchId, name, phone
 - **branches**: id, name, slug, status, category, subcategory, latitude, longitude, city, address, coverImageUrl, description, deletedAt
-- **memberships**: id, userId, branchId, status (active/banned/left), isFavorite, joinedAt, lastSeenAt, source (invite/self_join/admin_created)
+- **memberships**: id, userId, branchId, status (active/banned/left), isFavorite, joinedAt, lastSeenAt, source (invite/self_join/admin_created), planId, classesRemaining, expiresAt
+- **membership_plans**: id, branchId, name, description, price (integer cents), durationDays, classLimit, isActive, createdAt
 - **audit_logs**: id, actorUserId, action, branchId, metadata (jsonb), createdAt
 - **client_notes**: id, branchId, userId, content, createdBy, createdAt
 - **attendances**: id, branchId, userId, checkedInAt, registeredBy
@@ -77,10 +84,12 @@ Multi-tenant gym management platform with role-based access (SUPER_ADMIN, BRANCH
 - Tab navigation with 6 sections: Resumen, Clientes, Membresías, Reservas, Contenido, TV Mode
 - Resumen tab: real counts (active clients, active memberships), branch status with description, public URL link, placeholder cards for reservations (will be real in Fase 4)
 - Clientes tab (Fase 2): client list with search/filter, create client dialog with credentials, invite link dialog, client profile modal with notes, attendance registration, membership info
-- Other tabs show placeholder "coming soon" UI (to be implemented in Fases 3-6)
+- Membresías tab (Fase 3): plan CRUD (create/edit/deactivate/reactivate), plan cards with price/duration/classLimit, assign plan to clients from profile dialog, auto-decrement classes on attendance, remove plan
+- Other tabs show placeholder "coming soon" UI (to be implemented in Fases 4-6)
 - StatusBadge component reused in header and summary with unique testIds
 - Preserves: suspended banner, impersonation banner, theme toggle, logout
 - Component file: client/src/components/clientes-tab.tsx
+- Component file: client/src/components/membresias-tab.tsx
 
 ## Branch Categories
 box, gym, yoga, estetica, doctor, abogado, freelancer, otro
