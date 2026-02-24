@@ -312,6 +312,103 @@ export const createClientSchema = z.object({
   password: z.string().min(6, "La contraseña debe tener al menos 6 caracteres").optional(),
 });
 
+export const branchPhotoTypeEnum = pgEnum("branch_photo_type", [
+  "profile",
+  "facility",
+]);
+
+export const branchPostMediaTypeEnum = pgEnum("branch_post_media_type", [
+  "image",
+  "video",
+]);
+
+export const branchPhotos = pgTable("branch_photos", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  type: branchPhotoTypeEnum("type").notNull(),
+  url: text("url").notNull(),
+  displayOrder: integer("display_order").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const branchPosts = pgTable("branch_posts", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  title: text("title").notNull(),
+  content: text("content").notNull(),
+  mediaUrl: text("media_url"),
+  mediaType: branchPostMediaTypeEnum("media_type"),
+  displayOrder: integer("display_order").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const branchProducts = pgTable("branch_products", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  name: text("name").notNull(),
+  description: text("description"),
+  price: integer("price").notNull().default(0),
+  imageUrl: text("image_url"),
+  displayOrder: integer("display_order").notNull().default(0),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const branchVideos = pgTable("branch_videos", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  title: text("title"),
+  url: text("url").notNull(),
+  thumbnailUrl: text("thumbnail_url"),
+  displayOrder: integer("display_order").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const insertBranchPhotoSchema = createInsertSchema(branchPhotos).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertBranchPostSchema = createInsertSchema(branchPosts).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertBranchProductSchema = createInsertSchema(branchProducts).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertBranchVideoSchema = createInsertSchema(branchVideos).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type BranchPhoto = typeof branchPhotos.$inferSelect;
+export type InsertBranchPhoto = z.infer<typeof insertBranchPhotoSchema>;
+export type BranchPost = typeof branchPosts.$inferSelect;
+export type InsertBranchPost = z.infer<typeof insertBranchPostSchema>;
+export type BranchProduct = typeof branchProducts.$inferSelect;
+export type InsertBranchProduct = z.infer<typeof insertBranchProductSchema>;
+export type BranchVideo = typeof branchVideos.$inferSelect;
+export type InsertBranchVideo = z.infer<typeof insertBranchVideoSchema>;
+
 export const BRANCH_CATEGORIES = [
   { value: "box", label: "Box / CrossFit" },
   { value: "gym", label: "Gimnasio" },

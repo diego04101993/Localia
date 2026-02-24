@@ -58,6 +58,26 @@ Multi-tenant gym management platform with role-based access (SUPER_ADMIN, BRANCH
 - `POST /api/superadmin/impersonate` - Start impersonation {branchId} (SUPER_ADMIN)
 - `POST /api/superadmin/impersonate/end` - End impersonation (authenticated)
 - `GET /api/superadmin/audit` - Audit logs (SUPER_ADMIN)
+- `POST /api/branch/upload` - Upload file (image/video), returns {url} (BRANCH_ADMIN)
+- `GET /api/branch/photos` - List branch photos (BRANCH_ADMIN)
+- `POST /api/branch/photos` - Add photo {type, url} (BRANCH_ADMIN)
+- `DELETE /api/branch/photos/:id` - Delete photo (BRANCH_ADMIN)
+- `POST /api/branch/photos/reorder` - Reorder photos {ids[]} (BRANCH_ADMIN)
+- `GET /api/branch/posts` - List branch posts (BRANCH_ADMIN)
+- `POST /api/branch/posts` - Create post {title, content, mediaUrl?, mediaType?} (BRANCH_ADMIN)
+- `PATCH /api/branch/posts/:id` - Update post (BRANCH_ADMIN)
+- `DELETE /api/branch/posts/:id` - Delete post (BRANCH_ADMIN)
+- `POST /api/branch/posts/reorder` - Reorder posts {ids[]} (BRANCH_ADMIN)
+- `GET /api/branch/products` - List branch products (BRANCH_ADMIN)
+- `POST /api/branch/products` - Create product {name, price, description?, imageUrl?} (BRANCH_ADMIN)
+- `PATCH /api/branch/products/:id` - Update product (BRANCH_ADMIN)
+- `DELETE /api/branch/products/:id` - Delete product (BRANCH_ADMIN)
+- `POST /api/branch/products/reorder` - Reorder products {ids[]} (BRANCH_ADMIN)
+- `GET /api/branch/videos` - List branch videos (BRANCH_ADMIN)
+- `POST /api/branch/videos` - Add video {url, title?} (BRANCH_ADMIN)
+- `DELETE /api/branch/videos/:id` - Delete video (BRANCH_ADMIN)
+- `POST /api/branch/videos/reorder` - Reorder videos {ids[]} (BRANCH_ADMIN)
+- `GET /api/public/branch/:slug/content` - Get all public content (photos, posts, products, videos)
 - `GET /api/public/branch/:slug` - Get public branch info
 - `GET /api/branches/nearby?q=&category=&lat=&lng=&radius_km=` - Search/filter branches (public)
 - `GET /api/memberships` - Get user memberships with branch info (authenticated)
@@ -74,6 +94,10 @@ Multi-tenant gym management platform with role-based access (SUPER_ADMIN, BRANCH
 - **audit_logs**: id, actorUserId, action, branchId, metadata (jsonb), createdAt
 - **client_notes**: id, branchId, userId, content, createdBy, createdAt
 - **attendances**: id, branchId, userId, checkedInAt, registeredBy
+- **branch_photos**: id, branchId, type (profile/facility), url, displayOrder, createdAt
+- **branch_posts**: id, branchId, title, content, mediaUrl, mediaType (image/video), displayOrder, createdAt
+- **branch_products**: id, branchId, name, description, price (integer cents), imageUrl, displayOrder, isActive, createdAt
+- **branch_videos**: id, branchId, title, url, thumbnailUrl, displayOrder, createdAt
 
 ## Branch Status Rules
 - **Activa (active)**: Todo funciona normalmente
@@ -91,18 +115,20 @@ Multi-tenant gym management platform with role-based access (SUPER_ADMIN, BRANCH
 - Resend welcome package: regenerate modal with URLs + admin email (no password change)
 - Search and filter branches, show/hide deleted
 
-## Branch Admin Dashboard (Fases 1-4 completadas)
+## Branch Admin Dashboard (Fases 1-5 completadas)
 - Tab navigation with 6 sections: Resumen, Clientes, Membresías, Reservas, Contenido, TV Mode
 - Resumen tab: real counts (active clients, active memberships, today's reservations, next booking), branch status with description, public URL link
 - Clientes tab (Fase 2): client list with search/filter, create client dialog with credentials, invite link dialog, client profile modal with notes, attendance registration, membership info
 - Membresías tab (Fase 3): plan CRUD (create/edit/deactivate/reactivate), plan cards with price/duration/classLimit, assign plan to clients from profile dialog, auto-decrement classes on attendance, remove plan
 - Reservas tab (Fase 4): weekly calendar view with class schedule, day detail with bookings, class CRUD (create/edit/deactivate/reactivate), book clients into classes, booking status management (confirmed/attended/cancelled), capacity tracking
-- Other tabs show placeholder "coming soon" UI (to be implemented in Fases 5-6)
+- Contenido tab (Fase 5): manage public profile content — profile photo (1), facility photos (max 5), fixed posts (max 3, text + image/video), products catalog (unlimited), training videos. File upload via multer. Reorder with ↑↓ buttons. All content shown on public page /app/:slug.
+- TV Mode tab shows placeholder "coming soon" UI (to be implemented in Fase 6)
 - StatusBadge component reused in header and summary with unique testIds
 - Preserves: suspended banner, impersonation banner, theme toggle, logout
 - Component file: client/src/components/clientes-tab.tsx
 - Component file: client/src/components/membresias-tab.tsx
 - Component file: client/src/components/reservas-tab.tsx
+- Component file: client/src/components/contenido-tab.tsx
 
 ## Branch Categories
 box, gym, yoga, estetica, doctor, abogado, freelancer, otro

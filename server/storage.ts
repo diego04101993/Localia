@@ -10,6 +10,10 @@ import {
   attendances,
   classSchedules,
   classBookings,
+  branchPhotos,
+  branchPosts,
+  branchProducts,
+  branchVideos,
   type User,
   type InsertUser,
   type Branch,
@@ -27,6 +31,14 @@ import {
   type InsertClassSchedule,
   type ClassBooking,
   type InsertClassBooking,
+  type BranchPhoto,
+  type InsertBranchPhoto,
+  type BranchPost,
+  type InsertBranchPost,
+  type BranchProduct,
+  type InsertBranchProduct,
+  type BranchVideo,
+  type InsertBranchVideo,
 } from "@shared/schema";
 
 export interface BranchMetrics {
@@ -96,6 +108,24 @@ export interface IStorage {
   getBooking(id: string): Promise<ClassBooking | undefined>;
   getTodayBookingsCount(branchId: string): Promise<number>;
   getNextBooking(branchId: string): Promise<{ className: string; startTime: string; bookingDate: string } | null>;
+  getBranchPhotos(branchId: string): Promise<BranchPhoto[]>;
+  addBranchPhoto(data: InsertBranchPhoto): Promise<BranchPhoto>;
+  deleteBranchPhoto(id: string): Promise<void>;
+  reorderBranchPhotos(branchId: string, ids: string[]): Promise<void>;
+  getBranchPosts(branchId: string): Promise<BranchPost[]>;
+  createBranchPost(data: InsertBranchPost): Promise<BranchPost>;
+  updateBranchPost(id: string, data: Partial<InsertBranchPost>): Promise<BranchPost | undefined>;
+  deleteBranchPost(id: string): Promise<void>;
+  reorderBranchPosts(branchId: string, ids: string[]): Promise<void>;
+  getBranchProducts(branchId: string): Promise<BranchProduct[]>;
+  createBranchProduct(data: InsertBranchProduct): Promise<BranchProduct>;
+  updateBranchProduct(id: string, data: Partial<InsertBranchProduct>): Promise<BranchProduct | undefined>;
+  deleteBranchProduct(id: string): Promise<void>;
+  reorderBranchProducts(branchId: string, ids: string[]): Promise<void>;
+  getBranchVideos(branchId: string): Promise<BranchVideo[]>;
+  addBranchVideo(data: InsertBranchVideo): Promise<BranchVideo>;
+  deleteBranchVideo(id: string): Promise<void>;
+  reorderBranchVideos(branchId: string, ids: string[]): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -733,6 +763,128 @@ export class DatabaseStorage implements IStorage {
       .orderBy(asc(classBookings.bookingDate), asc(classSchedules.startTime))
       .limit(1);
     return results[0] || null;
+  }
+
+  async getBranchPhotos(branchId: string): Promise<BranchPhoto[]> {
+    return db
+      .select()
+      .from(branchPhotos)
+      .where(eq(branchPhotos.branchId, branchId))
+      .orderBy(asc(branchPhotos.displayOrder));
+  }
+
+  async addBranchPhoto(data: InsertBranchPhoto): Promise<BranchPhoto> {
+    const [photo] = await db.insert(branchPhotos).values(data).returning();
+    return photo;
+  }
+
+  async deleteBranchPhoto(id: string): Promise<void> {
+    await db.delete(branchPhotos).where(eq(branchPhotos.id, id));
+  }
+
+  async reorderBranchPhotos(branchId: string, ids: string[]): Promise<void> {
+    for (let i = 0; i < ids.length; i++) {
+      await db
+        .update(branchPhotos)
+        .set({ displayOrder: i })
+        .where(and(eq(branchPhotos.id, ids[i]), eq(branchPhotos.branchId, branchId)));
+    }
+  }
+
+  async getBranchPosts(branchId: string): Promise<BranchPost[]> {
+    return db
+      .select()
+      .from(branchPosts)
+      .where(eq(branchPosts.branchId, branchId))
+      .orderBy(asc(branchPosts.displayOrder));
+  }
+
+  async createBranchPost(data: InsertBranchPost): Promise<BranchPost> {
+    const [post] = await db.insert(branchPosts).values(data).returning();
+    return post;
+  }
+
+  async updateBranchPost(id: string, data: Partial<InsertBranchPost>): Promise<BranchPost | undefined> {
+    const [post] = await db
+      .update(branchPosts)
+      .set(data as any)
+      .where(eq(branchPosts.id, id))
+      .returning();
+    return post;
+  }
+
+  async deleteBranchPost(id: string): Promise<void> {
+    await db.delete(branchPosts).where(eq(branchPosts.id, id));
+  }
+
+  async reorderBranchPosts(branchId: string, ids: string[]): Promise<void> {
+    for (let i = 0; i < ids.length; i++) {
+      await db
+        .update(branchPosts)
+        .set({ displayOrder: i })
+        .where(and(eq(branchPosts.id, ids[i]), eq(branchPosts.branchId, branchId)));
+    }
+  }
+
+  async getBranchProducts(branchId: string): Promise<BranchProduct[]> {
+    return db
+      .select()
+      .from(branchProducts)
+      .where(eq(branchProducts.branchId, branchId))
+      .orderBy(asc(branchProducts.displayOrder));
+  }
+
+  async createBranchProduct(data: InsertBranchProduct): Promise<BranchProduct> {
+    const [product] = await db.insert(branchProducts).values(data).returning();
+    return product;
+  }
+
+  async updateBranchProduct(id: string, data: Partial<InsertBranchProduct>): Promise<BranchProduct | undefined> {
+    const [product] = await db
+      .update(branchProducts)
+      .set(data as any)
+      .where(eq(branchProducts.id, id))
+      .returning();
+    return product;
+  }
+
+  async deleteBranchProduct(id: string): Promise<void> {
+    await db.delete(branchProducts).where(eq(branchProducts.id, id));
+  }
+
+  async reorderBranchProducts(branchId: string, ids: string[]): Promise<void> {
+    for (let i = 0; i < ids.length; i++) {
+      await db
+        .update(branchProducts)
+        .set({ displayOrder: i })
+        .where(and(eq(branchProducts.id, ids[i]), eq(branchProducts.branchId, branchId)));
+    }
+  }
+
+  async getBranchVideos(branchId: string): Promise<BranchVideo[]> {
+    return db
+      .select()
+      .from(branchVideos)
+      .where(eq(branchVideos.branchId, branchId))
+      .orderBy(asc(branchVideos.displayOrder));
+  }
+
+  async addBranchVideo(data: InsertBranchVideo): Promise<BranchVideo> {
+    const [video] = await db.insert(branchVideos).values(data).returning();
+    return video;
+  }
+
+  async deleteBranchVideo(id: string): Promise<void> {
+    await db.delete(branchVideos).where(eq(branchVideos.id, id));
+  }
+
+  async reorderBranchVideos(branchId: string, ids: string[]): Promise<void> {
+    for (let i = 0; i < ids.length; i++) {
+      await db
+        .update(branchVideos)
+        .set({ displayOrder: i })
+        .where(and(eq(branchVideos.id, ids[i]), eq(branchVideos.branchId, branchId)));
+    }
   }
 }
 

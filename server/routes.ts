@@ -3,6 +3,9 @@ import { type Server } from "http";
 import passport from "passport";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
+import path from "path";
+import fs from "fs";
+import multer from "multer";
 import { storage } from "./storage";
 import { setupAuth, requireAuth, requireRole, isImpersonating, getOriginalUserId } from "./auth";
 import { seedDatabase } from "./seed";
@@ -18,6 +21,39 @@ import {
   createBookingSchema,
 } from "@shared/schema";
 import { z } from "zod";
+
+const uploadsDir = path.join(process.cwd(), "uploads");
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
+const ALLOWED_VIDEO_TYPES = ["video/mp4", "video/webm"];
+const ALLOWED_TYPES = [...ALLOWED_IMAGE_TYPES, ...ALLOWED_VIDEO_TYPES];
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
+
+const uploadStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    cb(null, uploadsDir);
+  },
+  filename: (_req, file, cb) => {
+    const uniqueSuffix = `${Date.now()}-${crypto.randomBytes(6).toString("hex")}`;
+    const ext = path.extname(file.originalname).toLowerCase() || `.${file.mimetype.split("/")[1]}`;
+    cb(null, `${uniqueSuffix}${ext}`);
+  },
+});
+
+const upload = multer({
+  storage: uploadStorage,
+  limits: { fileSize: MAX_FILE_SIZE },
+  fileFilter: (_req, file, cb) => {
+    if (ALLOWED_TYPES.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error(`Tipo de archivo no permitido: ${file.mimetype}. Permitidos: jpg, png, webp, mp4, webm`));
+    }
+  },
+});
 
 function generateSecurePassword(length = 16): string {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%";
@@ -44,6 +80,38 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
   setupAuth(app);
+
+  const express = (await import("express")).default;
+  app.use("/uploads", express.static(uploadsDir));
+
+  app.post("/api/branch/upload", requireAuth, (req, res, next) => {
+    const user = req.user as any;
+    if (user.role !== "BRANCH_ADMIN" && user.role !== "SUPER_ADMIN") {
+      return res.status(403).json({ message: "Acceso denegado" });
+    }
+    if (!user.branchId) {
+      return res.status(400).json({ message: "No hay sucursal asignada" });
+    }
+    next();
+  }, (req, res) => {
+    upload.single("file")(req, res, (err) => {
+      if (err) {
+        if (err instanceof multer.MulterError) {
+          if (err.code === "LIMIT_FILE_SIZE") {
+            return res.status(400).json({ message: "El archivo excede el tamaño máximo de 10MB" });
+          }
+          return res.status(400).json({ message: `Error de archivo: ${err.message}` });
+        }
+        return res.status(400).json({ message: err.message || "Error al subir archivo" });
+      }
+      if (!req.file) {
+        return res.status(400).json({ message: "No se proporcionó ningún archivo" });
+      }
+      const url = `/uploads/${req.file.filename}`;
+      console.log(`[UPLOAD] File uploaded: ${url} by ${(req.user as any).email}`);
+      res.json({ url });
+    });
+  });
 
   app.post("/api/auth/login", (req, res, next) => {
     const result = loginSchema.safeParse(req.body);
@@ -1203,7 +1271,464 @@ export async function registerRoutes(
     }
   });
 
+  // --- Branch Content Management ---
+
+  // Photos
+  app.get("/api/branch/photos", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    try {
+      const photos = await storage.getBranchPhotos(user.branchId);
+      res.json(photos);
+    } catch (err: any) {
+      console.error(`[PHOTOS] Error listing:`, err.stack || err);
+      res.status(500).json({ message: "Error al obtener fotos" });
+    }
+  });
+
+  app.post("/api/branch/photos", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const { type, url } = req.body;
+      if (!type || !url) {
+        return res.status(400).json({ message: "Se requiere type y url" });
+      }
+      if (!["profile", "facility"].includes(type)) {
+        return res.status(400).json({ message: "Tipo inválido. Permitidos: profile, facility" });
+      }
+
+      const existing = await storage.getBranchPhotos(actor.branchId);
+      const profilePhotos = existing.filter(p => p.type === "profile");
+      const facilityPhotos = existing.filter(p => p.type === "facility");
+
+      if (type === "profile" && profilePhotos.length >= 1) {
+        return res.status(400).json({ message: "Solo se permite 1 foto de perfil. Elimina la actual primero." });
+      }
+      if (type === "facility" && facilityPhotos.length >= 5) {
+        return res.status(400).json({ message: "Máximo 5 fotos de instalaciones permitidas" });
+      }
+
+      const displayOrder = type === "profile" ? 0 : facilityPhotos.length;
+      const photo = await storage.addBranchPhoto({
+        branchId: actor.branchId,
+        type,
+        url,
+        displayOrder,
+      });
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "CREATE_PHOTO",
+        branchId: actor.branchId,
+        metadata: { photoId: photo.id, type },
+      });
+
+      console.log(`[PHOTOS] Added ${type} photo by ${actor.email}`);
+      res.status(201).json(photo);
+    } catch (err: any) {
+      console.error(`[PHOTOS] Error creating:`, err.stack || err);
+      res.status(500).json({ message: "Error al agregar foto" });
+    }
+  });
+
+  app.delete("/api/branch/photos/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const photoId = req.params.id as string;
+    try {
+      const photos = await storage.getBranchPhotos(actor.branchId);
+      const photo = photos.find(p => p.id === photoId);
+      if (!photo) {
+        return res.status(404).json({ message: "Foto no encontrada" });
+      }
+
+      await storage.deleteBranchPhoto(photoId);
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "DELETE_PHOTO",
+        branchId: actor.branchId,
+        metadata: { photoId, type: photo.type },
+      });
+
+      console.log(`[PHOTOS] Deleted photo ${photoId} by ${actor.email}`);
+      res.json({ message: "Foto eliminada" });
+    } catch (err: any) {
+      console.error(`[PHOTOS] Error deleting:`, err.stack || err);
+      res.status(500).json({ message: "Error al eliminar foto" });
+    }
+  });
+
+  app.post("/api/branch/photos/reorder", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const { ids } = req.body;
+      if (!Array.isArray(ids)) {
+        return res.status(400).json({ message: "Se requiere un array de ids" });
+      }
+      await storage.reorderBranchPhotos(actor.branchId, ids);
+      res.json({ message: "Orden actualizado" });
+    } catch (err: any) {
+      console.error(`[PHOTOS] Error reordering:`, err.stack || err);
+      res.status(500).json({ message: "Error al reordenar fotos" });
+    }
+  });
+
+  // Posts
+  app.get("/api/branch/posts", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    try {
+      const posts = await storage.getBranchPosts(user.branchId);
+      res.json(posts);
+    } catch (err: any) {
+      console.error(`[POSTS] Error listing:`, err.stack || err);
+      res.status(500).json({ message: "Error al obtener posts" });
+    }
+  });
+
+  app.post("/api/branch/posts", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const { title, content, mediaUrl, mediaType } = req.body;
+      if (!title || !content) {
+        return res.status(400).json({ message: "Se requiere título y contenido" });
+      }
+
+      const existing = await storage.getBranchPosts(actor.branchId);
+      if (existing.length >= 3) {
+        return res.status(400).json({ message: "Máximo 3 posts fijos permitidos" });
+      }
+
+      if (mediaType && !["image", "video"].includes(mediaType)) {
+        return res.status(400).json({ message: "Tipo de media inválido. Permitidos: image, video" });
+      }
+
+      const post = await storage.createBranchPost({
+        branchId: actor.branchId,
+        title,
+        content,
+        mediaUrl: mediaUrl || null,
+        mediaType: mediaType || null,
+        displayOrder: existing.length,
+      });
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "CREATE_POST",
+        branchId: actor.branchId,
+        metadata: { postId: post.id, title },
+      });
+
+      console.log(`[POSTS] Created "${title}" by ${actor.email}`);
+      res.status(201).json(post);
+    } catch (err: any) {
+      console.error(`[POSTS] Error creating:`, err.stack || err);
+      res.status(500).json({ message: "Error al crear post" });
+    }
+  });
+
+  app.patch("/api/branch/posts/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const postId = req.params.id as string;
+    try {
+      const posts = await storage.getBranchPosts(actor.branchId);
+      const post = posts.find(p => p.id === postId);
+      if (!post) {
+        return res.status(404).json({ message: "Post no encontrado" });
+      }
+
+      const { title, content, mediaUrl, mediaType } = req.body;
+      if (mediaType && !["image", "video"].includes(mediaType)) {
+        return res.status(400).json({ message: "Tipo de media inválido" });
+      }
+
+      const updated = await storage.updateBranchPost(postId, {
+        ...(title !== undefined && { title }),
+        ...(content !== undefined && { content }),
+        ...(mediaUrl !== undefined && { mediaUrl: mediaUrl || null }),
+        ...(mediaType !== undefined && { mediaType: mediaType || null }),
+      });
+
+      console.log(`[POSTS] Updated "${postId}" by ${actor.email}`);
+      res.json(updated);
+    } catch (err: any) {
+      console.error(`[POSTS] Error updating:`, err.stack || err);
+      res.status(500).json({ message: "Error al actualizar post" });
+    }
+  });
+
+  app.delete("/api/branch/posts/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const postId = req.params.id as string;
+    try {
+      const posts = await storage.getBranchPosts(actor.branchId);
+      const post = posts.find(p => p.id === postId);
+      if (!post) {
+        return res.status(404).json({ message: "Post no encontrado" });
+      }
+
+      await storage.deleteBranchPost(postId);
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "DELETE_POST",
+        branchId: actor.branchId,
+        metadata: { postId, title: post.title },
+      });
+
+      console.log(`[POSTS] Deleted "${post.title}" by ${actor.email}`);
+      res.json({ message: "Post eliminado" });
+    } catch (err: any) {
+      console.error(`[POSTS] Error deleting:`, err.stack || err);
+      res.status(500).json({ message: "Error al eliminar post" });
+    }
+  });
+
+  app.post("/api/branch/posts/reorder", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const { ids } = req.body;
+      if (!Array.isArray(ids)) {
+        return res.status(400).json({ message: "Se requiere un array de ids" });
+      }
+      await storage.reorderBranchPosts(actor.branchId, ids);
+      res.json({ message: "Orden actualizado" });
+    } catch (err: any) {
+      console.error(`[POSTS] Error reordering:`, err.stack || err);
+      res.status(500).json({ message: "Error al reordenar posts" });
+    }
+  });
+
+  // Products
+  app.get("/api/branch/products", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    try {
+      const products = await storage.getBranchProducts(user.branchId);
+      res.json(products);
+    } catch (err: any) {
+      console.error(`[PRODUCTS] Error listing:`, err.stack || err);
+      res.status(500).json({ message: "Error al obtener productos" });
+    }
+  });
+
+  app.post("/api/branch/products", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const { name, description, price, imageUrl } = req.body;
+      if (!name) {
+        return res.status(400).json({ message: "Se requiere nombre del producto" });
+      }
+      if (price === undefined || typeof price !== "number" || price < 0) {
+        return res.status(400).json({ message: "Se requiere un precio válido" });
+      }
+
+      const existing = await storage.getBranchProducts(actor.branchId);
+      const product = await storage.createBranchProduct({
+        branchId: actor.branchId,
+        name,
+        description: description || null,
+        price,
+        imageUrl: imageUrl || null,
+        displayOrder: existing.length,
+      });
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "CREATE_PRODUCT",
+        branchId: actor.branchId,
+        metadata: { productId: product.id, name },
+      });
+
+      console.log(`[PRODUCTS] Created "${name}" by ${actor.email}`);
+      res.status(201).json(product);
+    } catch (err: any) {
+      console.error(`[PRODUCTS] Error creating:`, err.stack || err);
+      res.status(500).json({ message: "Error al crear producto" });
+    }
+  });
+
+  app.patch("/api/branch/products/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const productId = req.params.id as string;
+    try {
+      const products = await storage.getBranchProducts(actor.branchId);
+      const product = products.find(p => p.id === productId);
+      if (!product) {
+        return res.status(404).json({ message: "Producto no encontrado" });
+      }
+
+      const { name, description, price, imageUrl, isActive } = req.body;
+      const updated = await storage.updateBranchProduct(productId, {
+        ...(name !== undefined && { name }),
+        ...(description !== undefined && { description: description || null }),
+        ...(price !== undefined && { price }),
+        ...(imageUrl !== undefined && { imageUrl: imageUrl || null }),
+        ...(isActive !== undefined && { isActive }),
+      });
+
+      console.log(`[PRODUCTS] Updated "${productId}" by ${actor.email}`);
+      res.json(updated);
+    } catch (err: any) {
+      console.error(`[PRODUCTS] Error updating:`, err.stack || err);
+      res.status(500).json({ message: "Error al actualizar producto" });
+    }
+  });
+
+  app.delete("/api/branch/products/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const productId = req.params.id as string;
+    try {
+      const products = await storage.getBranchProducts(actor.branchId);
+      const product = products.find(p => p.id === productId);
+      if (!product) {
+        return res.status(404).json({ message: "Producto no encontrado" });
+      }
+
+      await storage.deleteBranchProduct(productId);
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "DELETE_PRODUCT",
+        branchId: actor.branchId,
+        metadata: { productId, name: product.name },
+      });
+
+      console.log(`[PRODUCTS] Deleted "${product.name}" by ${actor.email}`);
+      res.json({ message: "Producto eliminado" });
+    } catch (err: any) {
+      console.error(`[PRODUCTS] Error deleting:`, err.stack || err);
+      res.status(500).json({ message: "Error al eliminar producto" });
+    }
+  });
+
+  app.post("/api/branch/products/reorder", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const { ids } = req.body;
+      if (!Array.isArray(ids)) {
+        return res.status(400).json({ message: "Se requiere un array de ids" });
+      }
+      await storage.reorderBranchProducts(actor.branchId, ids);
+      res.json({ message: "Orden actualizado" });
+    } catch (err: any) {
+      console.error(`[PRODUCTS] Error reordering:`, err.stack || err);
+      res.status(500).json({ message: "Error al reordenar productos" });
+    }
+  });
+
+  // Videos
+  app.get("/api/branch/videos", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    try {
+      const videos = await storage.getBranchVideos(user.branchId);
+      res.json(videos);
+    } catch (err: any) {
+      console.error(`[VIDEOS] Error listing:`, err.stack || err);
+      res.status(500).json({ message: "Error al obtener videos" });
+    }
+  });
+
+  app.post("/api/branch/videos", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const { title, url, thumbnailUrl } = req.body;
+      if (!url) {
+        return res.status(400).json({ message: "Se requiere la URL del video" });
+      }
+
+      const existing = await storage.getBranchVideos(actor.branchId);
+      const video = await storage.addBranchVideo({
+        branchId: actor.branchId,
+        title: title || null,
+        url,
+        thumbnailUrl: thumbnailUrl || null,
+        displayOrder: existing.length,
+      });
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "CREATE_VIDEO",
+        branchId: actor.branchId,
+        metadata: { videoId: video.id, title: title || "Sin título" },
+      });
+
+      console.log(`[VIDEOS] Added video by ${actor.email}`);
+      res.status(201).json(video);
+    } catch (err: any) {
+      console.error(`[VIDEOS] Error creating:`, err.stack || err);
+      res.status(500).json({ message: "Error al agregar video" });
+    }
+  });
+
+  app.delete("/api/branch/videos/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const videoId = req.params.id as string;
+    try {
+      const videos = await storage.getBranchVideos(actor.branchId);
+      const video = videos.find(v => v.id === videoId);
+      if (!video) {
+        return res.status(404).json({ message: "Video no encontrado" });
+      }
+
+      await storage.deleteBranchVideo(videoId);
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "DELETE_VIDEO",
+        branchId: actor.branchId,
+        metadata: { videoId, title: video.title },
+      });
+
+      console.log(`[VIDEOS] Deleted video ${videoId} by ${actor.email}`);
+      res.json({ message: "Video eliminado" });
+    } catch (err: any) {
+      console.error(`[VIDEOS] Error deleting:`, err.stack || err);
+      res.status(500).json({ message: "Error al eliminar video" });
+    }
+  });
+
+  app.post("/api/branch/videos/reorder", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const { ids } = req.body;
+      if (!Array.isArray(ids)) {
+        return res.status(400).json({ message: "Se requiere un array de ids" });
+      }
+      await storage.reorderBranchVideos(actor.branchId, ids);
+      res.json({ message: "Orden actualizado" });
+    } catch (err: any) {
+      console.error(`[VIDEOS] Error reordering:`, err.stack || err);
+      res.status(500).json({ message: "Error al reordenar videos" });
+    }
+  });
+
   // --- Public ---
+  app.get("/api/public/branch/:slug/content", async (req, res) => {
+    try {
+      const branch = await storage.getBranchBySlug(req.params.slug);
+      if (!branch || branch.deletedAt || branch.status !== "active") {
+        return res.status(404).json({ message: "Sucursal no encontrada" });
+      }
+
+      const [photos, posts, products, videos] = await Promise.all([
+        storage.getBranchPhotos(branch.id),
+        storage.getBranchPosts(branch.id),
+        storage.getBranchProducts(branch.id),
+        storage.getBranchVideos(branch.id),
+      ]);
+
+      const activeProducts = products.filter(p => p.isActive);
+
+      res.json({
+        photos,
+        posts,
+        products: activeProducts,
+        videos,
+      });
+    } catch (err: any) {
+      console.error(`[PUBLIC_CONTENT] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al obtener contenido" });
+    }
+  });
+
   app.get("/api/public/branch/:slug", async (req, res) => {
     const branch = await storage.getBranchBySlug(req.params.slug);
     if (!branch || branch.deletedAt) {

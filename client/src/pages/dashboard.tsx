@@ -34,6 +34,7 @@ import { useLocation } from "wouter";
 import ClientesTab from "@/components/clientes-tab";
 import MembresiasTab from "@/components/membresias-tab";
 import ReservasTab from "@/components/reservas-tab";
+import ContenidoTab from "@/components/contenido-tab";
 
 const DASHBOARD_TABS = [
   { value: "resumen", label: "Resumen", icon: LayoutDashboard },
@@ -383,12 +384,7 @@ export default function DashboardPage() {
           </TabsContent>
 
           <TabsContent value="contenido" className="mt-4">
-            <PlaceholderTab
-              tabId="contenido"
-              icon={FileText}
-              title="Contenido y Perfil Público"
-              description="Administra fotos, posts, productos y videos de tu sucursal para la página pública. Disponible próximamente."
-            />
+            <ContenidoTab />
           </TabsContent>
 
           <TabsContent value="tv" className="mt-4">
