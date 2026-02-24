@@ -558,6 +558,26 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/branch/alerts", requireAuth, async (req, res) => {
+    const user = req.user as any;
+    if (user.role !== "BRANCH_ADMIN" && user.role !== "SUPER_ADMIN") {
+      return res.status(403).json({ message: "Acceso denegado" });
+    }
+    if (!user.branchId) return res.status(400).json({ message: "No hay sucursal asignada" });
+    try {
+      const daysAhead = parseInt(req.query.daysAhead as string) || 7;
+      const daysSince = parseInt(req.query.daysSince as string) || 30;
+      const [expiringMemberships, inactiveClients] = await Promise.all([
+        storage.getExpiringMemberships(user.branchId, daysAhead),
+        storage.getInactiveClients(user.branchId, daysSince),
+      ]);
+      res.json({ expiringMemberships, inactiveClients });
+    } catch (err: any) {
+      console.error(`[BRANCH_ALERTS] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al obtener alertas" });
+    }
+  });
+
   // Branch admins (list)
   app.get("/api/superadmin/branches/:id/admins", requireRole("SUPER_ADMIN"), async (req, res) => {
     const admins = await storage.getBranchAdmins(req.params.id as string);
@@ -687,6 +707,39 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error(`[BRANCH_CLIENTS] Error:`, err.stack || err);
       res.status(500).json({ message: "Error al obtener clientes" });
+    }
+  });
+
+  app.get("/api/branch/clients/export", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    try {
+      const clients = await storage.getBranchClients(user.branchId);
+      const header = "name,email,phone,status,joinedAt,lastSeenAt,planName,classesRemaining";
+      const escCsv = (val: string | null | undefined) => {
+        if (val === null || val === undefined) return "";
+        const s = String(val);
+        if (s.includes(",") || s.includes('"') || s.includes("\n")) {
+          return `"${s.replace(/"/g, '""')}"`;
+        }
+        return s;
+      };
+      const rows = clients.map((c: any) => [
+        escCsv(c.name),
+        escCsv(c.email),
+        escCsv(c.phone),
+        escCsv(c.membershipStatus),
+        escCsv(c.joinedAt ? new Date(c.joinedAt).toISOString().split("T")[0] : null),
+        escCsv(c.lastSeenAt ? new Date(c.lastSeenAt).toISOString().split("T")[0] : null),
+        escCsv(c.planName),
+        c.classesRemaining !== null && c.classesRemaining !== undefined ? String(c.classesRemaining) : "",
+      ].join(","));
+      const csv = [header, ...rows].join("\n");
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", "attachment; filename=clientes.csv");
+      res.send(csv);
+    } catch (err: any) {
+      console.error(`[EXPORT_CSV] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al exportar clientes" });
     }
   });
 
@@ -1157,6 +1210,44 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error(`[CLASSES] Error deactivating:`, err.stack || err);
       res.status(500).json({ message: "Error al desactivar clase" });
+    }
+  });
+
+  // --- Copy Week Schedule ---
+  app.post("/api/branch/classes/copy-week", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const copySchema = z.object({
+        fromDay: z.number().int().min(0).max(6),
+        toDay: z.number().int().min(0).max(6),
+      });
+      const data = copySchema.parse(req.body);
+
+      if (data.fromDay === data.toDay) {
+        return res.status(400).json({ message: "El día origen y destino no pueden ser iguales" });
+      }
+
+      const created = await storage.copyClassSchedules(actor.branchId, data.fromDay, data.toDay);
+
+      if (created.length === 0) {
+        return res.json({ message: "No hay clases nuevas para copiar (ya existen o no hay clases en el día origen)", copied: 0 });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "COPY_WEEK_SCHEDULE",
+        branchId: actor.branchId,
+        metadata: { fromDay: data.fromDay, toDay: data.toDay, copiedCount: created.length },
+      });
+
+      console.log(`[CLASSES] Copied ${created.length} schedules from day ${data.fromDay} to ${data.toDay} by ${actor.email}`);
+      res.json({ message: `Se copiaron ${created.length} clases`, copied: created.length, classes: created });
+    } catch (err: any) {
+      if (err.name === "ZodError") {
+        return res.status(400).json({ message: err.errors[0]?.message || "Datos inválidos" });
+      }
+      console.error(`[CLASSES] Error copying week:`, err.stack || err);
+      res.status(500).json({ message: "Error al copiar horario" });
     }
   });
 
@@ -1751,7 +1842,101 @@ export async function registerRoutes(
     }
   });
 
+  // --- Announcements ---
+  app.get("/api/branch/announcements", requireAuth, async (req, res) => {
+    const actor = await getActingUser(req);
+    if (!actor?.branchId || (actor.role !== "BRANCH_ADMIN" && actor.role !== "SUPER_ADMIN")) {
+      return res.status(403).json({ message: "No autorizado" });
+    }
+    try {
+      const announcements = await storage.getBranchAnnouncements(actor.branchId);
+      res.json(announcements);
+    } catch (err: any) {
+      console.error(`[ANNOUNCEMENTS] Error fetching:`, err.stack || err);
+      res.status(500).json({ message: "Error al obtener anuncios" });
+    }
+  });
+
+  app.post("/api/branch/announcements", requireAuth, async (req, res) => {
+    const actor = await getActingUser(req);
+    if (!actor?.branchId || (actor.role !== "BRANCH_ADMIN" && actor.role !== "SUPER_ADMIN")) {
+      return res.status(403).json({ message: "No autorizado" });
+    }
+    try {
+      const { message } = req.body;
+      if (!message || typeof message !== "string" || message.trim().length === 0) {
+        return res.status(400).json({ message: "El mensaje es requerido" });
+      }
+      if (message.length > 500) {
+        return res.status(400).json({ message: "El mensaje no puede tener más de 500 caracteres" });
+      }
+
+      await storage.deactivateAllAnnouncements(actor.branchId);
+
+      const announcement = await storage.createAnnouncement({
+        branchId: actor.branchId,
+        message: message.trim(),
+        isActive: true,
+      });
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "CREATE_ANNOUNCEMENT",
+        branchId: actor.branchId,
+        metadata: { announcementId: announcement.id },
+      });
+
+      res.json(announcement);
+    } catch (err: any) {
+      console.error(`[ANNOUNCEMENTS] Error creating:`, err.stack || err);
+      res.status(500).json({ message: "Error al crear anuncio" });
+    }
+  });
+
+  app.delete("/api/branch/announcements/:id", requireAuth, async (req, res) => {
+    const actor = await getActingUser(req);
+    if (!actor?.branchId || (actor.role !== "BRANCH_ADMIN" && actor.role !== "SUPER_ADMIN")) {
+      return res.status(403).json({ message: "No autorizado" });
+    }
+    try {
+      const announcements = await storage.getBranchAnnouncements(actor.branchId);
+      const target = announcements.find(a => a.id === req.params.id);
+      if (!target) {
+        return res.status(404).json({ message: "Anuncio no encontrado" });
+      }
+
+      await storage.deleteAnnouncement(req.params.id);
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "DELETE_ANNOUNCEMENT",
+        branchId: actor.branchId,
+        metadata: { announcementId: req.params.id },
+      });
+
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error(`[ANNOUNCEMENTS] Error deleting:`, err.stack || err);
+      res.status(500).json({ message: "Error al eliminar anuncio" });
+    }
+  });
+
   // --- Public ---
+  app.get("/api/public/branch/:slug/announcements", async (req, res) => {
+    try {
+      const branch = await storage.getBranchBySlug(req.params.slug);
+      if (!branch || branch.deletedAt || branch.status !== "active") {
+        return res.status(404).json({ message: "Sucursal no encontrada" });
+      }
+      const all = await storage.getBranchAnnouncements(branch.id);
+      const active = all.filter(a => a.isActive);
+      res.json(active);
+    } catch (err: any) {
+      console.error(`[PUBLIC_ANNOUNCEMENTS] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al obtener anuncios" });
+    }
+  });
+
   app.get("/api/public/branch/:slug/content", async (req, res) => {
     try {
       const branch = await storage.getBranchBySlug(req.params.slug);

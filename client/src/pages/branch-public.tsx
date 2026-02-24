@@ -14,6 +14,7 @@ import {
   ChevronRight,
   Play,
   ShoppingBag,
+  Megaphone,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -202,6 +203,11 @@ export default function BranchPublicPage() {
     enabled: !!slug,
   });
 
+  const { data: announcements } = useQuery<any[]>({
+    queryKey: [`/api/public/branch/${slug}/announcements`],
+    enabled: !!slug,
+  });
+
   const { data: myMemberships } = useQuery<MembershipInfo[]>({
     queryKey: ["/api/memberships"],
     queryFn: getQueryFn({ on401: "returnNull" }),
@@ -354,6 +360,18 @@ export default function BranchPublicPage() {
       </div>
 
       <div className="max-w-lg mx-auto p-4 space-y-4 -mt-4 relative z-20">
+        {announcements && announcements.length > 0 && (
+          <div
+            className="flex items-center gap-2 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800"
+            data-testid="banner-announcement"
+          >
+            <Megaphone className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
+            <p className="text-sm font-medium text-amber-800 dark:text-amber-200" data-testid="text-announcement-banner">
+              {announcements[0].message}
+            </p>
+          </div>
+        )}
+
         {user && !isMember && (
           <Card>
             <CardContent className="p-4 flex items-center justify-between gap-3 flex-wrap">

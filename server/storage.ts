@@ -39,6 +39,9 @@ import {
   type InsertBranchProduct,
   type BranchVideo,
   type InsertBranchVideo,
+  branchAnnouncements,
+  type BranchAnnouncement,
+  type InsertBranchAnnouncement,
 } from "@shared/schema";
 
 export interface BranchMetrics {
@@ -128,6 +131,13 @@ export interface IStorage {
   addBranchVideo(data: InsertBranchVideo): Promise<BranchVideo>;
   deleteBranchVideo(id: string): Promise<void>;
   reorderBranchVideos(branchId: string, ids: string[]): Promise<void>;
+  copyClassSchedules(branchId: string, fromDay: number, toDay: number): Promise<ClassSchedule[]>;
+  getExpiringMemberships(branchId: string, daysAhead: number): Promise<any[]>;
+  getInactiveClients(branchId: string, daysSince: number): Promise<any[]>;
+  getBranchAnnouncements(branchId: string): Promise<BranchAnnouncement[]>;
+  createAnnouncement(data: InsertBranchAnnouncement): Promise<BranchAnnouncement>;
+  deleteAnnouncement(id: string): Promise<void>;
+  deactivateAllAnnouncements(branchId: string): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -946,6 +956,151 @@ export class DatabaseStorage implements IStorage {
         .set({ displayOrder: i })
         .where(and(eq(branchVideos.id, ids[i]), eq(branchVideos.branchId, branchId)));
     }
+  }
+  async copyClassSchedules(branchId: string, fromDay: number, toDay: number): Promise<ClassSchedule[]> {
+    const sourceSchedules = await db
+      .select()
+      .from(classSchedules)
+      .where(and(
+        eq(classSchedules.branchId, branchId),
+        eq(classSchedules.dayOfWeek, fromDay),
+        eq(classSchedules.isActive, true)
+      ))
+      .orderBy(asc(classSchedules.startTime));
+
+    if (sourceSchedules.length === 0) return [];
+
+    const existingOnTarget = await db
+      .select()
+      .from(classSchedules)
+      .where(and(
+        eq(classSchedules.branchId, branchId),
+        eq(classSchedules.dayOfWeek, toDay),
+        eq(classSchedules.isActive, true)
+      ));
+
+    const existingSet = new Set(
+      existingOnTarget.map(s => `${s.name}|${s.startTime}`)
+    );
+
+    const toCopy = sourceSchedules.filter(
+      s => !existingSet.has(`${s.name}|${s.startTime}`)
+    );
+
+    if (toCopy.length === 0) return [];
+
+    const created: ClassSchedule[] = [];
+    for (const s of toCopy) {
+      const [newSchedule] = await db.insert(classSchedules).values({
+        branchId,
+        name: s.name,
+        description: s.description,
+        dayOfWeek: toDay,
+        startTime: s.startTime,
+        endTime: s.endTime,
+        capacity: s.capacity,
+        instructorName: s.instructorName,
+        isActive: true,
+      }).returning();
+      created.push(newSchedule);
+    }
+
+    return created;
+  }
+
+  async getExpiringMemberships(branchId: string, daysAhead: number): Promise<any[]> {
+    const now = new Date();
+    const futureDate = new Date();
+    futureDate.setDate(futureDate.getDate() + daysAhead);
+
+    const results = await db
+      .select({
+        userId: users.id,
+        name: users.name,
+        email: users.email,
+        phone: users.phone,
+        membershipId: memberships.id,
+        planName: membershipPlans.name,
+        expiresAt: memberships.expiresAt,
+        classesRemaining: memberships.classesRemaining,
+      })
+      .from(memberships)
+      .innerJoin(users, eq(memberships.userId, users.id))
+      .leftJoin(membershipPlans, eq(memberships.planId, membershipPlans.id))
+      .where(and(
+        eq(memberships.branchId, branchId),
+        eq(memberships.status, "active"),
+        sql`${memberships.expiresAt} IS NOT NULL`,
+        sql`${memberships.expiresAt} >= ${now.toISOString()}`,
+        sql`${memberships.expiresAt} <= ${futureDate.toISOString()}`
+      ))
+      .orderBy(asc(memberships.expiresAt));
+
+    return results;
+  }
+
+  async getInactiveClients(branchId: string, daysSince: number): Promise<any[]> {
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - daysSince);
+
+    const results = await db
+      .select({
+        userId: users.id,
+        name: users.name,
+        email: users.email,
+        phone: users.phone,
+        membershipId: memberships.id,
+        joinedAt: memberships.joinedAt,
+        lastSeenAt: memberships.lastSeenAt,
+        planName: membershipPlans.name,
+        lastAttendance: sql<string>`(
+          SELECT MAX(${attendances.checkedInAt})
+          FROM ${attendances}
+          WHERE ${attendances.userId} = ${users.id}
+            AND ${attendances.branchId} = ${memberships.branchId}
+        )`.as("last_attendance"),
+      })
+      .from(memberships)
+      .innerJoin(users, eq(memberships.userId, users.id))
+      .leftJoin(membershipPlans, eq(memberships.planId, membershipPlans.id))
+      .where(and(
+        eq(memberships.branchId, branchId),
+        eq(memberships.status, "active"),
+        sql`COALESCE(
+          (SELECT MAX(${attendances.checkedInAt}) FROM ${attendances} WHERE ${attendances.userId} = ${users.id} AND ${attendances.branchId} = ${memberships.branchId}),
+          ${memberships.joinedAt}
+        ) < ${cutoffDate.toISOString()}`
+      ))
+      .orderBy(asc(sql`COALESCE(
+        (SELECT MAX(${attendances.checkedInAt}) FROM ${attendances} WHERE ${attendances.userId} = ${users.id} AND ${attendances.branchId} = ${memberships.branchId}),
+        ${memberships.joinedAt}
+      )`));
+
+    return results;
+  }
+
+  async getBranchAnnouncements(branchId: string): Promise<BranchAnnouncement[]> {
+    return await db
+      .select()
+      .from(branchAnnouncements)
+      .where(eq(branchAnnouncements.branchId, branchId))
+      .orderBy(desc(branchAnnouncements.createdAt));
+  }
+
+  async createAnnouncement(data: InsertBranchAnnouncement): Promise<BranchAnnouncement> {
+    const [announcement] = await db.insert(branchAnnouncements).values(data).returning();
+    return announcement;
+  }
+
+  async deleteAnnouncement(id: string): Promise<void> {
+    await db.delete(branchAnnouncements).where(eq(branchAnnouncements.id, id));
+  }
+
+  async deactivateAllAnnouncements(branchId: string): Promise<void> {
+    await db
+      .update(branchAnnouncements)
+      .set({ isActive: false })
+      .where(and(eq(branchAnnouncements.branchId, branchId), eq(branchAnnouncements.isActive, true)));
   }
 }
 

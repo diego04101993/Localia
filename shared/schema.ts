@@ -411,6 +411,26 @@ export type InsertBranchProduct = z.infer<typeof insertBranchProductSchema>;
 export type BranchVideo = typeof branchVideos.$inferSelect;
 export type InsertBranchVideo = z.infer<typeof insertBranchVideoSchema>;
 
+export const branchAnnouncements = pgTable("branch_announcements", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  message: text("message").notNull(),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const insertBranchAnnouncementSchema = createInsertSchema(branchAnnouncements).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type BranchAnnouncement = typeof branchAnnouncements.$inferSelect;
+export type InsertBranchAnnouncement = z.infer<typeof insertBranchAnnouncementSchema>;
+
 export const BRANCH_CATEGORIES = [
   { value: "box", label: "Box / CrossFit" },
   { value: "gym", label: "Gimnasio" },

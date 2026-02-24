@@ -14,6 +14,7 @@ import {
   CheckCircle2,
   XCircle,
   User,
+  Copy,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -533,9 +534,99 @@ function ClassDayDetail({
   );
 }
 
+function CopyWeekDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+}) {
+  const { toast } = useToast();
+  const [fromDay, setFromDay] = useState("1");
+  const [toDay, setToDay] = useState("2");
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const resp = await apiRequest("POST", "/api/branch/classes/copy-week", {
+        fromDay: parseInt(fromDay),
+        toDay: parseInt(toDay),
+      });
+      return resp.json();
+    },
+    onSuccess: (data: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/classes"] });
+      toast({
+        title: data.copied > 0 ? "Horario copiado" : "Sin cambios",
+        description: data.message,
+      });
+      onOpenChange(false);
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message || "Error al copiar horario", variant: "destructive" });
+    },
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Copiar horario</DialogTitle>
+          <DialogDescription>
+            Copia todas las clases activas de un día a otro. No se duplicarán clases con el mismo nombre y horario.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-2">
+              <Label>Desde (día origen)</Label>
+              <Select value={fromDay} onValueChange={setFromDay}>
+                <SelectTrigger data-testid="select-copy-from-day">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {DAY_NAMES.map((name, i) => (
+                    <SelectItem key={i} value={i.toString()}>{name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Hacia (día destino)</Label>
+              <Select value={toDay} onValueChange={setToDay}>
+                <SelectTrigger data-testid="select-copy-to-day">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {DAY_NAMES.map((name, i) => (
+                    <SelectItem key={i} value={i.toString()}>{name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} data-testid="button-cancel-copy">
+              Cancelar
+            </Button>
+            <Button
+              onClick={() => mutation.mutate()}
+              disabled={mutation.isPending || fromDay === toDay}
+              data-testid="button-submit-copy"
+            >
+              {mutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Copy className="h-4 w-4 mr-2" />}
+              Copiar
+            </Button>
+          </DialogFooter>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export default function ReservasTab() {
   const { toast } = useToast();
   const [showCreateDialog, setShowCreateDialog] = useState(false);
+  const [showCopyDialog, setShowCopyDialog] = useState(false);
   const [editingClass, setEditingClass] = useState<ClassSchedule | null>(null);
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [viewMode, setViewMode] = useState<"calendar" | "classes">("calendar");
@@ -620,6 +711,10 @@ export default function ReservasTab() {
           >
             <Clock className="h-4 w-4 mr-1" />
             Clases
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => setShowCopyDialog(true)} data-testid="button-copy-week">
+            <Copy className="h-4 w-4 mr-1" />
+            Copiar horario
           </Button>
           <Button size="sm" onClick={() => setShowCreateDialog(true)} data-testid="button-create-class">
             <Plus className="h-4 w-4 mr-1" />
@@ -856,6 +951,9 @@ export default function ReservasTab() {
       )}
       {editingClass && (
         <ClassFormDialog open={!!editingClass} onOpenChange={() => setEditingClass(null)} editClass={editingClass} />
+      )}
+      {showCopyDialog && (
+        <CopyWeekDialog open={showCopyDialog} onOpenChange={setShowCopyDialog} />
       )}
     </div>
   );

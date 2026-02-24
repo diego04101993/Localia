@@ -60,6 +60,13 @@ Multi-tenant gym management platform with role-based access (SUPER_ADMIN, BRANCH
 - `GET /api/superadmin/audit` - Audit logs (SUPER_ADMIN)
 - `GET /api/branch/tv-data?date=` - TV mode data: today's classes with bookings + routines (BRANCH_ADMIN)
 - `PATCH /api/branch/classes/:id/routine` - Update class routine {routineDescription, routineImageUrl} (BRANCH_ADMIN)
+- `GET /api/branch/clients/export` - Export clients to CSV (BRANCH_ADMIN)
+- `GET /api/branch/alerts` - Expiring memberships + inactive clients alerts (BRANCH_ADMIN)
+- `GET /api/branch/announcements` - List branch announcements (BRANCH_ADMIN)
+- `POST /api/branch/announcements` - Create announcement {message} (BRANCH_ADMIN)
+- `DELETE /api/branch/announcements/:id` - Delete announcement (BRANCH_ADMIN)
+- `GET /api/public/branch/:slug/announcements` - Active announcements (public)
+- `POST /api/branch/classes/copy-week` - Copy schedules between days {fromDay, toDay} (BRANCH_ADMIN)
 - `POST /api/branch/upload` - Upload file (image/video), returns {url} (BRANCH_ADMIN)
 - `GET /api/branch/photos` - List branch photos (BRANCH_ADMIN)
 - `POST /api/branch/photos` - Add photo {type, url} (BRANCH_ADMIN)
@@ -100,6 +107,7 @@ Multi-tenant gym management platform with role-based access (SUPER_ADMIN, BRANCH
 - **branch_posts**: id, branchId, title, content, mediaUrl, mediaType (image/video), displayOrder, createdAt
 - **branch_products**: id, branchId, name, description, price (integer cents), imageUrl, displayOrder, isActive, createdAt
 - **branch_videos**: id, branchId, title, url, thumbnailUrl, displayOrder, createdAt
+- **branch_announcements**: id, branchId, message, isActive, createdAt
 
 ## Branch Status Rules
 - **Activa (active)**: Todo funciona normalmente
@@ -117,7 +125,7 @@ Multi-tenant gym management platform with role-based access (SUPER_ADMIN, BRANCH
 - Resend welcome package: regenerate modal with URLs + admin email (no password change)
 - Search and filter branches, show/hide deleted
 
-## Branch Admin Dashboard (Fases 1-6 completadas)
+## Branch Admin Dashboard (Fases 1-7 completadas)
 - Tab navigation with 6 sections: Resumen, Clientes, Membresías, Reservas, Contenido, TV Mode
 - Resumen tab: real counts (active clients, active memberships, today's reservations, next booking), branch status with description, public URL link
 - Clientes tab (Fase 2): client list with search/filter, create client dialog with credentials, invite link dialog, client profile modal with notes, attendance registration, membership info
@@ -125,6 +133,7 @@ Multi-tenant gym management platform with role-based access (SUPER_ADMIN, BRANCH
 - Reservas tab (Fase 4): weekly calendar view with class schedule, day detail with bookings, class CRUD (create/edit/deactivate/reactivate), book clients into classes, booking status management (confirmed/attended/cancelled), capacity tracking
 - Contenido tab (Fase 5): manage public profile content — profile photo (1), facility photos (max 5), fixed posts (max 3, text + image/video), products catalog (unlimited), training videos. File upload via multer. Reorder with ↑↓ buttons. All content shown on public page /app/:slug.
 - TV Mode tab (Fase 6): full-screen TV/monitor view for reception — today's classes by hour, student list with attendance status (attended/pending/cancelled), routine per class (text + optional image), date navigation, auto-refresh every 30s, fullscreen browser API button
+- Fase 7 Extras: announcements (create/delete, max 1 active, banner on public page), export clients CSV, alerts (expiring memberships + inactive 30d clients in Resumen), copy weekly schedules between days
 - StatusBadge component reused in header and summary with unique testIds
 - Preserves: suspended banner, impersonation banner, theme toggle, logout
 - Component file: client/src/components/clientes-tab.tsx

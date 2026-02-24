@@ -17,6 +17,7 @@ import {
   Package,
   Hash,
   XCircle,
+  Download,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -599,7 +600,21 @@ export default function ClientesTab() {
             data-testid="input-search-clients"
           />
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              const link = document.createElement("a");
+              link.href = "/api/branch/clients/export";
+              link.download = "clientes.csv";
+              link.click();
+            }}
+            data-testid="button-export-csv"
+          >
+            <Download className="h-4 w-4 mr-1" />
+            Exportar CSV
+          </Button>
           <Button variant="outline" size="sm" onClick={() => setShowInviteDialog(true)} data-testid="button-invite-client">
             <Link2 className="h-4 w-4 mr-1" />
             Invitar
