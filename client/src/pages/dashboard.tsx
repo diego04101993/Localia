@@ -35,6 +35,7 @@ import ClientesTab from "@/components/clientes-tab";
 import MembresiasTab from "@/components/membresias-tab";
 import ReservasTab from "@/components/reservas-tab";
 import ContenidoTab from "@/components/contenido-tab";
+import TvModeTab from "@/components/tv-mode-tab";
 
 const DASHBOARD_TABS = [
   { value: "resumen", label: "Resumen", icon: LayoutDashboard },
@@ -223,19 +224,6 @@ function ResumenTab({ branchStats, branchStatus, branchSlug, isLoading, reservat
   );
 }
 
-function PlaceholderTab({ icon: Icon, title, description, tabId }: { icon: any; title: string; description: string; tabId: string }) {
-  return (
-    <Card>
-      <CardContent className="p-4">
-        <div className="text-center py-12" data-testid={`placeholder-${tabId}`}>
-          <Icon className="h-12 w-12 text-muted-foreground/30 mx-auto mb-4" />
-          <h3 className="font-semibold text-lg mb-1" data-testid={`text-placeholder-title-${tabId}`}>{title}</h3>
-          <p className="text-sm text-muted-foreground max-w-md mx-auto" data-testid={`text-placeholder-desc-${tabId}`}>{description}</p>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
 
 export default function DashboardPage() {
   const { user, logout, refetch } = useAuth();
@@ -388,12 +376,7 @@ export default function DashboardPage() {
           </TabsContent>
 
           <TabsContent value="tv" className="mt-4">
-            <PlaceholderTab
-              tabId="tv"
-              icon={Monitor}
-              title="TV Mode (Recepción)"
-              description="Pantalla para monitor de recepción con lista de alumnos del día y rutinas por horario. Disponible próximamente."
-            />
+            <TvModeTab />
           </TabsContent>
         </Tabs>
       </main>

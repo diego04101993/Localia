@@ -108,6 +108,8 @@ export interface IStorage {
   getBooking(id: string): Promise<ClassBooking | undefined>;
   getTodayBookingsCount(branchId: string): Promise<number>;
   getNextBooking(branchId: string): Promise<{ className: string; startTime: string; bookingDate: string } | null>;
+  getTvModeData(branchId: string, date: string): Promise<any[]>;
+  updateClassRoutine(classId: string, routineDescription: string | null, routineImageUrl: string | null): Promise<ClassSchedule | undefined>;
   getBranchPhotos(branchId: string): Promise<BranchPhoto[]>;
   addBranchPhoto(data: InsertBranchPhoto): Promise<BranchPhoto>;
   deleteBranchPhoto(id: string): Promise<void>;
@@ -763,6 +765,65 @@ export class DatabaseStorage implements IStorage {
       .orderBy(asc(classBookings.bookingDate), asc(classSchedules.startTime))
       .limit(1);
     return results[0] || null;
+  }
+
+  async getTvModeData(branchId: string, date: string): Promise<any[]> {
+    const dayOfWeek = new Date(date + "T12:00:00Z").getUTCDay();
+    const schedules = await db
+      .select()
+      .from(classSchedules)
+      .where(and(
+        eq(classSchedules.branchId, branchId),
+        eq(classSchedules.dayOfWeek, dayOfWeek),
+        eq(classSchedules.isActive, true)
+      ))
+      .orderBy(asc(classSchedules.startTime));
+
+    const result = [];
+    for (const schedule of schedules) {
+      const bookings = await db
+        .select({
+          id: classBookings.id,
+          userId: classBookings.userId,
+          status: classBookings.status,
+          userName: users.name,
+          userEmail: users.email,
+        })
+        .from(classBookings)
+        .innerJoin(users, eq(classBookings.userId, users.id))
+        .where(and(
+          eq(classBookings.classScheduleId, schedule.id),
+          eq(classBookings.bookingDate, date)
+        ))
+        .orderBy(asc(users.name));
+
+      const attended = bookings.filter(b => b.status === "attended").length;
+      const confirmed = bookings.filter(b => b.status === "confirmed").length;
+      const cancelled = bookings.filter(b => b.status === "cancelled").length;
+
+      result.push({
+        id: schedule.id,
+        name: schedule.name,
+        startTime: schedule.startTime,
+        endTime: schedule.endTime,
+        capacity: schedule.capacity,
+        instructorName: schedule.instructorName,
+        routineDescription: schedule.routineDescription,
+        routineImageUrl: schedule.routineImageUrl,
+        bookings,
+        summary: { total: bookings.length, attended, confirmed, cancelled },
+      });
+    }
+    return result;
+  }
+
+  async updateClassRoutine(classId: string, routineDescription: string | null, routineImageUrl: string | null): Promise<ClassSchedule | undefined> {
+    const [updated] = await db
+      .update(classSchedules)
+      .set({ routineDescription, routineImageUrl })
+      .where(eq(classSchedules.id, classId))
+      .returning();
+    return updated;
   }
 
   async getBranchPhotos(branchId: string): Promise<BranchPhoto[]> {

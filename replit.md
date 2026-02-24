@@ -58,6 +58,8 @@ Multi-tenant gym management platform with role-based access (SUPER_ADMIN, BRANCH
 - `POST /api/superadmin/impersonate` - Start impersonation {branchId} (SUPER_ADMIN)
 - `POST /api/superadmin/impersonate/end` - End impersonation (authenticated)
 - `GET /api/superadmin/audit` - Audit logs (SUPER_ADMIN)
+- `GET /api/branch/tv-data?date=` - TV mode data: today's classes with bookings + routines (BRANCH_ADMIN)
+- `PATCH /api/branch/classes/:id/routine` - Update class routine {routineDescription, routineImageUrl} (BRANCH_ADMIN)
 - `POST /api/branch/upload` - Upload file (image/video), returns {url} (BRANCH_ADMIN)
 - `GET /api/branch/photos` - List branch photos (BRANCH_ADMIN)
 - `POST /api/branch/photos` - Add photo {type, url} (BRANCH_ADMIN)
@@ -115,14 +117,14 @@ Multi-tenant gym management platform with role-based access (SUPER_ADMIN, BRANCH
 - Resend welcome package: regenerate modal with URLs + admin email (no password change)
 - Search and filter branches, show/hide deleted
 
-## Branch Admin Dashboard (Fases 1-5 completadas)
+## Branch Admin Dashboard (Fases 1-6 completadas)
 - Tab navigation with 6 sections: Resumen, Clientes, Membresías, Reservas, Contenido, TV Mode
 - Resumen tab: real counts (active clients, active memberships, today's reservations, next booking), branch status with description, public URL link
 - Clientes tab (Fase 2): client list with search/filter, create client dialog with credentials, invite link dialog, client profile modal with notes, attendance registration, membership info
 - Membresías tab (Fase 3): plan CRUD (create/edit/deactivate/reactivate), plan cards with price/duration/classLimit, assign plan to clients from profile dialog, auto-decrement classes on attendance, remove plan
 - Reservas tab (Fase 4): weekly calendar view with class schedule, day detail with bookings, class CRUD (create/edit/deactivate/reactivate), book clients into classes, booking status management (confirmed/attended/cancelled), capacity tracking
 - Contenido tab (Fase 5): manage public profile content — profile photo (1), facility photos (max 5), fixed posts (max 3, text + image/video), products catalog (unlimited), training videos. File upload via multer. Reorder with ↑↓ buttons. All content shown on public page /app/:slug.
-- TV Mode tab shows placeholder "coming soon" UI (to be implemented in Fase 6)
+- TV Mode tab (Fase 6): full-screen TV/monitor view for reception — today's classes by hour, student list with attendance status (attended/pending/cancelled), routine per class (text + optional image), date navigation, auto-refresh every 30s, fullscreen browser API button
 - StatusBadge component reused in header and summary with unique testIds
 - Preserves: suspended banner, impersonation banner, theme toggle, logout
 - Component file: client/src/components/clientes-tab.tsx

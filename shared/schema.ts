@@ -233,6 +233,8 @@ export const classSchedules = pgTable("class_schedules", {
   capacity: integer("capacity").notNull().default(10),
   instructorName: text("instructor_name"),
   isActive: boolean("is_active").notNull().default(true),
+  routineDescription: text("routine_description"),
+  routineImageUrl: text("routine_image_url"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 

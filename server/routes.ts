@@ -1700,6 +1700,57 @@ export async function registerRoutes(
     }
   });
 
+  // --- TV Mode ---
+  app.get("/api/branch/tv-data", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    try {
+      const date = (req.query.date as string) || new Date().toISOString().split("T")[0];
+      const data = await storage.getTvModeData(user.branchId, date);
+      res.json(data);
+    } catch (err: any) {
+      console.error(`[TV_MODE] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al obtener datos de TV Mode" });
+    }
+  });
+
+  app.patch("/api/branch/classes/:id/routine", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const classId = req.params.id;
+    try {
+      const schedule = await storage.getClassSchedule(classId);
+      if (!schedule || schedule.branchId !== actor.branchId) {
+        return res.status(404).json({ message: "Clase no encontrada" });
+      }
+
+      const { routineDescription, routineImageUrl } = req.body;
+      if (routineDescription !== undefined && routineDescription !== null && typeof routineDescription !== "string") {
+        return res.status(400).json({ message: "routineDescription debe ser texto o null" });
+      }
+      if (routineImageUrl !== undefined && routineImageUrl !== null && typeof routineImageUrl !== "string") {
+        return res.status(400).json({ message: "routineImageUrl debe ser texto o null" });
+      }
+
+      const updated = await storage.updateClassRoutine(
+        classId,
+        typeof routineDescription === "string" ? routineDescription : null,
+        typeof routineImageUrl === "string" ? routineImageUrl : null
+      );
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "UPDATE_CLASS_ROUTINE",
+        branchId: actor.branchId,
+        metadata: { classId, className: schedule.name },
+      });
+
+      console.log(`[TV_MODE] Updated routine for class ${schedule.name} by ${actor.email}`);
+      res.json(updated);
+    } catch (err: any) {
+      console.error(`[TV_MODE] Error updating routine:`, err.stack || err);
+      res.status(500).json({ message: "Error al actualizar rutina" });
+    }
+  });
+
   // --- Public ---
   app.get("/api/public/branch/:slug/content", async (req, res) => {
     try {
