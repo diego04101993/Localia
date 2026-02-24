@@ -14,6 +14,8 @@ import {
   createClientSchema,
   createPlanSchema,
   assignPlanSchema,
+  createClassScheduleSchema,
+  createBookingSchema,
 } from "@shared/schema";
 import { z } from "zod";
 
@@ -967,6 +969,237 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error(`[PLAN] Error removing:`, err.stack || err);
       res.status(500).json({ message: "Error al quitar plan" });
+    }
+  });
+
+  // --- Branch Stats (updated with reservations) ---
+  app.get("/api/branch/reservations/stats", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const todayCount = await storage.getTodayBookingsCount(actor.branchId);
+      const nextBooking = await storage.getNextBooking(actor.branchId);
+      res.json({ todayCount, nextBooking });
+    } catch (err: any) {
+      console.error(`[RESERVATIONS] Error getting stats:`, err.stack || err);
+      res.status(500).json({ message: "Error al obtener estadísticas" });
+    }
+  });
+
+  // --- Class Schedules ---
+  app.get("/api/branch/classes", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const schedules = await storage.getBranchClassSchedules(actor.branchId);
+      res.json(schedules);
+    } catch (err: any) {
+      console.error(`[CLASSES] Error listing:`, err.stack || err);
+      res.status(500).json({ message: "Error al listar clases" });
+    }
+  });
+
+  app.post("/api/branch/classes", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const data = createClassScheduleSchema.parse(req.body);
+      const schedule = await storage.createClassSchedule({
+        ...data,
+        branchId: actor.branchId,
+        description: data.description || null,
+        instructorName: data.instructorName || null,
+      });
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "CREATE_CLASS",
+        branchId: actor.branchId,
+        metadata: { classId: schedule.id, name: schedule.name },
+      });
+
+      console.log(`[CLASSES] Created "${schedule.name}" by ${actor.email}`);
+      res.status(201).json(schedule);
+    } catch (err: any) {
+      if (err.name === "ZodError") {
+        return res.status(400).json({ message: err.errors[0]?.message || "Datos inválidos" });
+      }
+      console.error(`[CLASSES] Error creating:`, err.stack || err);
+      res.status(500).json({ message: "Error al crear clase" });
+    }
+  });
+
+  app.patch("/api/branch/classes/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const classId = req.params.id as string;
+    try {
+      const existing = await storage.getClassSchedule(classId);
+      if (!existing || existing.branchId !== actor.branchId) {
+        return res.status(404).json({ message: "Clase no encontrada" });
+      }
+
+      const updateSchema = createClassScheduleSchema.partial().extend({ isActive: z.boolean().optional() });
+      const data = updateSchema.parse(req.body);
+      const updated = await storage.updateClassSchedule(classId, {
+        ...(data.name !== undefined && { name: data.name }),
+        ...(data.description !== undefined && { description: data.description || null }),
+        ...(data.dayOfWeek !== undefined && { dayOfWeek: data.dayOfWeek }),
+        ...(data.startTime !== undefined && { startTime: data.startTime }),
+        ...(data.endTime !== undefined && { endTime: data.endTime }),
+        ...(data.capacity !== undefined && { capacity: data.capacity }),
+        ...(data.instructorName !== undefined && { instructorName: data.instructorName || null }),
+        ...(data.isActive !== undefined && { isActive: data.isActive }),
+      });
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "UPDATE_CLASS",
+        branchId: actor.branchId,
+        metadata: { classId, changes: data },
+      });
+
+      console.log(`[CLASSES] Updated "${updated?.name}" by ${actor.email}`);
+      res.json(updated);
+    } catch (err: any) {
+      if (err.name === "ZodError") {
+        return res.status(400).json({ message: err.errors[0]?.message || "Datos inválidos" });
+      }
+      console.error(`[CLASSES] Error updating:`, err.stack || err);
+      res.status(500).json({ message: "Error al actualizar clase" });
+    }
+  });
+
+  app.delete("/api/branch/classes/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const classId = req.params.id as string;
+    try {
+      const existing = await storage.getClassSchedule(classId);
+      if (!existing || existing.branchId !== actor.branchId) {
+        return res.status(404).json({ message: "Clase no encontrada" });
+      }
+
+      const updated = await storage.updateClassSchedule(classId, { isActive: false });
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "DEACTIVATE_CLASS",
+        branchId: actor.branchId,
+        metadata: { classId, name: existing.name },
+      });
+
+      console.log(`[CLASSES] Deactivated "${existing.name}" by ${actor.email}`);
+      res.json(updated);
+    } catch (err: any) {
+      console.error(`[CLASSES] Error deactivating:`, err.stack || err);
+      res.status(500).json({ message: "Error al desactivar clase" });
+    }
+  });
+
+  // --- Bookings ---
+  app.get("/api/branch/bookings", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const date = (req.query.date as string) || new Date().toISOString().split("T")[0];
+    try {
+      const bookings = await storage.getBookingsForDate(actor.branchId, date);
+      res.json(bookings);
+    } catch (err: any) {
+      console.error(`[BOOKINGS] Error listing:`, err.stack || err);
+      res.status(500).json({ message: "Error al listar reservas" });
+    }
+  });
+
+  app.get("/api/branch/bookings/class/:classId", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const classScheduleId = req.params.classId as string;
+    const date = (req.query.date as string) || new Date().toISOString().split("T")[0];
+    try {
+      const schedule = await storage.getClassSchedule(classScheduleId);
+      if (!schedule || schedule.branchId !== actor.branchId) {
+        return res.status(404).json({ message: "Clase no encontrada" });
+      }
+      const bookings = await storage.getBookingsForClassOnDate(classScheduleId, date);
+      res.json({ schedule, bookings, capacity: schedule.capacity, booked: bookings.filter(b => b.status !== "cancelled").length });
+    } catch (err: any) {
+      console.error(`[BOOKINGS] Error listing class bookings:`, err.stack || err);
+      res.status(500).json({ message: "Error al listar reservas de clase" });
+    }
+  });
+
+  app.post("/api/branch/bookings", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const data = createBookingSchema.parse(req.body);
+      const schedule = await storage.getClassSchedule(data.classScheduleId);
+      if (!schedule || schedule.branchId !== actor.branchId) {
+        return res.status(404).json({ message: "Clase no encontrada" });
+      }
+
+      const userMembership = await storage.getMembership(data.userId, actor.branchId);
+      if (!userMembership || userMembership.status !== "active") {
+        return res.status(400).json({ message: "El cliente no pertenece a esta sucursal o no tiene membresía activa" });
+      }
+
+      const existingBookings = await storage.getBookingsForClassOnDate(data.classScheduleId, data.bookingDate);
+      const activeBookings = existingBookings.filter(b => b.status !== "cancelled");
+      if (activeBookings.length >= schedule.capacity) {
+        return res.status(400).json({ message: "Clase llena, no hay lugares disponibles" });
+      }
+
+      const alreadyBooked = activeBookings.find(b => b.userId === data.userId);
+      if (alreadyBooked) {
+        return res.status(400).json({ message: "El cliente ya tiene reserva en esta clase" });
+      }
+
+      const booking = await storage.createBooking({
+        classScheduleId: data.classScheduleId,
+        branchId: actor.branchId,
+        userId: data.userId,
+        bookingDate: data.bookingDate,
+        status: "confirmed",
+      });
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "CREATE_BOOKING",
+        branchId: actor.branchId,
+        metadata: { bookingId: booking.id, classId: data.classScheduleId, userId: data.userId, date: data.bookingDate },
+      });
+
+      console.log(`[BOOKINGS] Created booking for user ${data.userId} in class ${schedule.name} on ${data.bookingDate} by ${actor.email}`);
+      res.status(201).json(booking);
+    } catch (err: any) {
+      if (err.name === "ZodError") {
+        return res.status(400).json({ message: err.errors[0]?.message || "Datos inválidos" });
+      }
+      console.error(`[BOOKINGS] Error creating:`, err.stack || err);
+      res.status(500).json({ message: "Error al crear reserva" });
+    }
+  });
+
+  app.patch("/api/branch/bookings/:id/status", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const bookingId = req.params.id as string;
+    try {
+      const { status } = z.object({ status: z.enum(["confirmed", "cancelled", "attended"]) }).parse(req.body);
+      const existing = await storage.getBooking(bookingId);
+      if (!existing || existing.branchId !== actor.branchId) {
+        return res.status(404).json({ message: "Reserva no encontrada" });
+      }
+
+      const updated = await storage.updateBookingStatus(bookingId, status);
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "UPDATE_BOOKING_STATUS",
+        branchId: actor.branchId,
+        metadata: { bookingId, oldStatus: existing.status, newStatus: status },
+      });
+
+      console.log(`[BOOKINGS] Updated booking ${bookingId} status to ${status} by ${actor.email}`);
+      res.json(updated);
+    } catch (err: any) {
+      if (err.name === "ZodError") {
+        return res.status(400).json({ message: err.errors[0]?.message || "Datos inválidos" });
+      }
+      console.error(`[BOOKINGS] Error updating status:`, err.stack || err);
+      res.status(500).json({ message: "Error al actualizar reserva" });
     }
   });
 

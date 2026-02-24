@@ -212,6 +212,79 @@ export type InsertClientNote = z.infer<typeof insertClientNoteSchema>;
 export type Attendance = typeof attendances.$inferSelect;
 export type InsertAttendance = z.infer<typeof insertAttendanceSchema>;
 
+export const bookingStatusEnum = pgEnum("booking_status", [
+  "confirmed",
+  "cancelled",
+  "attended",
+]);
+
+export const classSchedules = pgTable("class_schedules", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  name: text("name").notNull(),
+  description: text("description"),
+  dayOfWeek: integer("day_of_week").notNull(),
+  startTime: text("start_time").notNull(),
+  endTime: text("end_time").notNull(),
+  capacity: integer("capacity").notNull().default(10),
+  instructorName: text("instructor_name"),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const classBookings = pgTable("class_bookings", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  classScheduleId: varchar("class_schedule_id", { length: 36 })
+    .notNull()
+    .references(() => classSchedules.id),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  userId: varchar("user_id", { length: 36 })
+    .notNull()
+    .references(() => users.id),
+  bookingDate: text("booking_date").notNull(),
+  status: bookingStatusEnum("status").notNull().default("confirmed"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const insertClassScheduleSchema = createInsertSchema(classSchedules).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertClassBookingSchema = createInsertSchema(classBookings).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const createClassScheduleSchema = z.object({
+  name: z.string().min(1, "El nombre es obligatorio"),
+  description: z.string().optional(),
+  dayOfWeek: z.number().int().min(0).max(6),
+  startTime: z.string().regex(/^\d{2}:\d{2}$/, "Formato HH:MM"),
+  endTime: z.string().regex(/^\d{2}:\d{2}$/, "Formato HH:MM"),
+  capacity: z.number().int().min(1, "Mínimo 1 lugar"),
+  instructorName: z.string().optional(),
+});
+
+export const createBookingSchema = z.object({
+  classScheduleId: z.string().min(1),
+  userId: z.string().min(1),
+  bookingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Formato YYYY-MM-DD"),
+});
+
+export type ClassSchedule = typeof classSchedules.$inferSelect;
+export type InsertClassSchedule = z.infer<typeof insertClassScheduleSchema>;
+export type ClassBooking = typeof classBookings.$inferSelect;
+export type InsertClassBooking = z.infer<typeof insertClassBookingSchema>;
+
 export const insertMembershipPlanSchema = createInsertSchema(membershipPlans).omit({
   id: true,
   createdAt: true,

@@ -8,6 +8,8 @@ import {
   auditLogs,
   clientNotes,
   attendances,
+  classSchedules,
+  classBookings,
   type User,
   type InsertUser,
   type Branch,
@@ -21,6 +23,10 @@ import {
   type InsertAttendance,
   type MembershipPlan,
   type InsertMembershipPlan,
+  type ClassSchedule,
+  type InsertClassSchedule,
+  type ClassBooking,
+  type InsertClassBooking,
 } from "@shared/schema";
 
 export interface BranchMetrics {
@@ -79,6 +85,17 @@ export interface IStorage {
   assignPlanToMembership(membershipId: string, planId: string, classesRemaining: number | null, expiresAt: Date | null): Promise<Membership | undefined>;
   removePlanFromMembership(membershipId: string): Promise<Membership | undefined>;
   decrementClassesRemaining(membershipId: string): Promise<Membership | undefined>;
+  getBranchClassSchedules(branchId: string): Promise<ClassSchedule[]>;
+  createClassSchedule(data: InsertClassSchedule): Promise<ClassSchedule>;
+  updateClassSchedule(id: string, data: Partial<InsertClassSchedule>): Promise<ClassSchedule | undefined>;
+  getClassSchedule(id: string): Promise<ClassSchedule | undefined>;
+  getBookingsForDate(branchId: string, date: string): Promise<any[]>;
+  getBookingsForClassOnDate(classScheduleId: string, date: string): Promise<any[]>;
+  createBooking(data: InsertClassBooking): Promise<ClassBooking>;
+  updateBookingStatus(id: string, status: string): Promise<ClassBooking | undefined>;
+  getBooking(id: string): Promise<ClassBooking | undefined>;
+  getTodayBookingsCount(branchId: string): Promise<number>;
+  getNextBooking(branchId: string): Promise<{ className: string; startTime: string; bookingDate: string } | null>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -584,6 +601,138 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(memberships.id, membershipId), sql`${memberships.classesRemaining} IS NOT NULL AND ${memberships.classesRemaining} > 0`))
       .returning();
     return m;
+  }
+
+  async getBranchClassSchedules(branchId: string): Promise<ClassSchedule[]> {
+    return db
+      .select()
+      .from(classSchedules)
+      .where(eq(classSchedules.branchId, branchId))
+      .orderBy(asc(classSchedules.dayOfWeek), asc(classSchedules.startTime));
+  }
+
+  async createClassSchedule(data: InsertClassSchedule): Promise<ClassSchedule> {
+    const [schedule] = await db.insert(classSchedules).values(data).returning();
+    return schedule;
+  }
+
+  async updateClassSchedule(id: string, data: Partial<InsertClassSchedule>): Promise<ClassSchedule | undefined> {
+    const [schedule] = await db
+      .update(classSchedules)
+      .set(data)
+      .where(eq(classSchedules.id, id))
+      .returning();
+    return schedule;
+  }
+
+  async getClassSchedule(id: string): Promise<ClassSchedule | undefined> {
+    const [schedule] = await db.select().from(classSchedules).where(eq(classSchedules.id, id));
+    return schedule;
+  }
+
+  async getBookingsForDate(branchId: string, date: string): Promise<any[]> {
+    const results = await db
+      .select({
+        id: classBookings.id,
+        classScheduleId: classBookings.classScheduleId,
+        userId: classBookings.userId,
+        bookingDate: classBookings.bookingDate,
+        status: classBookings.status,
+        createdAt: classBookings.createdAt,
+        userName: users.name,
+        userEmail: users.email,
+        className: classSchedules.name,
+        startTime: classSchedules.startTime,
+        endTime: classSchedules.endTime,
+      })
+      .from(classBookings)
+      .innerJoin(users, eq(classBookings.userId, users.id))
+      .innerJoin(classSchedules, eq(classBookings.classScheduleId, classSchedules.id))
+      .where(and(
+        eq(classBookings.branchId, branchId),
+        eq(classBookings.bookingDate, date)
+      ))
+      .orderBy(asc(classSchedules.startTime), asc(users.name));
+    return results;
+  }
+
+  async getBookingsForClassOnDate(classScheduleId: string, date: string): Promise<any[]> {
+    const results = await db
+      .select({
+        id: classBookings.id,
+        userId: classBookings.userId,
+        status: classBookings.status,
+        createdAt: classBookings.createdAt,
+        userName: users.name,
+        userEmail: users.email,
+      })
+      .from(classBookings)
+      .innerJoin(users, eq(classBookings.userId, users.id))
+      .where(and(
+        eq(classBookings.classScheduleId, classScheduleId),
+        eq(classBookings.bookingDate, date)
+      ))
+      .orderBy(asc(users.name));
+    return results;
+  }
+
+  async createBooking(data: InsertClassBooking): Promise<ClassBooking> {
+    const [booking] = await db.insert(classBookings).values(data).returning();
+    return booking;
+  }
+
+  async updateBookingStatus(id: string, status: string): Promise<ClassBooking | undefined> {
+    const [booking] = await db
+      .update(classBookings)
+      .set({ status: status as any })
+      .where(eq(classBookings.id, id))
+      .returning();
+    return booking;
+  }
+
+  async getBooking(id: string): Promise<ClassBooking | undefined> {
+    const [booking] = await db.select().from(classBookings).where(eq(classBookings.id, id));
+    return booking;
+  }
+
+  async getTodayBookingsCount(branchId: string): Promise<number> {
+    const today = new Date().toISOString().split("T")[0];
+    const [result] = await db
+      .select({ count: sql<number>`COUNT(*)`.as("count") })
+      .from(classBookings)
+      .where(and(
+        eq(classBookings.branchId, branchId),
+        eq(classBookings.bookingDate, today),
+        ne(classBookings.status, "cancelled")
+      ));
+    return Number(result?.count) || 0;
+  }
+
+  async getNextBooking(branchId: string): Promise<{ className: string; startTime: string; bookingDate: string } | null> {
+    const today = new Date().toISOString().split("T")[0];
+    const now = new Date().toTimeString().slice(0, 5);
+    const results = await db
+      .select({
+        className: classSchedules.name,
+        startTime: classSchedules.startTime,
+        bookingDate: classBookings.bookingDate,
+      })
+      .from(classBookings)
+      .innerJoin(classSchedules, eq(classBookings.classScheduleId, classSchedules.id))
+      .where(and(
+        eq(classBookings.branchId, branchId),
+        ne(classBookings.status, "cancelled"),
+        or(
+          sql`${classBookings.bookingDate} > ${today}`,
+          and(
+            eq(classBookings.bookingDate, today),
+            sql`${classSchedules.startTime} >= ${now}`
+          )
+        )
+      ))
+      .orderBy(asc(classBookings.bookingDate), asc(classSchedules.startTime))
+      .limit(1);
+    return results[0] || null;
   }
 }
 

@@ -46,6 +46,15 @@ Multi-tenant gym management platform with role-based access (SUPER_ADMIN, BRANCH
 - `DELETE /api/branch/plans/:id` - Deactivate plan (BRANCH_ADMIN)
 - `POST /api/branch/memberships/:id/assign-plan` - Assign plan to membership (BRANCH_ADMIN)
 - `DELETE /api/branch/memberships/:id/plan` - Remove plan from membership (BRANCH_ADMIN)
+- `GET /api/branch/reservations/stats` - Today's booking count + next booking (BRANCH_ADMIN)
+- `GET /api/branch/classes` - List class schedules (BRANCH_ADMIN)
+- `POST /api/branch/classes` - Create class schedule (BRANCH_ADMIN)
+- `PATCH /api/branch/classes/:id` - Update class (BRANCH_ADMIN)
+- `DELETE /api/branch/classes/:id` - Deactivate class (BRANCH_ADMIN)
+- `GET /api/branch/bookings?date=` - Get bookings for date (BRANCH_ADMIN)
+- `GET /api/branch/bookings/class/:classId?date=` - Get bookings for specific class+date (BRANCH_ADMIN)
+- `POST /api/branch/bookings` - Create booking {classScheduleId, userId, bookingDate} (BRANCH_ADMIN)
+- `PATCH /api/branch/bookings/:id/status` - Update booking status (BRANCH_ADMIN)
 - `POST /api/superadmin/impersonate` - Start impersonation {branchId} (SUPER_ADMIN)
 - `POST /api/superadmin/impersonate/end` - End impersonation (authenticated)
 - `GET /api/superadmin/audit` - Audit logs (SUPER_ADMIN)
@@ -60,6 +69,8 @@ Multi-tenant gym management platform with role-based access (SUPER_ADMIN, BRANCH
 - **branches**: id, name, slug, status, category, subcategory, latitude, longitude, city, address, coverImageUrl, description, deletedAt
 - **memberships**: id, userId, branchId, status (active/banned/left), isFavorite, joinedAt, lastSeenAt, source (invite/self_join/admin_created), planId, classesRemaining, expiresAt
 - **membership_plans**: id, branchId, name, description, price (integer cents), durationDays, classLimit, isActive, createdAt
+- **class_schedules**: id, branchId, name, description, dayOfWeek, startTime, endTime, capacity, instructorName, isActive, createdAt
+- **class_bookings**: id, classScheduleId, branchId, userId, bookingDate, status (confirmed/cancelled/attended), createdAt
 - **audit_logs**: id, actorUserId, action, branchId, metadata (jsonb), createdAt
 - **client_notes**: id, branchId, userId, content, createdBy, createdAt
 - **attendances**: id, branchId, userId, checkedInAt, registeredBy
@@ -80,16 +91,18 @@ Multi-tenant gym management platform with role-based access (SUPER_ADMIN, BRANCH
 - Resend welcome package: regenerate modal with URLs + admin email (no password change)
 - Search and filter branches, show/hide deleted
 
-## Branch Admin Dashboard (Fase 1-2 completadas)
+## Branch Admin Dashboard (Fases 1-4 completadas)
 - Tab navigation with 6 sections: Resumen, Clientes, Membresías, Reservas, Contenido, TV Mode
-- Resumen tab: real counts (active clients, active memberships), branch status with description, public URL link, placeholder cards for reservations (will be real in Fase 4)
+- Resumen tab: real counts (active clients, active memberships, today's reservations, next booking), branch status with description, public URL link
 - Clientes tab (Fase 2): client list with search/filter, create client dialog with credentials, invite link dialog, client profile modal with notes, attendance registration, membership info
 - Membresías tab (Fase 3): plan CRUD (create/edit/deactivate/reactivate), plan cards with price/duration/classLimit, assign plan to clients from profile dialog, auto-decrement classes on attendance, remove plan
-- Other tabs show placeholder "coming soon" UI (to be implemented in Fases 4-6)
+- Reservas tab (Fase 4): weekly calendar view with class schedule, day detail with bookings, class CRUD (create/edit/deactivate/reactivate), book clients into classes, booking status management (confirmed/attended/cancelled), capacity tracking
+- Other tabs show placeholder "coming soon" UI (to be implemented in Fases 5-6)
 - StatusBadge component reused in header and summary with unique testIds
 - Preserves: suspended banner, impersonation banner, theme toggle, logout
 - Component file: client/src/components/clientes-tab.tsx
 - Component file: client/src/components/membresias-tab.tsx
+- Component file: client/src/components/reservas-tab.tsx
 
 ## Branch Categories
 box, gym, yoga, estetica, doctor, abogado, freelancer, otro

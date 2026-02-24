@@ -33,6 +33,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
 import ClientesTab from "@/components/clientes-tab";
 import MembresiasTab from "@/components/membresias-tab";
+import ReservasTab from "@/components/reservas-tab";
 
 const DASHBOARD_TABS = [
   { value: "resumen", label: "Resumen", icon: LayoutDashboard },
@@ -70,11 +71,18 @@ function StatusBadge({ status, testId = "badge-branch-status" }: { status: strin
   );
 }
 
-function ResumenTab({ branchStats, branchStatus, branchSlug, isLoading }: {
+interface ReservationStats {
+  todayCount: number;
+  nextBooking: { className: string; startTime: string; bookingDate: string } | null;
+}
+
+function ResumenTab({ branchStats, branchStatus, branchSlug, isLoading, reservationStats, reservationLoading }: {
   branchStats: { activeMemberships: number; uniqueActiveCustomers: number } | undefined;
   branchStatus: string;
   branchSlug: string;
   isLoading: boolean;
+  reservationStats: ReservationStats | undefined;
+  reservationLoading: boolean;
 }) {
   const statusConfig: Record<string, { label: string; description: string; color: string }> = {
     active: { label: "Activa", description: "Tu sucursal está operando normalmente.", color: "text-green-600 dark:text-green-400" },
@@ -129,7 +137,13 @@ function ResumenTab({ branchStats, branchStatus, branchSlug, isLoading }: {
               <CalendarDays className="h-5 w-5 text-blue-500" />
             </div>
             <div>
-              <p className="text-2xl font-bold" data-testid="text-reservations-today">0</p>
+              {reservationLoading ? (
+                <Skeleton className="h-7 w-12 mb-1" />
+              ) : (
+                <p className="text-2xl font-bold" data-testid="text-reservations-today">
+                  {reservationStats?.todayCount ?? 0}
+                </p>
+              )}
               <p className="text-xs text-muted-foreground">Reservas de hoy</p>
             </div>
           </CardContent>
@@ -141,9 +155,17 @@ function ResumenTab({ branchStats, branchStatus, branchSlug, isLoading }: {
               <Clock className="h-5 w-5 text-purple-500" />
             </div>
             <div>
-              <p className="text-sm font-semibold text-muted-foreground" data-testid="text-next-reservation">
-                Sin reservas
-              </p>
+              {reservationLoading ? (
+                <Skeleton className="h-5 w-24 mb-1" />
+              ) : reservationStats?.nextBooking ? (
+                <p className="text-sm font-semibold" data-testid="text-next-reservation">
+                  {reservationStats.nextBooking.className} {reservationStats.nextBooking.startTime}
+                </p>
+              ) : (
+                <p className="text-sm font-semibold text-muted-foreground" data-testid="text-next-reservation">
+                  Sin reservas
+                </p>
+              )}
               <p className="text-xs text-muted-foreground">Próxima reserva</p>
             </div>
           </CardContent>
@@ -229,6 +251,11 @@ export default function DashboardPage() {
 
   const { data: branchStats, isLoading: statsLoading } = useQuery<{ activeMemberships: number; uniqueActiveCustomers: number }>({
     queryKey: ["/api/branch/stats"],
+    enabled: !!user?.branchId,
+  });
+
+  const { data: reservationStats, isLoading: reservationLoading } = useQuery<ReservationStats>({
+    queryKey: ["/api/branch/reservations/stats"],
     enabled: !!user?.branchId,
   });
 
@@ -338,6 +365,8 @@ export default function DashboardPage() {
               branchStatus={branchStatus}
               branchSlug={branchSlug}
               isLoading={statsLoading}
+              reservationStats={reservationStats}
+              reservationLoading={reservationLoading}
             />
           </TabsContent>
 
@@ -350,12 +379,7 @@ export default function DashboardPage() {
           </TabsContent>
 
           <TabsContent value="reservas" className="mt-4">
-            <PlaceholderTab
-              tabId="reservas"
-              icon={Calendar}
-              title="Reservas y Calendario"
-              description="Calendario semanal y diario para agendar citas, clases y sesiones con tus clientes. Disponible próximamente."
-            />
+            <ReservasTab />
           </TabsContent>
 
           <TabsContent value="contenido" className="mt-4">
