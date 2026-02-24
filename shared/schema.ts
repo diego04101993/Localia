@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, pgEnum, doublePrecision, boolean, uniqueIndex, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, pgEnum, doublePrecision, boolean, uniqueIndex, jsonb, integer } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -36,6 +36,7 @@ export const users = pgTable("users", {
   role: userRoleEnum("role").notNull().default("CUSTOMER"),
   branchId: varchar("branch_id", { length: 36 }).references(() => branches.id),
   name: text("name").notNull().default(""),
+  phone: text("phone"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -88,6 +89,39 @@ export const auditLogs = pgTable("audit_logs", {
   branchId: varchar("branch_id", { length: 36 }),
   metadata: jsonb("metadata"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const clientNotes = pgTable("client_notes", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  userId: varchar("user_id", { length: 36 })
+    .notNull()
+    .references(() => users.id),
+  content: text("content").notNull(),
+  createdBy: varchar("created_by", { length: 36 })
+    .notNull()
+    .references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const attendances = pgTable("attendances", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  userId: varchar("user_id", { length: 36 })
+    .notNull()
+    .references(() => users.id),
+  registeredBy: varchar("registered_by", { length: 36 })
+    .notNull()
+    .references(() => users.id),
+  checkedInAt: timestamp("checked_in_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const insertUserSchema = createInsertSchema(users).omit({
@@ -143,6 +177,28 @@ export type InsertMembership = z.infer<typeof insertMembershipSchema>;
 export type LoginData = z.infer<typeof loginSchema>;
 export type CreateBranchData = z.infer<typeof createBranchSchema>;
 export type AuditLog = typeof auditLogs.$inferSelect;
+
+export const insertClientNoteSchema = createInsertSchema(clientNotes).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertAttendanceSchema = createInsertSchema(attendances).omit({
+  id: true,
+  checkedInAt: true,
+});
+
+export type ClientNote = typeof clientNotes.$inferSelect;
+export type InsertClientNote = z.infer<typeof insertClientNoteSchema>;
+export type Attendance = typeof attendances.$inferSelect;
+export type InsertAttendance = z.infer<typeof insertAttendanceSchema>;
+
+export const createClientSchema = z.object({
+  name: z.string().min(1, "El nombre es obligatorio"),
+  email: z.string().email("Correo electrónico inválido"),
+  phone: z.string().optional(),
+  password: z.string().min(6, "La contraseña debe tener al menos 6 caracteres").optional(),
+});
 
 export const BRANCH_CATEGORIES = [
   { value: "box", label: "Box / CrossFit" },

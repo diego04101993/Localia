@@ -11,6 +11,7 @@ import {
   createBranchSchema,
   joinBranchSchema,
   favoriteBranchSchema,
+  createClientSchema,
 } from "@shared/schema";
 import { z } from "zod";
 
@@ -593,6 +594,199 @@ export async function registerRoutes(
     const limit = parseInt(req.query.limit as string) || 50;
     const logs = await storage.getAuditLogs(limit);
     res.json(logs);
+  });
+
+  // --- Branch Admin: Client Management ---
+  function requireBranchAdmin(req: any, res: any, next: any) {
+    if (!req.isAuthenticated()) return res.status(401).json({ message: "No autenticado" });
+    const user = req.user as any;
+    if (user.role !== "BRANCH_ADMIN" && user.role !== "SUPER_ADMIN") {
+      return res.status(403).json({ message: "Acceso denegado" });
+    }
+    if (!user.branchId) return res.status(400).json({ message: "No hay sucursal asignada" });
+    next();
+  }
+
+  app.get("/api/branch/clients", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    try {
+      const clients = await storage.getBranchClients(user.branchId);
+      res.json(clients);
+    } catch (err: any) {
+      console.error(`[BRANCH_CLIENTS] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al obtener clientes" });
+    }
+  });
+
+  app.get("/api/branch/clients/:id", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    const clientId = req.params.id as string;
+    try {
+      const profile = await storage.getClientProfile(clientId, user.branchId);
+      if (!profile) return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+      res.json(profile);
+    } catch (err: any) {
+      console.error(`[CLIENT_PROFILE] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al obtener perfil del cliente" });
+    }
+  });
+
+  app.post("/api/branch/clients", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const result = createClientSchema.safeParse(req.body);
+    if (!result.success) {
+      return res.status(400).json({ message: "Datos inválidos", errors: result.error.flatten() });
+    }
+
+    try {
+      const existing = await storage.getUserByEmail(result.data.email);
+      if (existing) {
+        const existingMembership = await storage.getMembership(existing.id, actor.branchId);
+        if (existingMembership) {
+          if (existingMembership.status === "active") {
+            return res.status(409).json({ message: "Este cliente ya está registrado en tu sucursal" });
+          }
+          await storage.updateMembership(existingMembership.id, { status: "active", source: "admin_created" });
+          if (result.data.phone) await storage.updateUserPhone(existing.id, result.data.phone);
+          await storage.createAuditLog({
+            actorUserId: actor.id,
+            action: "REACTIVATE_CLIENT",
+            branchId: actor.branchId,
+            metadata: { clientEmail: existing.email },
+          });
+          console.log(`[CREATE_CLIENT] Reactivated ${existing.email} for branch ${actor.branchId}`);
+          return res.json({ message: "Cliente reactivado", userId: existing.id });
+        }
+        await storage.createMembership({
+          userId: existing.id,
+          branchId: actor.branchId,
+          status: "active",
+          isFavorite: false,
+          source: "admin_created",
+        });
+        if (result.data.phone) await storage.updateUserPhone(existing.id, result.data.phone);
+        await storage.createAuditLog({
+          actorUserId: actor.id,
+          action: "ADD_EXISTING_CLIENT",
+          branchId: actor.branchId,
+          metadata: { clientEmail: existing.email },
+        });
+        console.log(`[CREATE_CLIENT] Added existing user ${existing.email} to branch ${actor.branchId}`);
+        return res.json({ message: "Cliente agregado", userId: existing.id });
+      }
+
+      const plainPassword = result.data.password || generateSecurePassword(12);
+      const hash = await bcrypt.hash(plainPassword, 10);
+
+      const newUser = await storage.createUser({
+        email: result.data.email,
+        passwordHash: hash,
+        role: "CUSTOMER",
+        name: result.data.name,
+        phone: result.data.phone || null,
+      });
+
+      await storage.createMembership({
+        userId: newUser.id,
+        branchId: actor.branchId,
+        status: "active",
+        isFavorite: false,
+        source: "admin_created",
+      });
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "CREATE_CLIENT",
+        branchId: actor.branchId,
+        metadata: { clientEmail: newUser.email, clientName: newUser.name },
+      });
+
+      console.log(`[CREATE_CLIENT] Created new client ${newUser.email} for branch ${actor.branchId}`);
+      res.status(201).json({
+        userId: newUser.id,
+        email: newUser.email,
+        name: newUser.name,
+        password: plainPassword,
+      });
+    } catch (err: any) {
+      console.error(`[CREATE_CLIENT] Error:`, err.stack || err);
+      res.status(500).json({ message: `Error al crear cliente: ${err.message || "error desconocido"}` });
+    }
+  });
+
+  app.post("/api/branch/clients/:id/notes", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const clientId = req.params.id as string;
+    const { content } = req.body;
+
+    if (!content || typeof content !== "string" || content.trim().length === 0) {
+      return res.status(400).json({ message: "El contenido de la nota es obligatorio" });
+    }
+
+    try {
+      const membership = await storage.getMembership(clientId, actor.branchId);
+      if (!membership) return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+
+      const note = await storage.createClientNote({
+        branchId: actor.branchId,
+        userId: clientId,
+        content: content.trim(),
+        createdBy: actor.id,
+      });
+
+      console.log(`[CLIENT_NOTE] Added note for client ${clientId} by ${actor.email}`);
+      res.status(201).json(note);
+    } catch (err: any) {
+      console.error(`[CLIENT_NOTE] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al crear nota" });
+    }
+  });
+
+  app.post("/api/branch/clients/:id/attendance", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const clientId = req.params.id as string;
+
+    try {
+      const membership = await storage.getMembership(clientId, actor.branchId);
+      if (!membership) return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+      if (membership.status !== "active") {
+        return res.status(400).json({ message: "El cliente no tiene una membresía activa" });
+      }
+
+      const attendance = await storage.createAttendance({
+        branchId: actor.branchId,
+        userId: clientId,
+        registeredBy: actor.id,
+      });
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "REGISTER_ATTENDANCE",
+        branchId: actor.branchId,
+        metadata: { clientId },
+      });
+
+      console.log(`[ATTENDANCE] Registered for client ${clientId} by ${actor.email}`);
+      res.status(201).json(attendance);
+    } catch (err: any) {
+      console.error(`[ATTENDANCE] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al registrar asistencia" });
+    }
+  });
+
+  app.get("/api/branch/invite-link", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    try {
+      const branch = await storage.getBranch(user.branchId);
+      if (!branch) return res.status(404).json({ message: "Sucursal no encontrada" });
+      const protocol = req.headers["x-forwarded-proto"] || "https";
+      const host = req.headers.host || "localhost:5000";
+      const inviteUrl = `${protocol}://${host}/app/${branch.slug}`;
+      res.json({ inviteUrl, slug: branch.slug });
+    } catch (err: any) {
+      console.error(`[INVITE_LINK] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al generar link de invitación" });
+    }
   });
 
   // --- Public ---

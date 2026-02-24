@@ -5,6 +5,8 @@ import {
   branches,
   memberships,
   auditLogs,
+  clientNotes,
+  attendances,
   type User,
   type InsertUser,
   type Branch,
@@ -12,6 +14,10 @@ import {
   type Membership,
   type InsertMembership,
   type AuditLog,
+  type ClientNote,
+  type InsertClientNote,
+  type Attendance,
+  type InsertAttendance,
 } from "@shared/schema";
 
 export interface BranchMetrics {
@@ -55,6 +61,13 @@ export interface IStorage {
   updateMembership(id: string, data: Partial<InsertMembership>): Promise<Membership | undefined>;
   createAuditLog(data: { actorUserId: string; action: string; branchId?: string; metadata?: any }): Promise<AuditLog>;
   getAuditLogs(limit?: number): Promise<(AuditLog & { actorEmail?: string | null })[]>;
+  getBranchClients(branchId: string): Promise<any[]>;
+  getClientProfile(userId: string, branchId: string): Promise<any>;
+  createClientNote(data: InsertClientNote): Promise<ClientNote>;
+  getClientNotes(userId: string, branchId: string): Promise<(ClientNote & { createdByName?: string })[]>;
+  createAttendance(data: InsertAttendance): Promise<Attendance>;
+  getClientAttendances(userId: string, branchId: string, limit?: number): Promise<Attendance[]>;
+  updateUserPhone(id: string, phone: string | null): Promise<User | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -364,6 +377,127 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(auditLogs.createdAt))
       .limit(limit);
     return results;
+  }
+
+  async getBranchClients(branchId: string): Promise<any[]> {
+    const results = await db
+      .select({
+        userId: users.id,
+        name: users.name,
+        email: users.email,
+        phone: users.phone,
+        membershipId: memberships.id,
+        membershipStatus: memberships.status,
+        joinedAt: memberships.joinedAt,
+        lastSeenAt: memberships.lastSeenAt,
+        source: memberships.source,
+        isFavorite: memberships.isFavorite,
+      })
+      .from(memberships)
+      .innerJoin(users, eq(memberships.userId, users.id))
+      .where(eq(memberships.branchId, branchId))
+      .orderBy(desc(memberships.joinedAt));
+
+    const clientIds = results.map(r => r.userId);
+    let lastAttendanceMap: Record<string, Date> = {};
+    if (clientIds.length > 0) {
+      const attResults = await db
+        .select({
+          userId: attendances.userId,
+          lastCheckin: sql<string>`MAX(${attendances.checkedInAt})`.as("last_checkin"),
+        })
+        .from(attendances)
+        .where(and(
+          eq(attendances.branchId, branchId),
+          sql`${attendances.userId} = ANY(${sql`ARRAY[${sql.join(clientIds.map(id => sql`${id}`), sql`,`)}]`})`
+        ))
+        .groupBy(attendances.userId);
+
+      for (const a of attResults) {
+        if (a.lastCheckin) {
+          lastAttendanceMap[a.userId] = new Date(a.lastCheckin);
+        }
+      }
+    }
+
+    return results.map(r => ({
+      ...r,
+      lastAttendance: lastAttendanceMap[r.userId] || null,
+    }));
+  }
+
+  async getClientProfile(userId: string, branchId: string): Promise<any> {
+    const [membership] = await db
+      .select()
+      .from(memberships)
+      .where(and(eq(memberships.userId, userId), eq(memberships.branchId, branchId)));
+
+    if (!membership) return null;
+
+    const [user] = await db.select().from(users).where(eq(users.id, userId));
+    if (!user) return null;
+
+    const notes = await this.getClientNotes(userId, branchId);
+    const recentAttendances = await this.getClientAttendances(userId, branchId, 10);
+
+    const [attendanceCount] = await db
+      .select({ count: sql<number>`COUNT(*)`.as("count") })
+      .from(attendances)
+      .where(and(eq(attendances.userId, userId), eq(attendances.branchId, branchId)));
+
+    return {
+      user: { id: user.id, name: user.name, email: user.email, phone: user.phone, createdAt: user.createdAt },
+      membership,
+      notes,
+      recentAttendances,
+      totalAttendances: Number(attendanceCount?.count) || 0,
+    };
+  }
+
+  async createClientNote(data: InsertClientNote): Promise<ClientNote> {
+    const [note] = await db.insert(clientNotes).values(data).returning();
+    return note;
+  }
+
+  async getClientNotes(userId: string, branchId: string): Promise<(ClientNote & { createdByName?: string })[]> {
+    const results = await db
+      .select({
+        id: clientNotes.id,
+        branchId: clientNotes.branchId,
+        userId: clientNotes.userId,
+        content: clientNotes.content,
+        createdBy: clientNotes.createdBy,
+        createdAt: clientNotes.createdAt,
+        createdByName: users.name,
+      })
+      .from(clientNotes)
+      .leftJoin(users, eq(clientNotes.createdBy, users.id))
+      .where(and(eq(clientNotes.userId, userId), eq(clientNotes.branchId, branchId)))
+      .orderBy(desc(clientNotes.createdAt));
+
+    return results.map(r => ({
+      ...r,
+      createdByName: r.createdByName ?? undefined,
+    }));
+  }
+
+  async createAttendance(data: InsertAttendance): Promise<Attendance> {
+    const [att] = await db.insert(attendances).values(data).returning();
+    return att;
+  }
+
+  async getClientAttendances(userId: string, branchId: string, limit = 10): Promise<Attendance[]> {
+    return db
+      .select()
+      .from(attendances)
+      .where(and(eq(attendances.userId, userId), eq(attendances.branchId, branchId)))
+      .orderBy(desc(attendances.checkedInAt))
+      .limit(limit);
+  }
+
+  async updateUserPhone(id: string, phone: string | null): Promise<User | undefined> {
+    const [user] = await db.update(users).set({ phone }).where(eq(users.id, id)).returning();
+    return user;
   }
 }
 

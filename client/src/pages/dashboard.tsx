@@ -31,6 +31,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
+import ClientesTab from "@/components/clientes-tab";
 
 const DASHBOARD_TABS = [
   { value: "resumen", label: "Resumen", icon: LayoutDashboard },
@@ -340,12 +341,7 @@ export default function DashboardPage() {
           </TabsContent>
 
           <TabsContent value="clientes" className="mt-4">
-            <PlaceholderTab
-              tabId="clientes"
-              icon={Users}
-              title="Gestión de Clientes"
-              description="Aquí podrás ver, crear e invitar clientes, registrar asistencia y gestionar sus perfiles. Disponible próximamente."
-            />
+            <ClientesTab />
           </TabsContent>
 
           <TabsContent value="membresias" className="mt-4">
