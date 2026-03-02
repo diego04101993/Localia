@@ -3,6 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import {
   Users,
   UserPlus,
+  Plus,
   Link2,
   Search,
   ClipboardCheck,
@@ -842,6 +843,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete }:
 }) {
   const { toast } = useToast();
   const [noteContent, setNoteContent] = useState("");
+  const [showAllNotes, setShowAllNotes] = useState(false);
   const [showPlanSelect, setShowPlanSelect] = useState(false);
 
   const { data: profile, isLoading } = useQuery<ClientProfile>({
@@ -1164,38 +1166,52 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete }:
                 <StickyNote className="h-3.5 w-3.5" />
                 Notas internas ({profile.notes.length})
               </h4>
-              <div className="space-y-2 mb-3">
-                {profile.notes.length === 0 && (
-                  <p className="text-xs text-muted-foreground">Sin notas</p>
-                )}
-                {profile.notes.map((note) => (
-                  <div key={note.id} className="bg-muted rounded-md p-2 text-sm" data-testid={`note-${note.id}`}>
-                    <p>{note.content}</p>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      {note.createdByName} · {formatDateTime(note.createdAt)}
-                    </p>
-                  </div>
-                ))}
-              </div>
-              <div className="flex gap-2">
+              <div className="flex gap-2 mb-3">
                 <Textarea
                   value={noteContent}
                   onChange={(e) => setNoteContent(e.target.value)}
                   placeholder="Agregar nota interna..."
-                  className="text-sm min-h-[60px]"
-                  data-testid="input-note-content"
+                  className="text-sm min-h-[50px]"
+                  data-testid="client-note-add"
                 />
+                <Button
+                  size="sm"
+                  className="self-end shrink-0"
+                  onClick={() => noteContent.trim() && noteMutation.mutate(noteContent.trim())}
+                  disabled={noteMutation.isPending || !noteContent.trim()}
+                  data-testid="button-add-note"
+                >
+                  {noteMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
+                </Button>
               </div>
-              <Button
-                size="sm"
-                className="mt-2"
-                onClick={() => noteContent.trim() && noteMutation.mutate(noteContent.trim())}
-                disabled={noteMutation.isPending || !noteContent.trim()}
-                data-testid="button-add-note"
-              >
-                {noteMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <StickyNote className="h-3.5 w-3.5 mr-1" />}
-                Agregar nota
-              </Button>
+              <div className="space-y-0" data-testid="client-notes-list">
+                {profile.notes.length === 0 && (
+                  <p className="text-xs text-muted-foreground italic">Sin notas registradas</p>
+                )}
+                {(showAllNotes ? profile.notes : profile.notes.slice(0, 10)).map((note, idx) => (
+                  <div key={note.id} className="relative pl-4 pb-3" data-testid={`note-${note.id}`}>
+                    <div className="absolute left-[5px] top-[6px] w-1.5 h-1.5 rounded-full bg-primary" />
+                    {idx < (showAllNotes ? profile.notes.length : Math.min(profile.notes.length, 10)) - 1 && (
+                      <div className="absolute left-[7px] top-[14px] bottom-0 w-px bg-border" />
+                    )}
+                    <div className="text-[10px] text-muted-foreground mb-0.5">
+                      {formatDateTime(note.createdAt)} — {note.createdByName || "Admin"}
+                    </div>
+                    <p className="text-sm leading-snug">{note.content}</p>
+                  </div>
+                ))}
+                {profile.notes.length > 10 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-xs w-full"
+                    onClick={() => setShowAllNotes(!showAllNotes)}
+                    data-testid="button-show-all-notes"
+                  >
+                    {showAllNotes ? "Mostrar menos" : `Ver todas (${profile.notes.length})`}
+                  </Button>
+                )}
+              </div>
             </div>
           </div>
         ) : (
