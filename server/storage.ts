@@ -134,7 +134,7 @@ export interface IStorage {
   copyClassSchedules(branchId: string, fromDay: number, toDay: number): Promise<ClassSchedule[]>;
   getExpiringMemberships(branchId: string, daysAhead: number): Promise<any[]>;
   getInactiveClients(branchId: string, daysSince: number): Promise<any[]>;
-  updateClient(userId: string, data: { name?: string; lastName?: string | null; phone?: string | null; birthDate?: string | null; gender?: string | null; emergencyContactName?: string | null; emergencyContactPhone?: string | null; medicalNotes?: string | null; avatarUrl?: string | null }): Promise<any>;
+  updateClient(userId: string, data: { name?: string; lastName?: string | null; phone?: string | null; birthDate?: string | null; gender?: string | null; emergencyContactName?: string | null; emergencyContactPhone?: string | null; medicalNotes?: string | null; injuriesNotes?: string | null; medicalWarnings?: string | null; parqAccepted?: boolean; parqAcceptedDate?: string | null; avatarUrl?: string | null }): Promise<any>;
   updateClientStatus(membershipId: string, clientStatus: string): Promise<any>;
   updateClientDebt(membershipId: string, hasDebt: boolean, debtAmount: number): Promise<any>;
   softDeleteMembership(membershipId: string): Promise<any>;
@@ -1108,7 +1108,7 @@ export class DatabaseStorage implements IStorage {
     return results;
   }
 
-  async updateClient(userId: string, data: { name?: string; lastName?: string | null; phone?: string | null; birthDate?: string | null; gender?: string | null; emergencyContactName?: string | null; emergencyContactPhone?: string | null; medicalNotes?: string | null; avatarUrl?: string | null }): Promise<any> {
+  async updateClient(userId: string, data: { name?: string; lastName?: string | null; phone?: string | null; birthDate?: string | null; gender?: string | null; emergencyContactName?: string | null; emergencyContactPhone?: string | null; medicalNotes?: string | null; injuriesNotes?: string | null; medicalWarnings?: string | null; parqAccepted?: boolean; parqAcceptedDate?: string | null; avatarUrl?: string | null }): Promise<any> {
     const updateData: any = {};
     if (data.name !== undefined) updateData.name = data.name;
     if (data.lastName !== undefined) updateData.lastName = data.lastName;
@@ -1118,6 +1118,10 @@ export class DatabaseStorage implements IStorage {
     if (data.emergencyContactName !== undefined) updateData.emergencyContactName = data.emergencyContactName;
     if (data.emergencyContactPhone !== undefined) updateData.emergencyContactPhone = data.emergencyContactPhone;
     if (data.medicalNotes !== undefined) updateData.medicalNotes = data.medicalNotes;
+    if (data.injuriesNotes !== undefined) updateData.injuriesNotes = data.injuriesNotes;
+    if (data.medicalWarnings !== undefined) updateData.medicalWarnings = data.medicalWarnings;
+    if (data.parqAccepted !== undefined) updateData.parqAccepted = data.parqAccepted;
+    if (data.parqAcceptedDate !== undefined) updateData.parqAcceptedDate = data.parqAcceptedDate;
     if (data.avatarUrl !== undefined) updateData.avatarUrl = data.avatarUrl;
 
     if (Object.keys(updateData).length === 0) return null;

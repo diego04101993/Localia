@@ -43,6 +43,10 @@ export const users = pgTable("users", {
   emergencyContactName: text("emergency_contact_name"),
   emergencyContactPhone: text("emergency_contact_phone"),
   medicalNotes: text("medical_notes"),
+  injuriesNotes: text("injuries_notes"),
+  medicalWarnings: text("medical_warnings"),
+  parqAccepted: boolean("parq_accepted").notNull().default(false),
+  parqAcceptedDate: text("parq_accepted_date"),
   avatarUrl: text("avatar_url"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
@@ -339,6 +343,10 @@ export const updateClientSchema = z.object({
   emergencyContactName: z.string().nullable().optional(),
   emergencyContactPhone: z.string().nullable().optional(),
   medicalNotes: z.string().nullable().optional(),
+  injuriesNotes: z.string().nullable().optional(),
+  medicalWarnings: z.string().nullable().optional(),
+  parqAccepted: z.boolean().optional(),
+  parqAcceptedDate: z.string().nullable().optional(),
   avatarUrl: z.string().nullable().optional(),
 });
 
