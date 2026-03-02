@@ -1,0 +1,99 @@
+Eres un senior full-stack engineer en Box Manager (multi-tenant). NO borres ni refactorices grande. Todo incremental, seguro y compatible.
+
+Contexto:
+Frontend: React + wouter + TanStack Query + shadcn/ui + Tailwind, es-MX, dark mode, data-testid.
+Backend: Express + sesiones (passport), PostgreSQL + Drizzle.
+
+OBJETIVO: Implementar “EXTRAS PRO” para la pestaña Clientes y Perfil del cliente, sin romper flujos existentes (crear cliente, asignar plan, registrar asistencia, exportar CSV, invitar link).
+
+IMPORTANTE:
+- No cambiar rutas existentes de forma breaking.
+- Si agregas campos, que sean opcionales y con defaults.
+- Soft delete siempre.
+- Multi-tenant: todo filtrado por branchId.
+- Mantener consistencia visual con shadcn/ui.
+- Mantener /export CSV funcionando (si agregas columnas, al final y opcionales).
+- No tocar auth/sesiones.
+
+EXTRAS A IMPLEMENTAR (en este orden, uno por uno, sin mezclar todo de golpe):
+
+EXTRA 1 — Foto del cliente (avatar)
+- Permitir subir 1 foto por cliente (jpg/png/webp).
+- Guardar en servidor (multer) y referencia en DB.
+- Mostrar avatar en lista de clientes y en modal “Perfil del cliente”.
+- Si no hay foto: iniciales como hoy.
+- Agregar data-testid:
+  - client-avatar-upload
+  - client-avatar-remove
+- Permitir eliminar/replace foto.
+
+EXTRA 2 — WhatsApp y llamada rápida
+- Si el cliente tiene phone:
+  - Botón “WhatsApp” que abre wa.me con número normalizado (MX).
+  - Botón “Llamar” (tel:).
+- En desktop abre nueva pestaña.
+- data-testid:
+  - client-whatsapp
+  - client-call
+
+EXTRA 3 — Status del cliente (Activo / Inactivo / Congelado)
+- Nuevo campo statusClient: active | inactive | frozen (default active).
+- En la lista: badge con color.
+- En Perfil: selector para cambiar status.
+- Reglas:
+  - inactive: no permitir reservar (si intenta reservar, mostrar mensaje claro).
+  - frozen: permitir ver perfil pero bloquear registro de asistencia y reservas (mensaje claro).
+- data-testid:
+  - client-status-select
+  - client-status-save
+
+EXTRA 4 — Adeudo (flag + monto)
+- Campos opcionales: hasDebt boolean, debtAmount number (MXN).
+- En lista: icono/alerta si hasDebt.
+- En Perfil: switch + input monto.
+- No meter cobros ni pagos todavía, solo registro.
+- data-testid:
+  - client-debt-toggle
+  - client-debt-amount
+
+EXTRA 5 — Salud / PAR-Q (privado)
+- Campos privados: injuriesNotes, medicalWarnings (texto), parqAccepted boolean + date.
+- Solo visibles en dashboard, jamás en /app/:slug público.
+- Mostrar sección “Salud (privado)” con aviso “Solo admins”.
+- data-testid:
+  - client-medical-notes
+  - client-parq-toggle
+
+EXTRA 6 — Historial de notas por fecha (timeline)
+- Cambiar “Notas internas” para que sea lista con timestamp y autor (admin email).
+- Permitir agregar nota (ya existe) pero ahora guarda: text, createdAt, createdBy.
+- Mostrar últimas 10 y botón “Ver todas”.
+- data-testid:
+  - client-note-add
+  - client-notes-list
+
+EXTRA 7 — Resumen PRO dentro del Perfil del cliente
+- Añadir un bloque arriba con:
+  - Última asistencia (fecha)
+  - Total asistencias
+  - Clases restantes (si tiene membresía activa)
+  - Próxima reserva (si existe)
+- Ya hay datos en tablas attendances/bookings, solo agregarlos en endpoint y UI.
+- Nada de queries pesadas: usa endpoints específicos o agregaciones simples.
+
+IMPLEMENTACIÓN / ENTREGA:
+1) Implementa EXTRA 1 y deja funcionando end-to-end.
+2) Luego EXTRA 2, etc. Uno por uno.
+3) Por cada extra:
+   - lista exacta de archivos tocados
+   - endpoints nuevos o extendidos
+   - migración Drizzle (si aplica)
+   - validación manual paso a paso
+4) Tests mínimos:
+   - Backend: endpoints no rompen
+   - Frontend: render y acciones básicas
+
+RESTRICCIÓN:
+- Evita refactors grandes.
+- Si encuentras duplicación, NO “arregles todo”; solo añade lo necesario.
+- No cambies estilos globales ni routing.

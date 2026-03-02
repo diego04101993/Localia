@@ -25,6 +25,8 @@ import {
   AlertTriangle,
   Heart,
   Shield,
+  Camera,
+  ImageOff,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -80,6 +82,7 @@ interface BranchClient {
   planName: string | null;
   classesRemaining: number | null;
   expiresAt: string | null;
+  avatarUrl: string | null;
 }
 
 interface MembershipPlan {
@@ -103,6 +106,7 @@ interface ClientProfile {
     emergencyContactName: string | null;
     emergencyContactPhone: string | null;
     medicalNotes: string | null;
+    avatarUrl: string | null;
     createdAt: string;
   };
   membership: {
@@ -162,6 +166,115 @@ function genderLabel(g: string | null): string {
 
 function displayName(name: string, lastName: string | null): string {
   return lastName ? `${name} ${lastName}` : name;
+}
+
+function getInitials(name: string, lastName: string | null): string {
+  const first = name.charAt(0).toUpperCase();
+  const last = lastName ? lastName.charAt(0).toUpperCase() : "";
+  return last ? `${first}${last}` : first;
+}
+
+function ClientAvatar({ avatarUrl, name, lastName, size = "md" }: { avatarUrl: string | null; name: string; lastName: string | null; size?: "sm" | "md" | "lg" }) {
+  const sizeClasses = size === "sm" ? "w-8 h-8 text-xs" : size === "md" ? "w-10 h-10 text-sm" : "w-16 h-16 text-xl";
+
+  if (avatarUrl) {
+    return (
+      <img
+        src={avatarUrl}
+        alt={displayName(name, lastName)}
+        className={`${sizeClasses} rounded-full object-cover shrink-0`}
+        data-testid="client-avatar-image"
+      />
+    );
+  }
+
+  return (
+    <div className={`${sizeClasses} rounded-full bg-primary/10 flex items-center justify-center shrink-0`} data-testid="client-avatar-initials">
+      <span className="font-semibold text-primary">{getInitials(name, lastName)}</span>
+    </div>
+  );
+}
+
+function AvatarUploadSection({ clientId, avatarUrl, name, lastName }: { clientId: string; avatarUrl: string | null; name: string; lastName: string | null }) {
+  const { toast } = useToast();
+  const [uploading, setUploading] = useState(false);
+
+  async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const validTypes = ["image/jpeg", "image/png", "image/webp"];
+    if (!validTypes.includes(file.type)) {
+      toast({ title: "Formato no válido", description: "Solo jpg, png o webp", variant: "destructive" });
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast({ title: "Archivo muy grande", description: "Máximo 5MB", variant: "destructive" });
+      return;
+    }
+
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const resp = await fetch(`/api/branch/clients/${clientId}/avatar`, {
+        method: "POST",
+        body: formData,
+      });
+      if (!resp.ok) {
+        const err = await resp.json();
+        throw new Error(err.message || "Error al subir");
+      }
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients", clientId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
+      toast({ title: "Foto actualizada" });
+    } catch (err: any) {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    } finally {
+      setUploading(false);
+      e.target.value = "";
+    }
+  }
+
+  const removeMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("DELETE", `/api/branch/clients/${clientId}/avatar`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients", clientId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
+      toast({ title: "Foto eliminada" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <div className="flex items-center gap-3">
+      <ClientAvatar avatarUrl={avatarUrl} name={name} lastName={lastName} size="lg" />
+      <div className="flex flex-col gap-1">
+        <label className="cursor-pointer" data-testid="client-avatar-upload">
+          <input type="file" accept="image/jpeg,image/png,image/webp" className="hidden" onChange={handleUpload} disabled={uploading} />
+          <span className="inline-flex items-center gap-1 text-xs text-primary hover:underline">
+            {uploading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Camera className="h-3 w-3" />}
+            {avatarUrl ? "Cambiar foto" : "Subir foto"}
+          </span>
+        </label>
+        {avatarUrl && (
+          <button
+            onClick={() => removeMutation.mutate()}
+            disabled={removeMutation.isPending}
+            className="inline-flex items-center gap-1 text-xs text-red-500 hover:underline"
+            data-testid="client-avatar-remove"
+          >
+            <ImageOff className="h-3 w-3" />
+            Eliminar foto
+          </button>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function CreateClientDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
@@ -626,6 +739,13 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete }:
           </div>
         ) : profile ? (
           <div className="space-y-4">
+            <AvatarUploadSection
+              clientId={profile.user.id}
+              avatarUrl={profile.user.avatarUrl}
+              name={profile.user.name}
+              lastName={profile.user.lastName}
+            />
+
             <div>
               <h3 className="font-semibold text-lg" data-testid="text-profile-name">
                 {displayName(profile.user.name, profile.user.lastName)}
@@ -989,11 +1109,7 @@ export default function ClientesTab() {
             >
               <CardContent className="p-3 sm:p-4">
                 <div className="flex items-center gap-3">
-                  <div className="flex items-center justify-center w-10 h-10 rounded-full bg-primary/10 shrink-0">
-                    <span className="text-sm font-semibold text-primary">
-                      {client.name.charAt(0).toUpperCase()}
-                    </span>
-                  </div>
+                  <ClientAvatar avatarUrl={client.avatarUrl} name={client.name} lastName={client.lastName} size="md" />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <p className="font-medium text-sm truncate" data-testid={`text-client-name-${client.userId}`}>

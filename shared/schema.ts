@@ -43,6 +43,7 @@ export const users = pgTable("users", {
   emergencyContactName: text("emergency_contact_name"),
   emergencyContactPhone: text("emergency_contact_phone"),
   medicalNotes: text("medical_notes"),
+  avatarUrl: text("avatar_url"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -335,6 +336,7 @@ export const updateClientSchema = z.object({
   emergencyContactName: z.string().nullable().optional(),
   emergencyContactPhone: z.string().nullable().optional(),
   medicalNotes: z.string().nullable().optional(),
+  avatarUrl: z.string().nullable().optional(),
 });
 
 export const branchPhotoTypeEnum = pgEnum("branch_photo_type", [

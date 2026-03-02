@@ -41,6 +41,8 @@ Multi-tenant gym management platform with role-based access (SUPER_ADMIN, BRANCH
 - `GET /api/branch/clients/:id` - Client profile with notes + attendances + emergency/medical info (BRANCH_ADMIN)
 - `POST /api/branch/clients/:id/notes` - Add internal note (BRANCH_ADMIN)
 - `POST /api/branch/clients/:id/attendance` - Register attendance (BRANCH_ADMIN)
+- `POST /api/branch/clients/:id/avatar` - Upload client avatar photo (BRANCH_ADMIN, multer)
+- `DELETE /api/branch/clients/:id/avatar` - Remove client avatar photo (BRANCH_ADMIN)
 - `GET /api/branch/invite-link` - Get branch invite URL (BRANCH_ADMIN)
 - `GET /api/branch/plans` - List branch membership plans (BRANCH_ADMIN)
 - `POST /api/branch/plans` - Create membership plan (BRANCH_ADMIN)

@@ -977,6 +977,70 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/branch/clients/:id/avatar", requireBranchAdmin, (req, res) => {
+    const actor = req.user as any;
+    const clientId = req.params.id as string;
+
+    upload.single("file")(req, res, async (err) => {
+      if (err) {
+        if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+          return res.status(400).json({ message: "El archivo excede el tamaño máximo de 10MB" });
+        }
+        return res.status(400).json({ message: err.message || "Error al subir archivo" });
+      }
+      if (!req.file) {
+        return res.status(400).json({ message: "No se proporcionó ningún archivo" });
+      }
+
+      try {
+        const membership = await storage.getMembership(clientId, actor.branchId);
+        if (!membership) {
+          fs.unlinkSync(req.file.path);
+          return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+        }
+
+        const existingUser = await storage.getUser(clientId);
+        if (existingUser?.avatarUrl) {
+          const oldPath = path.join(process.cwd(), existingUser.avatarUrl);
+          if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+        }
+
+        const avatarUrl = `/uploads/${req.file.filename}`;
+        await storage.updateClient(clientId, { avatarUrl });
+
+        console.log(`[AVATAR] Uploaded for client ${clientId} by ${actor.email}`);
+        res.json({ avatarUrl });
+      } catch (err: any) {
+        console.error(`[AVATAR] Error:`, err.stack || err);
+        res.status(500).json({ message: "Error al subir avatar" });
+      }
+    });
+  });
+
+  app.delete("/api/branch/clients/:id/avatar", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const clientId = req.params.id as string;
+
+    try {
+      const membership = await storage.getMembership(clientId, actor.branchId);
+      if (!membership) return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+
+      const existingUser = await storage.getUser(clientId);
+      if (existingUser?.avatarUrl) {
+        const oldPath = path.join(process.cwd(), existingUser.avatarUrl);
+        if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+      }
+
+      await storage.updateClient(clientId, { avatarUrl: null });
+
+      console.log(`[AVATAR] Removed for client ${clientId} by ${actor.email}`);
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error(`[AVATAR] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al eliminar avatar" });
+    }
+  });
+
   app.get("/api/branch/invite-link", requireBranchAdmin, async (req, res) => {
     const user = req.user as any;
     try {

@@ -134,7 +134,7 @@ export interface IStorage {
   copyClassSchedules(branchId: string, fromDay: number, toDay: number): Promise<ClassSchedule[]>;
   getExpiringMemberships(branchId: string, daysAhead: number): Promise<any[]>;
   getInactiveClients(branchId: string, daysSince: number): Promise<any[]>;
-  updateClient(userId: string, data: { name?: string; lastName?: string | null; phone?: string | null; birthDate?: string | null; gender?: string | null; emergencyContactName?: string | null; emergencyContactPhone?: string | null; medicalNotes?: string | null }): Promise<any>;
+  updateClient(userId: string, data: { name?: string; lastName?: string | null; phone?: string | null; birthDate?: string | null; gender?: string | null; emergencyContactName?: string | null; emergencyContactPhone?: string | null; medicalNotes?: string | null; avatarUrl?: string | null }): Promise<any>;
   softDeleteMembership(membershipId: string): Promise<any>;
   getBranchAnnouncements(branchId: string): Promise<BranchAnnouncement[]>;
   createAnnouncement(data: InsertBranchAnnouncement): Promise<BranchAnnouncement>;
@@ -466,6 +466,7 @@ export class DatabaseStorage implements IStorage {
         phone: users.phone,
         birthDate: users.birthDate,
         gender: users.gender,
+        avatarUrl: users.avatarUrl,
         membershipId: memberships.id,
         membershipStatus: memberships.status,
         joinedAt: memberships.joinedAt,
@@ -548,6 +549,7 @@ export class DatabaseStorage implements IStorage {
         emergencyContactName: user.emergencyContactName,
         emergencyContactPhone: user.emergencyContactPhone,
         medicalNotes: user.medicalNotes,
+        avatarUrl: user.avatarUrl,
         createdAt: user.createdAt,
       },
       membership,
@@ -1101,7 +1103,7 @@ export class DatabaseStorage implements IStorage {
     return results;
   }
 
-  async updateClient(userId: string, data: { name?: string; lastName?: string | null; phone?: string | null; birthDate?: string | null; gender?: string | null; emergencyContactName?: string | null; emergencyContactPhone?: string | null; medicalNotes?: string | null }): Promise<any> {
+  async updateClient(userId: string, data: { name?: string; lastName?: string | null; phone?: string | null; birthDate?: string | null; gender?: string | null; emergencyContactName?: string | null; emergencyContactPhone?: string | null; medicalNotes?: string | null; avatarUrl?: string | null }): Promise<any> {
     const updateData: any = {};
     if (data.name !== undefined) updateData.name = data.name;
     if (data.lastName !== undefined) updateData.lastName = data.lastName;
@@ -1111,6 +1113,7 @@ export class DatabaseStorage implements IStorage {
     if (data.emergencyContactName !== undefined) updateData.emergencyContactName = data.emergencyContactName;
     if (data.emergencyContactPhone !== undefined) updateData.emergencyContactPhone = data.emergencyContactPhone;
     if (data.medicalNotes !== undefined) updateData.medicalNotes = data.medicalNotes;
+    if (data.avatarUrl !== undefined) updateData.avatarUrl = data.avatarUrl;
 
     if (Object.keys(updateData).length === 0) return null;
 
