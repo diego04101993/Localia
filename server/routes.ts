@@ -951,6 +951,9 @@ export async function registerRoutes(
       if (membership.status !== "active") {
         return res.status(400).json({ message: "El cliente no tiene una membresía activa" });
       }
+      if (membership.clientStatus === "frozen") {
+        return res.status(400).json({ message: "El cliente está congelado. No se puede registrar asistencia." });
+      }
 
       const attendance = await storage.createAttendance({
         branchId: actor.branchId,
@@ -1038,6 +1041,36 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error(`[AVATAR] Error:`, err.stack || err);
       res.status(500).json({ message: "Error al eliminar avatar" });
+    }
+  });
+
+  app.patch("/api/branch/clients/:id/status", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const clientId = req.params.id as string;
+    const { clientStatus } = req.body;
+
+    if (!clientStatus || !["active", "inactive", "frozen"].includes(clientStatus)) {
+      return res.status(400).json({ message: "Status inválido. Usa: active, inactive, frozen" });
+    }
+
+    try {
+      const membership = await storage.getMembership(clientId, actor.branchId);
+      if (!membership) return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+
+      await storage.updateClientStatus(membership.id, clientStatus);
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "UPDATE_CLIENT_STATUS",
+        branchId: actor.branchId,
+        metadata: { clientId, clientStatus },
+      });
+
+      console.log(`[CLIENT_STATUS] ${clientId} → ${clientStatus} by ${actor.email}`);
+      res.json({ success: true, clientStatus });
+    } catch (err: any) {
+      console.error(`[CLIENT_STATUS] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al actualizar status" });
     }
   });
 
@@ -1431,6 +1464,12 @@ export async function registerRoutes(
       const userMembership = await storage.getMembership(data.userId, actor.branchId);
       if (!userMembership || userMembership.status !== "active") {
         return res.status(400).json({ message: "El cliente no pertenece a esta sucursal o no tiene membresía activa" });
+      }
+      if (userMembership.clientStatus === "inactive") {
+        return res.status(400).json({ message: "El cliente está inactivo. No se puede reservar." });
+      }
+      if (userMembership.clientStatus === "frozen") {
+        return res.status(400).json({ message: "El cliente está congelado. No se puede reservar." });
       }
 
       const existingBookings = await storage.getBookingsForClassOnDate(data.classScheduleId, data.bookingDate);

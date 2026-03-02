@@ -43,6 +43,7 @@ Multi-tenant gym management platform with role-based access (SUPER_ADMIN, BRANCH
 - `POST /api/branch/clients/:id/attendance` - Register attendance (BRANCH_ADMIN)
 - `POST /api/branch/clients/:id/avatar` - Upload client avatar photo (BRANCH_ADMIN, multer)
 - `DELETE /api/branch/clients/:id/avatar` - Remove client avatar photo (BRANCH_ADMIN)
+- `PATCH /api/branch/clients/:id/status` - Update client status {clientStatus: active|inactive|frozen} (BRANCH_ADMIN)
 - `GET /api/branch/invite-link` - Get branch invite URL (BRANCH_ADMIN)
 - `GET /api/branch/plans` - List branch membership plans (BRANCH_ADMIN)
 - `POST /api/branch/plans` - Create membership plan (BRANCH_ADMIN)
@@ -100,7 +101,7 @@ Multi-tenant gym management platform with role-based access (SUPER_ADMIN, BRANCH
 ## Database Schema
 - **users**: id, email, passwordHash, role (SUPER_ADMIN/BRANCH_ADMIN/CUSTOMER), branchId, name, phone, lastName, birthDate, gender, emergencyContactName, emergencyContactPhone, medicalNotes
 - **branches**: id, name, slug, status, category, subcategory, latitude, longitude, city, address, coverImageUrl, description, deletedAt
-- **memberships**: id, userId, branchId, status (active/banned/left), isFavorite, joinedAt, lastSeenAt, source (invite/self_join/admin_created), planId, classesRemaining, expiresAt
+- **memberships**: id, userId, branchId, status (active/banned/left), isFavorite, joinedAt, lastSeenAt, source (invite/self_join/admin_created), planId, classesRemaining, expiresAt, clientStatus (active/inactive/frozen default active)
 - **membership_plans**: id, branchId, name, description, price (integer cents), durationDays, classLimit, isActive, createdAt
 - **class_schedules**: id, branchId, name, description, dayOfWeek, startTime, endTime, capacity, instructorName, isActive, createdAt
 - **class_bookings**: id, classScheduleId, branchId, userId, bookingDate, status (confirmed/cancelled/attended), createdAt

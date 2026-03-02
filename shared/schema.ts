@@ -84,6 +84,7 @@ export const memberships = pgTable("memberships", {
   planId: varchar("plan_id", { length: 36 }),
   classesRemaining: integer("classes_remaining"),
   expiresAt: timestamp("expires_at", { withTimezone: true }),
+  clientStatus: text("client_status").notNull().default("active"),
 }, (table) => [
   uniqueIndex("memberships_user_branch_idx").on(table.userId, table.branchId),
 ]);

@@ -85,6 +85,7 @@ interface BranchClient {
   classesRemaining: number | null;
   expiresAt: string | null;
   avatarUrl: string | null;
+  clientStatus: string;
 }
 
 interface MembershipPlan {
@@ -114,6 +115,7 @@ interface ClientProfile {
   membership: {
     id: string;
     status: string;
+    clientStatus: string;
     joinedAt: string;
     lastSeenAt: string | null;
     source: string;
@@ -168,6 +170,20 @@ function genderLabel(g: string | null): string {
 
 function displayName(name: string, lastName: string | null): string {
   return lastName ? `${name} ${lastName}` : name;
+}
+
+function clientStatusLabel(s: string): string {
+  if (s === "active") return "Activo";
+  if (s === "inactive") return "Inactivo";
+  if (s === "frozen") return "Congelado";
+  return s;
+}
+
+function clientStatusVariant(s: string): "default" | "secondary" | "destructive" | "outline" {
+  if (s === "active") return "default";
+  if (s === "inactive") return "secondary";
+  if (s === "frozen") return "outline";
+  return "secondary";
 }
 
 function normalizePhoneMX(phone: string): string {
@@ -648,6 +664,54 @@ function InviteLinkDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
   );
 }
 
+function ClientStatusSelector({ clientId, currentStatus }: { clientId: string; currentStatus: string }) {
+  const { toast } = useToast();
+
+  const statusMutation = useMutation({
+    mutationFn: async (clientStatus: string) => {
+      const resp = await apiRequest("PATCH", `/api/branch/clients/${clientId}/status`, { clientStatus });
+      return resp.json();
+    },
+    onSuccess: (_data, newStatus) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients", clientId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
+      toast({ title: `Status actualizado a ${clientStatusLabel(newStatus)}` });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <div className="flex items-center gap-2">
+      <Badge variant={clientStatusVariant(currentStatus)} data-testid="badge-client-status">
+        {clientStatusLabel(currentStatus)}
+      </Badge>
+      <Select
+        value={currentStatus}
+        onValueChange={(val) => statusMutation.mutate(val)}
+        disabled={statusMutation.isPending}
+      >
+        <SelectTrigger className="w-[140px] h-7 text-xs" data-testid="client-status-select">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="active">Activo</SelectItem>
+          <SelectItem value="inactive">Inactivo</SelectItem>
+          <SelectItem value="frozen">Congelado</SelectItem>
+        </SelectContent>
+      </Select>
+      {statusMutation.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
+      {currentStatus === "inactive" && (
+        <span className="text-xs text-orange-500">No puede reservar</span>
+      )}
+      {currentStatus === "frozen" && (
+        <span className="text-xs text-blue-500">Sin asistencia ni reservas</span>
+      )}
+    </div>
+  );
+}
+
 function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete }: {
   clientId: string | null;
   open: boolean;
@@ -806,10 +870,12 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete }:
               </div>
             </div>
 
+            <ClientStatusSelector
+              clientId={profile.user.id}
+              currentStatus={profile.membership.clientStatus || "active"}
+            />
+
             <div className="flex items-center gap-2">
-              <Badge variant={profile.membership.status === "active" ? "default" : "secondary"} data-testid="badge-client-status">
-                {profile.membership.status === "active" ? "Activo" : profile.membership.status === "banned" ? "Bloqueado" : "Inactivo"}
-              </Badge>
               <span className="text-xs text-muted-foreground">
                 Membresía desde {formatDate(profile.membership.joinedAt)} · {profile.membership.source === "admin_created" ? "Creado por admin" : profile.membership.source === "invite" ? "Por invitación" : "Auto-registro"}
               </span>
@@ -822,7 +888,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete }:
               <Button
                 size="sm"
                 onClick={() => attendanceMutation.mutate()}
-                disabled={attendanceMutation.isPending || profile.membership.status !== "active"}
+                disabled={attendanceMutation.isPending || profile.membership.status !== "active" || profile.membership.clientStatus === "frozen"}
                 data-testid="button-register-attendance"
               >
                 {attendanceMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <ClipboardCheck className="h-4 w-4 mr-1" />}
@@ -1146,11 +1212,11 @@ export default function ClientesTab() {
                         {displayName(client.name, client.lastName)}
                       </p>
                       <Badge
-                        variant={client.membershipStatus === "active" ? "default" : "secondary"}
+                        variant={clientStatusVariant(client.clientStatus)}
                         className="text-[10px] px-1.5 py-0"
                         data-testid={`badge-client-status-${client.userId}`}
                       >
-                        {client.membershipStatus === "active" ? "Activo" : client.membershipStatus === "banned" ? "Bloqueado" : "Inactivo"}
+                        {clientStatusLabel(client.clientStatus)}
                       </Badge>
                     </div>
                     <div className="flex items-center gap-3 text-xs text-muted-foreground mt-0.5">

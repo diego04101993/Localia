@@ -135,6 +135,7 @@ export interface IStorage {
   getExpiringMemberships(branchId: string, daysAhead: number): Promise<any[]>;
   getInactiveClients(branchId: string, daysSince: number): Promise<any[]>;
   updateClient(userId: string, data: { name?: string; lastName?: string | null; phone?: string | null; birthDate?: string | null; gender?: string | null; emergencyContactName?: string | null; emergencyContactPhone?: string | null; medicalNotes?: string | null; avatarUrl?: string | null }): Promise<any>;
+  updateClientStatus(membershipId: string, clientStatus: string): Promise<any>;
   softDeleteMembership(membershipId: string): Promise<any>;
   getBranchAnnouncements(branchId: string): Promise<BranchAnnouncement[]>;
   createAnnouncement(data: InsertBranchAnnouncement): Promise<BranchAnnouncement>;
@@ -469,6 +470,7 @@ export class DatabaseStorage implements IStorage {
         avatarUrl: users.avatarUrl,
         membershipId: memberships.id,
         membershipStatus: memberships.status,
+        clientStatus: memberships.clientStatus,
         joinedAt: memberships.joinedAt,
         lastSeenAt: memberships.lastSeenAt,
         source: memberships.source,
@@ -1118,6 +1120,15 @@ export class DatabaseStorage implements IStorage {
     if (Object.keys(updateData).length === 0) return null;
 
     const [updated] = await db.update(users).set(updateData).where(eq(users.id, userId)).returning();
+    return updated;
+  }
+
+  async updateClientStatus(membershipId: string, clientStatus: string): Promise<any> {
+    const [updated] = await db
+      .update(memberships)
+      .set({ clientStatus })
+      .where(eq(memberships.id, membershipId))
+      .returning();
     return updated;
   }
 
