@@ -29,6 +29,7 @@ import {
   ImageOff,
   MessageCircle,
   PhoneCall,
+  DollarSign,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -86,6 +87,8 @@ interface BranchClient {
   expiresAt: string | null;
   avatarUrl: string | null;
   clientStatus: string;
+  hasDebt: boolean;
+  debtAmount: number;
 }
 
 interface MembershipPlan {
@@ -116,6 +119,8 @@ interface ClientProfile {
     id: string;
     status: string;
     clientStatus: string;
+    hasDebt: boolean;
+    debtAmount: number;
     joinedAt: string;
     lastSeenAt: string | null;
     source: string;
@@ -664,6 +669,84 @@ function InviteLinkDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
   );
 }
 
+function ClientDebtSection({ clientId, hasDebt, debtAmount }: { clientId: string; hasDebt: boolean; debtAmount: number }) {
+  const { toast } = useToast();
+  const [localHasDebt, setLocalHasDebt] = useState(hasDebt);
+  const [localAmount, setLocalAmount] = useState(String(debtAmount / 100));
+
+  useEffect(() => {
+    setLocalHasDebt(hasDebt);
+    setLocalAmount(String(debtAmount / 100));
+  }, [hasDebt, debtAmount]);
+
+  const debtMutation = useMutation({
+    mutationFn: async (data: { hasDebt: boolean; debtAmount: number }) => {
+      const resp = await apiRequest("PATCH", `/api/branch/clients/${clientId}/debt`, data);
+      return resp.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients", clientId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
+      toast({ title: "Adeudo actualizado" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  function saveDebt() {
+    const cents = Math.round(parseFloat(localAmount || "0") * 100);
+    debtMutation.mutate({ hasDebt: localHasDebt, debtAmount: cents });
+  }
+
+  return (
+    <div className="bg-muted/50 rounded-md p-3 space-y-2">
+      <h4 className="text-sm font-medium flex items-center gap-1.5">
+        <DollarSign className="h-3.5 w-3.5" />
+        Adeudo
+      </h4>
+      <div className="flex items-center gap-3">
+        <label className="flex items-center gap-2 cursor-pointer text-sm">
+          <input
+            type="checkbox"
+            checked={localHasDebt}
+            onChange={(e) => setLocalHasDebt(e.target.checked)}
+            className="rounded"
+            data-testid="client-debt-toggle"
+          />
+          Tiene adeudo
+        </label>
+        {localHasDebt && (
+          <div className="flex items-center gap-1">
+            <span className="text-sm text-muted-foreground">$</span>
+            <Input
+              type="number"
+              min="0"
+              step="0.01"
+              value={localAmount}
+              onChange={(e) => setLocalAmount(e.target.value)}
+              className="w-24 h-7 text-sm"
+              placeholder="0.00"
+              data-testid="client-debt-amount"
+            />
+            <span className="text-xs text-muted-foreground">MXN</span>
+          </div>
+        )}
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 text-xs"
+          onClick={saveDebt}
+          disabled={debtMutation.isPending}
+          data-testid="client-debt-save"
+        >
+          {debtMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Guardar"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function ClientStatusSelector({ clientId, currentStatus }: { clientId: string; currentStatus: string }) {
   const { toast } = useToast();
 
@@ -924,6 +1007,12 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete }:
                 </div>
               )}
             </div>
+
+            <ClientDebtSection
+              clientId={profile.user.id}
+              hasDebt={profile.membership.hasDebt}
+              debtAmount={profile.membership.debtAmount}
+            />
 
             <div className="bg-muted/50 rounded-md p-3 space-y-2">
               <h4 className="text-sm font-medium flex items-center gap-1.5">
@@ -1218,6 +1307,12 @@ export default function ClientesTab() {
                       >
                         {clientStatusLabel(client.clientStatus)}
                       </Badge>
+                      {client.hasDebt && (
+                        <span className="inline-flex items-center gap-0.5 text-[10px] text-red-500 font-medium" data-testid={`badge-debt-${client.userId}`}>
+                          <DollarSign className="h-3 w-3" />
+                          Adeudo
+                        </span>
+                      )}
                     </div>
                     <div className="flex items-center gap-3 text-xs text-muted-foreground mt-0.5">
                       <span className="truncate">{client.email}</span>

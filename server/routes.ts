@@ -1074,6 +1074,37 @@ export async function registerRoutes(
     }
   });
 
+  app.patch("/api/branch/clients/:id/debt", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const clientId = req.params.id as string;
+    const { hasDebt, debtAmount } = req.body;
+
+    if (typeof hasDebt !== "boolean") {
+      return res.status(400).json({ message: "hasDebt debe ser boolean" });
+    }
+
+    try {
+      const membership = await storage.getMembership(clientId, actor.branchId);
+      if (!membership) return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+
+      const amount = hasDebt ? Math.max(0, Math.round(Number(debtAmount) || 0)) : 0;
+      await storage.updateClientDebt(membership.id, hasDebt, amount);
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "UPDATE_CLIENT_DEBT",
+        branchId: actor.branchId,
+        metadata: { clientId, hasDebt, debtAmount: amount },
+      });
+
+      console.log(`[CLIENT_DEBT] ${clientId} hasDebt=${hasDebt} amount=${amount} by ${actor.email}`);
+      res.json({ success: true, hasDebt, debtAmount: amount });
+    } catch (err: any) {
+      console.error(`[CLIENT_DEBT] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al actualizar adeudo" });
+    }
+  });
+
   app.get("/api/branch/invite-link", requireBranchAdmin, async (req, res) => {
     const user = req.user as any;
     try {
