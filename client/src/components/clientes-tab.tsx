@@ -27,6 +27,8 @@ import {
   Shield,
   Camera,
   ImageOff,
+  MessageCircle,
+  PhoneCall,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -166,6 +168,14 @@ function genderLabel(g: string | null): string {
 
 function displayName(name: string, lastName: string | null): string {
   return lastName ? `${name} ${lastName}` : name;
+}
+
+function normalizePhoneMX(phone: string): string {
+  const digits = phone.replace(/\D/g, "");
+  if (digits.startsWith("52")) return digits;
+  if (digits.startsWith("1") && digits.length === 11) return "52" + digits.slice(1);
+  if (digits.length === 10) return "52" + digits;
+  return digits;
 }
 
 function getInitials(name: string, lastName: string | null): string {
@@ -758,6 +768,26 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete }:
                 <div className="flex items-center gap-2 text-sm text-muted-foreground mt-1">
                   <Phone className="h-3.5 w-3.5" />
                   <span data-testid="text-profile-phone">{profile.user.phone}</span>
+                  <a
+                    href={`https://wa.me/${normalizePhoneMX(profile.user.phone)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-xs text-green-600 hover:text-green-700 hover:underline ml-1"
+                    data-testid="client-whatsapp"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <MessageCircle className="h-3 w-3" />
+                    WhatsApp
+                  </a>
+                  <a
+                    href={`tel:${profile.user.phone}`}
+                    className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 hover:underline"
+                    data-testid="client-call"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <PhoneCall className="h-3 w-3" />
+                    Llamar
+                  </a>
                 </div>
               )}
               <div className="flex items-center gap-3 text-sm text-muted-foreground mt-1 flex-wrap">
