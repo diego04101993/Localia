@@ -112,6 +112,10 @@ interface ClientProfile {
     emergencyContactName: string | null;
     emergencyContactPhone: string | null;
     medicalNotes: string | null;
+    injuriesNotes: string | null;
+    medicalWarnings: string | null;
+    parqAccepted: boolean;
+    parqAcceptedDate: string | null;
     avatarUrl: string | null;
     createdAt: string;
   };
@@ -490,6 +494,9 @@ function EditClientDialog({ clientId, open, onOpenChange }: { clientId: string |
   const [emergencyContactName, setEmergencyContactName] = useState("");
   const [emergencyContactPhone, setEmergencyContactPhone] = useState("");
   const [medicalNotes, setMedicalNotes] = useState("");
+  const [injuriesNotes, setInjuriesNotes] = useState("");
+  const [medicalWarnings, setMedicalWarnings] = useState("");
+  const [parqAccepted, setParqAccepted] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
   const { data: profile } = useQuery<ClientProfile>({
@@ -507,6 +514,9 @@ function EditClientDialog({ clientId, open, onOpenChange }: { clientId: string |
       setEmergencyContactName(profile.user.emergencyContactName || "");
       setEmergencyContactPhone(profile.user.emergencyContactPhone || "");
       setMedicalNotes(profile.user.medicalNotes || "");
+      setInjuriesNotes(profile.user.injuriesNotes || "");
+      setMedicalWarnings(profile.user.medicalWarnings || "");
+      setParqAccepted(profile.user.parqAccepted || false);
       setLoaded(true);
     }
   }, [profile, loaded]);
@@ -543,6 +553,10 @@ function EditClientDialog({ clientId, open, onOpenChange }: { clientId: string |
       emergencyContactName: emergencyContactName || null,
       emergencyContactPhone: emergencyContactPhone || null,
       medicalNotes: medicalNotes || null,
+      injuriesNotes: injuriesNotes || null,
+      medicalWarnings: medicalWarnings || null,
+      parqAccepted,
+      parqAcceptedDate: parqAccepted ? (profile?.user.parqAcceptedDate || new Date().toISOString().split("T")[0]) : null,
     });
   }
 
@@ -606,6 +620,30 @@ function EditClientDialog({ clientId, open, onOpenChange }: { clientId: string |
             <div className="space-y-2">
               <Label>Notas médicas (privado)</Label>
               <Textarea value={medicalNotes} onChange={(e) => setMedicalNotes(e.target.value)} placeholder="Alergias, condiciones, etc." className="min-h-[60px] text-sm" data-testid="input-edit-medical" />
+            </div>
+            <div className="space-y-2">
+              <Label>Lesiones / limitaciones</Label>
+              <Textarea value={injuriesNotes} onChange={(e) => setInjuriesNotes(e.target.value)} placeholder="Rodilla derecha operada, espalda baja sensible, etc." className="min-h-[60px] text-sm" data-testid="input-edit-injuries" />
+            </div>
+            <div className="space-y-2">
+              <Label>Advertencias médicas</Label>
+              <Textarea value={medicalWarnings} onChange={(e) => setMedicalWarnings(e.target.value)} placeholder="Hipertensión, asma, toma medicamento X, etc." className="min-h-[60px] text-sm" data-testid="input-edit-warnings" />
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="parq-accepted"
+                checked={parqAccepted}
+                onChange={(e) => setParqAccepted(e.target.checked)}
+                className="rounded"
+                data-testid="input-edit-parq"
+              />
+              <Label htmlFor="parq-accepted" className="cursor-pointer text-sm">
+                PAR-Q firmado / aceptado
+              </Label>
+              {parqAccepted && profile?.user.parqAcceptedDate && (
+                <span className="text-xs text-muted-foreground">({profile.user.parqAcceptedDate})</span>
+              )}
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={handleClose} data-testid="button-cancel-edit">Cancelar</Button>
@@ -1079,24 +1117,47 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete }:
               )}
             </div>
 
-            {(profile.user.emergencyContactName || profile.user.emergencyContactPhone || profile.user.medicalNotes) && (
-              <div className="bg-muted/50 rounded-md p-3 space-y-2">
-                <h4 className="text-sm font-medium flex items-center gap-1.5">
-                  <Shield className="h-3.5 w-3.5" />
-                  Info de emergencia / médica
-                </h4>
-                {(profile.user.emergencyContactName || profile.user.emergencyContactPhone) && (
-                  <div className="text-xs text-muted-foreground">
-                    <span className="font-medium">Contacto:</span> {profile.user.emergencyContactName || ""} {profile.user.emergencyContactPhone ? `(${profile.user.emergencyContactPhone})` : ""}
-                  </div>
-                )}
-                {profile.user.medicalNotes && (
-                  <div className="text-xs text-muted-foreground" data-testid="text-medical-notes">
-                    <span className="font-medium">Notas médicas:</span> {profile.user.medicalNotes}
-                  </div>
+            <div className="bg-muted/50 rounded-md p-3 space-y-2">
+              <h4 className="text-sm font-medium flex items-center gap-1.5">
+                <Shield className="h-3.5 w-3.5" />
+                Salud y emergencia
+              </h4>
+              <div className="flex items-center gap-2">
+                <Badge
+                  variant={profile.user.parqAccepted ? "default" : "outline"}
+                  className={`text-[10px] ${profile.user.parqAccepted ? "bg-green-600" : ""}`}
+                  data-testid="badge-parq"
+                >
+                  PAR-Q {profile.user.parqAccepted ? "✓" : "pendiente"}
+                </Badge>
+                {profile.user.parqAccepted && profile.user.parqAcceptedDate && (
+                  <span className="text-[10px] text-muted-foreground">Firmado: {profile.user.parqAcceptedDate}</span>
                 )}
               </div>
-            )}
+              {(profile.user.emergencyContactName || profile.user.emergencyContactPhone) && (
+                <div className="text-xs text-muted-foreground">
+                  <span className="font-medium">Contacto emergencia:</span> {profile.user.emergencyContactName || ""} {profile.user.emergencyContactPhone ? `(${profile.user.emergencyContactPhone})` : ""}
+                </div>
+              )}
+              {profile.user.medicalNotes && (
+                <div className="text-xs text-muted-foreground" data-testid="text-medical-notes">
+                  <span className="font-medium">Notas médicas:</span> {profile.user.medicalNotes}
+                </div>
+              )}
+              {profile.user.injuriesNotes && (
+                <div className="text-xs text-muted-foreground" data-testid="text-injuries-notes">
+                  <span className="font-medium">Lesiones:</span> {profile.user.injuriesNotes}
+                </div>
+              )}
+              {profile.user.medicalWarnings && (
+                <div className="text-xs text-muted-foreground" data-testid="text-medical-warnings">
+                  <span className="font-medium">Advertencias:</span> {profile.user.medicalWarnings}
+                </div>
+              )}
+              {!profile.user.emergencyContactName && !profile.user.emergencyContactPhone && !profile.user.medicalNotes && !profile.user.injuriesNotes && !profile.user.medicalWarnings && !profile.user.parqAccepted && (
+                <p className="text-xs text-muted-foreground italic">Sin datos de salud registrados</p>
+              )}
+            </div>
 
             <div>
               <h4 className="text-sm font-medium mb-2 flex items-center gap-1.5">

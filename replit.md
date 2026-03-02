@@ -100,7 +100,7 @@ Multi-tenant gym management platform with role-based access (SUPER_ADMIN, BRANCH
 - `POST /api/memberships/favorite` - Toggle favorite {branchId, isFavorite} (authenticated)
 
 ## Database Schema
-- **users**: id, email, passwordHash, role (SUPER_ADMIN/BRANCH_ADMIN/CUSTOMER), branchId, name, phone, lastName, birthDate, gender, emergencyContactName, emergencyContactPhone, medicalNotes
+- **users**: id, email, passwordHash, role (SUPER_ADMIN/BRANCH_ADMIN/CUSTOMER), branchId, name, phone, lastName, birthDate, gender, emergencyContactName, emergencyContactPhone, medicalNotes, injuriesNotes, medicalWarnings, parqAccepted (boolean), parqAcceptedDate
 - **branches**: id, name, slug, status, category, subcategory, latitude, longitude, city, address, coverImageUrl, description, deletedAt
 - **memberships**: id, userId, branchId, status (active/banned/left), isFavorite, joinedAt, lastSeenAt, source (invite/self_join/admin_created), planId, classesRemaining, expiresAt, clientStatus (active/inactive/frozen default active)
 - **membership_plans**: id, branchId, name, description, price (integer cents), durationDays, classLimit, isActive, createdAt
