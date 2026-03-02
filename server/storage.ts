@@ -134,6 +134,8 @@ export interface IStorage {
   copyClassSchedules(branchId: string, fromDay: number, toDay: number): Promise<ClassSchedule[]>;
   getExpiringMemberships(branchId: string, daysAhead: number): Promise<any[]>;
   getInactiveClients(branchId: string, daysSince: number): Promise<any[]>;
+  updateClient(userId: string, data: { name?: string; lastName?: string | null; phone?: string | null; birthDate?: string | null; gender?: string | null; emergencyContactName?: string | null; emergencyContactPhone?: string | null; medicalNotes?: string | null }): Promise<any>;
+  softDeleteMembership(membershipId: string): Promise<any>;
   getBranchAnnouncements(branchId: string): Promise<BranchAnnouncement[]>;
   createAnnouncement(data: InsertBranchAnnouncement): Promise<BranchAnnouncement>;
   deleteAnnouncement(id: string): Promise<void>;
@@ -449,13 +451,21 @@ export class DatabaseStorage implements IStorage {
     return results;
   }
 
-  async getBranchClients(branchId: string): Promise<any[]> {
+  async getBranchClients(branchId: string, includeLeft: boolean = false): Promise<any[]> {
+    const conditions = [eq(memberships.branchId, branchId)];
+    if (!includeLeft) {
+      conditions.push(ne(memberships.status, "left"));
+    }
+
     const results = await db
       .select({
         userId: users.id,
         name: users.name,
+        lastName: users.lastName,
         email: users.email,
         phone: users.phone,
+        birthDate: users.birthDate,
+        gender: users.gender,
         membershipId: memberships.id,
         membershipStatus: memberships.status,
         joinedAt: memberships.joinedAt,
@@ -470,7 +480,7 @@ export class DatabaseStorage implements IStorage {
       .from(memberships)
       .innerJoin(users, eq(memberships.userId, users.id))
       .leftJoin(membershipPlans, eq(memberships.planId, membershipPlans.id))
-      .where(eq(memberships.branchId, branchId))
+      .where(and(...conditions))
       .orderBy(desc(memberships.joinedAt));
 
     const clientIds = results.map(r => r.userId);
@@ -527,7 +537,19 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(attendances.userId, userId), eq(attendances.branchId, branchId)));
 
     return {
-      user: { id: user.id, name: user.name, email: user.email, phone: user.phone, createdAt: user.createdAt },
+      user: {
+        id: user.id,
+        name: user.name,
+        lastName: user.lastName,
+        email: user.email,
+        phone: user.phone,
+        birthDate: user.birthDate,
+        gender: user.gender,
+        emergencyContactName: user.emergencyContactName,
+        emergencyContactPhone: user.emergencyContactPhone,
+        medicalNotes: user.medicalNotes,
+        createdAt: user.createdAt,
+      },
       membership,
       plan,
       notes,
@@ -1077,6 +1099,32 @@ export class DatabaseStorage implements IStorage {
       )`));
 
     return results;
+  }
+
+  async updateClient(userId: string, data: { name?: string; lastName?: string | null; phone?: string | null; birthDate?: string | null; gender?: string | null; emergencyContactName?: string | null; emergencyContactPhone?: string | null; medicalNotes?: string | null }): Promise<any> {
+    const updateData: any = {};
+    if (data.name !== undefined) updateData.name = data.name;
+    if (data.lastName !== undefined) updateData.lastName = data.lastName;
+    if (data.phone !== undefined) updateData.phone = data.phone;
+    if (data.birthDate !== undefined) updateData.birthDate = data.birthDate;
+    if (data.gender !== undefined) updateData.gender = data.gender;
+    if (data.emergencyContactName !== undefined) updateData.emergencyContactName = data.emergencyContactName;
+    if (data.emergencyContactPhone !== undefined) updateData.emergencyContactPhone = data.emergencyContactPhone;
+    if (data.medicalNotes !== undefined) updateData.medicalNotes = data.medicalNotes;
+
+    if (Object.keys(updateData).length === 0) return null;
+
+    const [updated] = await db.update(users).set(updateData).where(eq(users.id, userId)).returning();
+    return updated;
+  }
+
+  async softDeleteMembership(membershipId: string): Promise<any> {
+    const [updated] = await db
+      .update(memberships)
+      .set({ status: "left" })
+      .where(eq(memberships.id, membershipId))
+      .returning();
+    return updated;
   }
 
   async getBranchAnnouncements(branchId: string): Promise<BranchAnnouncement[]> {

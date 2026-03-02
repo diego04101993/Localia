@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import {
   Users,
@@ -18,6 +18,13 @@ import {
   Hash,
   XCircle,
   Download,
+  Pencil,
+  Trash2,
+  ChevronDown,
+  ChevronUp,
+  AlertTriangle,
+  Heart,
+  Shield,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -27,6 +34,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -34,14 +48,27 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
 interface BranchClient {
   userId: string;
   name: string;
+  lastName: string | null;
   email: string;
   phone: string | null;
+  birthDate: string | null;
+  gender: string | null;
   membershipId: string;
   membershipStatus: string;
   joinedAt: string;
@@ -65,8 +92,29 @@ interface MembershipPlan {
 }
 
 interface ClientProfile {
-  user: { id: string; name: string; email: string; phone: string | null; createdAt: string };
-  membership: { id: string; status: string; joinedAt: string; lastSeenAt: string | null; source: string; planId: string | null; classesRemaining: number | null; expiresAt: string | null };
+  user: {
+    id: string;
+    name: string;
+    lastName: string | null;
+    email: string;
+    phone: string | null;
+    birthDate: string | null;
+    gender: string | null;
+    emergencyContactName: string | null;
+    emergencyContactPhone: string | null;
+    medicalNotes: string | null;
+    createdAt: string;
+  };
+  membership: {
+    id: string;
+    status: string;
+    joinedAt: string;
+    lastSeenAt: string | null;
+    source: string;
+    planId: string | null;
+    classesRemaining: number | null;
+    expiresAt: string | null;
+  };
   plan: { id: string; name: string; price: number; durationDays: number | null; classLimit: number | null } | null;
   notes: { id: string; content: string; createdAt: string; createdByName?: string }[];
   recentAttendances: { id: string; checkedInAt: string }[];
@@ -95,15 +143,43 @@ function timeAgo(dateStr: string | null) {
   return `Hace ${Math.floor(days / 30)} meses`;
 }
 
+function calcAge(birthDate: string | null): number | null {
+  if (!birthDate) return null;
+  const birth = new Date(birthDate);
+  const now = new Date();
+  let age = now.getFullYear() - birth.getFullYear();
+  const m = now.getMonth() - birth.getMonth();
+  if (m < 0 || (m === 0 && now.getDate() < birth.getDate())) age--;
+  return age;
+}
+
+function genderLabel(g: string | null): string {
+  if (g === "M") return "Masculino";
+  if (g === "F") return "Femenino";
+  if (g === "NE") return "No especifica";
+  return "";
+}
+
+function displayName(name: string, lastName: string | null): string {
+  return lastName ? `${name} ${lastName}` : name;
+}
+
 function CreateClientDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
   const { toast } = useToast();
   const [name, setName] = useState("");
+  const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
+  const [showMore, setShowMore] = useState(false);
+  const [birthDate, setBirthDate] = useState("");
+  const [gender, setGender] = useState("");
+  const [emergencyContactName, setEmergencyContactName] = useState("");
+  const [emergencyContactPhone, setEmergencyContactPhone] = useState("");
+  const [medicalNotes, setMedicalNotes] = useState("");
   const [createdPassword, setCreatedPassword] = useState<string | null>(null);
 
   const createMutation = useMutation({
-    mutationFn: async (data: { name: string; email: string; phone?: string }) => {
+    mutationFn: async (data: any) => {
       const resp = await apiRequest("POST", "/api/branch/clients", data);
       return resp.json();
     },
@@ -124,16 +200,23 @@ function CreateClientDialog({ open, onOpenChange }: { open: boolean; onOpenChang
   });
 
   function resetAndClose() {
-    setName("");
-    setEmail("");
-    setPhone("");
-    setCreatedPassword(null);
+    setName(""); setLastName(""); setEmail(""); setPhone("");
+    setShowMore(false); setBirthDate(""); setGender("");
+    setEmergencyContactName(""); setEmergencyContactPhone("");
+    setMedicalNotes(""); setCreatedPassword(null);
     onOpenChange(false);
   }
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    createMutation.mutate({ name, email, phone: phone || undefined });
+    const data: any = { name, email, phone: phone || undefined };
+    if (lastName) data.lastName = lastName;
+    if (birthDate) data.birthDate = birthDate;
+    if (gender) data.gender = gender;
+    if (emergencyContactName) data.emergencyContactName = emergencyContactName;
+    if (emergencyContactPhone) data.emergencyContactPhone = emergencyContactPhone;
+    if (medicalNotes) data.medicalNotes = medicalNotes;
+    createMutation.mutate(data);
   }
 
   if (createdPassword) {
@@ -172,45 +255,74 @@ function CreateClientDialog({ open, onOpenChange }: { open: boolean; onOpenChang
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent className="max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Crear cliente</DialogTitle>
           <DialogDescription>Agrega un nuevo cliente a tu sucursal</DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="client-name">Nombre *</Label>
-            <Input
-              id="client-name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Nombre del cliente"
-              required
-              data-testid="input-client-name"
-            />
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-2">
+              <Label htmlFor="client-name">Nombre *</Label>
+              <Input id="client-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Nombre" required data-testid="input-client-name" />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="client-lastname">Apellidos</Label>
+              <Input id="client-lastname" value={lastName} onChange={(e) => setLastName(e.target.value)} placeholder="Apellidos" data-testid="input-client-lastname" />
+            </div>
           </div>
           <div className="space-y-2">
             <Label htmlFor="client-email">Email *</Label>
-            <Input
-              id="client-email"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="correo@ejemplo.com"
-              required
-              data-testid="input-client-email"
-            />
+            <Input id="client-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="correo@ejemplo.com" required data-testid="input-client-email" />
           </div>
           <div className="space-y-2">
             <Label htmlFor="client-phone">Teléfono (opcional)</Label>
-            <Input
-              id="client-phone"
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              placeholder="55 1234 5678"
-              data-testid="input-client-phone"
-            />
+            <Input id="client-phone" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="55 1234 5678" data-testid="input-client-phone" />
           </div>
+
+          <Button type="button" variant="ghost" size="sm" className="w-full" onClick={() => setShowMore(!showMore)} data-testid="button-toggle-more-fields">
+            {showMore ? <ChevronUp className="h-4 w-4 mr-1" /> : <ChevronDown className="h-4 w-4 mr-1" />}
+            {showMore ? "Menos datos" : "Más datos"}
+          </Button>
+
+          {showMore && (
+            <div className="space-y-3 border-t pt-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label htmlFor="client-birthdate">Fecha de nacimiento</Label>
+                  <Input id="client-birthdate" type="date" value={birthDate} onChange={(e) => setBirthDate(e.target.value)} data-testid="input-client-birthdate" />
+                </div>
+                <div className="space-y-2">
+                  <Label>Género</Label>
+                  <Select value={gender} onValueChange={setGender}>
+                    <SelectTrigger data-testid="select-client-gender">
+                      <SelectValue placeholder="Seleccionar" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="M">Masculino</SelectItem>
+                      <SelectItem value="F">Femenino</SelectItem>
+                      <SelectItem value="NE">No especifica</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label htmlFor="client-emergency-name">Contacto de emergencia</Label>
+                  <Input id="client-emergency-name" value={emergencyContactName} onChange={(e) => setEmergencyContactName(e.target.value)} placeholder="Nombre" data-testid="input-client-emergency-name" />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="client-emergency-phone">Tel. emergencia</Label>
+                  <Input id="client-emergency-phone" value={emergencyContactPhone} onChange={(e) => setEmergencyContactPhone(e.target.value)} placeholder="55 1234 5678" data-testid="input-client-emergency-phone" />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="client-medical">Notas médicas (privado)</Label>
+                <Textarea id="client-medical" value={medicalNotes} onChange={(e) => setMedicalNotes(e.target.value)} placeholder="Alergias, condiciones, etc." className="min-h-[60px] text-sm" data-testid="input-client-medical" />
+              </div>
+            </div>
+          )}
+
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} data-testid="button-cancel-create-client">Cancelar</Button>
             <Button type="submit" disabled={createMutation.isPending || !name || !email} data-testid="button-submit-client">
@@ -219,6 +331,147 @@ function CreateClientDialog({ open, onOpenChange }: { open: boolean; onOpenChang
             </Button>
           </DialogFooter>
         </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function EditClientDialog({ clientId, open, onOpenChange }: { clientId: string | null; open: boolean; onOpenChange: (v: boolean) => void }) {
+  const { toast } = useToast();
+  const [name, setName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [birthDate, setBirthDate] = useState("");
+  const [gender, setGender] = useState("");
+  const [emergencyContactName, setEmergencyContactName] = useState("");
+  const [emergencyContactPhone, setEmergencyContactPhone] = useState("");
+  const [medicalNotes, setMedicalNotes] = useState("");
+  const [loaded, setLoaded] = useState(false);
+
+  const { data: profile } = useQuery<ClientProfile>({
+    queryKey: ["/api/branch/clients", clientId],
+    enabled: open && !!clientId,
+  });
+
+  useEffect(() => {
+    if (profile && !loaded) {
+      setName(profile.user.name || "");
+      setLastName(profile.user.lastName || "");
+      setPhone(profile.user.phone || "");
+      setBirthDate(profile.user.birthDate || "");
+      setGender(profile.user.gender || "");
+      setEmergencyContactName(profile.user.emergencyContactName || "");
+      setEmergencyContactPhone(profile.user.emergencyContactPhone || "");
+      setMedicalNotes(profile.user.medicalNotes || "");
+      setLoaded(true);
+    }
+  }, [profile, loaded]);
+
+  const editMutation = useMutation({
+    mutationFn: async (data: any) => {
+      const resp = await apiRequest("PATCH", `/api/branch/clients/${clientId}`, data);
+      return resp.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients", clientId] });
+      toast({ title: "Cliente actualizado" });
+      handleClose();
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message || "Error al actualizar", variant: "destructive" });
+    },
+  });
+
+  function handleClose() {
+    setLoaded(false);
+    onOpenChange(false);
+  }
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    editMutation.mutate({
+      name: name || undefined,
+      lastName: lastName || null,
+      phone: phone || null,
+      birthDate: birthDate || null,
+      gender: gender || null,
+      emergencyContactName: emergencyContactName || null,
+      emergencyContactPhone: emergencyContactPhone || null,
+      medicalNotes: medicalNotes || null,
+    });
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={handleClose}>
+      <DialogContent className="max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Editar cliente</DialogTitle>
+          <DialogDescription>Modifica los datos del cliente</DialogDescription>
+        </DialogHeader>
+        {!profile ? (
+          <div className="space-y-3">
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>Nombre *</Label>
+                <Input value={name} onChange={(e) => setName(e.target.value)} required data-testid="input-edit-name" />
+              </div>
+              <div className="space-y-2">
+                <Label>Apellidos</Label>
+                <Input value={lastName} onChange={(e) => setLastName(e.target.value)} data-testid="input-edit-lastname" />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>Teléfono</Label>
+              <Input value={phone} onChange={(e) => setPhone(e.target.value)} data-testid="input-edit-phone" />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>Fecha de nacimiento</Label>
+                <Input type="date" value={birthDate} onChange={(e) => setBirthDate(e.target.value)} data-testid="input-edit-birthdate" />
+              </div>
+              <div className="space-y-2">
+                <Label>Género</Label>
+                <Select value={gender} onValueChange={setGender}>
+                  <SelectTrigger data-testid="select-edit-gender">
+                    <SelectValue placeholder="Seleccionar" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="M">Masculino</SelectItem>
+                    <SelectItem value="F">Femenino</SelectItem>
+                    <SelectItem value="NE">No especifica</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>Contacto de emergencia</Label>
+                <Input value={emergencyContactName} onChange={(e) => setEmergencyContactName(e.target.value)} placeholder="Nombre" data-testid="input-edit-emergency-name" />
+              </div>
+              <div className="space-y-2">
+                <Label>Tel. emergencia</Label>
+                <Input value={emergencyContactPhone} onChange={(e) => setEmergencyContactPhone(e.target.value)} placeholder="55 1234 5678" data-testid="input-edit-emergency-phone" />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>Notas médicas (privado)</Label>
+              <Textarea value={medicalNotes} onChange={(e) => setMedicalNotes(e.target.value)} placeholder="Alergias, condiciones, etc." className="min-h-[60px] text-sm" data-testid="input-edit-medical" />
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={handleClose} data-testid="button-cancel-edit">Cancelar</Button>
+              <Button type="submit" disabled={editMutation.isPending || !name} data-testid="button-save-edit">
+                {editMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Pencil className="h-4 w-4 mr-2" />}
+                Guardar
+              </Button>
+            </DialogFooter>
+          </form>
+        )}
       </DialogContent>
     </Dialog>
   );
@@ -272,10 +525,12 @@ function InviteLinkDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
   );
 }
 
-function ClientProfileDialog({ clientId, open, onOpenChange }: {
+function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete }: {
   clientId: string | null;
   open: boolean;
   onOpenChange: (v: boolean) => void;
+  onEdit: (id: string) => void;
+  onDelete: (id: string, name: string) => void;
 }) {
   const { toast } = useToast();
   const [noteContent, setNoteContent] = useState("");
@@ -353,12 +608,14 @@ function ClientProfileDialog({ clientId, open, onOpenChange }: {
   });
 
   const activePlans = (plans || []).filter(p => p.isActive);
+  const age = profile ? calcAge(profile.user.birthDate) : null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Perfil del cliente</DialogTitle>
+          <DialogDescription>Información detallada y acciones</DialogDescription>
         </DialogHeader>
 
         {isLoading ? (
@@ -370,7 +627,9 @@ function ClientProfileDialog({ clientId, open, onOpenChange }: {
         ) : profile ? (
           <div className="space-y-4">
             <div>
-              <h3 className="font-semibold text-lg" data-testid="text-profile-name">{profile.user.name}</h3>
+              <h3 className="font-semibold text-lg" data-testid="text-profile-name">
+                {displayName(profile.user.name, profile.user.lastName)}
+              </h3>
               <div className="flex items-center gap-2 text-sm text-muted-foreground mt-1">
                 <Mail className="h-3.5 w-3.5" />
                 <span data-testid="text-profile-email">{profile.user.email}</span>
@@ -381,9 +640,19 @@ function ClientProfileDialog({ clientId, open, onOpenChange }: {
                   <span data-testid="text-profile-phone">{profile.user.phone}</span>
                 </div>
               )}
-              <div className="flex items-center gap-2 text-sm text-muted-foreground mt-1">
-                <Calendar className="h-3.5 w-3.5" />
-                <span>Desde {formatDate(profile.user.createdAt)}</span>
+              <div className="flex items-center gap-3 text-sm text-muted-foreground mt-1 flex-wrap">
+                <span className="flex items-center gap-1">
+                  <Calendar className="h-3.5 w-3.5" />
+                  Desde {formatDate(profile.user.createdAt)}
+                </span>
+                {profile.user.birthDate && (
+                  <span data-testid="text-profile-age">
+                    {age !== null ? `${age} años` : ""} ({profile.user.birthDate})
+                  </span>
+                )}
+                {profile.user.gender && (
+                  <span data-testid="text-profile-gender">{genderLabel(profile.user.gender)}</span>
+                )}
               </div>
             </div>
 
@@ -396,6 +665,50 @@ function ClientProfileDialog({ clientId, open, onOpenChange }: {
               </span>
             </div>
 
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" variant="outline" onClick={() => { onOpenChange(false); onEdit(profile.user.id); }} data-testid="button-profile-edit">
+                <Pencil className="h-3.5 w-3.5 mr-1" /> Editar
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => attendanceMutation.mutate()}
+                disabled={attendanceMutation.isPending || profile.membership.status !== "active"}
+                data-testid="button-register-attendance"
+              >
+                {attendanceMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <ClipboardCheck className="h-4 w-4 mr-1" />}
+                Registrar asistencia
+              </Button>
+              <Button size="sm" variant="destructive" onClick={() => { onOpenChange(false); onDelete(profile.user.id, displayName(profile.user.name, profile.user.lastName)); }} data-testid="button-profile-delete">
+                <Trash2 className="h-3.5 w-3.5 mr-1" /> Eliminar
+              </Button>
+            </div>
+
+            <div className="bg-muted/50 rounded-md p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-medium flex items-center gap-1.5">
+                  <ClipboardCheck className="h-3.5 w-3.5" />
+                  Asistencias
+                </h4>
+                <span className="text-xs text-muted-foreground" data-testid="text-total-attendances">
+                  {profile.totalAttendances} total
+                </span>
+              </div>
+              <div className="text-xs text-muted-foreground" data-testid="text-last-attendance">
+                Última: {profile.recentAttendances.length > 0 ? formatDateTime(profile.recentAttendances[0].checkedInAt) : "Nunca"}
+              </div>
+              {profile.recentAttendances.length > 0 && (
+                <div className="space-y-1 pt-1 border-t">
+                  <p className="text-xs font-medium">Últimas 5:</p>
+                  {profile.recentAttendances.slice(0, 5).map((att) => (
+                    <div key={att.id} className="text-xs text-muted-foreground flex items-center gap-2">
+                      <Check className="h-3 w-3 text-green-500" />
+                      {formatDateTime(att.checkedInAt)}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <div className="bg-muted/50 rounded-md p-3 space-y-2">
               <h4 className="text-sm font-medium flex items-center gap-1.5">
                 <Package className="h-3.5 w-3.5" />
@@ -405,16 +718,8 @@ function ClientProfileDialog({ clientId, open, onOpenChange }: {
                 <div className="space-y-1">
                   <div className="flex items-center justify-between">
                     <span className="text-sm font-medium" data-testid="text-profile-plan">{profile.plan.name}</span>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 px-2 text-xs"
-                      onClick={() => removePlanMutation.mutate()}
-                      disabled={removePlanMutation.isPending}
-                      data-testid="button-remove-plan"
-                    >
-                      <XCircle className="h-3 w-3 mr-1" />
-                      Quitar
+                    <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => removePlanMutation.mutate()} disabled={removePlanMutation.isPending} data-testid="button-remove-plan">
+                      <XCircle className="h-3 w-3 mr-1" /> Quitar
                     </Button>
                   </div>
                   <div className="flex items-center gap-3 text-xs text-muted-foreground">
@@ -425,9 +730,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange }: {
                       </span>
                     )}
                     {profile.membership.expiresAt && (
-                      <span data-testid="text-plan-expires">
-                        Vence: {formatDate(profile.membership.expiresAt)}
-                      </span>
+                      <span data-testid="text-plan-expires">Vence: {formatDate(profile.membership.expiresAt)}</span>
                     )}
                     {profile.membership.classesRemaining === null && !profile.membership.expiresAt && (
                       <span>Ilimitado</span>
@@ -438,14 +741,8 @@ function ClientProfileDialog({ clientId, open, onOpenChange }: {
                 <div className="space-y-2">
                   <p className="text-xs text-muted-foreground" data-testid="text-no-plan">Sin plan asignado</p>
                   {!showPlanSelect ? (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setShowPlanSelect(true)}
-                      data-testid="button-assign-plan"
-                    >
-                      <Package className="h-3.5 w-3.5 mr-1" />
-                      Asignar plan
+                    <Button variant="outline" size="sm" onClick={() => setShowPlanSelect(true)} data-testid="button-assign-plan">
+                      <Package className="h-3.5 w-3.5 mr-1" /> Asignar plan
                     </Button>
                   ) : (
                     <div className="space-y-2">
@@ -462,9 +759,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange }: {
                           >
                             <div className="flex justify-between items-center">
                               <span className="font-medium">{plan.name}</span>
-                              <span className="text-xs text-muted-foreground">
-                                ${(plan.price / 100).toFixed(2)}
-                              </span>
+                              <span className="text-xs text-muted-foreground">${(plan.price / 100).toFixed(2)}</span>
                             </div>
                             <div className="text-xs text-muted-foreground mt-0.5">
                               {plan.durationDays ? `${plan.durationDays} días` : "Sin límite"} · {plan.classLimit ? `${plan.classLimit} clases` : "Ilimitadas"}
@@ -472,45 +767,29 @@ function ClientProfileDialog({ clientId, open, onOpenChange }: {
                           </button>
                         ))
                       )}
-                      <Button variant="ghost" size="sm" onClick={() => setShowPlanSelect(false)} data-testid="button-cancel-assign-plan">
-                        Cancelar
-                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => setShowPlanSelect(false)} data-testid="button-cancel-assign-plan">Cancelar</Button>
                     </div>
                   )}
                 </div>
               )}
             </div>
 
-            <div className="flex gap-2">
-              <Button
-                size="sm"
-                onClick={() => attendanceMutation.mutate()}
-                disabled={attendanceMutation.isPending || profile.membership.status !== "active"}
-                data-testid="button-register-attendance"
-              >
-                {attendanceMutation.isPending ? (
-                  <Loader2 className="h-4 w-4 animate-spin mr-1" />
-                ) : (
-                  <ClipboardCheck className="h-4 w-4 mr-1" />
+            {(profile.user.emergencyContactName || profile.user.emergencyContactPhone || profile.user.medicalNotes) && (
+              <div className="bg-muted/50 rounded-md p-3 space-y-2">
+                <h4 className="text-sm font-medium flex items-center gap-1.5">
+                  <Shield className="h-3.5 w-3.5" />
+                  Info de emergencia / médica
+                </h4>
+                {(profile.user.emergencyContactName || profile.user.emergencyContactPhone) && (
+                  <div className="text-xs text-muted-foreground">
+                    <span className="font-medium">Contacto:</span> {profile.user.emergencyContactName || ""} {profile.user.emergencyContactPhone ? `(${profile.user.emergencyContactPhone})` : ""}
+                  </div>
                 )}
-                Registrar asistencia
-              </Button>
-              <div className="text-xs text-muted-foreground self-center">
-                {profile.totalAttendances} asistencia{profile.totalAttendances !== 1 ? "s" : ""} total
-              </div>
-            </div>
-
-            {profile.recentAttendances.length > 0 && (
-              <div>
-                <h4 className="text-sm font-medium mb-2">Últimas asistencias</h4>
-                <div className="space-y-1">
-                  {profile.recentAttendances.slice(0, 5).map((att) => (
-                    <div key={att.id} className="text-xs text-muted-foreground flex items-center gap-2">
-                      <Check className="h-3 w-3 text-green-500" />
-                      {formatDateTime(att.checkedInAt)}
-                    </div>
-                  ))}
-                </div>
+                {profile.user.medicalNotes && (
+                  <div className="text-xs text-muted-foreground" data-testid="text-medical-notes">
+                    <span className="font-medium">Notas médicas:</span> {profile.user.medicalNotes}
+                  </div>
+                )}
               </div>
             )}
 
@@ -562,21 +841,41 @@ function ClientProfileDialog({ clientId, open, onOpenChange }: {
 }
 
 export default function ClientesTab() {
+  const { toast } = useToast();
   const [search, setSearch] = useState("");
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [showInviteDialog, setShowInviteDialog] = useState(false);
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
   const [showProfileDialog, setShowProfileDialog] = useState(false);
+  const [editClientId, setEditClientId] = useState<string | null>(null);
+  const [showEditDialog, setShowEditDialog] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
 
   const { data: clients, isLoading } = useQuery<BranchClient[]>({
     queryKey: ["/api/branch/clients"],
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: async (clientId: string) => {
+      await apiRequest("DELETE", `/api/branch/clients/${clientId}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/stats"] });
+      toast({ title: "Cliente eliminado" });
+      setDeleteTarget(null);
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message || "Error al eliminar", variant: "destructive" });
+    },
+  });
+
   const filteredClients = (clients || []).filter((c) => {
     if (!search) return true;
     const q = search.toLowerCase();
+    const full = displayName(c.name, c.lastName).toLowerCase();
     return (
-      c.name.toLowerCase().includes(q) ||
+      full.includes(q) ||
       c.email.toLowerCase().includes(q) ||
       (c.phone && c.phone.includes(q))
     );
@@ -585,6 +884,15 @@ export default function ClientesTab() {
   function openProfile(userId: string) {
     setSelectedClientId(userId);
     setShowProfileDialog(true);
+  }
+
+  function openEdit(userId: string) {
+    setEditClientId(userId);
+    setShowEditDialog(true);
+  }
+
+  function openDelete(userId: string, name: string) {
+    setDeleteTarget({ id: userId, name });
   }
 
   return (
@@ -689,7 +997,7 @@ export default function ClientesTab() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <p className="font-medium text-sm truncate" data-testid={`text-client-name-${client.userId}`}>
-                        {client.name}
+                        {displayName(client.name, client.lastName)}
                       </p>
                       <Badge
                         variant={client.membershipStatus === "active" ? "default" : "secondary"}
@@ -709,7 +1017,27 @@ export default function ClientesTab() {
                       )}
                     </div>
                   </div>
-                  <div className="hidden sm:flex flex-col items-end gap-0.5 shrink-0">
+                  <div className="hidden sm:flex items-center gap-1 shrink-0">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 w-7 p-0"
+                      onClick={(e) => { e.stopPropagation(); openEdit(client.userId); }}
+                      data-testid={`button-edit-client-${client.userId}`}
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 w-7 p-0 text-red-500 hover:text-red-700"
+                      onClick={(e) => { e.stopPropagation(); openDelete(client.userId, displayName(client.name, client.lastName)); }}
+                      data-testid={`button-delete-client-${client.userId}`}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                  <div className="hidden md:flex flex-col items-end gap-0.5 shrink-0">
                     <span className="text-xs text-muted-foreground">
                       Última visita: {timeAgo(client.lastAttendance)}
                     </span>
@@ -730,11 +1058,37 @@ export default function ClientesTab() {
 
       <CreateClientDialog open={showCreateDialog} onOpenChange={setShowCreateDialog} />
       <InviteLinkDialog open={showInviteDialog} onOpenChange={setShowInviteDialog} />
+      <EditClientDialog clientId={editClientId} open={showEditDialog} onOpenChange={setShowEditDialog} />
       <ClientProfileDialog
         clientId={selectedClientId}
         open={showProfileDialog}
         onOpenChange={setShowProfileDialog}
+        onEdit={openEdit}
+        onDelete={openDelete}
       />
+
+      <AlertDialog open={!!deleteTarget} onOpenChange={(o) => { if (!o) setDeleteTarget(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Eliminar cliente?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Se desactivará la membresía de <strong>{deleteTarget?.name}</strong>. El cliente dejará de aparecer en la lista. Esta acción se puede revertir.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-cancel-delete">Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 hover:bg-red-700"
+              onClick={() => deleteTarget && deleteMutation.mutate(deleteTarget.id)}
+              disabled={deleteMutation.isPending}
+              data-testid="button-confirm-delete"
+            >
+              {deleteMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Trash2 className="h-4 w-4 mr-1" />}
+              Eliminar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

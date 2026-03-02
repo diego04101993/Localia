@@ -36,7 +36,13 @@ export const users = pgTable("users", {
   role: userRoleEnum("role").notNull().default("CUSTOMER"),
   branchId: varchar("branch_id", { length: 36 }).references(() => branches.id),
   name: text("name").notNull().default(""),
+  lastName: text("last_name"),
   phone: text("phone"),
+  birthDate: text("birth_date"),
+  gender: text("gender"),
+  emergencyContactName: text("emergency_contact_name"),
+  emergencyContactPhone: text("emergency_contact_phone"),
+  medicalNotes: text("medical_notes"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -309,9 +315,26 @@ export type InsertMembershipPlan = z.infer<typeof insertMembershipPlanSchema>;
 
 export const createClientSchema = z.object({
   name: z.string().min(1, "El nombre es obligatorio"),
+  lastName: z.string().optional(),
   email: z.string().email("Correo electrónico inválido"),
   phone: z.string().optional(),
+  birthDate: z.string().optional(),
+  gender: z.enum(["M", "F", "NE"]).optional(),
+  emergencyContactName: z.string().optional(),
+  emergencyContactPhone: z.string().optional(),
+  medicalNotes: z.string().optional(),
   password: z.string().min(6, "La contraseña debe tener al menos 6 caracteres").optional(),
+});
+
+export const updateClientSchema = z.object({
+  name: z.string().min(1).optional(),
+  lastName: z.string().nullable().optional(),
+  phone: z.string().nullable().optional(),
+  birthDate: z.string().nullable().optional(),
+  gender: z.enum(["M", "F", "NE"]).nullable().optional(),
+  emergencyContactName: z.string().nullable().optional(),
+  emergencyContactPhone: z.string().nullable().optional(),
+  medicalNotes: z.string().nullable().optional(),
 });
 
 export const branchPhotoTypeEnum = pgEnum("branch_photo_type", [

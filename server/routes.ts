@@ -15,6 +15,7 @@ import {
   joinBranchSchema,
   favoriteBranchSchema,
   createClientSchema,
+  updateClientSchema,
   createPlanSchema,
   assignPlanSchema,
   createClassScheduleSchema,
@@ -702,7 +703,8 @@ export async function registerRoutes(
   app.get("/api/branch/clients", requireBranchAdmin, async (req, res) => {
     const user = req.user as any;
     try {
-      const clients = await storage.getBranchClients(user.branchId);
+      const includeLeft = req.query.include_left === "true";
+      const clients = await storage.getBranchClients(user.branchId, includeLeft);
       res.json(clients);
     } catch (err: any) {
       console.error(`[BRANCH_CLIENTS] Error:`, err.stack || err);
@@ -714,7 +716,7 @@ export async function registerRoutes(
     const user = req.user as any;
     try {
       const clients = await storage.getBranchClients(user.branchId);
-      const header = "name,email,phone,status,joinedAt,lastSeenAt,planName,classesRemaining";
+      const header = "nombre,apellido,email,telefono,genero,fechaNacimiento,status,ingreso,ultimaVisita,plan,clasesRestantes";
       const escCsv = (val: string | null | undefined) => {
         if (val === null || val === undefined) return "";
         const s = String(val);
@@ -725,8 +727,11 @@ export async function registerRoutes(
       };
       const rows = clients.map((c: any) => [
         escCsv(c.name),
+        escCsv(c.lastName),
         escCsv(c.email),
         escCsv(c.phone),
+        escCsv(c.gender),
+        escCsv(c.birthDate),
         escCsv(c.membershipStatus),
         escCsv(c.joinedAt ? new Date(c.joinedAt).toISOString().split("T")[0] : null),
         escCsv(c.lastSeenAt ? new Date(c.lastSeenAt).toISOString().split("T")[0] : null),
@@ -811,6 +816,17 @@ export async function registerRoutes(
         phone: result.data.phone || null,
       });
 
+      if (result.data.lastName || result.data.birthDate || result.data.gender || result.data.emergencyContactName || result.data.emergencyContactPhone || result.data.medicalNotes) {
+        await storage.updateClient(newUser.id, {
+          lastName: result.data.lastName || null,
+          birthDate: result.data.birthDate || null,
+          gender: result.data.gender || null,
+          emergencyContactName: result.data.emergencyContactName || null,
+          emergencyContactPhone: result.data.emergencyContactPhone || null,
+          medicalNotes: result.data.medicalNotes || null,
+        });
+      }
+
       await storage.createMembership({
         userId: newUser.id,
         branchId: actor.branchId,
@@ -836,6 +852,64 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error(`[CREATE_CLIENT] Error:`, err.stack || err);
       res.status(500).json({ message: `Error al crear cliente: ${err.message || "error desconocido"}` });
+    }
+  });
+
+  app.patch("/api/branch/clients/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const clientId = req.params.id as string;
+    const result = updateClientSchema.safeParse(req.body);
+    if (!result.success) {
+      return res.status(400).json({ message: "Datos inválidos", errors: result.error.flatten() });
+    }
+
+    try {
+      const membership = await storage.getMembership(clientId, actor.branchId);
+      if (!membership) return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+
+      const updated = await storage.updateClient(clientId, result.data);
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "UPDATE_CLIENT",
+        branchId: actor.branchId,
+        metadata: { clientId, fields: Object.keys(result.data) },
+      });
+
+      console.log(`[UPDATE_CLIENT] Updated client ${clientId} by ${actor.email}`);
+      res.json(updated);
+    } catch (err: any) {
+      console.error(`[UPDATE_CLIENT] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al actualizar cliente" });
+    }
+  });
+
+  app.delete("/api/branch/clients/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const clientId = req.params.id as string;
+
+    try {
+      const membership = await storage.getMembership(clientId, actor.branchId);
+      if (!membership) return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+
+      if (membership.status === "left") {
+        return res.status(400).json({ message: "El cliente ya fue eliminado" });
+      }
+
+      await storage.softDeleteMembership(membership.id);
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "SOFT_DELETE_CLIENT",
+        branchId: actor.branchId,
+        metadata: { clientId, membershipId: membership.id },
+      });
+
+      console.log(`[DELETE_CLIENT] Soft deleted client ${clientId} by ${actor.email}`);
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error(`[DELETE_CLIENT] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al eliminar cliente" });
     }
   });
 
@@ -1843,11 +1917,8 @@ export async function registerRoutes(
   });
 
   // --- Announcements ---
-  app.get("/api/branch/announcements", requireAuth, async (req, res) => {
-    const actor = await getActingUser(req);
-    if (!actor?.branchId || (actor.role !== "BRANCH_ADMIN" && actor.role !== "SUPER_ADMIN")) {
-      return res.status(403).json({ message: "No autorizado" });
-    }
+  app.get("/api/branch/announcements", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
     try {
       const announcements = await storage.getBranchAnnouncements(actor.branchId);
       res.json(announcements);
@@ -1857,11 +1928,8 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/branch/announcements", requireAuth, async (req, res) => {
-    const actor = await getActingUser(req);
-    if (!actor?.branchId || (actor.role !== "BRANCH_ADMIN" && actor.role !== "SUPER_ADMIN")) {
-      return res.status(403).json({ message: "No autorizado" });
-    }
+  app.post("/api/branch/announcements", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
     try {
       const { message } = req.body;
       if (!message || typeof message !== "string" || message.trim().length === 0) {
@@ -1893,11 +1961,8 @@ export async function registerRoutes(
     }
   });
 
-  app.delete("/api/branch/announcements/:id", requireAuth, async (req, res) => {
-    const actor = await getActingUser(req);
-    if (!actor?.branchId || (actor.role !== "BRANCH_ADMIN" && actor.role !== "SUPER_ADMIN")) {
-      return res.status(403).json({ message: "No autorizado" });
-    }
+  app.delete("/api/branch/announcements/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
     try {
       const announcements = await storage.getBranchAnnouncements(actor.branchId);
       const target = announcements.find(a => a.id === req.params.id);

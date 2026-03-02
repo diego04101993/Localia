@@ -1,0 +1,60 @@
+Eres un senior full-stack engineer trabajando en Box Manager (multi-tenant). NO borres ni reestructures el proyecto. Cambios pequeños, seguros y con verificación.
+
+Contexto del stack:
+Frontend: React + wouter + TanStack Query + shadcn/ui + Tailwind, es-MX, dark mode, data-testid en elementos interactivos.
+Backend: Express + Passport + bcrypt + express-session.
+DB: PostgreSQL + Drizzle ORM. Multi-tenant con roles SUPER_ADMIN, BRANCH_ADMIN, CUSTOMER.
+
+Objetivo de este ticket (hacerlo en 2 partes, pero en un solo PR):
+A) FIX CRÍTICO: En Branch Admin > Resumen > “Anuncio rápido” al dar Publicar, falla con 500:
+   {"message":"getActingUser is not defined"}
+   Debe quedar 100% funcionando: crear anuncio (máx 1 activo), mostrarlo como banner en /app/:slug, y registrar audit log sin crashear.
+
+B) MEJORA CLIENTES (sin romper lo existente):
+   En pestaña “Clientes”, agregar:
+   1) Campos extra al crear/editar cliente:
+      - firstName (Nombre) ya existe como name, pero separar:
+        firstName, lastName (apellidos)
+      - phone (ya existe)
+      - birthDate (opcional) y calcular edad en UI
+      - gender (opcional: M/F/No especifica)
+      - emergencyContactName, emergencyContactPhone (opcionales)
+      - medicalNotes (opcional, privado)
+   2) Editar cliente (modal) desde la lista o desde el “Perfil del cliente”.
+   3) Eliminar cliente con confirmación (soft delete, NO hard delete). Debe desaparecer de la lista por default. (Si ya existe patrón “ver eliminadas”, úsalo.)
+   4) En “Perfil del cliente” mejorar claridad:
+      - Mostrar: última asistencia, total asistencias, clases restantes si tiene plan, y un mini-historial (últimas 5 asistencias)
+      - Botones claros: “Editar”, “Desactivar/Eliminar”, “Asignar plan”, “Registrar asistencia”
+   5) Mantener compatibilidad: Si hay clientes viejos, migrar datos con defaults (lastName null, etc.) y que nada truene.
+
+Reglas de seguridad:
+- NO cambies rutas existentes de forma breaking.
+- NO cambies autenticación/sesiones.
+- NO elimines tablas, solo migra.
+- Respeta multi-tenant: todas las operaciones deben filtrar por branchId actual del admin.
+- Mantén textos en español (es-MX).
+- Mantén data-testid en: publicar anuncio, input anuncio, crear cliente, editar cliente, eliminar cliente, confirmar eliminar, guardar edición.
+
+Plan de trabajo obligatorio:
+1) Diagnóstico rápido del bug:
+   - Encuentra dónde se llama getActingUser (backend). Puede estar en un helper de audit log o middleware.
+   - Solución correcta: crear/rehabilitar helper getActingUser(req) o reemplazar por función existente (ej: req.user, req.session.impersonation, etc).
+   - Asegura que audit log guarde actorId, actorEmail, actorRole, branchId, action, targetType/targetId, metadata.
+2) Implementa fix + prueba manual:
+   - Publicar anuncio desde dashboard debe responder 200 y reflejar banner en /app/:slug.
+3) DB migration para nuevos campos de cliente:
+   - Añade columnas a tabla correspondiente (customers o users/customer profile según modelo).
+   - Backfill seguro.
+4) UI:
+   - “Crear cliente” agrega campos nuevos (los opcionales con acordeón “Más datos”).
+   - Agrega “Editar” y “Eliminar” en lista de clientes (acciones por fila) y también dentro del modal Perfil.
+   - Soft delete: botón “Eliminar” -> confirm dialog -> éxito toast -> refrescar query.
+5) Tests mínimos:
+   - Backend: endpoint crear anuncio no debe lanzar ReferenceError.
+   - Backend: crear/editar/eliminar cliente (soft) funciona y filtra por branch.
+   - Frontend: flujo manual: crear cliente, editarlo, eliminarlo, exportar CSV sigue funcionando.
+
+Entrega:
+- Lista exacta de archivos modificados.
+- Breve checklist para que yo valide (pasos click-by-click).
+- No hagas refactors grandes, solo cambios necesarios.
