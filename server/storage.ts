@@ -1,4 +1,4 @@
-import { eq, and, sql, ilike, or, ne, isNull, count, desc, asc } from "drizzle-orm";
+import { eq, and, sql, ilike, or, ne, isNull, count, desc, asc, gte } from "drizzle-orm";
 import { db } from "./db";
 import {
   users,
@@ -542,6 +542,30 @@ export class DatabaseStorage implements IStorage {
       .from(attendances)
       .where(and(eq(attendances.userId, userId), eq(attendances.branchId, branchId)));
 
+    const today = new Date().toISOString().split("T")[0];
+    const nextBookingResults = await db
+      .select({
+        bookingDate: classBookings.bookingDate,
+        className: classSchedules.name,
+        startTime: classSchedules.startTime,
+      })
+      .from(classBookings)
+      .innerJoin(classSchedules, eq(classBookings.classScheduleId, classSchedules.id))
+      .where(
+        and(
+          eq(classBookings.userId, userId),
+          eq(classBookings.branchId, branchId),
+          eq(classBookings.status, "confirmed"),
+          gte(classBookings.bookingDate, today)
+        )
+      )
+      .orderBy(classBookings.bookingDate, classSchedules.startTime)
+      .limit(1);
+
+    const nextBooking = nextBookingResults.length > 0
+      ? { bookingDate: nextBookingResults[0].bookingDate, className: nextBookingResults[0].className, startTime: nextBookingResults[0].startTime }
+      : null;
+
     return {
       user: {
         id: user.id,
@@ -566,6 +590,7 @@ export class DatabaseStorage implements IStorage {
       notes,
       recentAttendances,
       totalAttendances: Number(attendanceCount?.count) || 0,
+      nextBooking,
     };
   }
 

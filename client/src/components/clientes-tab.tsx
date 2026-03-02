@@ -137,6 +137,7 @@ interface ClientProfile {
   notes: { id: string; content: string; createdAt: string; createdByName?: string }[];
   recentAttendances: { id: string; checkedInAt: string }[];
   totalAttendances: number;
+  nextBooking: { bookingDate: string; className: string; startTime: string } | null;
 }
 
 function formatDate(dateStr: string | null) {
@@ -1022,22 +1023,42 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete }:
               </Button>
             </div>
 
-            <div className="bg-muted/50 rounded-md p-3 space-y-2">
-              <div className="flex items-center justify-between">
-                <h4 className="text-sm font-medium flex items-center gap-1.5">
-                  <ClipboardCheck className="h-3.5 w-3.5" />
-                  Asistencias
-                </h4>
-                <span className="text-xs text-muted-foreground" data-testid="text-total-attendances">
-                  {profile.totalAttendances} total
-                </span>
+            <div className="bg-muted/50 rounded-md p-3 space-y-3" data-testid="client-summary-pro">
+              <h4 className="text-sm font-medium flex items-center gap-1.5">
+                <ClipboardCheck className="h-3.5 w-3.5" />
+                Resumen
+              </h4>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="bg-background rounded-md p-2 text-center">
+                  <div className="text-lg font-bold" data-testid="text-total-attendances">{profile.totalAttendances}</div>
+                  <div className="text-[10px] text-muted-foreground">Asistencias</div>
+                </div>
+                <div className="bg-background rounded-md p-2 text-center">
+                  <div className="text-lg font-bold" data-testid="text-classes-remaining-summary">
+                    {profile.membership.classesRemaining !== null ? profile.membership.classesRemaining : "∞"}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground">Clases restantes</div>
+                </div>
               </div>
-              <div className="text-xs text-muted-foreground" data-testid="text-last-attendance">
-                Última: {profile.recentAttendances.length > 0 ? formatDateTime(profile.recentAttendances[0].checkedInAt) : "Nunca"}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-muted-foreground">Última asistencia</span>
+                  <span className="font-medium" data-testid="text-last-attendance">
+                    {profile.recentAttendances.length > 0 ? formatDateTime(profile.recentAttendances[0].checkedInAt) : "Nunca"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-muted-foreground">Próxima reserva</span>
+                  <span className="font-medium" data-testid="text-next-booking">
+                    {profile.nextBooking
+                      ? `${profile.nextBooking.className} · ${formatDate(profile.nextBooking.bookingDate)} ${profile.nextBooking.startTime}`
+                      : "Sin reservas"}
+                  </span>
+                </div>
               </div>
               {profile.recentAttendances.length > 0 && (
                 <div className="space-y-1 pt-1 border-t">
-                  <p className="text-xs font-medium">Últimas 5:</p>
+                  <p className="text-[10px] font-medium text-muted-foreground">Últimas 5 asistencias:</p>
                   {profile.recentAttendances.slice(0, 5).map((att) => (
                     <div key={att.id} className="text-xs text-muted-foreground flex items-center gap-2">
                       <Check className="h-3 w-3 text-green-500" />
