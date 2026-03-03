@@ -1,0 +1,124 @@
+OBJETIVO
+Seguimos construyendo Branch Admin dashboard (sucursal) para fitness (Natación). Ya funcionan Resumen, Clientes, Membresías y Reservas. Quiero mejoras incrementales sin refactor grande.
+
+REGLAS ANTI-ROTURAS
+- NO reestructures carpetas ni renombres masivos.
+- Implementa por fases, cambios mínimos por archivo.
+- Mantén compatibilidad con datos existentes en DB.
+- Si hay migraciones: campos nullable + defaults + backfill seguro.
+
+CAMBIO DE REGLA DE NEGOCIO (IMPORTANTE)
+EN ESTE PRODUCTO FITNESS: TODO ES MENSUAL.
+- Un plan SIEMPRE tiene ciclo mensual: pago del cliente tiene fecha (paidAt) y vencimiento (expiresAt = paidAt + 30 días o 1 mes).
+- Da igual si es “ilimitado” o “por clases”: el 3 feb vence el 3 mar aunque no use todas.
+- Al renovar (paga de nuevo), se crea un nuevo ciclo con nuevas fechas y se resetean clases si aplica.
+
+FASE 0: AUDITORÍA (SIN CAMBIOS)
+Identifica archivos/modelos de:
+- Planes (membership plans)
+- Asignación/compra del plan por cliente (membership assignment/purchase)
+- Bookings (reservas)
+- Dashboard Resumen (donde pondremos alertas)
+
+FASE 1: UI/UX EN MEMBRESÍAS (CLARO Y MENSUAL)
+PROBLEMA: “Sin vencimiento” confunde y no aplica para fitness mensual.
+ACCIONES:
+1) En el modal Crear/Editar plan:
+   - Cambia “Vigencia” a “Ciclo”:
+     - Mostrar fijo: “Mensual (30 días)” o “Mensual (1 mes)”
+   - Oculta o deshabilita el switch “Sin vencimiento” SOLO en este modo fitness.
+   - Mantén el switch en código si existe para no romper otras partes, pero en UI fitness que no se muestre.
+2) En “Resumen del plan” mostrar:
+   - Ciclo: Mensual
+   - Clases: Ilimitadas o N clases por ciclo
+   - Precio mensual
+
+NOTA: No reescribas toda la app multi-giro, solo deja esto listo para fitness.
+
+FASE 2: ESTRUCTURA DE CICLO DE PAGO POR CLIENTE (SIN ROMPER)
+Necesitamos registrar “pago de tal día a tal día”.
+Implementa en la asignación del plan al cliente:
+- paidAt (fecha de pago/activación)
+- expiresAt (fecha de vencimiento: paidAt + 1 mes)
+- totalClassesPerCycle (nullable si ilimitado)
+- remainingClasses (nullable si ilimitado)
+- status: active | expired | cancelled (si aplica)
+- (Opcional) renewedFromId para rastrear renovaciones
+
+Backfill:
+- Para membresías ya asignadas existentes: si no tienen paidAt/expiresAt:
+  - paidAt = createdAt o assignedAt
+  - expiresAt = paidAt + 30 días
+
+FASE 3: ALERTAS EN DASHBOARD (Resumen) — VENCIMIENTOS Y SIN CLASES
+Agregar card “Alertas” con:
+- “Planes vencidos” (expiresAt < hoy y status=active => marcar expired)
+- “Vencen pronto” (expiresAt dentro de 3 días)
+- “Sin clases” (remainingClasses = 0 para planes por clases, aunque no hayan vencido)
+
+Lista top 5 por prioridad:
+1) vencidos
+2) sin clases
+3) vencen pronto
+
+Cada item:
+- Cliente + plan + “Vence: 03 Mar” + “Clases restantes: X” + botón “Ver cliente”
+Esto es tu recordatorio para cobrar/renovar.
+
+FASE 4: RENOVACIÓN (COBRO MES A MES)
+En perfil del cliente (donde se asigna plan):
+- Mostrar claramente:
+  - “Pagó: 03 Feb”
+  - “Vence: 03 Mar”
+  - “Días restantes: 5”
+  - “Clases restantes: 2/12” o “Ilimitadas”
+- Botón “Renovar”:
+  - Crea un NUEVO ciclo (paidAt = hoy, expiresAt = hoy + 1 mes)
+  - Si es por clases: remainingClasses se resetea a totalClassesPerCycle
+  - Si es ilimitado: remainingClasses = null
+- Mantén historial (no sobreescribas el ciclo anterior).
+
+FASE 5: CONSUMO DE CLASES (CON CICLO MENSUAL)
+Reglas:
+1) Si cliente marca ASISTIÓ => descuenta 1 (solo si plan es por clases y ciclo está activo)
+2) Si no canceló y ya pasó la hora => no_show y descuenta 1 (si aplica)
+3) Si cancela antes del cutoff => no descuenta
+4) Si el ciclo está vencido => NO permitir reservar/registrar asistencia como válida sin renovar.
+   - Mensaje: “Plan vencido. Renueva para reservar/asistir.”
+
+Implementación segura:
+- Booking status: booked | cancelled | attended | no_show
+- Asegura idempotencia: no descontar dos veces (flag consumed o transición de status controlada)
+
+FASE 6: RESERVAS — QUIÉN AGENDA (APP vs SUCURSAL)
+- Mantén “Reservar” desde dashboard.
+- Prepara para reservas desde app:
+  - Booking.source = app | dashboard
+  - En calendario mostrar badge “App” o “Sucursal”
+- No construir toda la app aquí; solo soporte.
+
+FASE 7: MANEJO DE PLANES DESACTIVADOS/ELIMINADOS
+- No hard-delete si ya fue asignado a clientes.
+- Default: Archivar (soft delete)
+- Si intentan eliminar y hay asignaciones:
+  - Modal con:
+    A) “Archivar (recomendado)”
+    B) “Archivar y desasignar de todos” (confirmación extra)
+- No borres historial.
+
+CHECKLIST DE PRUEBAS
+1) Crear plan mensual por clases e ilimitado: UI claro “Mensual”.
+2) Asignar plan: se ve Pagó/Vence.
+3) Cuando pasa la fecha de vencimiento: aparece alerta y cliente queda expired.
+4) Reservar con plan vencido: bloqueado con mensaje + botón renovar.
+5) Asistencia/no-show/cancelación: descuenta correcto dentro del ciclo activo.
+6) Renovar: crea nuevo ciclo con nuevas fechas y resetea clases si aplica.
+7) Dashboard muestra alertas por vencidos, vencen pronto, sin clases.
+8) Todo lo existente sigue funcionando.
+
+ENTREGABLE
+Al final, reporta:
+- Archivos tocados
+- Campos nuevos agregados
+- Endpoints nuevos/ajustados (sin romper existentes)
+- Qué pantallas cambiaron y cómo probarlas

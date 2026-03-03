@@ -566,14 +566,15 @@ export async function registerRoutes(
     }
     if (!user.branchId) return res.status(400).json({ message: "No hay sucursal asignada" });
     try {
-      const daysAhead = parseInt(req.query.daysAhead as string) || 7;
+      const daysAhead = parseInt(req.query.daysAhead as string) || 3;
       const daysSince = parseInt(req.query.daysSince as string) || 30;
-      const [expiringMemberships, inactiveClients, clientsWithoutClasses] = await Promise.all([
+      const [expiringMemberships, expiredMemberships, inactiveClients, clientsWithoutClasses] = await Promise.all([
         storage.getExpiringMemberships(user.branchId, daysAhead),
+        storage.getExpiredMemberships(user.branchId),
         storage.getInactiveClients(user.branchId, daysSince),
         storage.getClientsWithoutClasses(user.branchId),
       ]);
-      res.json({ expiringMemberships, inactiveClients, clientsWithoutClasses });
+      res.json({ expiringMemberships, expiredMemberships, inactiveClients, clientsWithoutClasses });
     } catch (err: any) {
       console.error(`[BRANCH_ALERTS] Error:`, err.stack || err);
       res.status(500).json({ message: "Error al obtener alertas" });
@@ -962,6 +963,9 @@ export async function registerRoutes(
       if (membership.clientStatus === "frozen") {
         return res.status(400).json({ message: "El cliente está congelado. No se puede registrar asistencia." });
       }
+      if (membership.expiresAt && new Date(membership.expiresAt) < new Date()) {
+        return res.status(400).json({ message: "Plan vencido. Renueva para registrar asistencia." });
+      }
 
       const attendance = await storage.createAttendance({
         branchId: actor.branchId,
@@ -1304,6 +1308,66 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/branch/memberships/:id/renew", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const membershipId = req.params.id as string;
+    try {
+      const targetMembership = await storage.getMembershipById(membershipId);
+      if (!targetMembership || targetMembership.branchId !== actor.branchId) {
+        return res.status(404).json({ message: "Membresía no encontrada" });
+      }
+
+      if (!targetMembership.planId) {
+        return res.status(400).json({ message: "No hay plan asignado para renovar" });
+      }
+
+      const plan = await storage.getPlan(targetMembership.planId);
+      if (!plan) {
+        return res.status(404).json({ message: "Plan no encontrado" });
+      }
+
+      const now = new Date();
+      const expiresAt = new Date(now);
+      const duration = plan.durationDays || 30;
+      expiresAt.setDate(expiresAt.getDate() + duration);
+
+      const classesRemaining = plan.classLimit ?? null;
+      const classesTotal = plan.classLimit ?? null;
+
+      const renewed = await storage.renewMembership(
+        targetMembership.id, plan.id, classesRemaining, classesTotal, expiresAt, now
+      );
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "RENEW_MEMBERSHIP",
+        branchId: actor.branchId,
+        metadata: { membershipId: targetMembership.id, planId: plan.id, planName: plan.name, paidAt: now.toISOString(), expiresAt: expiresAt.toISOString() },
+      });
+
+      console.log(`[RENEW] Renewed "${plan.name}" for membership ${targetMembership.id} by ${actor.email}`);
+      res.json(renewed);
+    } catch (err: any) {
+      console.error(`[RENEW] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al renovar membresía" });
+    }
+  });
+
+  app.get("/api/branch/plans/:id/assignments", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const planId = req.params.id as string;
+    try {
+      const plan = await storage.getPlan(planId);
+      if (!plan || plan.branchId !== actor.branchId) {
+        return res.status(404).json({ message: "Plan no encontrado" });
+      }
+      const count = await storage.getMembershipsAssignedToPlan(planId);
+      res.json({ count });
+    } catch (err: any) {
+      res.status(500).json({ message: "Error" });
+    }
+  });
+
   // --- Branch Stats (updated with reservations) ---
   app.get("/api/branch/reservations/stats", requireBranchAdmin, async (req, res) => {
     const actor = req.user as any;
@@ -1515,6 +1579,12 @@ export async function registerRoutes(
       if (userMembership.clientStatus === "frozen") {
         return res.status(400).json({ message: "El cliente está congelado. No se puede reservar." });
       }
+      if (userMembership.expiresAt && new Date(userMembership.expiresAt) < new Date()) {
+        return res.status(400).json({ message: "Plan vencido. Renueva para reservar." });
+      }
+      if (userMembership.classesRemaining !== null && userMembership.classesRemaining <= 0) {
+        return res.status(400).json({ message: "Sin clases disponibles. Renueva para reservar." });
+      }
 
       const existingBookings = await storage.getBookingsForClassOnDate(data.classScheduleId, data.bookingDate);
       const activeBookings = existingBookings.filter(b => b.status !== "cancelled");
@@ -1533,6 +1603,7 @@ export async function registerRoutes(
         userId: data.userId,
         bookingDate: data.bookingDate,
         status: "confirmed",
+        source: "dashboard",
       });
 
       await storage.createAuditLog({
@@ -2312,6 +2383,7 @@ export async function registerRoutes(
         branchId: branch.id,
         userId: user.id,
         bookingDate,
+        source: "app",
       });
 
       res.status(201).json(booking);

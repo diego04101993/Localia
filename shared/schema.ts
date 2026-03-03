@@ -92,6 +92,8 @@ export const memberships = pgTable("memberships", {
   expiresAt: timestamp("expires_at", { withTimezone: true }),
   membershipStartDate: timestamp("membership_start_date", { withTimezone: true }),
   membershipEndDate: timestamp("membership_end_date", { withTimezone: true }),
+  paidAt: timestamp("paid_at", { withTimezone: true }),
+  renewedFromId: varchar("renewed_from_id", { length: 36 }),
   clientStatus: text("client_status").notNull().default("active"),
   hasDebt: boolean("has_debt").notNull().default(false),
   debtAmount: integer("debt_amount").notNull().default(0),
@@ -257,6 +259,11 @@ export const classSchedules = pgTable("class_schedules", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
+export const bookingSourceEnum = pgEnum("booking_source", [
+  "dashboard",
+  "app",
+]);
+
 export const classBookings = pgTable("class_bookings", {
   id: varchar("id", { length: 36 })
     .primaryKey()
@@ -273,6 +280,7 @@ export const classBookings = pgTable("class_bookings", {
   bookingDate: text("booking_date").notNull(),
   status: bookingStatusEnum("status").notNull().default("confirmed"),
   lateCancellation: boolean("late_cancellation").notNull().default(false),
+  source: bookingSourceEnum("source").notNull().default("dashboard"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 

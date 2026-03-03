@@ -1,0 +1,116 @@
+OBJETIVO
+Estamos construyendo el dashboard de Branch Admin (sucursal) para un negocio fitness (Natación). Ya funcionan Resumen, Clientes, Membresías y Reservas. NO quiero refactors grandes ni reescribir arquitectura. Solo mejoras incrementales, pequeñas y seguras, con cambios mínimos por archivo.
+
+REGLAS ANTI-ROTURAS
+- NO reestructures carpetas ni renombres masivos.
+- Cambios por fases (PR mental): implementa 1 cosa, verifica, luego la siguiente.
+- Mantén compatibilidad con datos existentes en DB.
+- Si falta algo en DB, usa migración segura (campo nullable + default) y no rompas seeds.
+- No elimines endpoints existentes: solo agrega/ajusta.
+
+FASE 0: AUDITORÍA RÁPIDA (SIN CAMBIOS)
+1) Identifica dónde están:
+   - Modelo/tabla de membership plan (planes)
+   - Relación plan-asignado-a-cliente (purchase/assignment)
+   - Reservas (booking) y estados (cancelado/asistió/no-show)
+2) Lista en un comentario interno (o nota) qué archivos tocarás, máximo 8 archivos.
+
+FASE 1: UX CLARA EN “VIGENCIA / SIN VENCIMIENTO” (Membresías)
+PROBLEMA: El toggle “Sin vencimiento” confunde.
+CAMBIO UI:
+- Renombra labels para que se entiendan:
+  - “Vigencia (días)” y un switch “Sin vencimiento”
+- Agrega helper text debajo:
+  - Si switch activo: “El plan no caduca por fecha; solo termina al agotarse las clases.”
+  - Si switch inactivo: “El plan caduca X días después de asignarlo al cliente (aunque queden clases).”
+- Agrega tooltip (icono i) con la misma explicación.
+- En el “Resumen del plan” muestra:
+  - Vigencia: “Sin vencimiento” o “30 días”
+  - Clases: “Ilimitadas” o “12 clases”
+
+FASE 2: SEGURIDAD AL DESACTIVAR/ELIMINAR PLANES
+PROBLEMA: Si desactivo/eliminio un plan que ya está asignado a clientes, debo evitar inconsistencias.
+CAMBIO:
+- Evita hard-delete del plan si está asignado a >=1 cliente.
+- Implementa “Desactivar/Archivar” (soft delete) como comportamiento por defecto.
+- Si el usuario intenta “Eliminar”:
+  - Si NO tiene clientes asignados: permitir eliminar.
+  - Si SÍ tiene clientes asignados: mostrar modal:
+    A) “Archivar (recomendado): no afecta a clientes, pero ya no se puede asignar”
+    B) “Archivar y desasignar de todos los clientes” (peligroso) con confirmación extra.
+- Si se elige desasignar:
+  - Para cada cliente afectado, su plan actual debe quedar en “Sin plan asignado”
+  - NO borres historial de compras/uso si existe; marca como “plan archivado” o guarda snapshot (planName/price/classes/days) en la asignación.
+
+FASE 3: LÓGICA DE CONSUMO DE CLASES (lo más importante)
+NECESIDAD:
+- Cuando un cliente tiene un plan con clases (ej 12), se debe descontar 1 clase bajo estas reglas:
+  1) Si el cliente agenda y ASISTE => descuenta 1
+  2) Si el cliente agenda y NO CANCELA y ya pasó la hora de la clase => descuenta 1 (no-show)
+  3) Si el cliente cancela ANTES del tiempo límite => NO descuenta
+- Debe verse:
+  - Clases restantes y vencimiento en perfil del cliente
+  - Alerta/notificación en dashboard cuando un cliente se queda sin clases (0) o se venció su plan
+
+DISEÑO MINIMO (sin romper):
+- En la asignación del plan al cliente, guarda:
+  - assignedAt (fecha)
+  - expiresAt (nullable si sin vencimiento)
+  - totalClasses (nullable si ilimitadas)
+  - remainingClasses (nullable si ilimitadas)
+- En booking/reserva, guarda:
+  - status: booked | cancelled | attended | no_show
+  - cancelledAt (nullable)
+  - source: app | dashboard (para futuro)
+- Agrega config por sucursal:
+  - cancelCutoffMinutes (default 120) para “cancelar a tiempo”
+
+IMPLEMENTACIÓN:
+A) Descuento por ASISTENCIA:
+- Cuando se marca “Asistió”, si la reserva estaba booked, cambia a attended y descuenta 1 (si no es ilimitado).
+- Evita doble descuento (idempotencia): guarda en la reserva un flag “consumed=true” o detecta por status.
+
+B) Descuento por NO-SHOW (pasó la hora):
+- Implementa un job simple (server-side) que al cargar el dashboard o cada X minutos:
+  - Busca reservas booked cuyo endTime < now y no están cancelled/attended
+  - Márcalas no_show y descuenta 1 (idempotente)
+- No uses cron externo; hazlo con un scheduler liviano en el server o un “lazy evaluator” al consultar.
+
+C) Cancelación:
+- Al cancelar, calcula si está “a tiempo”:
+  - now <= startTime - cancelCutoffMinutes => cancelled (no consume)
+  - si cancela tarde: opcional (define comportamiento). Por ahora:
+    - si cancela tarde, marcar cancelled_late y consumir 1 (o tratar como no_show). Elige una sola regla consistente y muéstrala en UI.
+- IMPORTANTE: si ya se consumió, no regreses clases automáticamente (a menos que admin lo permita).
+
+FASE 4: NOTIFICACIONES EN DASHBOARD (Resumen)
+- En Resumen agrega un card “Alertas”:
+  - “Clientes sin clases” (count)
+  - “Clientes con plan vencido” (count)
+- Lista top 5 con botón “Ver cliente”:
+  - nombre + plan + remaining + expiresAt
+- Esto debe funcionar sin afectar rendimiento (paginación o query eficiente).
+
+FASE 5: RESERVAS — QUIÉN AGENDA
+- Mantén el botón “Reservar” en dashboard (para casos admin/médicos).
+- Prepárate para reservas desde app:
+  - Acepta reservas con source=app
+  - En UI del calendario, muestra badge pequeño “App” o “Sucursal”
+- No implementes la app completa aquí; solo deja el backend/DB listo y el UI soporta mostrarlo.
+
+PRUEBAS MANUALES (CHECKLIST)
+1) Crear plan con vigencia y sin vencimiento: UI lo explica.
+2) Asignar plan a cliente: se ve expiresAt o “sin vencimiento” y remaining.
+3) Reservar clase:
+   - Marcar asistió => descuenta 1
+   - No cancelar y pasar hora => no_show descuenta 1 automáticamente
+   - Cancelar a tiempo => no descuenta
+4) Cliente llega a 0 clases => aparece alerta en Resumen.
+5) Desactivar plan asignado:
+   - Archivar no afecta clientes
+   - Archivar y desasignar sí lo quita y deja “sin plan”
+6) Nada debe romper: Clientes/Membresías/Reservas siguen funcionando.
+
+ENTREGABLE
+- Implementa por fases, commiteando mentalmente cada fase.
+- Al final, resume exactamente qué archivos tocaste y qué endpoints/queries cambiaste.

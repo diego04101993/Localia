@@ -109,6 +109,18 @@ interface AlertsData {
     expiresAt: string;
     classesRemaining: number | null;
   }>;
+  expiredMemberships?: Array<{
+    userId: string;
+    name: string;
+    lastName: string | null;
+    email: string;
+    phone: string | null;
+    membershipId: string;
+    planName: string | null;
+    expiresAt: string;
+    classesRemaining: number | null;
+    paidAt: string | null;
+  }>;
   inactiveClients: Array<{
     userId: string;
     name: string;
@@ -132,10 +144,12 @@ interface AlertsData {
 }
 
 function AlertsSection({ alerts, isLoading }: { alerts: AlertsData | undefined; isLoading: boolean }) {
+  const [expiredExpanded, setExpiredExpanded] = useState(true);
   const [expiringExpanded, setExpiringExpanded] = useState(false);
   const [inactiveExpanded, setInactiveExpanded] = useState(false);
   const [noClassesExpanded, setNoClassesExpanded] = useState(false);
 
+  const expiredCount = alerts?.expiredMemberships?.length ?? 0;
   const expiringCount = alerts?.expiringMemberships?.length ?? 0;
   const inactiveCount = alerts?.inactiveClients?.length ?? 0;
   const noClassesCount = alerts?.clientsWithoutClasses?.length ?? 0;

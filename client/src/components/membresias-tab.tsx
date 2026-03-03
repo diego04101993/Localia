@@ -73,7 +73,7 @@ function PlanFormDialog({
   const classesValue = parseInt(classLimitStr || "0");
 
   const isValidPrice = !isNaN(priceValue) && priceValue > 0;
-  const isValidDays = noExpiry || (daysValue >= 1 && daysValue <= 3650);
+  const isValidDays = true;
   const isValidClasses = unlimitedClasses || (classesValue >= 1 && classesValue <= 999);
   const isValidName = name.trim().length > 0 && name.length <= 60;
   const isValidDesc = description.length <= 200;
@@ -104,7 +104,7 @@ function PlanFormDialog({
     if (!canSubmit) return;
 
     const price = Math.round(priceValue * 100);
-    const durationDays = noExpiry ? null : daysValue;
+    const durationDays = 30;
     const classLimit = unlimitedClasses ? null : classesValue;
 
     mutation.mutate({ name: name.trim(), description: description.trim() || undefined, price, durationDays, classLimit });
@@ -172,36 +172,12 @@ function PlanFormDialog({
             </div>
 
             <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label htmlFor="plan-duration">Vigencia</Label>
-                <div className="flex items-center gap-1.5">
-                  <Switch
-                    id="toggle-no-expiry"
-                    checked={noExpiry}
-                    onCheckedChange={(v) => { setNoExpiry(v); if (v) setDurationStr(""); }}
-                    data-testid="toggle-no-expiry"
-                  />
-                  <Label htmlFor="toggle-no-expiry" className="text-[10px] text-muted-foreground cursor-pointer">Sin vencimiento</Label>
-                </div>
+              <Label>Ciclo</Label>
+              <div className="flex items-center gap-2 h-10 px-3 rounded-md border bg-muted/50">
+                <Calendar className="h-4 w-4 text-muted-foreground" />
+                <span className="text-sm font-medium">Mensual (30 días)</span>
               </div>
-              <div className="relative">
-                <Input
-                  id="plan-duration"
-                  type="number"
-                  min="1"
-                  max="3650"
-                  value={durationStr}
-                  onChange={(e) => setDurationStr(e.target.value)}
-                  placeholder="30"
-                  disabled={noExpiry}
-                  className="pr-12"
-                  data-testid="input-plan-duration"
-                />
-                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">días</span>
-              </div>
-              {!noExpiry && durationStr && !isValidDays && (
-                <p className="text-[10px] text-red-500">Entre 1 y 3650 días</p>
-              )}
+              <input type="hidden" value="30" />
             </div>
 
             <div className="space-y-2 sm:col-span-2">
@@ -242,9 +218,9 @@ function PlanFormDialog({
             <div className="rounded-md bg-muted/50 p-3 text-sm" data-testid="plan-summary">
               <p className="font-medium mb-1">Resumen del plan</p>
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                <span>Precio: <strong className="text-foreground">${priceValue.toFixed(2)} MXN</strong></span>
-                <span>Vigencia: <strong className="text-foreground">{noExpiry ? "Sin vencimiento" : `${daysValue} días`}</strong></span>
-                <span>Clases: <strong className="text-foreground">{unlimitedClasses ? "Ilimitadas" : `${classesValue} clases`}</strong></span>
+                <span>Precio mensual: <strong className="text-foreground">${priceValue.toFixed(2)} MXN</strong></span>
+                <span>Ciclo: <strong className="text-foreground">Mensual</strong></span>
+                <span>Clases por ciclo: <strong className="text-foreground">{unlimitedClasses ? "Ilimitadas" : `${classesValue}`}</strong></span>
               </div>
             </div>
           )}
@@ -366,15 +342,11 @@ export default function MembresiasTab() {
                   <div className="flex items-center gap-3 text-xs text-muted-foreground">
                     <span className="flex items-center gap-1">
                       <Calendar className="h-3 w-3" />
-                      {plan.durationDays ? `${plan.durationDays} días` : (
-                        <span className="flex items-center gap-0.5">
-                          <Infinity className="h-3 w-3" /> Sin vencimiento
-                        </span>
-                      )}
+                      Mensual
                     </span>
                     <span className="flex items-center gap-1">
                       <Hash className="h-3 w-3" />
-                      {plan.classLimit ? `${plan.classLimit} clases` : (
+                      {plan.classLimit ? `${plan.classLimit} clases/ciclo` : (
                         <span className="flex items-center gap-0.5">
                           <Infinity className="h-3 w-3" /> Ilimitadas
                         </span>
@@ -384,9 +356,6 @@ export default function MembresiasTab() {
                   <div className="flex flex-wrap gap-1">
                     {!plan.classLimit && (
                       <Badge variant="secondary" className="text-[10px]" data-testid={`badge-unlimited-${plan.id}`}>Ilimitadas</Badge>
-                    )}
-                    {!plan.durationDays && (
-                      <Badge variant="secondary" className="text-[10px]" data-testid={`badge-no-expiry-${plan.id}`}>Sin vencimiento</Badge>
                     )}
                   </div>
                   <div className="flex gap-2 pt-1">
@@ -430,8 +399,8 @@ export default function MembresiasTab() {
                         <Badge variant="secondary" data-testid={`badge-plan-status-${plan.id}`}>Inactivo</Badge>
                       </div>
                       <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                        <span>{plan.durationDays ? `${plan.durationDays} días` : "Sin vencimiento"}</span>
-                        <span>{plan.classLimit ? `${plan.classLimit} clases` : "Ilimitadas"}</span>
+                        <span>Mensual</span>
+                        <span>{plan.classLimit ? `${plan.classLimit} clases/ciclo` : "Ilimitadas"}</span>
                       </div>
                       <Button
                         variant="outline"
