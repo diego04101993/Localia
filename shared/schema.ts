@@ -336,6 +336,7 @@ export const createClientSchema = z.object({
 
 export const updateClientSchema = z.object({
   name: z.string().min(1).optional(),
+  email: z.string().email().optional(),
   lastName: z.string().nullable().optional(),
   phone: z.string().nullable().optional(),
   birthDate: z.string().nullable().optional(),
@@ -455,6 +456,7 @@ export const branchAnnouncements = pgTable("branch_announcements", {
     .notNull()
     .references(() => branches.id),
   message: text("message").notNull(),
+  imageUrl: text("image_url"),
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });

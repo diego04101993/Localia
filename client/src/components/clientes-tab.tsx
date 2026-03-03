@@ -29,7 +29,6 @@ import {
   Camera,
   ImageOff,
   MessageCircle,
-  PhoneCall,
   DollarSign,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
@@ -489,6 +488,7 @@ function CreateClientDialog({ open, onOpenChange }: { open: boolean; onOpenChang
 function EditClientDialog({ clientId, open, onOpenChange }: { clientId: string | null; open: boolean; onOpenChange: (v: boolean) => void }) {
   const { toast } = useToast();
   const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
   const [lastName, setLastName] = useState("");
   const [phone, setPhone] = useState("");
   const [birthDate, setBirthDate] = useState("");
@@ -509,6 +509,7 @@ function EditClientDialog({ clientId, open, onOpenChange }: { clientId: string |
   useEffect(() => {
     if (profile && !loaded) {
       setName(profile.user.name || "");
+      setEmail(profile.user.email || "");
       setLastName(profile.user.lastName || "");
       setPhone(profile.user.phone || "");
       setBirthDate(profile.user.birthDate || "");
@@ -548,6 +549,7 @@ function EditClientDialog({ clientId, open, onOpenChange }: { clientId: string |
     e.preventDefault();
     editMutation.mutate({
       name: name || undefined,
+      email: email || undefined,
       lastName: lastName || null,
       phone: phone || null,
       birthDate: birthDate || null,
@@ -585,6 +587,10 @@ function EditClientDialog({ clientId, open, onOpenChange }: { clientId: string |
                 <Label>Apellidos</Label>
                 <Input value={lastName} onChange={(e) => setLastName(e.target.value)} data-testid="input-edit-lastname" />
               </div>
+            </div>
+            <div className="space-y-2">
+              <Label>Email *</Label>
+              <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required data-testid="input-edit-email" />
             </div>
             <div className="space-y-2">
               <Label>Teléfono</Label>
@@ -798,6 +804,7 @@ function ClientStatusSelector({ clientId, currentStatus }: { clientId: string; c
     onSuccess: (_data, newStatus) => {
       queryClient.invalidateQueries({ queryKey: ["/api/branch/clients", clientId] });
       queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/stats"] });
       toast({ title: `Status actualizado a ${clientStatusLabel(newStatus)}` });
     },
     onError: (err: any) => {
@@ -967,15 +974,19 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete }:
                     <MessageCircle className="h-3 w-3" />
                     WhatsApp
                   </a>
-                  <a
-                    href={`tel:${profile.user.phone}`}
+                  <button
+                    type="button"
                     className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 hover:underline"
-                    data-testid="client-call"
-                    onClick={(e) => e.stopPropagation()}
+                    data-testid="client-copy-phone"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      navigator.clipboard.writeText(profile.user.phone!);
+                      toast({ title: "Teléfono copiado" });
+                    }}
                   >
-                    <PhoneCall className="h-3 w-3" />
-                    Llamar
-                  </a>
+                    <Copy className="h-3 w-3" />
+                    Copiar
+                  </button>
                 </div>
               )}
               <div className="flex items-center gap-3 text-sm text-muted-foreground mt-1 flex-wrap">
@@ -1463,7 +1474,7 @@ export default function ClientesTab() {
 
       <CreateClientDialog open={showCreateDialog} onOpenChange={setShowCreateDialog} />
       <InviteLinkDialog open={showInviteDialog} onOpenChange={setShowInviteDialog} />
-      <EditClientDialog clientId={editClientId} open={showEditDialog} onOpenChange={setShowEditDialog} />
+      <EditClientDialog key={editClientId} clientId={editClientId} open={showEditDialog} onOpenChange={setShowEditDialog} />
       <ClientProfileDialog
         clientId={selectedClientId}
         open={showProfileDialog}

@@ -113,7 +113,7 @@ Multi-tenant gym management platform with role-based access (SUPER_ADMIN, BRANCH
 - **branch_posts**: id, branchId, title, content, mediaUrl, mediaType (image/video), displayOrder, createdAt
 - **branch_products**: id, branchId, name, description, price (integer cents), imageUrl, displayOrder, isActive, createdAt
 - **branch_videos**: id, branchId, title, url, thumbnailUrl, displayOrder, createdAt
-- **branch_announcements**: id, branchId, message, isActive, createdAt
+- **branch_announcements**: id, branchId, message, imageUrl, isActive, createdAt
 
 ## Branch Status Rules
 - **Activa (active)**: Todo funciona normalmente

@@ -867,6 +867,13 @@ export async function registerRoutes(
       const membership = await storage.getMembership(clientId, actor.branchId);
       if (!membership) return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
 
+      if (result.data.email) {
+        const existing = await storage.getUserByEmail(result.data.email);
+        if (existing && existing.id !== clientId) {
+          return res.status(409).json({ message: "Ese email ya está registrado por otro usuario" });
+        }
+      }
+
       const updated = await storage.updateClient(clientId, result.data);
 
       await storage.createAuditLog({
@@ -2065,7 +2072,7 @@ export async function registerRoutes(
   app.post("/api/branch/announcements", requireBranchAdmin, async (req, res) => {
     const actor = req.user as any;
     try {
-      const { message } = req.body;
+      const { message, imageUrl } = req.body;
       if (!message || typeof message !== "string" || message.trim().length === 0) {
         return res.status(400).json({ message: "El mensaje es requerido" });
       }
@@ -2078,6 +2085,7 @@ export async function registerRoutes(
       const announcement = await storage.createAnnouncement({
         branchId: actor.branchId,
         message: message.trim(),
+        imageUrl: imageUrl || null,
         isActive: true,
       });
 

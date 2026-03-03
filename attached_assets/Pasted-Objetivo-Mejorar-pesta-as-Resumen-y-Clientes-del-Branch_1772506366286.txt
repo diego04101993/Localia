@@ -1,0 +1,163 @@
+Objetivo: Mejorar pestañas Resumen y Clientes del Branch Admin Dashboard sin romper nada existente. Cambios mínimos, incremental, con compatibilidad hacia atrás. Mantener endpoints actuales, solo agregar nuevos si es indispensable. No modificar navegación global ni auth.
+
+0) Reglas para no romper
+
+Haz cambios en pequeños commits / pasos: backend primero, luego frontend.
+
+No borres funcionalidades actuales (asistencias, notas, estados, adeudo, avatar).
+
+Si algo falla, rollback del último cambio y arreglar antes de seguir.
+
+Mantén DB migrations seguras: columnas nuevas con defaults, sin perder data.
+
+1) FIX CRÍTICO: Bug al editar (modal muestra datos del cliente anterior)
+
+Problema reproducible: si abro “Editar” del cliente A y luego sin refrescar abro “Editar” del cliente B, el modal muestra A.
+
+Solución requerida (frontend):
+
+Asegura que el modal se “resetea” cuando cambia el selectedClientId.
+
+No reutilices estado del form anterior.
+
+Implementa patrón:
+
+selectedClientId + isEditOpen
+
+cuando hago click en editar: set selectedClientId, luego abrir modal
+
+useEffect(() => { reset(formValuesFromSelectedClient) }, [selectedClientId, isEditOpen])
+
+Alternativa válida: usar key={selectedClientId} en el componente del modal/form para forzar remount (preferible si es simple).
+
+Criterio de aceptación:
+
+Sin refrescar, puedo editar A, cerrar, editar B y siempre carga B correctamente.
+
+2) Permitir editar el EMAIL del cliente
+
+Ahora: en “Editar cliente” no permite cambiar email.
+
+Requerido:
+
+En modal “Editar cliente” incluir campo Email editable.
+
+Validar formato básico.
+
+Backend: permitir update de email con protección:
+
+Si email ya existe en otro usuario => error claro.
+
+Si el usuario es cliente de la sucursal, permitir el cambio.
+
+Ajustar CSV export si aplica (ya lo trae, pero confirmar).
+
+Criterio de aceptación:
+
+Cambio email, guardo, se refleja en lista + perfil, y sigue funcionando login/invitación sin romper.
+
+3) Contador de “Clientes activos” en Resumen debe respetar estado del cliente
+
+Problema: cambio un cliente a “Inactivo” o “Congelado” y el contador de “Clientes activos” no baja.
+
+Requerido:
+
+Definir “activo” = client_status === "active".
+
+Actualizar endpoint/resumen que alimenta tarjetas del dashboard para que:
+
+activeClientsCount cuente solo los que estén en status active.
+
+Si ya existe conteo, ajustar la query/aggregación.
+
+Cuando cambio el status desde el perfil del cliente:
+
+actualizar UI optimist o refetch de resumen para que el número cambie sin recargar.
+
+Criterio de aceptación:
+
+Si tengo 4 clientes y pongo 1 inactivo => Resumen muestra 3 clientes activos.
+
+4) Botón “Llamar” en web: cambiarlo o eliminarlo
+
+Problema: “tel:” no sirve bien en desktop web.
+
+Requerido:
+
+En dashboard web, reemplazar “Llamar” por:
+
+Opción A (mejor): botón “Copiar teléfono”.
+
+Opción B: ocultar “Llamar” si window.navigator.userAgent indica desktop (pero esto es menos limpio).
+
+Mantener WhatsApp como está (funciona perfecto).
+
+Criterio de aceptación:
+
+No aparece “Llamar” (o ya no hace nada). Ahora copia teléfono con toast “Copiado”.
+
+5) Anuncio rápido: aceptar IMAGEN (fase 1 segura)
+
+Estado actual: solo texto. Ya se publica y se refleja en perfil público (OK).
+
+Requerido (fase 1):
+
+Permitir adjuntar 1 imagen opcional al anuncio:
+
+JPG/PNG/WebP
+
+máximo 2MB (o el límite que usen ustedes, pero fijo y validado)
+
+UI:
+
+botón “Adjuntar imagen”
+
+preview miniatura
+
+botón “Quitar”
+
+publicar con texto + imagen
+
+Backend:
+
+endpoint para subir imagen del anuncio (puede ser dentro del mismo publish endpoint o separado).
+
+guardar announcement_image_url (o similar) en branch/settings.
+
+En perfil público:
+
+si hay imagen, mostrarla dentro del banner del anuncio (responsive).
+
+NO implementar video todavía (dejar TODO preparado a nivel diseño, pero sin subir mp4).
+
+Criterio de aceptación:
+
+Puedo publicar anuncio con texto + imagen y se ve en /app/:slug.
+
+6) Pulido UX en Clientes (sin inventar cosas raras)
+
+En lista de clientes:
+
+que se vea claramente: Nombre + Apellidos (ya lo tienes)
+
+badge de status (Activo/Inactivo/Congelado) y badge “$ Adeudo” (ya lo tienes, mantener)
+
+iconos editar/eliminar (ya están, mantener)
+
+En “Crear cliente”:
+
+no pedir foto ahí. (La foto la sube el admin o el cliente luego, como ya funciona)
+
+mantener “Más datos” colapsable como está.
+
+7) IMPORTANTE: Esto debe aplicar a todas las sucursales
+
+Confirmar que todo lo anterior es parte del Branch Admin Dashboard, por lo que se debe ver igual para cualquier sucursal/branch usando los mismos componentes/páginas. Evita hardcodear “Natación”; todo debe depender del branch actual.
+
+Entregables
+
+Cambios aplicados + compilando sin errores.
+
+Lista breve de archivos tocados.
+
+Instrucciones rápidas de prueba manual (5 pasos) para validar cada fix.

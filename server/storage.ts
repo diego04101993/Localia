@@ -134,7 +134,7 @@ export interface IStorage {
   copyClassSchedules(branchId: string, fromDay: number, toDay: number): Promise<ClassSchedule[]>;
   getExpiringMemberships(branchId: string, daysAhead: number): Promise<any[]>;
   getInactiveClients(branchId: string, daysSince: number): Promise<any[]>;
-  updateClient(userId: string, data: { name?: string; lastName?: string | null; phone?: string | null; birthDate?: string | null; gender?: string | null; emergencyContactName?: string | null; emergencyContactPhone?: string | null; medicalNotes?: string | null; injuriesNotes?: string | null; medicalWarnings?: string | null; parqAccepted?: boolean; parqAcceptedDate?: string | null; avatarUrl?: string | null }): Promise<any>;
+  updateClient(userId: string, data: { name?: string; email?: string; lastName?: string | null; phone?: string | null; birthDate?: string | null; gender?: string | null; emergencyContactName?: string | null; emergencyContactPhone?: string | null; medicalNotes?: string | null; injuriesNotes?: string | null; medicalWarnings?: string | null; parqAccepted?: boolean; parqAcceptedDate?: string | null; avatarUrl?: string | null }): Promise<any>;
   updateClientStatus(membershipId: string, clientStatus: string): Promise<any>;
   updateClientDebt(membershipId: string, hasDebt: boolean, debtAmount: number): Promise<any>;
   softDeleteMembership(membershipId: string): Promise<any>;
@@ -255,7 +255,7 @@ export class DatabaseStorage implements IStorage {
     const [result] = await db
       .select({
         activeMemberships: sql<number>`COUNT(CASE WHEN ${memberships.status} = 'active' THEN 1 END)`.as("active_memberships"),
-        uniqueActiveCustomers: sql<number>`COUNT(DISTINCT CASE WHEN ${memberships.status} = 'active' THEN ${memberships.userId} END)`.as("unique_active_customers"),
+        uniqueActiveCustomers: sql<number>`COUNT(DISTINCT CASE WHEN ${memberships.status} = 'active' AND ${memberships.clientStatus} = 'active' THEN ${memberships.userId} END)`.as("unique_active_customers"),
       })
       .from(memberships)
       .where(eq(memberships.branchId, branchId));
@@ -1137,9 +1137,10 @@ export class DatabaseStorage implements IStorage {
     return results;
   }
 
-  async updateClient(userId: string, data: { name?: string; lastName?: string | null; phone?: string | null; birthDate?: string | null; gender?: string | null; emergencyContactName?: string | null; emergencyContactPhone?: string | null; medicalNotes?: string | null; injuriesNotes?: string | null; medicalWarnings?: string | null; parqAccepted?: boolean; parqAcceptedDate?: string | null; avatarUrl?: string | null }): Promise<any> {
+  async updateClient(userId: string, data: { name?: string; email?: string; lastName?: string | null; phone?: string | null; birthDate?: string | null; gender?: string | null; emergencyContactName?: string | null; emergencyContactPhone?: string | null; medicalNotes?: string | null; injuriesNotes?: string | null; medicalWarnings?: string | null; parqAccepted?: boolean; parqAcceptedDate?: string | null; avatarUrl?: string | null }): Promise<any> {
     const updateData: any = {};
     if (data.name !== undefined) updateData.name = data.name;
+    if (data.email !== undefined) updateData.email = data.email;
     if (data.lastName !== undefined) updateData.lastName = data.lastName;
     if (data.phone !== undefined) updateData.phone = data.phone;
     if (data.birthDate !== undefined) updateData.birthDate = data.birthDate;

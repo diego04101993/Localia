@@ -27,6 +27,8 @@ import {
   Megaphone,
   Trash2,
   Send,
+  ImagePlus,
+  Loader2,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/lib/auth";
@@ -267,20 +269,47 @@ function AlertsSection({ alerts, isLoading }: { alerts: AlertsData | undefined; 
 
 function AnnouncementsSection({ branchId }: { branchId: string }) {
   const [newMessage, setNewMessage] = useState("");
+  const [announcementImageUrl, setAnnouncementImageUrl] = useState<string | null>(null);
+  const [uploadingImage, setUploadingImage] = useState(false);
   const { toast } = useToast();
 
   const { data: announcements, isLoading } = useQuery<any[]>({
     queryKey: ["/api/branch/announcements"],
   });
 
+  async function handleImageUpload(file: File) {
+    if (!file.type.match(/^image\/(jpeg|png|webp)$/)) {
+      toast({ title: "Solo JPG, PNG o WebP", variant: "destructive" });
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      toast({ title: "Máximo 2MB", variant: "destructive" });
+      return;
+    }
+    setUploadingImage(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/branch/upload", { method: "POST", body: formData, credentials: "include" });
+      if (!res.ok) throw new Error("Error al subir imagen");
+      const data = await res.json();
+      setAnnouncementImageUrl(data.url);
+    } catch {
+      toast({ title: "Error al subir imagen", variant: "destructive" });
+    } finally {
+      setUploadingImage(false);
+    }
+  }
+
   const createMutation = useMutation({
-    mutationFn: async (message: string) => {
-      const res = await apiRequest("POST", "/api/branch/announcements", { message });
+    mutationFn: async ({ message, imageUrl }: { message: string; imageUrl: string | null }) => {
+      const res = await apiRequest("POST", "/api/branch/announcements", { message, imageUrl });
       return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/branch/announcements"] });
       setNewMessage("");
+      setAnnouncementImageUrl(null);
       toast({ title: "Anuncio publicado" });
     },
     onError: (err: any) => {
@@ -315,23 +344,53 @@ function AnnouncementsSection({ branchId }: { branchId: string }) {
         <p className="text-xs text-muted-foreground">
           Se muestra como banner en tu página pública. Solo 1 activo a la vez.
         </p>
-        <div className="flex gap-2">
-          <Input
-            placeholder="Ej: Hoy clase especial a las 7pm..."
-            value={newMessage}
-            onChange={(e) => setNewMessage(e.target.value)}
-            maxLength={500}
-            data-testid="input-announcement-message"
-          />
-          <Button
-            size="sm"
-            disabled={!newMessage.trim() || createMutation.isPending}
-            onClick={() => createMutation.mutate(newMessage.trim())}
-            data-testid="button-create-announcement"
-          >
-            <Send className="h-4 w-4 mr-1" />
-            Publicar
-          </Button>
+        <div className="space-y-2">
+          <div className="flex gap-2">
+            <Input
+              placeholder="Ej: Hoy clase especial a las 7pm..."
+              value={newMessage}
+              onChange={(e) => setNewMessage(e.target.value)}
+              maxLength={500}
+              data-testid="input-announcement-message"
+            />
+            <Button
+              size="sm"
+              disabled={!newMessage.trim() || createMutation.isPending}
+              onClick={() => createMutation.mutate({ message: newMessage.trim(), imageUrl: announcementImageUrl })}
+              data-testid="button-create-announcement"
+            >
+              <Send className="h-4 w-4 mr-1" />
+              Publicar
+            </Button>
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="cursor-pointer">
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                className="hidden"
+                onChange={(e) => e.target.files?.[0] && handleImageUpload(e.target.files[0])}
+                data-testid="input-announcement-image"
+              />
+              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+                {uploadingImage ? <Loader2 className="h-3 w-3 animate-spin" /> : <ImagePlus className="h-3 w-3" />}
+                {announcementImageUrl ? "Cambiar imagen" : "Adjuntar imagen"}
+              </span>
+            </label>
+            {announcementImageUrl && (
+              <div className="flex items-center gap-2">
+                <img src={announcementImageUrl} alt="Preview" className="h-8 w-8 rounded object-cover" />
+                <button
+                  type="button"
+                  className="text-xs text-red-500 hover:text-red-700"
+                  onClick={() => setAnnouncementImageUrl(null)}
+                  data-testid="button-remove-announcement-image"
+                >
+                  Quitar
+                </button>
+              </div>
+            )}
+          </div>
         </div>
         {isLoading ? (
           <Skeleton className="h-10 w-full" />
@@ -340,12 +399,17 @@ function AnnouncementsSection({ branchId }: { branchId: string }) {
             {activeAnnouncements.map((a: any) => (
               <div
                 key={a.id}
-                className="flex items-center justify-between gap-2 p-2 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800"
+                className="flex items-start justify-between gap-2 p-2 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800"
                 data-testid={`announcement-${a.id}`}
               >
-                <div className="flex items-center gap-2 min-w-0">
-                  <Megaphone className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
-                  <span className="text-sm truncate" data-testid={`text-announcement-${a.id}`}>{a.message}</span>
+                <div className="flex items-start gap-2 min-w-0">
+                  <Megaphone className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                  <div className="min-w-0">
+                    <span className="text-sm" data-testid={`text-announcement-${a.id}`}>{a.message}</span>
+                    {a.imageUrl && (
+                      <img src={a.imageUrl} alt="Anuncio" className="mt-1 rounded max-h-20 object-cover" data-testid={`img-announcement-${a.id}`} />
+                    )}
+                  </div>
                 </div>
                 <Button
                   variant="ghost"

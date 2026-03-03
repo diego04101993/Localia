@@ -362,13 +362,23 @@ export default function BranchPublicPage() {
       <div className="max-w-lg mx-auto p-4 space-y-4 -mt-4 relative z-20">
         {announcements && announcements.length > 0 && (
           <div
-            className="flex items-center gap-2 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800"
+            className="p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 space-y-2"
             data-testid="banner-announcement"
           >
-            <Megaphone className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
-            <p className="text-sm font-medium text-amber-800 dark:text-amber-200" data-testid="text-announcement-banner">
-              {announcements[0].message}
-            </p>
+            <div className="flex items-center gap-2">
+              <Megaphone className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
+              <p className="text-sm font-medium text-amber-800 dark:text-amber-200" data-testid="text-announcement-banner">
+                {announcements[0].message}
+              </p>
+            </div>
+            {announcements[0].imageUrl && (
+              <img
+                src={announcements[0].imageUrl}
+                alt="Anuncio"
+                className="w-full rounded-md max-h-48 object-cover"
+                data-testid="img-announcement-banner"
+              />
+            )}
           </div>
         )}
 
