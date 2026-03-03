@@ -120,14 +120,25 @@ interface AlertsData {
     planName: string | null;
     lastAttendance: string | null;
   }>;
+  clientsWithoutClasses?: Array<{
+    userId: string;
+    name: string;
+    email: string;
+    membershipId: string;
+    planName: string | null;
+    classesRemaining: number | null;
+    classesTotal: number | null;
+  }>;
 }
 
 function AlertsSection({ alerts, isLoading }: { alerts: AlertsData | undefined; isLoading: boolean }) {
   const [expiringExpanded, setExpiringExpanded] = useState(false);
   const [inactiveExpanded, setInactiveExpanded] = useState(false);
+  const [noClassesExpanded, setNoClassesExpanded] = useState(false);
 
   const expiringCount = alerts?.expiringMemberships?.length ?? 0;
   const inactiveCount = alerts?.inactiveClients?.length ?? 0;
+  const noClassesCount = alerts?.clientsWithoutClasses?.length ?? 0;
 
   if (isLoading) {
     return (
@@ -148,7 +159,7 @@ function AlertsSection({ alerts, isLoading }: { alerts: AlertsData | undefined; 
     );
   }
 
-  if (expiringCount === 0 && inactiveCount === 0) {
+  if (expiringCount === 0 && inactiveCount === 0 && noClassesCount === 0) {
     return null;
   }
 
@@ -268,6 +279,49 @@ function AlertsSection({ alerts, isLoading }: { alerts: AlertsData | undefined; 
                     </div>
                   );
                 })}
+              </div>
+            </CardContent>
+          )}
+        </Card>
+      )}
+
+      {noClassesCount > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-center gap-2">
+                <CreditCard className="h-4 w-4 text-purple-500" />
+                <span>Sin clases disponibles</span>
+                <Badge variant="default" className="bg-purple-500" data-testid="badge-no-classes-count">
+                  {noClassesCount}
+                </Badge>
+              </div>
+              <Button
+                size="icon"
+                variant="ghost"
+                onClick={() => setNoClassesExpanded(!noClassesExpanded)}
+                data-testid="button-toggle-no-classes"
+              >
+                {noClassesExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              </Button>
+            </CardTitle>
+          </CardHeader>
+          {noClassesExpanded && (
+            <CardContent className="p-4 pt-0">
+              <div className="space-y-2 max-h-60 overflow-y-auto">
+                {alerts?.clientsWithoutClasses?.map((c) => (
+                  <div
+                    key={c.membershipId}
+                    className="flex items-center justify-between gap-2 p-2 rounded-md bg-muted/50 flex-wrap"
+                    data-testid={`alert-no-classes-${c.userId}`}
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium truncate">{c.name}</p>
+                      <p className="text-xs text-muted-foreground truncate">{c.planName || "Sin plan"}</p>
+                    </div>
+                    <Badge variant="destructive">0 clases</Badge>
+                  </div>
+                ))}
               </div>
             </CardContent>
           )}

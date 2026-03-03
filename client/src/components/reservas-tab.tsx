@@ -87,6 +87,11 @@ interface ClientInfo {
   userId: string;
   name: string;
   email: string;
+  clientStatus?: string;
+  classesRemaining?: number | null;
+  classesTotal?: number | null;
+  expiresAt?: string | null;
+  planName?: string | null;
 }
 
 const DAY_NAMES = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
@@ -307,6 +312,12 @@ function BookClientDialog({
 
   const availableClients = (clients || []).filter(c => !bookedUserIds.has(c.userId));
   const spotsLeft = classSchedule.capacity - (classBookings?.booked || 0);
+  const selectedClient = availableClients.find(c => c.userId === selectedUserId);
+
+  const clientBlocked = selectedClient && (selectedClient.clientStatus === "frozen" || selectedClient.clientStatus === "inactive");
+  const clientNoClasses = selectedClient && selectedClient.classesRemaining !== null && selectedClient.classesRemaining !== undefined && selectedClient.classesRemaining <= 0;
+  const clientExpired = selectedClient?.expiresAt && new Date(selectedClient.expiresAt) < new Date();
+  const canBook = selectedUserId && !clientBlocked && !clientNoClasses && !clientExpired;
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -354,18 +365,56 @@ function BookClientDialog({
                   </SelectTrigger>
                   <SelectContent>
                     {availableClients.map((c) => (
-                      <SelectItem key={c.userId} value={c.userId}>{c.name} ({c.email})</SelectItem>
+                      <SelectItem key={c.userId} value={c.userId}>
+                        {c.name} ({c.email})
+                        {c.clientStatus === "frozen" ? " ❄️" : c.clientStatus === "inactive" ? " ⏸️" : ""}
+                      </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
+
+              {selectedClient && (
+                <div className="rounded-md border p-3 space-y-1" data-testid="booking-client-info">
+                  <p className="text-sm font-medium">{selectedClient.name}</p>
+                  <div className="flex flex-wrap gap-2 text-xs">
+                    {selectedClient.planName && (
+                      <Badge variant="outline">{selectedClient.planName}</Badge>
+                    )}
+                    {selectedClient.classesRemaining !== null && selectedClient.classesRemaining !== undefined ? (
+                      <Badge variant={selectedClient.classesRemaining > 0 ? "secondary" : "destructive"}>
+                        {selectedClient.classesRemaining} clases restantes
+                      </Badge>
+                    ) : selectedClient.planName ? (
+                      <Badge variant="secondary">Ilimitadas</Badge>
+                    ) : null}
+                    {selectedClient.expiresAt && (
+                      <Badge variant={new Date(selectedClient.expiresAt) < new Date() ? "destructive" : "outline"}>
+                        Vence: {new Date(selectedClient.expiresAt).toLocaleDateString("es-MX", { day: "2-digit", month: "short" })}
+                      </Badge>
+                    )}
+                  </div>
+                  {clientBlocked && (
+                    <p className="text-xs text-red-500 mt-1">
+                      {selectedClient.clientStatus === "frozen" ? "Cliente congelado — no puede reservar" : "Cliente inactivo — no puede reservar"}
+                    </p>
+                  )}
+                  {clientNoClasses && (
+                    <p className="text-xs text-red-500 mt-1">Sin clases disponibles — asigna un plan primero</p>
+                  )}
+                  {clientExpired && (
+                    <p className="text-xs text-red-500 mt-1">Membresía vencida — renueva para reservar</p>
+                  )}
+                </div>
+              )}
+
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => onOpenChange(false)} data-testid="button-cancel-booking">
                   Cancelar
                 </Button>
                 <Button
                   onClick={() => mutation.mutate()}
-                  disabled={mutation.isPending || !selectedUserId}
+                  disabled={mutation.isPending || !canBook}
                   data-testid="button-submit-booking"
                 >
                   {mutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
@@ -415,7 +464,8 @@ function ClassDayDetail({
     },
   });
 
-  const activeBookings = (classBookings?.bookings || []).filter(b => b.status !== "cancelled");
+  const activeBookings = (classBookings?.bookings || []).filter(b => b.status !== "cancelled" && b.status !== "no_show");
+  const noShowBookings = (classBookings?.bookings || []).filter(b => b.status === "no_show");
   const cancelledBookings = (classBookings?.bookings || []).filter(b => b.status === "cancelled");
   const spotsLeft = classSchedule.capacity - activeBookings.length;
 
@@ -489,6 +539,16 @@ function ClassDayDetail({
                       <Button
                         size="sm"
                         variant="ghost"
+                        className="h-7 px-2 text-orange-500"
+                        onClick={() => statusMutation.mutate({ bookingId: b.id, status: "no_show" })}
+                        disabled={statusMutation.isPending}
+                        data-testid={`button-noshow-${b.id}`}
+                      >
+                        No asistió
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
                         className="h-7 px-2 text-red-500"
                         onClick={() => statusMutation.mutate({ bookingId: b.id, status: "cancelled" })}
                         disabled={statusMutation.isPending}
@@ -504,9 +564,28 @@ function ClassDayDetail({
                       Asistió
                     </Badge>
                   )}
+                  {b.status === "no_show" && (
+                    <Badge variant="destructive" className="text-xs" data-testid={`badge-noshow-${b.id}`}>
+                      No asistió
+                    </Badge>
+                  )}
                 </div>
               </div>
             ))}
+            {noShowBookings.length > 0 && (
+              <div className="pt-2 border-t mt-2">
+                <p className="text-xs text-muted-foreground mb-1">No asistieron ({noShowBookings.length})</p>
+                {noShowBookings.map((b) => (
+                  <div key={b.id} className="flex items-center justify-between gap-2 py-1 px-2 opacity-70">
+                    <div className="flex items-center gap-2">
+                      <User className="h-3 w-3 text-orange-400" />
+                      <span className="text-xs">{b.userName}</span>
+                    </div>
+                    <Badge variant="destructive" className="text-[10px]">No asistió</Badge>
+                  </div>
+                ))}
+              </div>
+            )}
             {cancelledBookings.length > 0 && (
               <div className="pt-2 border-t mt-2">
                 <p className="text-xs text-muted-foreground mb-1">Canceladas ({cancelledBookings.length})</p>

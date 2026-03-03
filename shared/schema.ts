@@ -66,6 +66,7 @@ export const branches = pgTable("branches", {
   address: text("address"),
   coverImageUrl: text("cover_image_url"),
   description: text("description"),
+  cancelCutoffMinutes: integer("cancel_cutoff_minutes").notNull().default(120),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
 });
@@ -87,7 +88,10 @@ export const memberships = pgTable("memberships", {
   source: membershipSourceEnum("source").notNull().default("self_join"),
   planId: varchar("plan_id", { length: 36 }),
   classesRemaining: integer("classes_remaining"),
+  classesTotal: integer("classes_total"),
   expiresAt: timestamp("expires_at", { withTimezone: true }),
+  membershipStartDate: timestamp("membership_start_date", { withTimezone: true }),
+  membershipEndDate: timestamp("membership_end_date", { withTimezone: true }),
   clientStatus: text("client_status").notNull().default("active"),
   hasDebt: boolean("has_debt").notNull().default(false),
   debtAmount: integer("debt_amount").notNull().default(0),
@@ -230,6 +234,7 @@ export const bookingStatusEnum = pgEnum("booking_status", [
   "confirmed",
   "cancelled",
   "attended",
+  "no_show",
 ]);
 
 export const classSchedules = pgTable("class_schedules", {
@@ -267,6 +272,7 @@ export const classBookings = pgTable("class_bookings", {
     .references(() => users.id),
   bookingDate: text("booking_date").notNull(),
   status: bookingStatusEnum("status").notNull().default("confirmed"),
+  lateCancellation: boolean("late_cancellation").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 

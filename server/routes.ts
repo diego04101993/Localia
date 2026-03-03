@@ -568,11 +568,12 @@ export async function registerRoutes(
     try {
       const daysAhead = parseInt(req.query.daysAhead as string) || 7;
       const daysSince = parseInt(req.query.daysSince as string) || 30;
-      const [expiringMemberships, inactiveClients] = await Promise.all([
+      const [expiringMemberships, inactiveClients, clientsWithoutClasses] = await Promise.all([
         storage.getExpiringMemberships(user.branchId, daysAhead),
         storage.getInactiveClients(user.branchId, daysSince),
+        storage.getClientsWithoutClasses(user.branchId),
       ]);
-      res.json({ expiringMemberships, inactiveClients });
+      res.json({ expiringMemberships, inactiveClients, clientsWithoutClasses });
     } catch (err: any) {
       console.error(`[BRANCH_ALERTS] Error:`, err.stack || err);
       res.status(500).json({ message: "Error al obtener alertas" });
@@ -1249,13 +1250,14 @@ export async function registerRoutes(
       }
 
       const classesRemaining = plan.classLimit ?? null;
+      const classesTotal = plan.classLimit ?? null;
       let expiresAt: Date | null = null;
       if (plan.durationDays) {
         expiresAt = new Date();
         expiresAt.setDate(expiresAt.getDate() + plan.durationDays);
       }
 
-      const membership = await storage.assignPlanToMembership(membershipId, planId, classesRemaining, expiresAt);
+      const membership = await storage.assignPlanToMembership(membershipId, planId, classesRemaining, classesTotal, expiresAt);
       if (!membership) {
         return res.status(404).json({ message: "Membresía no encontrada" });
       }
@@ -1465,6 +1467,10 @@ export async function registerRoutes(
     const actor = req.user as any;
     const date = (req.query.date as string) || new Date().toISOString().split("T")[0];
     try {
+      const reconciled = await storage.reconcilePastBookings(actor.branchId);
+      if (reconciled > 0) {
+        console.log(`[RECONCILE] Marked ${reconciled} no-show bookings for branch ${actor.branchId}`);
+      }
       const bookings = await storage.getBookingsForDate(actor.branchId, date);
       res.json(bookings);
     } catch (err: any) {
@@ -1551,23 +1557,53 @@ export async function registerRoutes(
     const actor = req.user as any;
     const bookingId = req.params.id as string;
     try {
-      const { status } = z.object({ status: z.enum(["confirmed", "cancelled", "attended"]) }).parse(req.body);
+      const { status } = z.object({ status: z.enum(["confirmed", "cancelled", "attended", "no_show"]) }).parse(req.body);
       const existing = await storage.getBooking(bookingId);
       if (!existing || existing.branchId !== actor.branchId) {
         return res.status(404).json({ message: "Reserva no encontrada" });
       }
 
+      const alreadyProcessed = existing.status === "attended" || existing.status === "no_show";
+
+      let lateCancellation = false;
+      if (status === "cancelled" && existing.status === "confirmed") {
+        const schedule = await storage.getClassSchedule(existing.classScheduleId);
+        const branch = await storage.getBranch(actor.branchId);
+        if (schedule && branch) {
+          const cutoff = (branch as any).cancelCutoffMinutes ?? 120;
+          const bookingDateStr = existing.bookingDate;
+          const classStart = new Date(`${bookingDateStr}T${schedule.startTime}:00`);
+          const now = new Date();
+          const diffMin = (classStart.getTime() - now.getTime()) / 60000;
+          if (diffMin < cutoff) {
+            lateCancellation = true;
+          }
+        }
+      }
+
       const updated = await storage.updateBookingStatus(bookingId, status);
+
+      if (lateCancellation) {
+        await storage.markBookingLateCancellation(bookingId);
+      }
+
+      const shouldDeduct = !alreadyProcessed && (status === "attended" || status === "no_show" || (status === "cancelled" && lateCancellation));
+      if (shouldDeduct) {
+        const mem = await storage.getMembershipByUserAndBranch(existing.userId, actor.branchId);
+        if (mem && mem.classesRemaining !== null && mem.classesRemaining > 0) {
+          await storage.decrementClassesRemaining(mem.id);
+        }
+      }
 
       await storage.createAuditLog({
         actorUserId: actor.id,
         action: "UPDATE_BOOKING_STATUS",
         branchId: actor.branchId,
-        metadata: { bookingId, oldStatus: existing.status, newStatus: status },
+        metadata: { bookingId, oldStatus: existing.status, newStatus: status, lateCancellation },
       });
 
-      console.log(`[BOOKINGS] Updated booking ${bookingId} status to ${status} by ${actor.email}`);
-      res.json(updated);
+      console.log(`[BOOKINGS] Updated booking ${bookingId} status to ${status}${lateCancellation ? " (late cancel)" : ""} by ${actor.email}`);
+      res.json({ ...updated, lateCancellation });
     } catch (err: any) {
       if (err.name === "ZodError") {
         return res.status(400).json({ message: err.errors[0]?.message || "Datos inválidos" });
@@ -2181,6 +2217,159 @@ export async function registerRoutes(
       return res.status(403).json({ message: "Servicio no activo" });
     }
     res.json(branch);
+  });
+
+  // --- Public: Schedule & Client Bookings ---
+  app.get("/api/public/branch/:slug/schedule", async (req, res) => {
+    try {
+      const branch = await storage.getBranchBySlug(req.params.slug as string);
+      if (!branch || branch.deletedAt || branch.status !== "active") {
+        return res.status(404).json({ message: "Sucursal no encontrada" });
+      }
+      const schedules = await storage.getBranchClassSchedules(branch.id);
+      const activeSchedules = schedules.filter(s => s.isActive);
+      res.json({ schedules: activeSchedules, cancelCutoffMinutes: branch.cancelCutoffMinutes ?? 120 });
+    } catch (err: any) {
+      console.error(`[PUBLIC_SCHEDULE] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al obtener horario" });
+    }
+  });
+
+  app.get("/api/public/branch/:slug/my-bookings", requireAuth, async (req, res) => {
+    const user = req.user as any;
+    try {
+      const branch = await storage.getBranchBySlug(req.params.slug as string);
+      if (!branch || branch.deletedAt) {
+        return res.status(404).json({ message: "Sucursal no encontrada" });
+      }
+      const mem = await storage.getMembershipByUserAndBranch(user.id, branch.id);
+      if (!mem || mem.status !== "active") {
+        return res.json({ bookings: [], membership: null });
+      }
+      const allBookings = await storage.getBookingsForDate(branch.id, req.query.date as string || new Date().toISOString().split("T")[0]);
+      const myBookings = allBookings.filter((b: any) => b.userId === user.id);
+      res.json({
+        bookings: myBookings,
+        membership: {
+          id: mem.id,
+          planId: mem.planId,
+          classesRemaining: mem.classesRemaining,
+          classesTotal: mem.classesTotal,
+          expiresAt: mem.expiresAt,
+          membershipStartDate: mem.membershipStartDate,
+          membershipEndDate: mem.membershipEndDate,
+          clientStatus: mem.clientStatus,
+        },
+      });
+    } catch (err: any) {
+      console.error(`[PUBLIC_MY_BOOKINGS] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al obtener reservas" });
+    }
+  });
+
+  app.post("/api/public/branch/:slug/book", requireAuth, async (req, res) => {
+    const user = req.user as any;
+    try {
+      const branch = await storage.getBranchBySlug(req.params.slug as string);
+      if (!branch || branch.deletedAt || branch.status !== "active") {
+        return res.status(404).json({ message: "Sucursal no encontrada" });
+      }
+
+      const mem = await storage.getMembershipByUserAndBranch(user.id, branch.id);
+      if (!mem || mem.status !== "active") {
+        return res.status(403).json({ message: "Debes ser miembro para reservar" });
+      }
+      if (mem.clientStatus === "frozen") {
+        return res.status(403).json({ message: "Tu membresía está congelada" });
+      }
+      if (mem.clientStatus === "inactive") {
+        return res.status(403).json({ message: "Tu membresía está inactiva" });
+      }
+      if (mem.expiresAt && new Date(mem.expiresAt) < new Date()) {
+        return res.status(403).json({ message: "Tu membresía ha vencido" });
+      }
+      if (mem.classesRemaining !== null && mem.classesRemaining <= 0) {
+        return res.status(403).json({ message: "No tienes clases disponibles" });
+      }
+
+      const { classScheduleId, bookingDate } = createBookingSchema.parse(req.body);
+      const schedule = await storage.getClassSchedule(classScheduleId);
+      if (!schedule || schedule.branchId !== branch.id || !schedule.isActive) {
+        return res.status(404).json({ message: "Clase no encontrada" });
+      }
+
+      const existing = await storage.getBookingsForClassOnDate(classScheduleId, bookingDate);
+      const activeBookings = existing.filter((b: any) => b.status !== "cancelled" && b.status !== "no_show");
+      if (activeBookings.length >= schedule.capacity) {
+        return res.status(400).json({ message: "Clase llena" });
+      }
+      if (activeBookings.some((b: any) => b.userId === user.id)) {
+        return res.status(400).json({ message: "Ya tienes reserva en esta clase" });
+      }
+
+      const booking = await storage.createBooking({
+        classScheduleId,
+        branchId: branch.id,
+        userId: user.id,
+        bookingDate,
+      });
+
+      res.status(201).json(booking);
+    } catch (err: any) {
+      if (err.name === "ZodError") {
+        return res.status(400).json({ message: err.errors[0]?.message || "Datos inválidos" });
+      }
+      console.error(`[PUBLIC_BOOK] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al crear reserva" });
+    }
+  });
+
+  app.post("/api/public/branch/:slug/cancel-booking", requireAuth, async (req, res) => {
+    const user = req.user as any;
+    try {
+      const branch = await storage.getBranchBySlug(req.params.slug as string);
+      if (!branch || branch.deletedAt) {
+        return res.status(404).json({ message: "Sucursal no encontrada" });
+      }
+
+      const { bookingId } = z.object({ bookingId: z.string().min(1) }).parse(req.body);
+      const booking = await storage.getBooking(bookingId);
+      if (!booking || booking.userId !== user.id || booking.branchId !== branch.id) {
+        return res.status(404).json({ message: "Reserva no encontrada" });
+      }
+      if (booking.status !== "confirmed") {
+        return res.status(400).json({ message: "Solo puedes cancelar reservas confirmadas" });
+      }
+
+      const schedule = await storage.getClassSchedule(booking.classScheduleId);
+      const cutoff = branch.cancelCutoffMinutes ?? 120;
+      let lateCancellation = false;
+
+      if (schedule) {
+        const classStart = new Date(`${booking.bookingDate}T${schedule.startTime}:00`);
+        const diffMin = (classStart.getTime() - Date.now()) / 60000;
+        if (diffMin < cutoff) {
+          lateCancellation = true;
+        }
+      }
+
+      await storage.updateBookingStatus(bookingId, "cancelled");
+      if (lateCancellation) {
+        await storage.markBookingLateCancellation(bookingId);
+        const mem = await storage.getMembershipByUserAndBranch(user.id, branch.id);
+        if (mem && mem.classesRemaining !== null && mem.classesRemaining > 0) {
+          await storage.decrementClassesRemaining(mem.id);
+        }
+      }
+
+      res.json({ success: true, lateCancellation });
+    } catch (err: any) {
+      if (err.name === "ZodError") {
+        return res.status(400).json({ message: err.errors[0]?.message || "Datos inválidos" });
+      }
+      console.error(`[PUBLIC_CANCEL] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al cancelar reserva" });
+    }
   });
 
   // --- Marketplace: Nearby / Search ---

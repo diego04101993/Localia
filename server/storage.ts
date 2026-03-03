@@ -98,8 +98,10 @@ export interface IStorage {
   updatePlan(id: string, data: Partial<InsertMembershipPlan>): Promise<MembershipPlan | undefined>;
   deactivatePlan(id: string): Promise<MembershipPlan | undefined>;
   getPlan(id: string): Promise<MembershipPlan | undefined>;
-  assignPlanToMembership(membershipId: string, planId: string, classesRemaining: number | null, expiresAt: Date | null): Promise<Membership | undefined>;
+  assignPlanToMembership(membershipId: string, planId: string, classesRemaining: number | null, classesTotal: number | null, expiresAt: Date | null): Promise<Membership | undefined>;
   removePlanFromMembership(membershipId: string): Promise<Membership | undefined>;
+  getMembershipByUserAndBranch(userId: string, branchId: string): Promise<Membership | undefined>;
+  reconcilePastBookings(branchId: string): Promise<number>;
   decrementClassesRemaining(membershipId: string): Promise<Membership | undefined>;
   getBranchClassSchedules(branchId: string): Promise<ClassSchedule[]>;
   createClassSchedule(data: InsertClassSchedule): Promise<ClassSchedule>;
@@ -109,6 +111,7 @@ export interface IStorage {
   getBookingsForClassOnDate(classScheduleId: string, date: string): Promise<any[]>;
   createBooking(data: InsertClassBooking): Promise<ClassBooking>;
   updateBookingStatus(id: string, status: string): Promise<ClassBooking | undefined>;
+  markBookingLateCancellation(id: string): Promise<void>;
   getBooking(id: string): Promise<ClassBooking | undefined>;
   getTodayBookingsCount(branchId: string): Promise<number>;
   getNextBooking(branchId: string): Promise<{ className: string; startTime: string; bookingDate: string } | null>;
@@ -135,6 +138,7 @@ export interface IStorage {
   copyClassSchedules(branchId: string, fromDay: number, toDay: number): Promise<ClassSchedule[]>;
   getExpiringMemberships(branchId: string, daysAhead: number): Promise<any[]>;
   getInactiveClients(branchId: string, daysSince: number): Promise<any[]>;
+  getClientsWithoutClasses(branchId: string): Promise<any[]>;
   updateClient(userId: string, data: { name?: string; email?: string; lastName?: string | null; phone?: string | null; birthDate?: string | null; gender?: string | null; emergencyContactName?: string | null; emergencyContactPhone?: string | null; medicalNotes?: string | null; injuriesNotes?: string | null; medicalWarnings?: string | null; parqAccepted?: boolean; parqAcceptedDate?: string | null; avatarUrl?: string | null }): Promise<any>;
   updateClientStatus(membershipId: string, clientStatus: string): Promise<any>;
   updateClientDebt(membershipId: string, hasDebt: boolean, debtAmount: number): Promise<any>;
@@ -483,7 +487,10 @@ export class DatabaseStorage implements IStorage {
         isFavorite: memberships.isFavorite,
         planId: memberships.planId,
         classesRemaining: memberships.classesRemaining,
+        classesTotal: memberships.classesTotal,
         expiresAt: memberships.expiresAt,
+        membershipStartDate: memberships.membershipStartDate,
+        membershipEndDate: memberships.membershipEndDate,
         planName: membershipPlans.name,
       })
       .from(memberships)
@@ -679,10 +686,18 @@ export class DatabaseStorage implements IStorage {
     return plan;
   }
 
-  async assignPlanToMembership(membershipId: string, planId: string, classesRemaining: number | null, expiresAt: Date | null): Promise<Membership | undefined> {
+  async assignPlanToMembership(membershipId: string, planId: string, classesRemaining: number | null, classesTotal: number | null, expiresAt: Date | null): Promise<Membership | undefined> {
+    const now = new Date();
     const [m] = await db
       .update(memberships)
-      .set({ planId, classesRemaining, expiresAt })
+      .set({
+        planId,
+        classesRemaining,
+        classesTotal,
+        expiresAt,
+        membershipStartDate: now,
+        membershipEndDate: expiresAt,
+      })
       .where(eq(memberships.id, membershipId))
       .returning();
     return m;
@@ -691,10 +706,51 @@ export class DatabaseStorage implements IStorage {
   async removePlanFromMembership(membershipId: string): Promise<Membership | undefined> {
     const [m] = await db
       .update(memberships)
-      .set({ planId: null, classesRemaining: null, expiresAt: null })
+      .set({ planId: null, classesRemaining: null, classesTotal: null, expiresAt: null, membershipStartDate: null, membershipEndDate: null })
       .where(eq(memberships.id, membershipId))
       .returning();
     return m;
+  }
+
+  async getMembershipByUserAndBranch(userId: string, branchId: string): Promise<Membership | undefined> {
+    const [m] = await db.select().from(memberships)
+      .where(and(eq(memberships.userId, userId), eq(memberships.branchId, branchId)));
+    return m;
+  }
+
+  async reconcilePastBookings(branchId: string): Promise<number> {
+    const today = new Date().toISOString().split("T")[0];
+    const now = new Date();
+    const currentTime = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+
+    const pendingBookings = await db
+      .select({
+        bookingId: classBookings.id,
+        userId: classBookings.userId,
+        bookingDate: classBookings.bookingDate,
+        endTime: classSchedules.endTime,
+      })
+      .from(classBookings)
+      .innerJoin(classSchedules, eq(classBookings.classScheduleId, classSchedules.id))
+      .where(
+        and(
+          eq(classBookings.branchId, branchId),
+          eq(classBookings.status, "confirmed"),
+          sql`(${classBookings.bookingDate} < ${today} OR (${classBookings.bookingDate} = ${today} AND ${classSchedules.endTime} <= ${currentTime}))`
+        )
+      );
+
+    let count = 0;
+    for (const booking of pendingBookings) {
+      await db.update(classBookings).set({ status: "no_show" as any }).where(eq(classBookings.id, booking.bookingId));
+
+      const mem = await this.getMembershipByUserAndBranch(booking.userId, branchId);
+      if (mem && mem.classesRemaining !== null && mem.classesRemaining > 0) {
+        await this.decrementClassesRemaining(mem.id);
+      }
+      count++;
+    }
+    return count;
   }
 
   async decrementClassesRemaining(membershipId: string): Promise<Membership | undefined> {
@@ -791,6 +847,10 @@ export class DatabaseStorage implements IStorage {
       .where(eq(classBookings.id, id))
       .returning();
     return booking;
+  }
+
+  async markBookingLateCancellation(id: string): Promise<void> {
+    await db.update(classBookings).set({ lateCancellation: true }).where(eq(classBookings.id, id));
   }
 
   async getBooking(id: string): Promise<ClassBooking | undefined> {
@@ -1137,6 +1197,29 @@ export class DatabaseStorage implements IStorage {
         ${memberships.joinedAt}
       )`));
 
+    return results;
+  }
+
+  async getClientsWithoutClasses(branchId: string): Promise<any[]> {
+    const results = await db
+      .select({
+        userId: users.id,
+        name: users.name,
+        email: users.email,
+        membershipId: memberships.id,
+        planName: membershipPlans.name,
+        classesRemaining: memberships.classesRemaining,
+        classesTotal: memberships.classesTotal,
+      })
+      .from(memberships)
+      .innerJoin(users, eq(memberships.userId, users.id))
+      .leftJoin(membershipPlans, eq(memberships.planId, membershipPlans.id))
+      .where(and(
+        eq(memberships.branchId, branchId),
+        eq(memberships.status, "active"),
+        eq(memberships.clientStatus, "active"),
+        sql`${memberships.classesRemaining} IS NOT NULL AND ${memberships.classesRemaining} = 0`
+      ));
     return results;
   }
 

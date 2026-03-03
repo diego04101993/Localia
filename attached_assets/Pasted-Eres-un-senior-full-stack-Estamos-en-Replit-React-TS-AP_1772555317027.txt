@@ -1,0 +1,193 @@
+Eres un senior full-stack. Estamos en Replit (React/TS + API + DB). Tu prioridad #1 es NO ROMPER el proyecto ni cambiar arquitectura. Trabaja en FASES pequeñas, con commits lógicos. Después de cada fase: compila, corre, prueba rutas clave y no sigas si hay errores.
+
+REGLAS ANTI-ROTO:
+- No refactors masivos, no renombres globales, no cambies rutas existentes si ya funcionan.
+- Cambios mínimos, bien aislados.
+- Si falta algo, crea funciones nuevas y úsalo donde aplique.
+- Mantén compatibilidad: si agregas columnas/fields, usa defaults y migrations seguras.
+- Agrega validaciones y mensajes de error amigables.
+- Si implementas subida de archivos, limita tamaño y tipo.
+
+OBJETIVO GENERAL:
+Mejorar UX de Membresías y Reservas + implementar lógica real de “clases restantes / vencimiento / descuentos por asistencia / cancelaciones” + que el CLIENTE (app pública /app/:slug) ya pueda ver calendario/horarios y reservar/cancelar.
+
+========================
+FASE 1 — BUGFIXES y ajustes rápidos (sin tocar lógica compleja)
+1) Clientes activos en Resumen:
+   - El KPI “Clientes activos” debe contar SOLO clientes con client_status = "active"
+   - Si el cliente está "inactive" o "frozen", NO debe contar como activo.
+   - Actualiza el endpoint/consulta del resumen y la UI.
+
+2) Bug de “Editar cliente muestra datos del cliente anterior”:
+   - Al abrir modal de editar para otro cliente sin refrescar, se queda estado viejo.
+   - Solución: al abrir modal, hacer reset del form + setValues del cliente correcto.
+   - Asegura que el modal tenga una “key” por clientId o useEffect que sincronice props->state.
+   - Prueba editando 3 clientes seguidos sin refrescar.
+
+3) Botón “Llamar”:
+   - En web no funciona y confunde. Quitar del dashboard web (Branch Admin).
+   - Mantener WhatsApp.
+
+4) Editar correo del cliente:
+   - En “Editar cliente” permitir modificar email.
+   - Validar formato email.
+   - Backend: PATCH /api/branch/clients/:id debe aceptar email (siempre que no esté repetido).
+   - Manejar error: “Ese email ya existe”.
+
+CHECKS FASE 1:
+- npm run dev / build OK
+- Editar cliente consecutivo funciona
+- KPI clientes activos cambia cuando pongo inactivo/congelado
+- Email se edita y guarda
+
+========================
+FASE 2 — Membresías: UX PRO + reglas base de planes
+Mejorar el modal “Crear/Editar plan” (actualmente se siente X):
+- UX:
+  - Layout en 2 columnas (desktop) con ayuda visual.
+  - Inputs con prefijos/sufijos: Precio “MXN”, Días “días”, Clases “clases”.
+  - Toggle “Ilimitado” para Clases (si ilimitado => classes = null).
+  - Toggle “Sin vencimiento” para Días (si sin vencimiento => days = null).
+  - Mostrar resumen en vivo: “Vigencia: 30 días | Cupo: 12 clases | Precio: $1500”.
+  - Botón primario deshabilitado si falta nombre o precio o valores inválidos.
+
+- Validaciones:
+  - precio > 0
+  - days si existe: 1..3650
+  - classes si existe: 1..999
+  - nombre length <= 60
+  - descripción opcional <= 200
+
+- Display:
+  - En tarjetas de planes, mostrar badges: “Ilimitadas”/“Sin vencimiento” cuando aplique.
+
+CHECKS FASE 2:
+- Crear plan ilimitado y plan normal
+- Editar plan no rompe
+- Lista se ve bien
+
+========================
+FASE 3 — Lógica real de “clases restantes / vencimiento / descuentos”
+REQUISITOS DE NEGOCIO (muy importante):
+- Cuando un cliente tiene plan asignado:
+  - Debe existir:
+    - membership_start_date
+    - membership_end_date (si plan tiene days) o null si sin vencimiento
+    - classes_total (si plan tiene classes) o null si ilimitado
+    - classes_remaining (si classes_total existe) inicia igual a total
+- Descuento de clase:
+  - Si el cliente ASISTE a una reserva => se descuenta 1 clase (si no es ilimitado)
+  - Si NO asiste y ya pasó la hora de inicio (o fin) => se descuenta 1 clase (si no es ilimitado)
+  - Si CANCELA a tiempo => NO se descuenta
+- “Cancela a tiempo”:
+  - Crear una regla configurable por sucursal: cancel_cutoff_minutes (default 120 min).
+  - Si cancela antes de cutoff => no descuento
+  - Si cancela tarde => descuento 1 (si no es ilimitado)
+- Congelado/inactivo:
+  - frozen: no puede reservar y no puede marcar asistencia
+  - inactive: no puede reservar (pero historial visible)
+
+IMPLEMENTACIÓN (sin romper):
+A) DB/Migración:
+- Agregar fields necesarios en memberships o tabla equivalente:
+  - membership_start_date, membership_end_date
+  - classes_total, classes_remaining
+  - cancel_cutoff_minutes (en branches/settings) o en branches
+- Mantener compat con datos actuales (defaults null).
+
+B) Backend:
+- Al asignar plan a cliente:
+  - set start_date=now
+  - calcular end_date = now + days (si days)
+  - classes_total = plan.classes (si existe)
+  - classes_remaining = plan.classes (si existe)
+- En endpoint de marcar asistencia / actualizar estado de reserva:
+  - Si status pasa a “attended” => aplicar descuento
+  - Si status pasa a “no_show” o se marca como “no asistió” => aplicar descuento
+- En cancelación:
+  - Validar cutoff con fecha/hora clase
+  - Guardar si fue “canceled_on_time” (bool) y si “late_cancel” (bool)
+  - Si late_cancel => aplicar descuento
+
+C) Jobs / Auto-descuento por tiempo:
+- Cuando una clase ya pasó y el cliente estaba reservado y no se marcó asistencia:
+  - marcar como “no_show” automáticamente (solo si pasó el tiempo fin)
+  - aplicar descuento
+- Implementación simple:
+  - Al cargar Reservas del día/semana, correr una rutina “reconcilePastBookings” que revise bookings pasados no resueltos y los cierre. (Evitar cron si no existe).
+  - Debe ser idempotente (no descontar doble).
+
+D) UI:
+- En perfil del cliente:
+  - Mostrar “Clases restantes” y “Vence: dd/mmm/aaaa” (o “Sin vencimiento”).
+  - Si classes_remaining = 0 => badge rojo “Sin clases” + CTA “Asignar plan”.
+- En dashboard (Resumen):
+  - Agregar bloque de notificaciones/alertas:
+    - “Clientes sin clases: N”
+    - “Membresías por vencer en 7 días: N”
+  - Click abre lista filtrada.
+
+CHECKS FASE 3:
+- Reservar -> asistir => descuenta
+- Reservar -> cancelar a tiempo => no descuenta
+- Reservar -> cancelar tarde => descuenta
+- Pasó la clase sin acción => auto no_show y descuenta
+- No descuenta doble si refresco 10 veces
+
+========================
+FASE 4 — Reservas: UX + reglas con membresías
+- En modal “Reservar cliente”:
+  - Mostrar al seleccionar cliente:
+    - clases restantes
+    - vencimiento
+    - si está inactive/frozen => bloquear y explicar
+    - si no tiene clases => bloquear y sugerir asignar plan
+- En lista de reservas de una clase:
+  - Mostrar chip de estado: reservado / asistió / no asistió / cancelado
+  - Acciones:
+    - marcar asistió
+    - marcar no asistió
+    - cancelar (y mostrar si fue a tiempo o tarde)
+  - Mostrar contador “ocupación” y “disponibles”
+
+CHECKS FASE 4:
+- No deja reservar si no tiene clases
+- Congelado no puede reservar
+- Estados se ven claros
+
+========================
+FASE 5 — App del cliente (/app/:slug): calendario + reservar/cancelar
+Actualmente el cliente no ve clases ni calendario.
+Implementar en la página pública del negocio:
+- Sección “Horarios / Reservar”
+  - Vista por semana (similar al admin pero simplificada)
+  - Lista de clases del día seleccionado
+  - Botón “Reservar” en clases disponibles
+  - Sección “Mis reservas” con opción “Cancelar”
+- Reglas:
+  - Si usuario no logueado => pedir login
+  - Si el usuario no es “miembro” => mostrar CTA “Unirme / solicitar”
+  - Si no tiene clases => mostrar “No tienes clases disponibles” (si plan limitado)
+  - Si venció => bloquear reservas
+  - Si cancelación fuera de cutoff => mostrar aviso “Se descontará 1 clase”
+- Mostrar banner de “Anuncio rápido” ya existente (texto + imagen) y listo.
+
+CHECKS FASE 5:
+- Cliente ve calendario y clases
+- Reserva desde app y aparece en admin
+- Cancelación desde app respeta cutoff
+
+========================
+MEJORA EXTRA (OPCIONAL, NO OBLIGATORIO AHORA): Video en anuncio rápido
+Recomendación: NO meter video todavía si no hay storage estable (S3/R2) porque Replit puede sufrir por tamaños y ancho de banda.
+Si lo implementas:
+- Solo MP4, máximo 10 segundos, máximo 8–12 MB
+- Generar thumbnail
+- En UI: preview y autoplay muted off
+- Si no se puede garantizar performance, dejarlo SOLO en imagen por ahora.
+
+ENTREGABLE FINAL:
+- Cambios implementados por fases
+- Sin errores de compilación
+- Pruebas manuales listadas al final (checklist)
+- Explicar brevemente qué archivos tocaste y por qué.
