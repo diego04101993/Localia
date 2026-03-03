@@ -24,6 +24,16 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useAuth } from "@/lib/auth";
 import { apiRequest, queryClient, getQueryFn } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -270,6 +280,7 @@ function CustomerScheduleSection({ slug }: { slug: string }) {
     const today = new Date();
     return today.toISOString().split("T")[0];
   });
+  const [cancelConfirm, setCancelConfirm] = useState<{ bookingId: string; isLate: boolean } | null>(null);
 
   const weekDates = getWeekDates(weekOffset);
 
@@ -328,13 +339,24 @@ function CustomerScheduleSection({ slug }: { slug: string }) {
       if (data.lateCancellation) {
         toast({ title: "Reserva cancelada", description: "Cancelación tardía: se descontó 1 clase." });
       } else {
-        toast({ title: "Reserva cancelada" });
+        toast({ title: "Reserva cancelada", description: "No se descontó ninguna clase." });
       }
+      setCancelConfirm(null);
     },
     onError: (err: any) => {
       toast({ title: "Error", description: err.message || "No se pudo cancelar", variant: "destructive" });
+      setCancelConfirm(null);
     },
   });
+
+  const cutoffMinutes = scheduleData?.cancelCutoffMinutes ?? 180;
+
+  function handleCancelClick(bookingId: string, classStartTime: string) {
+    const classStart = new Date(`${selectedDay}T${classStartTime}:00`);
+    const diffMin = (classStart.getTime() - Date.now()) / 60000;
+    const isLate = diffMin < cutoffMinutes;
+    setCancelConfirm({ bookingId, isLate });
+  }
 
   const membership = myBookingsData?.membership;
   const myBookings = myBookingsData?.bookings || [];
@@ -544,7 +566,7 @@ function CustomerScheduleSection({ slug }: { slug: string }) {
                             size="sm"
                             variant="outline"
                             className="h-7 text-xs text-red-600 border-red-200 hover:bg-red-50"
-                            onClick={() => cancelMutation.mutate(myBooking.id)}
+                            onClick={() => handleCancelClick(myBooking.id, cls.startTime)}
                             disabled={cancelMutation.isPending}
                             data-testid={`button-cancel-class-${cls.id}`}
                           >
@@ -576,6 +598,31 @@ function CustomerScheduleSection({ slug }: { slug: string }) {
           )}
         </CardContent>
       </Card>
+
+      <AlertDialog open={!!cancelConfirm} onOpenChange={(o) => { if (!o) setCancelConfirm(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Cancelar reserva?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {cancelConfirm?.isLate
+                ? `Cancelación tardía: al cancelar a menos de ${Math.floor(cutoffMinutes / 60)} ${cutoffMinutes >= 120 ? "horas" : "hora"}, se descontará 1 clase. ¿Continuar?`
+                : "No se descontará ninguna clase."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-cancel-dialog-dismiss">Volver</AlertDialogCancel>
+            <AlertDialogAction
+              className={cancelConfirm?.isLate ? "bg-red-600 hover:bg-red-700" : ""}
+              onClick={() => cancelConfirm && cancelMutation.mutate(cancelConfirm.bookingId)}
+              disabled={cancelMutation.isPending}
+              data-testid="button-cancel-dialog-confirm"
+            >
+              {cancelMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
+              {cancelConfirm?.isLate ? "Cancelar de todas formas" : "Sí, cancelar"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
