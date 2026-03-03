@@ -144,11 +144,27 @@ interface AlertsData {
   }>;
 }
 
-function AlertsSection({ alerts, isLoading }: { alerts: AlertsData | undefined; isLoading: boolean }) {
+function AlertsSection({ alerts, isLoading, onViewClient }: { alerts: AlertsData | undefined; isLoading: boolean; onViewClient: (userId: string) => void }) {
+  const { toast } = useToast();
   const [expiredExpanded, setExpiredExpanded] = useState(true);
   const [expiringExpanded, setExpiringExpanded] = useState(false);
   const [inactiveExpanded, setInactiveExpanded] = useState(false);
   const [noClassesExpanded, setNoClassesExpanded] = useState(false);
+
+  const renewMutation = useMutation({
+    mutationFn: async (membershipId: string) => {
+      const resp = await apiRequest("POST", `/api/branch/memberships/${membershipId}/renew`);
+      return resp.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/alerts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
+      toast({ title: "Membresía renovada" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message || "Error al renovar", variant: "destructive" });
+    },
+  });
 
   const expiredCount = alerts?.expiredMemberships?.length ?? 0;
   const expiringCount = alerts?.expiringMemberships?.length ?? 0;
@@ -240,7 +256,24 @@ function AlertsSection({ alerts, isLoading }: { alerts: AlertsData | undefined; 
                           <p className="text-[10px] text-muted-foreground">{m.classesRemaining} clases restantes</p>
                         )}
                       </div>
-                      <Badge variant="destructive" className="text-[10px]">Vencido</Badge>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-6 px-2 text-[10px]"
+                        onClick={() => onViewClient(m.userId)}
+                        data-testid={`button-view-expired-${m.userId}`}
+                      >
+                        Ver cliente
+                      </Button>
+                      <Button
+                        size="sm"
+                        className="h-6 px-2 text-[10px]"
+                        onClick={() => renewMutation.mutate(m.membershipId)}
+                        disabled={renewMutation.isPending}
+                        data-testid={`button-renew-expired-${m.userId}`}
+                      >
+                        {renewMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Renovar"}
+                      </Button>
                     </div>
                   </div>
                 ))}
@@ -291,6 +324,15 @@ function AlertsSection({ alerts, isLoading }: { alerts: AlertsData | undefined; 
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
                         <span className="text-[10px] text-muted-foreground">{formatDate(m.expiresAt)}</span>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-6 px-2 text-[10px]"
+                          onClick={() => onViewClient(m.userId)}
+                          data-testid={`button-view-expiring-${m.userId}`}
+                        >
+                          Ver cliente
+                        </Button>
                         <Badge
                           variant={days <= 2 ? "destructive" : "default"}
                           className={days <= 2 ? "" : "bg-orange-500"}
@@ -345,9 +387,20 @@ function AlertsSection({ alerts, isLoading }: { alerts: AlertsData | undefined; 
                           Última actividad: {formatDate(c.lastAttendance || c.joinedAt)}
                         </p>
                       </div>
-                      <Badge variant="destructive">
-                        {days} días
-                      </Badge>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-6 px-2 text-[10px]"
+                          onClick={() => onViewClient(c.userId)}
+                          data-testid={`button-view-inactive-${c.userId}`}
+                        >
+                          Ver cliente
+                        </Button>
+                        <Badge variant="destructive">
+                          {days} días
+                        </Badge>
+                      </div>
                     </div>
                   );
                 })}
@@ -395,6 +448,15 @@ function AlertsSection({ alerts, isLoading }: { alerts: AlertsData | undefined; 
                       {c.expiresAt && (
                         <span className="text-[10px] text-muted-foreground">Vence {formatDate(c.expiresAt)}</span>
                       )}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-6 px-2 text-[10px]"
+                        onClick={() => onViewClient(c.userId)}
+                        data-testid={`button-view-no-classes-${c.userId}`}
+                      >
+                        Ver cliente
+                      </Button>
                       <Badge variant="destructive">0/{c.classesTotal ?? "?"} clases</Badge>
                     </div>
                   </div>
@@ -715,7 +777,9 @@ function ResumenTab({ branchStats, branchStatus, branchSlug, branchId, isLoading
         </Card>
       </div>
 
-      <AlertsSection alerts={alerts} isLoading={alertsLoading} />
+      <AlertsSection alerts={alerts} isLoading={alertsLoading} onViewClient={(userId) => {
+        setActiveTab("clientes");
+      }} />
 
       <AnnouncementsSection branchId={branchId} />
 

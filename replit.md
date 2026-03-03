@@ -26,6 +26,7 @@ The platform is built with a modern web stack:
     - **Public Marketplace**: An `/explore` route allows all users to search, filter by category, and find nearby branches.
     - **User Features**: Customers can join branches, mark favorites, and manage their memberships.
     - **Monthly Billing Cycle**: A core design pattern for memberships. All plans are 30-day cycles, with `paidAt`, `expiresAt`, `classesRemaining` dynamically managed. `planStatus` is computed at read time. Renewal resets the cycle.
+    - **Class Consumption Rules**: Classes deducted automatically based on booking outcome. Attended → -1 class. No-show (auto-reconciled after class ends) → -1 class. Late cancellation (< 3hrs before class) → -1 class. Early cancellation (>= 3hrs) → no deduction. Unlimited plans never deducted. Expired plans block "attended" marking. Cutoff constant: `DEFAULT_CANCEL_CUTOFF_MINUTES = 180` in routes.ts, overridable per branch via `cancelCutoffMinutes`.
     - **Status Management**: Branches can be `active`, `suspended` (admin sees banner, clients blocked), or `blacklisted` (all blocked).
     - **Alerts and Notifications**: Dashboard alerts for expiring memberships, inactive clients, and zero-class clients.
     - **Data Export**: Ability to export client data to CSV.

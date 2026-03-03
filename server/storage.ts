@@ -743,6 +743,13 @@ export class DatabaseStorage implements IStorage {
     return m;
   }
 
+  // Rule 2: Auto no-show reconciliation
+  // Called on GET /api/branch/bookings — marks past confirmed bookings as no_show and deducts class
+  //
+  // Test scenarios:
+  // 1. Client with 5 classes books 10am class. Class ends. reconcile → classesRemaining=4, booking=no_show
+  // 2. Client cancels >3hrs before class → no deduction (classesRemaining stays same)
+  // 3. Client cancels <3hrs before class → lateCancellation=true, classesRemaining decremented
   async reconcilePastBookings(branchId: string): Promise<number> {
     const today = new Date().toISOString().split("T")[0];
     const now = new Date();
@@ -1245,7 +1252,8 @@ export class DatabaseStorage implements IStorage {
         eq(memberships.branchId, branchId),
         eq(memberships.status, "active"),
         eq(memberships.clientStatus, "active"),
-        sql`${memberships.classesRemaining} IS NOT NULL AND ${memberships.classesRemaining} = 0`
+        sql`${memberships.classesRemaining} IS NOT NULL AND ${memberships.classesRemaining} = 0`,
+        sql`${memberships.expiresAt} IS NOT NULL AND ${memberships.expiresAt} >= NOW()`
       ));
     return results;
   }

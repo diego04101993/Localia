@@ -23,6 +23,8 @@ import {
 } from "@shared/schema";
 import { z } from "zod";
 
+const DEFAULT_CANCEL_CUTOFF_MINUTES = 180;
+
 const uploadsDir = path.join(process.cwd(), "uploads");
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
@@ -1636,12 +1638,21 @@ export async function registerRoutes(
 
       const alreadyProcessed = existing.status === "attended" || existing.status === "no_show";
 
+      // Rule 1: Block "attended" if plan is expired
+      if (status === "attended" && !alreadyProcessed) {
+        const mem = await storage.getMembershipByUserAndBranch(existing.userId, actor.branchId);
+        if (mem && mem.expiresAt && new Date(mem.expiresAt) < new Date()) {
+          return res.status(400).json({ message: "Plan vencido. Renueva la membresía antes de marcar asistencia." });
+        }
+      }
+
       let lateCancellation = false;
       if (status === "cancelled" && existing.status === "confirmed") {
+        // Rule 3: Cancellation cutoff — late cancel deducts like no_show
         const schedule = await storage.getClassSchedule(existing.classScheduleId);
         const branch = await storage.getBranch(actor.branchId);
         if (schedule && branch) {
-          const cutoff = (branch as any).cancelCutoffMinutes ?? 120;
+          const cutoff = (branch as any).cancelCutoffMinutes ?? DEFAULT_CANCEL_CUTOFF_MINUTES;
           const bookingDateStr = existing.bookingDate;
           const classStart = new Date(`${bookingDateStr}T${schedule.startTime}:00`);
           const now = new Date();
@@ -1658,11 +1669,21 @@ export async function registerRoutes(
         await storage.markBookingLateCancellation(bookingId);
       }
 
+      // Class deduction rules:
+      // - attended: -1 class (if plan active and not unlimited)
+      // - no_show: -1 class (if plan active and not unlimited)
+      // - cancelled + lateCancellation: -1 class (treated as no_show)
+      // - cancelled before cutoff: no deduction
+      // - already processed (attended/no_show): no double deduction
       const shouldDeduct = !alreadyProcessed && (status === "attended" || status === "no_show" || (status === "cancelled" && lateCancellation));
+      let classesRemaining: number | null = null;
       if (shouldDeduct) {
         const mem = await storage.getMembershipByUserAndBranch(existing.userId, actor.branchId);
         if (mem && mem.classesRemaining !== null && mem.classesRemaining > 0) {
-          await storage.decrementClassesRemaining(mem.id);
+          const decremented = await storage.decrementClassesRemaining(mem.id);
+          classesRemaining = decremented?.classesRemaining ?? null;
+        } else if (mem) {
+          classesRemaining = mem.classesRemaining;
         }
       }
 
@@ -1674,7 +1695,7 @@ export async function registerRoutes(
       });
 
       console.log(`[BOOKINGS] Updated booking ${bookingId} status to ${status}${lateCancellation ? " (late cancel)" : ""} by ${actor.email}`);
-      res.json({ ...updated, lateCancellation });
+      res.json({ ...updated, lateCancellation, classesRemaining });
     } catch (err: any) {
       if (err.name === "ZodError") {
         return res.status(400).json({ message: err.errors[0]?.message || "Datos inválidos" });
@@ -2299,7 +2320,7 @@ export async function registerRoutes(
       }
       const schedules = await storage.getBranchClassSchedules(branch.id);
       const activeSchedules = schedules.filter(s => s.isActive);
-      res.json({ schedules: activeSchedules, cancelCutoffMinutes: branch.cancelCutoffMinutes ?? 120 });
+      res.json({ schedules: activeSchedules, cancelCutoffMinutes: branch.cancelCutoffMinutes ?? DEFAULT_CANCEL_CUTOFF_MINUTES });
     } catch (err: any) {
       console.error(`[PUBLIC_SCHEDULE] Error:`, err.stack || err);
       res.status(500).json({ message: "Error al obtener horario" });
@@ -2414,7 +2435,7 @@ export async function registerRoutes(
       }
 
       const schedule = await storage.getClassSchedule(booking.classScheduleId);
-      const cutoff = branch.cancelCutoffMinutes ?? 120;
+      const cutoff = branch.cancelCutoffMinutes ?? DEFAULT_CANCEL_CUTOFF_MINUTES;
       let lateCancellation = false;
 
       if (schedule) {

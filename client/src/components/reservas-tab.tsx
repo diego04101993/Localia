@@ -454,9 +454,13 @@ function ClassDayDetail({
       const resp = await apiRequest("PATCH", `/api/branch/bookings/${bookingId}/status`, { status });
       return resp.json();
     },
-    onSuccess: () => {
+    onSuccess: (_data: any, variables: { bookingId: string; status: string }) => {
       queryClient.invalidateQueries({ queryKey: [`/api/branch/bookings/class/${classSchedule.id}?date=${bookingDate}`] });
       queryClient.invalidateQueries({ queryKey: ["/api/branch/reservations/stats"] });
+      if (variables.status === "attended" || variables.status === "no_show" || variables.status === "cancelled") {
+        queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/branch/alerts"] });
+      }
       toast({ title: "Estado actualizado" });
     },
     onError: (err: any) => {
@@ -501,6 +505,9 @@ function ClassDayDetail({
         </div>
       </CardHeader>
       <CardContent className="pt-0">
+        <p className="text-[10px] text-muted-foreground mb-2" data-testid={`text-cutoff-info-${classSchedule.id}`}>
+          Cancelaciones con menos de 3 hrs de anticipación descuentan 1 clase.
+        </p>
         {isLoading ? (
           <div className="space-y-2">
             {[1, 2].map(i => <Skeleton key={i} className="h-8 w-full" />)}
