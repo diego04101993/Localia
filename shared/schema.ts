@@ -87,6 +87,7 @@ export const memberships = pgTable("memberships", {
   lastSeenAt: timestamp("last_seen_at"),
   source: membershipSourceEnum("source").notNull().default("self_join"),
   planId: varchar("plan_id", { length: 36 }),
+  planNameSnapshot: text("plan_name_snapshot"),
   classesRemaining: integer("classes_remaining"),
   classesTotal: integer("classes_total"),
   expiresAt: timestamp("expires_at", { withTimezone: true }),
