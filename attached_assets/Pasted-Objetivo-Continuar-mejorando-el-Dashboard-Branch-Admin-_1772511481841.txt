@@ -1,0 +1,49 @@
+Objetivo: Continuar mejorando el Dashboard Branch Admin sin romper lo ya hecho en Resumen y Clientes.
+IMPORTANTE:
+- NO cambies rutas existentes ni elimines endpoints actuales.
+- NO rompas compilación. Si algo falta, crea fallback.
+- Haz cambios en pasos pequeños y commiteables.
+- Mantén la UI consistente (shadcn/ui, mismos componentes y estilos).
+- Todo debe seguir funcionando por sucursal (scoped a branchId).
+
+Estado actual (NO TOCAR / NO REGRESIONAR):
+- Resumen: anuncio rápido publica texto + imagen y se refleja en el perfil público.
+- Clientes: crear/editar/eliminar, estados (activo/inactivo/congelado), adeudo, avatar, WhatsApp, notas, registro de asistencias, resumen PRO.
+
+Siguiente paso: implementar mejoras de estabilidad y UX que detectamos:
+1) FIX bug de modal “Editar cliente” mostrando datos del cliente anterior al abrir otro sin refrescar.
+   - Asegura que el form resetee estado cuando cambia clientId.
+   - Si usas React Hook Form, usa reset() en useEffect al cambiar el cliente seleccionado.
+   - Si no hay RHF, reinicializa state local correctamente.
+   - Agrega un key al Dialog usando el clientId para forzar remount si aplica.
+
+2) Habilitar edición de email del cliente:
+   - En Editar cliente permitir cambiar email.
+   - Validar formato email.
+   - Backend: permitir actualizar email en PATCH /api/branch/clients/:id (o endpoint existente).
+   - Manejar conflicto si el email ya existe: mostrar error claro en toast.
+
+3) Clientes activos en Resumen:
+   - El KPI “Clientes activos” debe contar solo client_status="active".
+   - Si un cliente pasa a “inactivo” o “congelado”, el número de activos debe bajar.
+   - Mantén también el total de clientes (si no existe, agrégalo como texto secundario: “X totales”).
+   - Asegúrate de que el cálculo use el source correcto (memberships o join users+memberships).
+
+4) Botón “Llamar”:
+   - Detecta si estamos en web desktop y el tel: no aplica / no hace nada.
+   - Opción A (preferida): oculta el botón “Llamar” en desktop web (mantén WhatsApp).
+   - Opción B: dejarlo pero con tooltip “Disponible en móvil”.
+
+5) Anuncio rápido: adjuntar imagen ya está. Solo mejoras de UX:
+   - Mostrar thumbnail más grande en dashboard.
+   - Confirmación al borrar anuncio (AlertDialog).
+   - Mostrar “Activo” con timestamp (ej. publicado hace X min) si existe createdAt.
+
+Reglas de implementación:
+- Solo toca archivos relacionados (dashboard pages/components + server route si hace falta).
+- Si necesitas migración DB, hazla de forma no destructiva (add columns only). Si ya existe, no re-crear.
+- Agrega tests manuales: lista de pasos para QA al final.
+
+Entrega:
+- Cambios completos compilando.
+- Explicar brevemente qué archivos tocaste y cómo probar cada punto.

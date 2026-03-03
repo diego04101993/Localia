@@ -31,6 +31,16 @@ import {
   Loader2,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useAuth } from "@/lib/auth";
 import { useTheme } from "@/components/theme-provider";
 import { Button } from "@/components/ui/button";
@@ -267,10 +277,24 @@ function AlertsSection({ alerts, isLoading }: { alerts: AlertsData | undefined; 
   );
 }
 
+function timeAgo(dateStr: string) {
+  const now = Date.now();
+  const then = new Date(dateStr).getTime();
+  const diffMs = now - then;
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return "justo ahora";
+  if (mins < 60) return `hace ${mins} min`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `hace ${hrs}h`;
+  const days = Math.floor(hrs / 24);
+  return `hace ${days}d`;
+}
+
 function AnnouncementsSection({ branchId }: { branchId: string }) {
   const [newMessage, setNewMessage] = useState("");
   const [announcementImageUrl, setAnnouncementImageUrl] = useState<string | null>(null);
   const [uploadingImage, setUploadingImage] = useState(false);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
   const { toast } = useToast();
 
   const { data: announcements, isLoading } = useQuery<any[]>({
@@ -399,28 +423,31 @@ function AnnouncementsSection({ branchId }: { branchId: string }) {
             {activeAnnouncements.map((a: any) => (
               <div
                 key={a.id}
-                className="flex items-start justify-between gap-2 p-2 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800"
+                className="rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 overflow-hidden"
                 data-testid={`announcement-${a.id}`}
               >
-                <div className="flex items-start gap-2 min-w-0">
-                  <Megaphone className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                {a.imageUrl && (
+                  <img src={a.imageUrl} alt="Anuncio" className="w-full max-h-40 object-cover" data-testid={`img-announcement-${a.id}`} />
+                )}
+                <div className="p-2 flex items-start justify-between gap-2">
                   <div className="min-w-0">
+                    <div className="flex items-center gap-1.5 mb-0.5">
+                      <Megaphone className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                      <span className="text-[10px] text-amber-600 dark:text-amber-400 font-medium">Activo · {timeAgo(a.createdAt)}</span>
+                    </div>
                     <span className="text-sm" data-testid={`text-announcement-${a.id}`}>{a.message}</span>
-                    {a.imageUrl && (
-                      <img src={a.imageUrl} alt="Anuncio" className="mt-1 rounded max-h-20 object-cover" data-testid={`img-announcement-${a.id}`} />
-                    )}
                   </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="shrink-0 text-red-500 hover:text-red-700"
+                    onClick={() => setDeleteId(a.id)}
+                    disabled={deleteMutation.isPending}
+                    data-testid={`button-delete-announcement-${a.id}`}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
                 </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="shrink-0 text-red-500 hover:text-red-700"
-                  onClick={() => deleteMutation.mutate(a.id)}
-                  disabled={deleteMutation.isPending}
-                  data-testid={`button-delete-announcement-${a.id}`}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
               </div>
             ))}
           </div>
@@ -430,12 +457,33 @@ function AnnouncementsSection({ branchId }: { branchId: string }) {
           </p>
         )}
       </CardContent>
+
+      <AlertDialog open={!!deleteId} onOpenChange={(o) => { if (!o) setDeleteId(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Eliminar anuncio?</AlertDialogTitle>
+            <AlertDialogDescription>
+              El anuncio dejará de mostrarse en tu página pública.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-cancel-delete-announcement">Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 hover:bg-red-700"
+              onClick={() => { if (deleteId) deleteMutation.mutate(deleteId); setDeleteId(null); }}
+              data-testid="button-confirm-delete-announcement"
+            >
+              Eliminar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Card>
   );
 }
 
 function ResumenTab({ branchStats, branchStatus, branchSlug, branchId, isLoading, reservationStats, reservationLoading, alerts, alertsLoading }: {
-  branchStats: { activeMemberships: number; uniqueActiveCustomers: number } | undefined;
+  branchStats: { activeMemberships: number; uniqueActiveCustomers: number; totalCustomers: number } | undefined;
   branchStatus: string;
   branchSlug: string;
   branchId: string;
@@ -470,6 +518,9 @@ function ResumenTab({ branchStats, branchStatus, branchSlug, branchId, isLoading
                 </p>
               )}
               <p className="text-xs text-muted-foreground">Clientes activos</p>
+              {branchStats && branchStats.totalCustomers > branchStats.uniqueActiveCustomers && (
+                <p className="text-[10px] text-muted-foreground" data-testid="text-clients-total">{branchStats.totalCustomers} totales</p>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -601,7 +652,7 @@ export default function DashboardPage() {
   const isImpersonating = !!(user as any)?.impersonating;
   const impersonatedBranchName = (user as any)?.impersonatedBranchName;
 
-  const { data: branchStats, isLoading: statsLoading } = useQuery<{ activeMemberships: number; uniqueActiveCustomers: number }>({
+  const { data: branchStats, isLoading: statsLoading } = useQuery<{ activeMemberships: number; uniqueActiveCustomers: number; totalCustomers: number }>({
     queryKey: ["/api/branch/stats"],
     enabled: !!user?.branchId,
   });

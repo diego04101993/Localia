@@ -53,6 +53,7 @@ export interface BranchMetrics {
 export interface BranchStats {
   activeMemberships: number;
   uniqueActiveCustomers: number;
+  totalCustomers: number;
 }
 
 export interface IStorage {
@@ -256,6 +257,7 @@ export class DatabaseStorage implements IStorage {
       .select({
         activeMemberships: sql<number>`COUNT(CASE WHEN ${memberships.status} = 'active' THEN 1 END)`.as("active_memberships"),
         uniqueActiveCustomers: sql<number>`COUNT(DISTINCT CASE WHEN ${memberships.status} = 'active' AND ${memberships.clientStatus} = 'active' THEN ${memberships.userId} END)`.as("unique_active_customers"),
+        totalCustomers: sql<number>`COUNT(DISTINCT CASE WHEN ${memberships.status} = 'active' THEN ${memberships.userId} END)`.as("total_customers"),
       })
       .from(memberships)
       .where(eq(memberships.branchId, branchId));
@@ -263,6 +265,7 @@ export class DatabaseStorage implements IStorage {
     return {
       activeMemberships: Number(result?.activeMemberships) || 0,
       uniqueActiveCustomers: Number(result?.uniqueActiveCustomers) || 0,
+      totalCustomers: Number(result?.totalCustomers) || 0,
     };
   }
 
