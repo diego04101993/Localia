@@ -30,6 +30,7 @@ The platform is built with a modern web stack:
     - **Status Management**: Branches can be `active`, `suspended` (admin sees banner, clients blocked), or `blacklisted` (all blocked).
     - **Alerts and Notifications**: Dashboard alerts for expiring memberships, inactive clients, and zero-class clients.
     - **Plan Deactivation Impact**: When a plan is deactivated/deleted, all assigned clients are detached (`planId=null`) but history is preserved (`paidAt`, `expiresAt`, `classesRemaining` kept). A `planNameSnapshot` string stores the deleted plan's name. `planStatus="deleted"` is computed at read time. UI shows orange "Plan eliminado" badge and "Asignar nuevo plan" button. Assigning a new plan clears `planNameSnapshot`.
+    - **Customer Self-Booking (PWA)**: Logged-in customers see an "Agenda" section on `/app/:slug` with a 7-day strip, class cards showing spots left (X/Y), Reservar/Cancelar buttons, and a "Mis reservas" section with upcoming confirmed bookings. Booking validates plan expiry, classes remaining, and capacity. Cancellation respects cutoff. Endpoints: `GET /api/public/branch/:slug/schedule?date=`, `GET /api/public/branch/:slug/my-bookings?date=`, `GET /api/public/branch/:slug/my-upcoming-bookings`, `POST /api/public/branch/:slug/book`, `POST /api/public/branch/:slug/cancel-booking`.
     - **Data Export**: Ability to export client data to CSV.
 
 ## External Dependencies

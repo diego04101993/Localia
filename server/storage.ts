@@ -149,6 +149,7 @@ export interface IStorage {
   updateClientStatus(membershipId: string, clientStatus: string): Promise<any>;
   updateClientDebt(membershipId: string, hasDebt: boolean, debtAmount: number): Promise<any>;
   softDeleteMembership(membershipId: string): Promise<any>;
+  getUpcomingBookingsForUser(branchId: string, userId: string, fromDate: string, limit?: number): Promise<any[]>;
   getBranchAnnouncements(branchId: string): Promise<BranchAnnouncement[]>;
   createAnnouncement(data: InsertBranchAnnouncement): Promise<BranchAnnouncement>;
   deleteAnnouncement(id: string): Promise<void>;
@@ -1399,6 +1400,31 @@ export class DatabaseStorage implements IStorage {
       .where(eq(memberships.id, membershipId))
       .returning();
     return updated;
+  }
+
+  async getUpcomingBookingsForUser(branchId: string, userId: string, fromDate: string, limit: number = 5): Promise<any[]> {
+    const results = await db
+      .select({
+        id: classBookings.id,
+        classScheduleId: classBookings.classScheduleId,
+        bookingDate: classBookings.bookingDate,
+        status: classBookings.status,
+        className: classSchedules.name,
+        startTime: classSchedules.startTime,
+        endTime: classSchedules.endTime,
+        instructorName: classSchedules.instructorName,
+      })
+      .from(classBookings)
+      .innerJoin(classSchedules, eq(classBookings.classScheduleId, classSchedules.id))
+      .where(and(
+        eq(classBookings.branchId, branchId),
+        eq(classBookings.userId, userId),
+        gte(classBookings.bookingDate, fromDate),
+        eq(classBookings.status, "confirmed")
+      ))
+      .orderBy(asc(classBookings.bookingDate), asc(classSchedules.startTime))
+      .limit(limit);
+    return results;
   }
 
   async getBranchAnnouncements(branchId: string): Promise<BranchAnnouncement[]> {

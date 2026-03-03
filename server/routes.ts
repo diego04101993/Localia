@@ -2321,7 +2321,22 @@ export async function registerRoutes(
       }
       const schedules = await storage.getBranchClassSchedules(branch.id);
       const activeSchedules = schedules.filter(s => s.isActive);
-      res.json({ schedules: activeSchedules, cancelCutoffMinutes: branch.cancelCutoffMinutes ?? DEFAULT_CANCEL_CUTOFF_MINUTES });
+
+      const date = req.query.date as string | undefined;
+      let spotsMap: Record<string, number> = {};
+      if (date) {
+        const allBookings = await storage.getBookingsForDate(branch.id, date);
+        const activeBookings = allBookings.filter((b: any) => b.status !== "cancelled" && b.status !== "no_show");
+        for (const b of activeBookings) {
+          spotsMap[b.classScheduleId] = (spotsMap[b.classScheduleId] || 0) + 1;
+        }
+      }
+
+      res.json({
+        schedules: activeSchedules,
+        cancelCutoffMinutes: branch.cancelCutoffMinutes ?? DEFAULT_CANCEL_CUTOFF_MINUTES,
+        spotsTaken: spotsMap,
+      });
     } catch (err: any) {
       console.error(`[PUBLIC_SCHEDULE] Error:`, err.stack || err);
       res.status(500).json({ message: "Error al obtener horario" });
@@ -2360,6 +2375,26 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/public/branch/:slug/my-upcoming-bookings", requireAuth, async (req, res) => {
+    const user = req.user as any;
+    try {
+      const branch = await storage.getBranchBySlug(req.params.slug as string);
+      if (!branch || branch.deletedAt) {
+        return res.status(404).json({ message: "Sucursal no encontrada" });
+      }
+      const mem = await storage.getMembershipByUserAndBranch(user.id, branch.id);
+      if (!mem || mem.status !== "active") {
+        return res.json([]);
+      }
+      const today = new Date().toISOString().split("T")[0];
+      const bookings = await storage.getUpcomingBookingsForUser(branch.id, user.id, today, 5);
+      res.json(bookings);
+    } catch (err: any) {
+      console.error(`[PUBLIC_UPCOMING] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al obtener reservas" });
+    }
+  });
+
   app.post("/api/public/branch/:slug/book", requireAuth, async (req, res) => {
     const user = req.user as any;
     try {
@@ -2385,7 +2420,7 @@ export async function registerRoutes(
         return res.status(403).json({ message: "No tienes clases disponibles" });
       }
 
-      const { classScheduleId, bookingDate } = createBookingSchema.parse(req.body);
+      const { classScheduleId, bookingDate } = createBookingSchema.omit({ userId: true }).parse(req.body);
       const schedule = await storage.getClassSchedule(classScheduleId);
       if (!schedule || schedule.branchId !== branch.id || !schedule.isActive) {
         return res.status(404).json({ message: "Clase no encontrada" });

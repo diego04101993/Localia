@@ -1,0 +1,40 @@
+STOP summarizing old tasks (announcements/clients CRUD). Do NOT mention T001–T004.
+
+NEW FEATURE REQUEST: CUSTOMER SELF-BOOKING UI ON /app/:slug
+
+Implement UI changes only (and minimal API wiring) so a logged-in CUSTOMER can book/cancel from the public branch page.
+
+Where to implement:
+- Find the public PWA page component for /app/:slug (e.g. client/src/pages/app-branch.tsx, client/src/pages/app/[slug].tsx, or similar).
+- Find the customer app tabs (Bookings/Feed/Reviews). Add/extend the "Bookings" tab to include "Agenda" (available classes to book).
+
+UI requirements:
+1) Add a section "Agenda" that shows upcoming classes for the selected day (today default).
+   - Day selector (simple buttons Today/Tomorrow + a date picker OR a 7-day strip).
+   - List class schedules with: name, start-end, instructor, capacity, spots left.
+   - Each row has:
+      - If not booked: button "Reservar"
+      - If already booked by the customer: button "Cancelar"
+2) Add "Mis reservas" section above Agenda:
+   - Show next 5 bookings (date/time + class name + status badge)
+
+Rules (use existing backend rules):
+- Booking must fail with a friendly Spanish message if:
+  - plan expired
+  - no classes remaining (if not unlimited)
+  - class full
+- Cancellation respects cutoff (already exists): show message if late cancel will deduct.
+
+API usage (do NOT create new endpoints unless missing):
+- Use existing GET /api/bookings (customer sees own)
+- Use existing POST /api/bookings to create booking
+- Use existing PATCH /api/bookings/:id to cancel
+- If there is an endpoint to fetch schedules/classes for a date, use it.
+  If missing, implement a minimal GET endpoint to fetch class schedules for branch/day (read-only).
+
+Deliverables (mandatory):
+A) List EXACT files modified (with paths).
+B) Show the new UI screenshot-equivalent description + what components were added.
+C) Provide a 7-step manual test checklist to verify from a CUSTOMER account in /app/:slug that booking appears in Branch Admin dashboard.
+
+Do not refactor other tabs. Make the smallest changes possible.

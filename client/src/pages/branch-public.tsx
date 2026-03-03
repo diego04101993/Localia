@@ -220,13 +220,30 @@ type MyBookingsData = {
   } | null;
 };
 
+type UpcomingBooking = {
+  id: string;
+  classScheduleId: string;
+  bookingDate: string;
+  status: string;
+  className: string;
+  startTime: string;
+  endTime: string;
+  instructorName: string | null;
+};
+
 type ScheduleData = {
   schedules: ScheduleClass[];
   cancelCutoffMinutes: number;
+  spotsTaken: Record<string, number>;
 };
 
 const DAY_LABELS = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
 const DAY_LABELS_FULL = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
+
+function formatBookingDate(dateStr: string) {
+  const d = new Date(dateStr + "T12:00:00");
+  return d.toLocaleDateString("es-MX", { weekday: "short", day: "2-digit", month: "short" });
+}
 
 function getWeekDates(offset: number): { date: Date; dateStr: string; dayOfWeek: number; label: string; isToday: boolean }[] {
   const today = new Date();
@@ -257,13 +274,27 @@ function CustomerScheduleSection({ slug }: { slug: string }) {
   const weekDates = getWeekDates(weekOffset);
 
   const { data: scheduleData, isLoading: scheduleLoading } = useQuery<ScheduleData>({
-    queryKey: [`/api/public/branch/${slug}/schedule`],
+    queryKey: [`/api/public/branch/${slug}/schedule`, selectedDay],
+    queryFn: async () => {
+      const resp = await fetch(`/api/public/branch/${slug}/schedule?date=${selectedDay}`);
+      if (!resp.ok) throw new Error("Error");
+      return resp.json();
+    },
   });
 
   const { data: myBookingsData, isLoading: bookingsLoading } = useQuery<MyBookingsData>({
     queryKey: [`/api/public/branch/${slug}/my-bookings`, selectedDay],
     queryFn: async () => {
       const resp = await fetch(`/api/public/branch/${slug}/my-bookings?date=${selectedDay}`, { credentials: "include" });
+      if (!resp.ok) throw new Error("Error");
+      return resp.json();
+    },
+  });
+
+  const { data: upcomingBookings } = useQuery<UpcomingBooking[]>({
+    queryKey: [`/api/public/branch/${slug}/my-upcoming-bookings`],
+    queryFn: async () => {
+      const resp = await fetch(`/api/public/branch/${slug}/my-upcoming-bookings`, { credentials: "include" });
       if (!resp.ok) throw new Error("Error");
       return resp.json();
     },
@@ -276,6 +307,8 @@ function CustomerScheduleSection({ slug }: { slug: string }) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [`/api/public/branch/${slug}/my-bookings`] });
+      queryClient.invalidateQueries({ queryKey: [`/api/public/branch/${slug}/my-upcoming-bookings`] });
+      queryClient.invalidateQueries({ queryKey: [`/api/public/branch/${slug}/schedule`] });
       toast({ title: "Reserva confirmada" });
     },
     onError: (err: any) => {
@@ -290,6 +323,8 @@ function CustomerScheduleSection({ slug }: { slug: string }) {
     },
     onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: [`/api/public/branch/${slug}/my-bookings`] });
+      queryClient.invalidateQueries({ queryKey: [`/api/public/branch/${slug}/my-upcoming-bookings`] });
+      queryClient.invalidateQueries({ queryKey: [`/api/public/branch/${slug}/schedule`] });
       if (data.lateCancellation) {
         toast({ title: "Reserva cancelada", description: "Cancelación tardía: se descontó 1 clase." });
       } else {
@@ -304,6 +339,7 @@ function CustomerScheduleSection({ slug }: { slug: string }) {
   const membership = myBookingsData?.membership;
   const myBookings = myBookingsData?.bookings || [];
   const schedules = scheduleData?.schedules || [];
+  const spotsTaken = scheduleData?.spotsTaken || {};
 
   const selectedDate = weekDates.find(d => d.dateStr === selectedDay);
   const daySchedules = selectedDate
@@ -318,192 +354,229 @@ function CustomerScheduleSection({ slug }: { slug: string }) {
   const canBook = membership && !planExpired && (isUnlimited || !noClasses) && membership.clientStatus === "active";
 
   return (
-    <Card data-testid="card-customer-schedule">
-      <CardContent className="p-4 space-y-4">
-        <div className="flex items-center justify-between">
-          <h3 className="font-semibold text-sm flex items-center gap-2" data-testid="text-schedule-title">
-            <CalendarDays className="h-4 w-4" />
-            Agenda
-          </h3>
-          {membership && (
-            <div className="flex items-center gap-2">
-              {membership.classesRemaining !== null ? (
-                <Badge variant="outline" className="text-[10px]" data-testid="badge-classes-info">
-                  {membership.classesRemaining}/{membership.classesTotal ?? "?"} clases
-                </Badge>
-              ) : (
-                <Badge variant="outline" className="text-[10px]" data-testid="badge-classes-info">
-                  Ilimitadas
-                </Badge>
-              )}
-              {membership.expiresAt && (
-                <Badge
-                  variant={planExpired ? "destructive" : "outline"}
-                  className="text-[10px]"
-                  data-testid="badge-plan-expiry"
-                >
-                  {planExpired ? "Vencido" : `Vence ${new Date(membership.expiresAt).toLocaleDateString("es-MX", { day: "2-digit", month: "short" })}`}
-                </Badge>
-              )}
+    <div className="space-y-4">
+      {upcomingBookings && upcomingBookings.length > 0 && (
+        <Card data-testid="card-upcoming-bookings">
+          <CardContent className="p-4 space-y-3">
+            <h3 className="font-semibold text-sm flex items-center gap-2" data-testid="text-upcoming-title">
+              <CalendarDays className="h-4 w-4" />
+              Mis reservas
+            </h3>
+            <div className="space-y-2">
+              {upcomingBookings.map((b) => (
+                <div key={b.id} className="flex items-center justify-between border rounded-md p-2" data-testid={`upcoming-booking-${b.id}`}>
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium" data-testid={`text-upcoming-class-${b.id}`}>{b.className}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {formatBookingDate(b.bookingDate)} · {b.startTime} – {b.endTime}
+                      {b.instructorName && ` · ${b.instructorName}`}
+                    </p>
+                  </div>
+                  <Badge variant="default" className="text-[10px] shrink-0" data-testid={`badge-upcoming-status-${b.id}`}>
+                    Confirmada
+                  </Badge>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      <Card data-testid="card-customer-schedule">
+        <CardContent className="p-4 space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="font-semibold text-sm flex items-center gap-2" data-testid="text-schedule-title">
+              <CalendarDays className="h-4 w-4" />
+              Agenda
+            </h3>
+            {membership && (
+              <div className="flex items-center gap-2">
+                {membership.classesRemaining !== null ? (
+                  <Badge variant="outline" className="text-[10px]" data-testid="badge-classes-info">
+                    {membership.classesRemaining}/{membership.classesTotal ?? "?"} clases
+                  </Badge>
+                ) : (
+                  <Badge variant="outline" className="text-[10px]" data-testid="badge-classes-info">
+                    Ilimitadas
+                  </Badge>
+                )}
+                {membership.expiresAt && (
+                  <Badge
+                    variant={planExpired ? "destructive" : "outline"}
+                    className="text-[10px]"
+                    data-testid="badge-plan-expiry"
+                  >
+                    {planExpired ? "Vencido" : `Vence ${new Date(membership.expiresAt).toLocaleDateString("es-MX", { day: "2-digit", month: "short" })}`}
+                  </Badge>
+                )}
+              </div>
+            )}
+          </div>
+
+          {planExpired && (
+            <div className="bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-md p-3" data-testid="alert-plan-expired">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 text-red-500 shrink-0" />
+                <div>
+                  <p className="text-sm font-medium text-red-700 dark:text-red-400">Tu plan venció</p>
+                  <p className="text-xs text-red-600 dark:text-red-400/80">Renueva en recepción para seguir reservando.</p>
+                </div>
+              </div>
             </div>
           )}
-        </div>
 
-        {planExpired && (
-          <div className="bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-md p-3" data-testid="alert-plan-expired">
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 text-red-500 shrink-0" />
-              <div>
-                <p className="text-sm font-medium text-red-700 dark:text-red-400">Tu plan venció</p>
-                <p className="text-xs text-red-600 dark:text-red-400/80">Renueva en recepción para seguir reservando.</p>
+          {!planExpired && noClasses && !isUnlimited && (
+            <div className="bg-orange-50 dark:bg-orange-950/30 border border-orange-200 dark:border-orange-800 rounded-md p-3" data-testid="alert-no-classes">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 text-orange-500 shrink-0" />
+                <div>
+                  <p className="text-sm font-medium text-orange-700 dark:text-orange-400">No tienes clases disponibles</p>
+                  <p className="text-xs text-orange-600 dark:text-orange-400/80">Compra un nuevo plan en recepción.</p>
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {!planExpired && noClasses && !isUnlimited && (
-          <div className="bg-orange-50 dark:bg-orange-950/30 border border-orange-200 dark:border-orange-800 rounded-md p-3" data-testid="alert-no-classes">
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 text-orange-500 shrink-0" />
-              <div>
-                <p className="text-sm font-medium text-orange-700 dark:text-orange-400">No tienes clases disponibles</p>
-                <p className="text-xs text-orange-600 dark:text-orange-400/80">Compra un nuevo plan en recepción.</p>
-              </div>
-            </div>
-          </div>
-        )}
-
-        <div className="flex items-center justify-between">
-          <Button
-            size="icon"
-            variant="ghost"
-            className="h-7 w-7"
-            onClick={() => setWeekOffset(weekOffset - 1)}
-            disabled={weekOffset <= 0}
-            data-testid="button-week-prev"
-          >
-            <ChevronLeft className="h-4 w-4" />
-          </Button>
-          <span className="text-xs text-muted-foreground" data-testid="text-week-range">
-            {weekDates[0].date.toLocaleDateString("es-MX", { day: "2-digit", month: "short" })} — {weekDates[6].date.toLocaleDateString("es-MX", { day: "2-digit", month: "short" })}
-          </span>
-          <Button
-            size="icon"
-            variant="ghost"
-            className="h-7 w-7"
-            onClick={() => setWeekOffset(weekOffset + 1)}
-            disabled={weekOffset >= 3}
-            data-testid="button-week-next"
-          >
-            <ChevronRight className="h-4 w-4" />
-          </Button>
-        </div>
-
-        <div className="flex gap-1">
-          {weekDates.map((d) => (
-            <button
-              key={d.dateStr}
-              onClick={() => setSelectedDay(d.dateStr)}
-              className={`flex-1 text-center py-1.5 rounded-md text-xs transition-colors ${
-                d.dateStr === selectedDay
-                  ? "bg-primary text-primary-foreground font-semibold"
-                  : d.isToday
-                  ? "bg-primary/10 font-medium"
-                  : "hover:bg-muted"
-              }`}
-              data-testid={`button-day-${d.dateStr}`}
+          <div className="flex items-center justify-between">
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-7 w-7"
+              onClick={() => setWeekOffset(weekOffset - 1)}
+              disabled={weekOffset <= 0}
+              data-testid="button-week-prev"
             >
-              <div>{DAY_LABELS[d.dayOfWeek]}</div>
-              <div className="text-[10px]">{d.date.getDate()}</div>
-            </button>
-          ))}
-        </div>
-
-        {scheduleLoading || bookingsLoading ? (
-          <div className="space-y-2">
-            <Skeleton className="h-16 w-full" />
-            <Skeleton className="h-16 w-full" />
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+            <span className="text-xs text-muted-foreground" data-testid="text-week-range">
+              {weekDates[0].date.toLocaleDateString("es-MX", { day: "2-digit", month: "short" })} — {weekDates[6].date.toLocaleDateString("es-MX", { day: "2-digit", month: "short" })}
+            </span>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-7 w-7"
+              onClick={() => setWeekOffset(weekOffset + 1)}
+              disabled={weekOffset >= 3}
+              data-testid="button-week-next"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </Button>
           </div>
-        ) : daySchedules.length === 0 ? (
-          <div className="text-center py-6">
-            <CalendarDays className="h-8 w-8 text-muted-foreground/30 mx-auto mb-2" />
-            <p className="text-sm text-muted-foreground" data-testid="text-no-classes">
-              No hay clases programadas para {selectedDate ? DAY_LABELS_FULL[selectedDate.dayOfWeek].toLowerCase() : "este día"}
-            </p>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {daySchedules.map((cls) => {
-              const myBooking = myBookings.find(
-                (b) => b.classScheduleId === cls.id && b.bookingDate === selectedDay && b.status === "confirmed"
-              );
-              const isPast = selectedDate && new Date(`${selectedDay}T${cls.endTime}:00`) < new Date();
 
-              return (
-                <div
-                  key={cls.id}
-                  className={`border rounded-lg p-3 space-y-1 ${myBooking ? "border-primary bg-primary/5" : ""} ${isPast ? "opacity-60" : ""}`}
-                  data-testid={`class-card-${cls.id}`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium" data-testid={`text-class-name-${cls.id}`}>{cls.name}</p>
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <span className="flex items-center gap-1">
-                          <Clock className="h-3 w-3" />
-                          {cls.startTime} – {cls.endTime}
-                        </span>
-                        {cls.instructorName && (
-                          <span data-testid={`text-class-instructor-${cls.id}`}>{cls.instructorName}</span>
+          <div className="flex gap-1">
+            {weekDates.map((d) => (
+              <button
+                key={d.dateStr}
+                onClick={() => setSelectedDay(d.dateStr)}
+                className={`flex-1 text-center py-1.5 rounded-md text-xs transition-colors ${
+                  d.dateStr === selectedDay
+                    ? "bg-primary text-primary-foreground font-semibold"
+                    : d.isToday
+                    ? "bg-primary/10 font-medium"
+                    : "hover:bg-muted"
+                }`}
+                data-testid={`button-day-${d.dateStr}`}
+              >
+                <div>{DAY_LABELS[d.dayOfWeek]}</div>
+                <div className="text-[10px]">{d.date.getDate()}</div>
+              </button>
+            ))}
+          </div>
+
+          {scheduleLoading || bookingsLoading ? (
+            <div className="space-y-2">
+              <Skeleton className="h-16 w-full" />
+              <Skeleton className="h-16 w-full" />
+            </div>
+          ) : daySchedules.length === 0 ? (
+            <div className="text-center py-6">
+              <CalendarDays className="h-8 w-8 text-muted-foreground/30 mx-auto mb-2" />
+              <p className="text-sm text-muted-foreground" data-testid="text-no-classes">
+                No hay clases programadas para {selectedDate ? DAY_LABELS_FULL[selectedDate.dayOfWeek].toLowerCase() : "este día"}
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {daySchedules.map((cls) => {
+                const myBooking = myBookings.find(
+                  (b) => b.classScheduleId === cls.id && b.bookingDate === selectedDay && b.status === "confirmed"
+                );
+                const isPast = selectedDate && new Date(`${selectedDay}T${cls.endTime}:00`) < new Date();
+                const taken = spotsTaken[cls.id] || 0;
+                const spotsLeft = cls.capacity - taken;
+                const isFull = spotsLeft <= 0;
+
+                return (
+                  <div
+                    key={cls.id}
+                    className={`border rounded-lg p-3 space-y-1 ${myBooking ? "border-primary bg-primary/5" : ""} ${isPast ? "opacity-60" : ""}`}
+                    data-testid={`class-card-${cls.id}`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium" data-testid={`text-class-name-${cls.id}`}>{cls.name}</p>
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
+                          <span className="flex items-center gap-1">
+                            <Clock className="h-3 w-3" />
+                            {cls.startTime} – {cls.endTime}
+                          </span>
+                          {cls.instructorName && (
+                            <span data-testid={`text-class-instructor-${cls.id}`}>{cls.instructorName}</span>
+                          )}
+                          <span
+                            className={`flex items-center gap-1 ${isFull && !myBooking ? "text-red-500 font-medium" : ""}`}
+                            data-testid={`text-class-spots-${cls.id}`}
+                          >
+                            <Users className="h-3 w-3" />
+                            {spotsLeft}/{cls.capacity} {spotsLeft === 1 ? "lugar" : "lugares"}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="shrink-0">
+                        {isPast ? (
+                          myBooking ? (
+                            <Badge variant="outline" className="text-[10px]">Reservada</Badge>
+                          ) : (
+                            <Badge variant="outline" className="text-[10px] text-muted-foreground">Pasada</Badge>
+                          )
+                        ) : myBooking ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs text-red-600 border-red-200 hover:bg-red-50"
+                            onClick={() => cancelMutation.mutate(myBooking.id)}
+                            disabled={cancelMutation.isPending}
+                            data-testid={`button-cancel-class-${cls.id}`}
+                          >
+                            {cancelMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <XCircle className="h-3 w-3 mr-1" />}
+                            Cancelar
+                          </Button>
+                        ) : canBook && !isFull ? (
+                          <Button
+                            size="sm"
+                            className="h-7 text-xs"
+                            onClick={() => bookMutation.mutate({ classScheduleId: cls.id, bookingDate: selectedDay })}
+                            disabled={bookMutation.isPending}
+                            data-testid={`button-book-class-${cls.id}`}
+                          >
+                            {bookMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <CalendarDays className="h-3 w-3 mr-1" />}
+                            Reservar
+                          </Button>
+                        ) : isFull ? (
+                          <Badge variant="outline" className="text-[10px] text-red-500">Llena</Badge>
+                        ) : (
+                          <Badge variant="outline" className="text-[10px] text-muted-foreground">No disponible</Badge>
                         )}
-                        <span className="flex items-center gap-1" data-testid={`text-class-capacity-${cls.id}`}>
-                          <Users className="h-3 w-3" />
-                          {cls.capacity} lugares
-                        </span>
                       </div>
                     </div>
-                    <div className="shrink-0">
-                      {isPast ? (
-                        myBooking ? (
-                          <Badge variant="outline" className="text-[10px]">Reservada</Badge>
-                        ) : (
-                          <Badge variant="outline" className="text-[10px] text-muted-foreground">Pasada</Badge>
-                        )
-                      ) : myBooking ? (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-7 text-xs text-red-600 border-red-200 hover:bg-red-50"
-                          onClick={() => cancelMutation.mutate(myBooking.id)}
-                          disabled={cancelMutation.isPending}
-                          data-testid={`button-cancel-class-${cls.id}`}
-                        >
-                          {cancelMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <XCircle className="h-3 w-3 mr-1" />}
-                          Cancelar
-                        </Button>
-                      ) : canBook ? (
-                        <Button
-                          size="sm"
-                          className="h-7 text-xs"
-                          onClick={() => bookMutation.mutate({ classScheduleId: cls.id, bookingDate: selectedDay })}
-                          disabled={bookMutation.isPending}
-                          data-testid={`button-book-class-${cls.id}`}
-                        >
-                          {bookMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <CalendarDays className="h-3 w-3 mr-1" />}
-                          Reservar
-                        </Button>
-                      ) : (
-                        <Badge variant="outline" className="text-[10px] text-muted-foreground">No disponible</Badge>
-                      )}
-                    </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </CardContent>
-    </Card>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 
@@ -735,6 +808,10 @@ export default function BranchPublicPage() {
               </span>
             </CardContent>
           </Card>
+        )}
+
+        {user && isMember && slug && (
+          <CustomerScheduleSection slug={slug} />
         )}
 
         <Card>
