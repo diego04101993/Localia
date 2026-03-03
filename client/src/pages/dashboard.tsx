@@ -140,6 +140,7 @@ interface AlertsData {
     planName: string | null;
     classesRemaining: number | null;
     classesTotal: number | null;
+    expiresAt: string | null;
   }>;
 }
 
@@ -232,10 +233,13 @@ function AlertsSection({ alerts, isLoading }: { alerts: AlertsData | undefined; 
                       <p className="text-sm font-medium truncate">{m.name} {m.lastName || ""}</p>
                       <p className="text-xs text-muted-foreground truncate">{m.planName || "Sin plan"}</p>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-muted-foreground">
-                        Venció {formatDate(m.expiresAt)}
-                      </span>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <div className="text-right">
+                        <p className="text-xs text-muted-foreground">Venció {formatDate(m.expiresAt)}</p>
+                        {m.classesRemaining !== null && (
+                          <p className="text-[10px] text-muted-foreground">{m.classesRemaining} clases restantes</p>
+                        )}
+                      </div>
                       <Badge variant="destructive" className="text-[10px]">Vencido</Badge>
                     </div>
                   </div>
@@ -280,14 +284,20 @@ function AlertsSection({ alerts, isLoading }: { alerts: AlertsData | undefined; 
                     >
                       <div className="min-w-0">
                         <p className="text-sm font-medium truncate">{m.name}</p>
-                        <p className="text-xs text-muted-foreground truncate">{m.planName || "Sin plan"}</p>
+                        <p className="text-xs text-muted-foreground truncate">
+                          {m.planName || "Sin plan"}
+                          {m.classesRemaining !== null ? ` · ${m.classesRemaining} clases` : ""}
+                        </p>
                       </div>
-                      <Badge
-                        variant={days <= 2 ? "destructive" : "default"}
-                        className={days <= 2 ? "" : "bg-orange-500"}
-                      >
-                        {days <= 0 ? "Hoy" : days === 1 ? "1 día" : `${days} días`}
-                      </Badge>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="text-[10px] text-muted-foreground">{formatDate(m.expiresAt)}</span>
+                        <Badge
+                          variant={days <= 2 ? "destructive" : "default"}
+                          className={days <= 2 ? "" : "bg-orange-500"}
+                        >
+                          {days <= 0 ? "Hoy" : days === 1 ? "1 día" : `${days} días`}
+                        </Badge>
+                      </div>
                     </div>
                   );
                 })}
@@ -381,7 +391,12 @@ function AlertsSection({ alerts, isLoading }: { alerts: AlertsData | undefined; 
                       <p className="text-sm font-medium truncate">{c.name}</p>
                       <p className="text-xs text-muted-foreground truncate">{c.planName || "Sin plan"}</p>
                     </div>
-                    <Badge variant="destructive">0 clases</Badge>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {c.expiresAt && (
+                        <span className="text-[10px] text-muted-foreground">Vence {formatDate(c.expiresAt)}</span>
+                      )}
+                      <Badge variant="destructive">0/{c.classesTotal ?? "?"} clases</Badge>
+                    </div>
                   </div>
                 ))}
               </div>
