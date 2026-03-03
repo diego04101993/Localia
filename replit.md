@@ -29,6 +29,7 @@ The platform is built with a modern web stack:
     - **Class Consumption Rules**: Classes deducted automatically based on booking outcome. Attended → -1 class. No-show (auto-reconciled after class ends) → -1 class. Late cancellation (< 3hrs before class) → -1 class. Early cancellation (>= 3hrs) → no deduction. Unlimited plans never deducted. Expired plans block "attended" marking. Cutoff constant: `DEFAULT_CANCEL_CUTOFF_MINUTES = 180` in routes.ts, overridable per branch via `cancelCutoffMinutes`.
     - **Status Management**: Branches can be `active`, `suspended` (admin sees banner, clients blocked), or `blacklisted` (all blocked).
     - **Alerts and Notifications**: Dashboard alerts for expiring memberships, inactive clients, and zero-class clients.
+    - **Plan Deactivation Impact**: When a plan is deactivated/deleted, all assigned clients are detached (`planId=null`) but history is preserved (`paidAt`, `expiresAt`, `classesRemaining` kept). A `planNameSnapshot` string stores the deleted plan's name. `planStatus="deleted"` is computed at read time. UI shows orange "Plan eliminado" badge and "Asignar nuevo plan" button. Assigning a new plan clears `planNameSnapshot`.
     - **Data Export**: Ability to export client data to CSV.
 
 ## External Dependencies

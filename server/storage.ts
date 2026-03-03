@@ -98,6 +98,7 @@ export interface IStorage {
   createPlan(data: InsertMembershipPlan): Promise<MembershipPlan>;
   updatePlan(id: string, data: Partial<InsertMembershipPlan>): Promise<MembershipPlan | undefined>;
   deactivatePlan(id: string): Promise<MembershipPlan | undefined>;
+  detachPlanFromMemberships(planId: string, planName: string): Promise<number>;
   getPlan(id: string): Promise<MembershipPlan | undefined>;
   assignPlanToMembership(membershipId: string, planId: string, classesRemaining: number | null, classesTotal: number | null, expiresAt: Date | null): Promise<Membership | undefined>;
   removePlanFromMembership(membershipId: string): Promise<Membership | undefined>;
@@ -496,6 +497,7 @@ export class DatabaseStorage implements IStorage {
         source: memberships.source,
         isFavorite: memberships.isFavorite,
         planId: memberships.planId,
+        planNameSnapshot: memberships.planNameSnapshot,
         classesRemaining: memberships.classesRemaining,
         classesTotal: memberships.classesTotal,
         expiresAt: memberships.expiresAt,
@@ -534,12 +536,15 @@ export class DatabaseStorage implements IStorage {
 
     const now = new Date();
     return results.map(r => {
-      let planStatus: "active" | "expired" | null = null;
+      let planStatus: "active" | "expired" | "deleted" | null = null;
       if (r.planId) {
         planStatus = (r.expiresAt && new Date(r.expiresAt) < now) ? "expired" : "active";
+      } else if (r.planNameSnapshot) {
+        planStatus = "deleted";
       }
       return {
         ...r,
+        planName: r.planName || r.planNameSnapshot || null,
         planStatus,
         lastAttendance: lastAttendanceMap[r.userId] || null,
       };
@@ -595,9 +600,12 @@ export class DatabaseStorage implements IStorage {
       ? { bookingDate: nextBookingResults[0].bookingDate, className: nextBookingResults[0].className, startTime: nextBookingResults[0].startTime }
       : null;
 
-    const planStatus: "active" | "expired" | null = membership.planId
-      ? (membership.expiresAt && new Date(membership.expiresAt) < new Date() ? "expired" : "active")
-      : null;
+    let planStatus: "active" | "expired" | "deleted" | null = null;
+    if (membership.planId) {
+      planStatus = (membership.expiresAt && new Date(membership.expiresAt) < new Date()) ? "expired" : "active";
+    } else if (membership.planNameSnapshot) {
+      planStatus = "deleted";
+    }
 
     return {
       user: {
@@ -620,6 +628,7 @@ export class DatabaseStorage implements IStorage {
       },
       membership,
       planStatus,
+      planNameSnapshot: membership.planNameSnapshot,
       plan,
       notes,
       recentAttendances,
@@ -705,6 +714,15 @@ export class DatabaseStorage implements IStorage {
     return plan;
   }
 
+  async detachPlanFromMemberships(planId: string, planName: string): Promise<number> {
+    const affected = await db
+      .update(memberships)
+      .set({ planId: null, planNameSnapshot: planName })
+      .where(and(eq(memberships.planId, planId), eq(memberships.status, "active")))
+      .returning({ id: memberships.id });
+    return affected.length;
+  }
+
   async getPlan(id: string): Promise<MembershipPlan | undefined> {
     const [plan] = await db.select().from(membershipPlans).where(eq(membershipPlans.id, id));
     return plan;
@@ -716,6 +734,7 @@ export class DatabaseStorage implements IStorage {
       .update(memberships)
       .set({
         planId,
+        planNameSnapshot: null,
         classesRemaining,
         classesTotal,
         expiresAt,

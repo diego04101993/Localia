@@ -1225,15 +1225,16 @@ export async function registerRoutes(
       }
 
       const plan = await storage.deactivatePlan(planId);
+      const detached = await storage.detachPlanFromMemberships(planId, existing.name);
 
       await storage.createAuditLog({
         actorUserId: actor.id,
         action: "DEACTIVATE_PLAN",
         branchId: actor.branchId,
-        metadata: { planId, name: existing.name },
+        metadata: { planId, name: existing.name, detachedClients: detached },
       });
 
-      console.log(`[PLAN] Deactivated "${existing.name}" by ${actor.email}`);
+      console.log(`[PLAN] Deactivated "${existing.name}" by ${actor.email}, detached ${detached} client(s)`);
       res.json(plan);
     } catch (err: any) {
       console.error(`[PLAN] Error deactivating:`, err.stack || err);

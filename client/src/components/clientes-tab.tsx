@@ -82,8 +82,9 @@ interface BranchClient {
   isFavorite: boolean;
   lastAttendance: string | null;
   planId: string | null;
+  planNameSnapshot: string | null;
   planName: string | null;
-  planStatus: "active" | "expired" | null;
+  planStatus: "active" | "expired" | "deleted" | null;
   classesRemaining: number | null;
   classesTotal: number | null;
   expiresAt: string | null;
@@ -137,7 +138,8 @@ interface ClientProfile {
     expiresAt: string | null;
     paidAt: string | null;
   };
-  planStatus: "active" | "expired" | null;
+  planStatus: "active" | "expired" | "deleted" | null;
+  planNameSnapshot: string | null;
   plan: { id: string; name: string; price: number; durationDays: number | null; classLimit: number | null } | null;
   notes: { id: string; content: string; createdAt: string; createdByName?: string }[];
   recentAttendances: { id: string; checkedInAt: string }[];
@@ -1185,6 +1187,65 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete }:
                     </div>
                   )}
                 </div>
+              ) : profile.planStatus === "deleted" ? (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline" className="border-orange-400 text-orange-600 text-[10px]" data-testid="badge-plan-deleted">
+                      Plan eliminado
+                    </Badge>
+                    {profile.planNameSnapshot && (
+                      <span className="text-xs text-muted-foreground line-through" data-testid="text-deleted-plan-name">{profile.planNameSnapshot}</span>
+                    )}
+                  </div>
+                  <div className="bg-orange-50 dark:bg-orange-950/30 border border-orange-200 dark:border-orange-800 rounded-md p-2">
+                    <p className="text-xs text-orange-700 dark:text-orange-400 flex items-center gap-1.5" data-testid="text-deleted-plan-warning">
+                      <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                      El plan asignado fue eliminado. Asigna un nuevo plan para continuar.
+                    </p>
+                  </div>
+                  {profile.membership.paidAt && (
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div className="bg-background rounded-md p-2">
+                        <div className="text-muted-foreground mb-0.5">Pagado el</div>
+                        <div className="font-medium">{formatDate(profile.membership.paidAt)}</div>
+                      </div>
+                      <div className="bg-background rounded-md p-2">
+                        <div className="text-muted-foreground mb-0.5">Vencía el</div>
+                        <div className="font-medium">{profile.membership.expiresAt ? formatDate(profile.membership.expiresAt) : "—"}</div>
+                      </div>
+                    </div>
+                  )}
+                  {!showPlanSelect ? (
+                    <Button variant="default" size="sm" className="w-full bg-orange-600 hover:bg-orange-700" onClick={() => setShowPlanSelect(true)} data-testid="button-assign-new-plan">
+                      <Package className="h-3.5 w-3.5 mr-1" /> Asignar nuevo plan
+                    </Button>
+                  ) : (
+                    <div className="space-y-2">
+                      {activePlans.length === 0 ? (
+                        <p className="text-xs text-muted-foreground">No hay planes activos. Crea uno en la pestaña Membresías.</p>
+                      ) : (
+                        activePlans.map((plan) => (
+                          <button
+                            key={plan.id}
+                            onClick={() => assignPlanMutation.mutate(plan.id)}
+                            disabled={assignPlanMutation.isPending}
+                            className="w-full text-left p-2 rounded-md border bg-background hover:bg-muted/50 transition-colors text-sm"
+                            data-testid={`button-select-plan-${plan.id}`}
+                          >
+                            <div className="flex justify-between items-center">
+                              <span className="font-medium">{plan.name}</span>
+                              <span className="text-xs text-muted-foreground">${(plan.price / 100).toFixed(2)}/mes</span>
+                            </div>
+                            <div className="text-xs text-muted-foreground mt-0.5">
+                              Mensual · {plan.classLimit ? `${plan.classLimit} clases/ciclo` : "Clases ilimitadas"}
+                            </div>
+                          </button>
+                        ))
+                      )}
+                      <Button variant="ghost" size="sm" onClick={() => setShowPlanSelect(false)} data-testid="button-cancel-assign-plan">Cancelar</Button>
+                    </div>
+                  )}
+                </div>
               ) : (
                 <div className="space-y-2">
                   <p className="text-xs text-muted-foreground" data-testid="text-no-plan">Sin plan asignado</p>
@@ -1499,11 +1560,11 @@ export default function ClientesTab() {
                       {client.phone && <span>{client.phone}</span>}
                       {client.planName && (
                         <Badge
-                          variant={client.planStatus === "expired" ? "destructive" : "outline"}
-                          className="text-[10px] px-1.5 py-0"
+                          variant={client.planStatus === "expired" ? "destructive" : client.planStatus === "deleted" ? "outline" : "outline"}
+                          className={`text-[10px] px-1.5 py-0 ${client.planStatus === "deleted" ? "border-orange-400 text-orange-600" : ""}`}
                           data-testid={`badge-plan-${client.userId}`}
                         >
-                          {client.planName}{client.planStatus === "expired" ? " (vencido)" : ""}
+                          {client.planStatus === "deleted" ? "Plan eliminado" : `${client.planName}${client.planStatus === "expired" ? " (vencido)" : ""}`}
                         </Badge>
                       )}
                     </div>
