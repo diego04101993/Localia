@@ -173,7 +173,7 @@ function AlertsSection({ alerts, isLoading }: { alerts: AlertsData | undefined; 
     );
   }
 
-  if (expiringCount === 0 && inactiveCount === 0 && noClassesCount === 0) {
+  if (expiredCount === 0 && expiringCount === 0 && inactiveCount === 0 && noClassesCount === 0) {
     return null;
   }
 
@@ -198,6 +198,54 @@ function AlertsSection({ alerts, isLoading }: { alerts: AlertsData | undefined; 
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      {expiredCount > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 text-red-500" />
+                <span>Planes vencidos</span>
+                <Badge variant="destructive" data-testid="badge-expired-count">
+                  {expiredCount}
+                </Badge>
+              </div>
+              <Button
+                size="icon"
+                variant="ghost"
+                onClick={() => setExpiredExpanded(!expiredExpanded)}
+                data-testid="button-toggle-expired"
+              >
+                {expiredExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              </Button>
+            </CardTitle>
+          </CardHeader>
+          {expiredExpanded && (
+            <CardContent className="p-4 pt-0">
+              <div className="space-y-2 max-h-60 overflow-y-auto">
+                {alerts?.expiredMemberships?.map((m) => (
+                  <div
+                    key={m.membershipId}
+                    className="flex items-center justify-between gap-2 p-2 rounded-md bg-muted/50 flex-wrap"
+                    data-testid={`alert-expired-${m.userId}`}
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium truncate">{m.name} {m.lastName || ""}</p>
+                      <p className="text-xs text-muted-foreground truncate">{m.planName || "Sin plan"}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground">
+                        Venció {formatDate(m.expiresAt)}
+                      </span>
+                      <Badge variant="destructive" className="text-[10px]">Vencido</Badge>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          )}
+        </Card>
+      )}
+
       {expiringCount > 0 && (
         <Card>
           <CardHeader className="pb-2">

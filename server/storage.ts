@@ -499,6 +499,7 @@ export class DatabaseStorage implements IStorage {
         classesRemaining: memberships.classesRemaining,
         classesTotal: memberships.classesTotal,
         expiresAt: memberships.expiresAt,
+        paidAt: memberships.paidAt,
         membershipStartDate: memberships.membershipStartDate,
         membershipEndDate: memberships.membershipEndDate,
         planName: membershipPlans.name,
@@ -531,10 +532,18 @@ export class DatabaseStorage implements IStorage {
       }
     }
 
-    return results.map(r => ({
-      ...r,
-      lastAttendance: lastAttendanceMap[r.userId] || null,
-    }));
+    const now = new Date();
+    return results.map(r => {
+      let planStatus: "active" | "expired" | null = null;
+      if (r.planId) {
+        planStatus = (r.expiresAt && new Date(r.expiresAt) < now) ? "expired" : "active";
+      }
+      return {
+        ...r,
+        planStatus,
+        lastAttendance: lastAttendanceMap[r.userId] || null,
+      };
+    });
   }
 
   async getClientProfile(userId: string, branchId: string): Promise<any> {
@@ -586,6 +595,10 @@ export class DatabaseStorage implements IStorage {
       ? { bookingDate: nextBookingResults[0].bookingDate, className: nextBookingResults[0].className, startTime: nextBookingResults[0].startTime }
       : null;
 
+    const planStatus: "active" | "expired" | null = membership.planId
+      ? (membership.expiresAt && new Date(membership.expiresAt) < new Date() ? "expired" : "active")
+      : null;
+
     return {
       user: {
         id: user.id,
@@ -606,6 +619,7 @@ export class DatabaseStorage implements IStorage {
         createdAt: user.createdAt,
       },
       membership,
+      planStatus,
       plan,
       notes,
       recentAttendances,

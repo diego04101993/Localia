@@ -83,8 +83,11 @@ interface BranchClient {
   lastAttendance: string | null;
   planId: string | null;
   planName: string | null;
+  planStatus: "active" | "expired" | null;
   classesRemaining: number | null;
+  classesTotal: number | null;
   expiresAt: string | null;
+  paidAt: string | null;
   avatarUrl: string | null;
   clientStatus: string;
   hasDebt: boolean;
@@ -130,8 +133,11 @@ interface ClientProfile {
     source: string;
     planId: string | null;
     classesRemaining: number | null;
+    classesTotal: number | null;
     expiresAt: string | null;
+    paidAt: string | null;
   };
+  planStatus: "active" | "expired" | null;
   plan: { id: string; name: string; price: number; durationDays: number | null; classLimit: number | null } | null;
   notes: { id: string; content: string; createdAt: string; createdByName?: string }[];
   recentAttendances: { id: string; checkedInAt: string }[];
@@ -925,6 +931,22 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete }:
     },
   });
 
+  const renewMutation = useMutation({
+    mutationFn: async () => {
+      const resp = await apiRequest("POST", `/api/branch/memberships/${profile!.membership.id}/renew`);
+      return resp.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients", clientId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/alerts"] });
+      toast({ title: "Membresía renovada" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message || "Error al renovar", variant: "destructive" });
+    },
+  });
+
   const activePlans = (plans || []).filter(p => p.isActive);
   const age = profile ? calcAge(profile.user.birthDate) : null;
 
@@ -1092,27 +1114,76 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete }:
                 Plan de membresía
               </h4>
               {profile.plan ? (
-                <div className="space-y-1">
+                <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium" data-testid="text-profile-plan">{profile.plan.name}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium" data-testid="text-profile-plan">{profile.plan.name}</span>
+                      <Badge
+                        variant={profile.planStatus === "expired" ? "destructive" : "default"}
+                        className="text-[10px]"
+                        data-testid="badge-plan-status"
+                      >
+                        {profile.planStatus === "expired" ? "Vencido" : "Activo"}
+                      </Badge>
+                    </div>
                     <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => removePlanMutation.mutate()} disabled={removePlanMutation.isPending} data-testid="button-remove-plan">
                       <XCircle className="h-3 w-3 mr-1" /> Quitar
                     </Button>
                   </div>
+
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="bg-background rounded-md p-2">
+                      <div className="text-muted-foreground mb-0.5">Ciclo</div>
+                      <div className="font-medium" data-testid="text-billing-cycle">Mensual</div>
+                    </div>
+                    <div className="bg-background rounded-md p-2">
+                      <div className="text-muted-foreground mb-0.5">Precio</div>
+                      <div className="font-medium" data-testid="text-plan-price">${(profile.plan.price / 100).toFixed(2)} MXN</div>
+                    </div>
+                    <div className="bg-background rounded-md p-2">
+                      <div className="text-muted-foreground mb-0.5">Pagado el</div>
+                      <div className="font-medium" data-testid="text-paid-at">
+                        {profile.membership.paidAt ? formatDate(profile.membership.paidAt) : "—"}
+                      </div>
+                    </div>
+                    <div className="bg-background rounded-md p-2">
+                      <div className="text-muted-foreground mb-0.5">Vence el</div>
+                      <div className={`font-medium ${profile.planStatus === "expired" ? "text-red-500" : ""}`} data-testid="text-plan-expires">
+                        {profile.membership.expiresAt ? formatDate(profile.membership.expiresAt) : "—"}
+                      </div>
+                    </div>
+                  </div>
+
                   <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                    {profile.membership.classesRemaining !== null && (
+                    {profile.membership.classesRemaining !== null && profile.membership.classesTotal !== null ? (
+                      <span className="flex items-center gap-1" data-testid="text-classes-remaining">
+                        <Hash className="h-3 w-3" />
+                        {profile.membership.classesRemaining}/{profile.membership.classesTotal} clases restantes
+                      </span>
+                    ) : profile.membership.classesRemaining !== null ? (
                       <span className="flex items-center gap-1" data-testid="text-classes-remaining">
                         <Hash className="h-3 w-3" />
                         {profile.membership.classesRemaining} clases restantes
                       </span>
-                    )}
-                    {profile.membership.expiresAt && (
-                      <span data-testid="text-plan-expires">Vence: {formatDate(profile.membership.expiresAt)}</span>
-                    )}
-                    {profile.membership.classesRemaining === null && !profile.membership.expiresAt && (
-                      <span>Ilimitado</span>
+                    ) : (
+                      <span>Clases ilimitadas</span>
                     )}
                   </div>
+
+                  {profile.planStatus === "expired" && (
+                    <div className="pt-1">
+                      <Button
+                        size="sm"
+                        className="w-full"
+                        onClick={() => renewMutation.mutate()}
+                        disabled={renewMutation.isPending}
+                        data-testid="button-renew-plan"
+                      >
+                        {renewMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Calendar className="h-4 w-4 mr-1" />}
+                        Renovar ciclo mensual
+                      </Button>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="space-y-2">
@@ -1136,10 +1207,10 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete }:
                           >
                             <div className="flex justify-between items-center">
                               <span className="font-medium">{plan.name}</span>
-                              <span className="text-xs text-muted-foreground">${(plan.price / 100).toFixed(2)}</span>
+                              <span className="text-xs text-muted-foreground">${(plan.price / 100).toFixed(2)}/mes</span>
                             </div>
                             <div className="text-xs text-muted-foreground mt-0.5">
-                              {plan.durationDays ? `${plan.durationDays} días` : "Sin límite"} · {plan.classLimit ? `${plan.classLimit} clases` : "Ilimitadas"}
+                              Mensual · {plan.classLimit ? `${plan.classLimit} clases/ciclo` : "Clases ilimitadas"}
                             </div>
                           </button>
                         ))
@@ -1427,8 +1498,12 @@ export default function ClientesTab() {
                       <span className="truncate">{client.email}</span>
                       {client.phone && <span>{client.phone}</span>}
                       {client.planName && (
-                        <Badge variant="outline" className="text-[10px] px-1.5 py-0" data-testid={`badge-plan-${client.userId}`}>
-                          {client.planName}
+                        <Badge
+                          variant={client.planStatus === "expired" ? "destructive" : "outline"}
+                          className="text-[10px] px-1.5 py-0"
+                          data-testid={`badge-plan-${client.userId}`}
+                        >
+                          {client.planName}{client.planStatus === "expired" ? " (vencido)" : ""}
                         </Badge>
                       )}
                     </div>
