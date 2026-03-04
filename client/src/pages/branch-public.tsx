@@ -337,9 +337,9 @@ function CustomerScheduleSection({ slug }: { slug: string }) {
       queryClient.invalidateQueries({ queryKey: [`/api/public/branch/${slug}/my-upcoming-bookings`] });
       queryClient.invalidateQueries({ queryKey: [`/api/public/branch/${slug}/schedule`] });
       if (data.lateCancellation) {
-        toast({ title: "Reserva cancelada", description: "Cancelación tardía: se descontó 1 clase." });
+        toast({ title: "Cancelación tardía", description: "Cancelación tardía: se descontará 1 clase." });
       } else {
-        toast({ title: "Reserva cancelada", description: "No se descontó ninguna clase." });
+        toast({ title: "Reserva cancelada", description: "Reserva cancelada (sin descuento)." });
       }
       setCancelConfirm(null);
     },
@@ -602,11 +602,13 @@ function CustomerScheduleSection({ slug }: { slug: string }) {
       <AlertDialog open={!!cancelConfirm} onOpenChange={(o) => { if (!o) setCancelConfirm(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>¿Cancelar reserva?</AlertDialogTitle>
-            <AlertDialogDescription>
+            <AlertDialogTitle data-testid="text-cancel-dialog-title">
+              {cancelConfirm?.isLate ? "Cancelación tardía" : "Cancelar reserva"}
+            </AlertDialogTitle>
+            <AlertDialogDescription data-testid="text-cancel-dialog-body">
               {cancelConfirm?.isLate
-                ? `Cancelación tardía: al cancelar a menos de ${Math.floor(cutoffMinutes / 60)} ${cutoffMinutes >= 120 ? "horas" : "hora"}, se descontará 1 clase. ¿Continuar?`
-                : "No se descontará ninguna clase."}
+                ? `Faltan menos de ${Math.floor(cutoffMinutes / 60)} horas. Si cancelas, se descontará 1 clase. ¿Deseas continuar?`
+                : "Si cancelas ahora, NO se descontará ninguna clase. ¿Deseas continuar?"}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -618,7 +620,7 @@ function CustomerScheduleSection({ slug }: { slug: string }) {
               data-testid="button-cancel-dialog-confirm"
             >
               {cancelMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
-              {cancelConfirm?.isLate ? "Cancelar de todas formas" : "Sí, cancelar"}
+              {cancelConfirm?.isLate ? "Sí, cancelar y descontar" : "Sí, cancelar"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
