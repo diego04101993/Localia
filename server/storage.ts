@@ -150,6 +150,7 @@ export interface IStorage {
   updateClientDebt(membershipId: string, hasDebt: boolean, debtAmount: number): Promise<any>;
   softDeleteMembership(membershipId: string): Promise<any>;
   getUpcomingBookingsForUser(branchId: string, userId: string, fromDate: string, limit?: number): Promise<any[]>;
+  updateBranchWhatsappTemplates(branchId: string, templates: Record<string, string>): Promise<any>;
   getBranchAnnouncements(branchId: string): Promise<BranchAnnouncement[]>;
   createAnnouncement(data: InsertBranchAnnouncement): Promise<BranchAnnouncement>;
   deleteAnnouncement(id: string): Promise<void>;
@@ -1191,12 +1192,14 @@ export class DatabaseStorage implements IStorage {
       .select({
         userId: users.id,
         name: users.name,
+        lastName: users.lastName,
         email: users.email,
         phone: users.phone,
         membershipId: memberships.id,
         planName: membershipPlans.name,
         expiresAt: memberships.expiresAt,
         classesRemaining: memberships.classesRemaining,
+        classesTotal: memberships.classesTotal,
       })
       .from(memberships)
       .innerJoin(users, eq(memberships.userId, users.id))
@@ -1221,6 +1224,7 @@ export class DatabaseStorage implements IStorage {
       .select({
         userId: users.id,
         name: users.name,
+        lastName: users.lastName,
         email: users.email,
         phone: users.phone,
         membershipId: memberships.id,
@@ -1258,7 +1262,9 @@ export class DatabaseStorage implements IStorage {
       .select({
         userId: users.id,
         name: users.name,
+        lastName: users.lastName,
         email: users.email,
+        phone: users.phone,
         membershipId: memberships.id,
         planName: membershipPlans.name,
         classesRemaining: memberships.classesRemaining,
@@ -1425,6 +1431,15 @@ export class DatabaseStorage implements IStorage {
       .orderBy(asc(classBookings.bookingDate), asc(classSchedules.startTime))
       .limit(limit);
     return results;
+  }
+
+  async updateBranchWhatsappTemplates(branchId: string, templates: Record<string, string>): Promise<any> {
+    const [updated] = await db
+      .update(branches)
+      .set({ whatsappTemplates: templates })
+      .where(eq(branches.id, branchId))
+      .returning();
+    return updated;
   }
 
   async getBranchAnnouncements(branchId: string): Promise<BranchAnnouncement[]> {

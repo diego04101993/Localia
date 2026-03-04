@@ -2186,6 +2186,53 @@ export async function registerRoutes(
     }
   });
 
+  // --- WhatsApp Templates ---
+  app.get("/api/branch/whatsapp-templates", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const branch = await storage.getBranch(actor.branchId);
+      if (!branch) return res.status(404).json({ message: "Sucursal no encontrada" });
+      const defaults: Record<string, string> = {
+        expired_membership: "Hola {firstName}, tu membresía en {branchName} ha vencido. ¡Renueva para seguir entrenando!",
+        expiring_membership: "Hola {firstName}, tu membresía en {branchName} vence pronto ({expiresAt}). ¡Renueva a tiempo!",
+        no_classes: "Hola {firstName}, te has quedado sin clases disponibles en {branchName}. Contacta al estudio para renovar.",
+      };
+      const saved = (branch as any).whatsappTemplates || {};
+      res.json({ ...defaults, ...saved });
+    } catch (err: any) {
+      console.error(`[WHATSAPP_TEMPLATES] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al obtener plantillas" });
+    }
+  });
+
+  app.patch("/api/branch/whatsapp-templates", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const templates = req.body;
+      if (!templates || typeof templates !== "object") {
+        return res.status(400).json({ message: "Datos inválidos" });
+      }
+      const allowed = ["expired_membership", "expiring_membership", "no_classes", "booking_confirmed"];
+      const filtered: Record<string, string> = {};
+      for (const key of allowed) {
+        if (typeof templates[key] === "string" && templates[key].trim().length > 0) {
+          filtered[key] = templates[key].trim();
+        }
+      }
+      await storage.updateBranchWhatsappTemplates(actor.branchId, filtered);
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "UPDATE_WHATSAPP_TEMPLATES",
+        branchId: actor.branchId,
+        metadata: { keys: Object.keys(filtered) },
+      });
+      res.json(filtered);
+    } catch (err: any) {
+      console.error(`[WHATSAPP_TEMPLATES] Error updating:`, err.stack || err);
+      res.status(500).json({ message: "Error al guardar plantillas" });
+    }
+  });
+
   // --- Announcements ---
   app.get("/api/branch/announcements", requireBranchAdmin, async (req, res) => {
     const actor = req.user as any;

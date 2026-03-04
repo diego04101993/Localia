@@ -29,8 +29,12 @@ import {
   Send,
   ImagePlus,
   Loader2,
+  MessageCircle,
+  Save,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -102,12 +106,14 @@ interface AlertsData {
   expiringMemberships: Array<{
     userId: string;
     name: string;
+    lastName: string | null;
     email: string;
     phone: string | null;
     membershipId: string;
     planName: string | null;
     expiresAt: string;
     classesRemaining: number | null;
+    classesTotal: number | null;
   }>;
   expiredMemberships?: Array<{
     userId: string;
@@ -124,6 +130,7 @@ interface AlertsData {
   inactiveClients: Array<{
     userId: string;
     name: string;
+    lastName: string | null;
     email: string;
     phone: string | null;
     membershipId: string;
@@ -135,7 +142,9 @@ interface AlertsData {
   clientsWithoutClasses?: Array<{
     userId: string;
     name: string;
+    lastName: string | null;
     email: string;
+    phone: string | null;
     membershipId: string;
     planName: string | null;
     classesRemaining: number | null;
@@ -144,7 +153,43 @@ interface AlertsData {
   }>;
 }
 
-function AlertsSection({ alerts, isLoading, onViewClient }: { alerts: AlertsData | undefined; isLoading: boolean; onViewClient: (userId: string) => void }) {
+function normalizePhoneMX(phone: string): string {
+  const digits = phone.replace(/\D/g, "");
+  if (digits.startsWith("52")) return digits;
+  if (digits.length === 10) return "52" + digits;
+  return digits;
+}
+
+function renderTemplate(template: string, vars: Record<string, string>): string {
+  return template.replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? "");
+}
+
+function buildWhatsAppUrl(phone: string, message: string): string {
+  const normalized = normalizePhoneMX(phone);
+  return `https://wa.me/${normalized}?text=${encodeURIComponent(message)}`;
+}
+
+type WhatsAppTemplates = Record<string, string>;
+
+function WhatsAppButton({ phone, template, vars, testId }: { phone: string | null; template: string; vars: Record<string, string>; testId: string }) {
+  if (!phone) return null;
+  const message = renderTemplate(template, vars);
+  const url = buildWhatsAppUrl(phone, message);
+  return (
+    <Button
+      size="sm"
+      variant="outline"
+      className="h-6 px-2 text-[10px] text-green-600 border-green-200 hover:bg-green-50"
+      onClick={() => window.open(url, "_blank")}
+      data-testid={testId}
+    >
+      <MessageCircle className="h-3 w-3 mr-0.5" />
+      WA
+    </Button>
+  );
+}
+
+function AlertsSection({ alerts, isLoading, onViewClient, branchName, whatsappTemplates }: { alerts: AlertsData | undefined; isLoading: boolean; onViewClient: (userId: string) => void; branchName: string; whatsappTemplates: WhatsAppTemplates }) {
   const { toast } = useToast();
   const [expiredExpanded, setExpiredExpanded] = useState(true);
   const [expiringExpanded, setExpiringExpanded] = useState(false);
@@ -256,6 +301,12 @@ function AlertsSection({ alerts, isLoading, onViewClient }: { alerts: AlertsData
                           <p className="text-[10px] text-muted-foreground">{m.classesRemaining} clases restantes</p>
                         )}
                       </div>
+                      <WhatsAppButton
+                        phone={m.phone}
+                        template={whatsappTemplates.expired_membership || ""}
+                        vars={{ firstName: m.name, fullName: `${m.name} ${m.lastName || ""}`.trim(), branchName, expiresAt: formatDate(m.expiresAt), classesRemaining: String(m.classesRemaining ?? 0), classesTotal: "0" }}
+                        testId={`button-wa-expired-${m.userId}`}
+                      />
                       <Button
                         size="sm"
                         variant="outline"
@@ -324,6 +375,12 @@ function AlertsSection({ alerts, isLoading, onViewClient }: { alerts: AlertsData
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
                         <span className="text-[10px] text-muted-foreground">{formatDate(m.expiresAt)}</span>
+                        <WhatsAppButton
+                          phone={m.phone}
+                          template={whatsappTemplates.expiring_membership || ""}
+                          vars={{ firstName: m.name, fullName: `${m.name} ${m.lastName || ""}`.trim(), branchName, expiresAt: formatDate(m.expiresAt), classesRemaining: String(m.classesRemaining ?? 0), classesTotal: String(m.classesTotal ?? 0) }}
+                          testId={`button-wa-expiring-${m.userId}`}
+                        />
                         <Button
                           size="sm"
                           variant="outline"
@@ -448,6 +505,12 @@ function AlertsSection({ alerts, isLoading, onViewClient }: { alerts: AlertsData
                       {c.expiresAt && (
                         <span className="text-[10px] text-muted-foreground">Vence {formatDate(c.expiresAt)}</span>
                       )}
+                      <WhatsAppButton
+                        phone={c.phone}
+                        template={whatsappTemplates.no_classes || ""}
+                        vars={{ firstName: c.name, fullName: `${c.name} ${c.lastName || ""}`.trim(), branchName, expiresAt: formatDate(c.expiresAt), classesRemaining: "0", classesTotal: String(c.classesTotal ?? 0) }}
+                        testId={`button-wa-no-classes-${c.userId}`}
+                      />
                       <Button
                         size="sm"
                         variant="outline"
@@ -481,6 +544,114 @@ function timeAgo(dateStr: string) {
   if (hrs < 24) return `hace ${hrs}h`;
   const days = Math.floor(hrs / 24);
   return `hace ${days}d`;
+}
+
+const TEMPLATE_LABELS: Record<string, string> = {
+  expired_membership: "Plan vencido",
+  expiring_membership: "Membresía por vencer",
+  no_classes: "Sin clases disponibles",
+};
+
+const TEMPLATE_SAMPLE_VARS: Record<string, string> = {
+  firstName: "María",
+  fullName: "María López",
+  branchName: "Mi Estudio",
+  expiresAt: "05 mar 2026",
+  classesRemaining: "3",
+  classesTotal: "12",
+};
+
+function WhatsAppTemplatesSection({ branchName }: { branchName: string }) {
+  const { toast } = useToast();
+  const [expanded, setExpanded] = useState(false);
+
+  const { data: templates, isLoading } = useQuery<WhatsAppTemplates>({
+    queryKey: ["/api/branch/whatsapp-templates"],
+  });
+
+  const [drafts, setDrafts] = useState<WhatsAppTemplates>({});
+  const [initialized, setInitialized] = useState(false);
+
+  if (templates && !initialized) {
+    setDrafts(templates);
+    setInitialized(true);
+  }
+
+  const saveMutation = useMutation({
+    mutationFn: async (data: WhatsAppTemplates) => {
+      const resp = await apiRequest("PATCH", "/api/branch/whatsapp-templates", data);
+      return resp.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/whatsapp-templates"] });
+      toast({ title: "Plantillas guardadas" });
+    },
+    onError: () => {
+      toast({ title: "Error", description: "No se pudieron guardar", variant: "destructive" });
+    },
+  });
+
+  const sampleVars = { ...TEMPLATE_SAMPLE_VARS, branchName };
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <MessageCircle className="h-4 w-4 text-green-600" />
+            <span>Plantillas WhatsApp</span>
+          </div>
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={() => setExpanded(!expanded)}
+            data-testid="button-toggle-wa-templates"
+          >
+            {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          </Button>
+        </CardTitle>
+      </CardHeader>
+      {expanded && (
+        <CardContent className="p-4 pt-0 space-y-4">
+          {isLoading ? (
+            <Skeleton className="h-20 w-full" />
+          ) : (
+            <>
+              <p className="text-xs text-muted-foreground">
+                Variables disponibles: {"{firstName}"}, {"{fullName}"}, {"{branchName}"}, {"{expiresAt}"}, {"{classesRemaining}"}, {"{classesTotal}"}
+              </p>
+              {Object.entries(TEMPLATE_LABELS).map(([key, label]) => (
+                <div key={key} className="space-y-1.5">
+                  <Label className="text-sm font-medium">{label}</Label>
+                  <Textarea
+                    value={drafts[key] || ""}
+                    onChange={(e) => setDrafts({ ...drafts, [key]: e.target.value })}
+                    rows={2}
+                    className="text-sm"
+                    data-testid={`textarea-wa-template-${key}`}
+                  />
+                  {drafts[key] && (
+                    <p className="text-xs text-muted-foreground border rounded-md p-2 bg-muted/30" data-testid={`preview-wa-template-${key}`}>
+                      {renderTemplate(drafts[key], sampleVars)}
+                    </p>
+                  )}
+                </div>
+              ))}
+              <Button
+                size="sm"
+                onClick={() => saveMutation.mutate(drafts)}
+                disabled={saveMutation.isPending}
+                data-testid="button-save-wa-templates"
+              >
+                {saveMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Save className="h-3 w-3 mr-1" />}
+                Guardar plantillas
+              </Button>
+            </>
+          )}
+        </CardContent>
+      )}
+    </Card>
+  );
 }
 
 function AnnouncementsSection({ branchId }: { branchId: string }) {
@@ -675,17 +846,23 @@ function AnnouncementsSection({ branchId }: { branchId: string }) {
   );
 }
 
-function ResumenTab({ branchStats, branchStatus, branchSlug, branchId, isLoading, reservationStats, reservationLoading, alerts, alertsLoading }: {
+function ResumenTab({ branchStats, branchStatus, branchSlug, branchId, branchName, isLoading, reservationStats, reservationLoading, alerts, alertsLoading, onViewClient }: {
   branchStats: { activeMemberships: number; uniqueActiveCustomers: number; totalCustomers: number } | undefined;
   branchStatus: string;
   branchSlug: string;
   branchId: string;
+  branchName: string;
   isLoading: boolean;
   reservationStats: ReservationStats | undefined;
   reservationLoading: boolean;
   alerts: AlertsData | undefined;
   alertsLoading: boolean;
+  onViewClient: (userId: string) => void;
 }) {
+  const { data: whatsappTemplates } = useQuery<WhatsAppTemplates>({
+    queryKey: ["/api/branch/whatsapp-templates"],
+  });
+
   const statusConfig: Record<string, { label: string; description: string; color: string }> = {
     active: { label: "Activa", description: "Tu sucursal está operando normalmente.", color: "text-green-600 dark:text-green-400" },
     suspended: { label: "Suspendida", description: "Pago pendiente. Tus clientes no pueden acceder.", color: "text-orange-500 dark:text-orange-400" },
@@ -777,9 +954,9 @@ function ResumenTab({ branchStats, branchStatus, branchSlug, branchId, isLoading
         </Card>
       </div>
 
-      <AlertsSection alerts={alerts} isLoading={alertsLoading} onViewClient={(userId) => {
-        setActiveTab("clientes");
-      }} />
+      <AlertsSection alerts={alerts} isLoading={alertsLoading} branchName={branchName} whatsappTemplates={whatsappTemplates || {}} onViewClient={onViewClient} />
+
+      <WhatsAppTemplatesSection branchName={branchName} />
 
       <AnnouncementsSection branchId={branchId} />
 
@@ -968,11 +1145,13 @@ export default function DashboardPage() {
               branchStatus={branchStatus}
               branchSlug={branchSlug}
               branchId={user?.branchId || ""}
+              branchName={branchName}
               isLoading={statsLoading}
               reservationStats={reservationStats}
               reservationLoading={reservationLoading}
               alerts={alerts}
               alertsLoading={alertsLoading}
+              onViewClient={() => setActiveTab("clientes")}
             />
           </TabsContent>
 

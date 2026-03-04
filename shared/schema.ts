@@ -67,6 +67,7 @@ export const branches = pgTable("branches", {
   coverImageUrl: text("cover_image_url"),
   description: text("description"),
   cancelCutoffMinutes: integer("cancel_cutoff_minutes").notNull().default(120),
+  whatsappTemplates: jsonb("whatsapp_templates"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
 });
