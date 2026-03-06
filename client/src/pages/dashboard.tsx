@@ -31,6 +31,8 @@ import {
   Loader2,
   MessageCircle,
   Save,
+  Cake,
+  Gift,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -60,6 +62,7 @@ import MembresiasTab from "@/components/membresias-tab";
 import ReservasTab from "@/components/reservas-tab";
 import ContenidoTab from "@/components/contenido-tab";
 import TvModeTab from "@/components/tv-mode-tab";
+import PerfilPublicoTab from "@/components/perfil-publico-tab";
 
 const DASHBOARD_TABS = [
   { value: "resumen", label: "Resumen", icon: LayoutDashboard },
@@ -67,6 +70,7 @@ const DASHBOARD_TABS = [
   { value: "membresias", label: "Membresías", icon: CreditCard },
   { value: "reservas", label: "Reservas", icon: Calendar },
   { value: "contenido", label: "Contenido", icon: FileText },
+  { value: "perfil", label: "Perfil Público", icon: Building2 },
   { value: "tv", label: "TV Mode", icon: Monitor },
 ] as const;
 
@@ -151,6 +155,14 @@ interface AlertsData {
     classesTotal: number | null;
     expiresAt: string | null;
   }>;
+  upcomingBirthdays?: Array<{
+    userId: string;
+    name: string;
+    lastName: string | null;
+    phone: string | null;
+    birthDate: string;
+    membershipId: string;
+  }>;
 }
 
 function normalizePhoneMX(phone: string): string {
@@ -195,6 +207,7 @@ function AlertsSection({ alerts, isLoading, onViewClient, branchName, whatsappTe
   const [expiringExpanded, setExpiringExpanded] = useState(false);
   const [inactiveExpanded, setInactiveExpanded] = useState(false);
   const [noClassesExpanded, setNoClassesExpanded] = useState(false);
+  const [birthdayExpanded, setBirthdayExpanded] = useState(true);
 
   const renewMutation = useMutation({
     mutationFn: async (membershipId: string) => {
@@ -215,6 +228,7 @@ function AlertsSection({ alerts, isLoading, onViewClient, branchName, whatsappTe
   const expiringCount = alerts?.expiringMemberships?.length ?? 0;
   const inactiveCount = alerts?.inactiveClients?.length ?? 0;
   const noClassesCount = alerts?.clientsWithoutClasses?.length ?? 0;
+  const birthdayCount = alerts?.upcomingBirthdays?.length ?? 0;
 
   if (isLoading) {
     return (
@@ -235,8 +249,33 @@ function AlertsSection({ alerts, isLoading, onViewClient, branchName, whatsappTe
     );
   }
 
-  if (expiredCount === 0 && expiringCount === 0 && inactiveCount === 0 && noClassesCount === 0) {
+  if (expiredCount === 0 && expiringCount === 0 && inactiveCount === 0 && noClassesCount === 0 && birthdayCount === 0) {
     return null;
+  }
+
+  function calculateAge(birthDateStr: string): number | null {
+    try {
+      const bd = new Date(birthDateStr);
+      const now = new Date();
+      let age = now.getFullYear() - bd.getFullYear();
+      const monthDiff = now.getMonth() - bd.getMonth();
+      if (monthDiff < 0 || (monthDiff === 0 && now.getDate() < bd.getDate())) {
+        age--;
+      }
+      return age + 1;
+    } catch { return null; }
+  }
+
+  function formatBirthday(birthDateStr: string): string {
+    try {
+      const bd = new Date(birthDateStr + "T12:00:00");
+      const now = new Date();
+      const thisYear = new Date(now.getFullYear(), bd.getMonth(), bd.getDate());
+      const diff = Math.ceil((thisYear.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+      if (diff === 0) return "Hoy";
+      if (diff === 1) return "Mañana";
+      return bd.toLocaleDateString("es-MX", { day: "2-digit", month: "short" });
+    } catch { return birthDateStr; }
   }
 
   function formatDate(dateStr: string | null) {
@@ -529,6 +568,82 @@ function AlertsSection({ alerts, isLoading, onViewClient, branchName, whatsappTe
           )}
         </Card>
       )}
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2">
+              <Cake className="h-4 w-4 text-pink-500" />
+              <span>Cumpleaños próximos</span>
+              {birthdayCount > 0 && (
+                <Badge variant="default" className="bg-pink-500" data-testid="badge-birthday-count">
+                  {birthdayCount}
+                </Badge>
+              )}
+            </div>
+            <Button
+              size="icon"
+              variant="ghost"
+              onClick={() => setBirthdayExpanded(!birthdayExpanded)}
+              data-testid="button-toggle-birthdays"
+            >
+              {birthdayExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            </Button>
+          </CardTitle>
+        </CardHeader>
+        {birthdayExpanded && (
+          <CardContent className="p-4 pt-0">
+            {birthdayCount === 0 ? (
+              <p className="text-sm text-muted-foreground" data-testid="text-no-birthdays">Sin cumpleaños próximos</p>
+            ) : (
+              <div className="space-y-2 max-h-60 overflow-y-auto">
+                {alerts?.upcomingBirthdays?.map((b) => {
+                  const age = calculateAge(b.birthDate);
+                  const dayLabel = formatBirthday(b.birthDate);
+                  return (
+                    <div
+                      key={b.userId}
+                      className="flex items-center justify-between gap-2 p-2 rounded-md bg-muted/50 flex-wrap"
+                      data-testid={`alert-birthday-${b.userId}`}
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">
+                          <Gift className="h-3 w-3 inline mr-1 text-pink-500" />
+                          {b.name} {b.lastName || ""}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {dayLabel}
+                          {age !== null ? ` · Cumple ${age} años` : ""}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <WhatsAppButton
+                          phone={b.phone}
+                          template={whatsappTemplates.birthday_greeting || "Hola {firstName}, todo el equipo de {branchName} te desea un feliz cumpleaños. ¡Te esperamos pronto!"}
+                          vars={{ firstName: b.name, fullName: `${b.name} ${b.lastName || ""}`.trim(), branchName }}
+                          testId={`button-wa-birthday-${b.userId}`}
+                        />
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-6 px-2 text-[10px]"
+                          onClick={() => onViewClient(b.userId)}
+                          data-testid={`button-view-birthday-${b.userId}`}
+                        >
+                          Ver cliente
+                        </Button>
+                        <Badge variant="default" className="bg-pink-500">
+                          {dayLabel}
+                        </Badge>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </CardContent>
+        )}
+      </Card>
     </div>
   );
 }
@@ -550,6 +665,7 @@ const TEMPLATE_LABELS: Record<string, string> = {
   expired_membership: "Plan vencido",
   expiring_membership: "Membresía por vencer",
   no_classes: "Sin clases disponibles",
+  birthday_greeting: "Cumpleaños",
 };
 
 const TEMPLATE_SAMPLE_VARS: Record<string, string> = {
@@ -1169,6 +1285,10 @@ export default function DashboardPage() {
 
           <TabsContent value="contenido" className="mt-4">
             <ContenidoTab />
+          </TabsContent>
+
+          <TabsContent value="perfil" className="mt-4">
+            <PerfilPublicoTab />
           </TabsContent>
 
           <TabsContent value="tv" className="mt-4">

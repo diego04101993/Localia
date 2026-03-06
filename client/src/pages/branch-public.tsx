@@ -19,6 +19,7 @@ import {
   Users,
   AlertTriangle,
   XCircle,
+  Navigation,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -141,35 +142,72 @@ function PublicPosts({ posts }: { posts: BranchPost[] }) {
 }
 
 function PublicProducts({ products }: { products: BranchProduct[] }) {
-  const sorted = [...products].sort((a, b) => a.displayOrder - b.displayOrder);
+  const sorted = [...products].filter(p => p.isActive).sort((a, b) => a.displayOrder - b.displayOrder);
   if (sorted.length === 0) return null;
+
+  const services = sorted.filter(p => (p as any).type === "service");
+  const prods = sorted.filter(p => (p as any).type !== "service");
 
   return (
     <Card data-testid="card-public-products">
-      <CardContent className="p-4">
-        <h3 className="font-semibold text-sm mb-3 flex items-center gap-2" data-testid="text-products-title">
-          <ShoppingBag className="h-4 w-4" />
-          Productos
-        </h3>
-        <div className="grid grid-cols-2 gap-3">
-          {sorted.map((product) => (
-            <div key={product.id} className="border rounded-lg overflow-hidden" data-testid={`public-product-${product.id}`}>
-              {product.imageUrl ? (
-                <img src={product.imageUrl} alt={product.name} className="h-24 w-full object-cover" data-testid={`img-public-product-${product.id}`} />
-              ) : (
-                <div className="h-24 w-full bg-muted flex items-center justify-center">
-                  <ShoppingBag className="h-6 w-6 text-muted-foreground/40" />
+      <CardContent className="p-4 space-y-4">
+        {services.length > 0 && (
+          <div>
+            <h3 className="font-semibold text-sm mb-3 flex items-center gap-2" data-testid="text-services-title">
+              <Star className="h-4 w-4" />
+              Servicios
+            </h3>
+            <div className="space-y-2">
+              {services.map((s) => (
+                <div key={s.id} className="flex items-center gap-3 p-2 border rounded-lg" data-testid={`public-service-${s.id}`}>
+                  {s.imageUrl ? (
+                    <img src={s.imageUrl} alt={s.name} className="h-14 w-14 rounded object-cover shrink-0" />
+                  ) : (
+                    <div className="h-14 w-14 rounded bg-muted flex items-center justify-center shrink-0">
+                      <Star className="h-5 w-5 text-muted-foreground/40" />
+                    </div>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium truncate">{s.name}</p>
+                    {s.description && <p className="text-xs text-muted-foreground line-clamp-2">{s.description}</p>}
+                    <div className="flex items-center gap-2 mt-1">
+                      {s.price > 0 && <span className="text-xs font-semibold text-primary">${(s.price / 100).toFixed(0)} MXN</span>}
+                      {(s as any).durationMinutes && <span className="text-xs text-muted-foreground">{(s as any).durationMinutes} min</span>}
+                    </div>
+                  </div>
                 </div>
-              )}
-              <div className="p-2">
-                <p className="text-xs font-medium truncate" data-testid={`text-public-product-name-${product.id}`}>{product.name}</p>
-                <p className="text-xs font-semibold text-primary" data-testid={`text-public-product-price-${product.id}`}>
-                  ${(product.price / 100).toFixed(2)} MXN
-                </p>
-              </div>
+              ))}
             </div>
-          ))}
-        </div>
+          </div>
+        )}
+        {prods.length > 0 && (
+          <div>
+            <h3 className="font-semibold text-sm mb-3 flex items-center gap-2" data-testid="text-products-title">
+              <ShoppingBag className="h-4 w-4" />
+              Productos
+            </h3>
+            <div className="grid grid-cols-2 gap-3">
+              {prods.map((product) => (
+                <div key={product.id} className="border rounded-lg overflow-hidden" data-testid={`public-product-${product.id}`}>
+                  {product.imageUrl ? (
+                    <img src={product.imageUrl} alt={product.name} className="h-24 w-full object-cover" data-testid={`img-public-product-${product.id}`} />
+                  ) : (
+                    <div className="h-24 w-full bg-muted flex items-center justify-center">
+                      <ShoppingBag className="h-6 w-6 text-muted-foreground/40" />
+                    </div>
+                  )}
+                  <div className="p-2">
+                    <p className="text-xs font-medium truncate" data-testid={`text-public-product-name-${product.id}`}>{product.name}</p>
+                    {product.description && <p className="text-[10px] text-muted-foreground truncate">{product.description}</p>}
+                    <p className="text-xs font-semibold text-primary" data-testid={`text-public-product-price-${product.id}`}>
+                      ${(product.price / 100).toFixed(0)} MXN
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
@@ -198,6 +236,89 @@ function PublicVideos({ videos }: { videos: BranchVideo[] }) {
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+const DAY_NAMES_SHORT = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
+
+function OperatingHoursDisplay({ hours }: { hours: any }) {
+  if (!hours || typeof hours !== "object") {
+    return (
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Clock className="h-4 w-4" />
+        <span>Horarios por configurar</span>
+      </div>
+    );
+  }
+
+  const days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+
+  return (
+    <div data-testid="section-operating-hours">
+      <div className="flex items-center gap-2 mb-2">
+        <Clock className="h-4 w-4 text-muted-foreground" />
+        <span className="text-sm font-medium">Horarios</span>
+      </div>
+      <div className="space-y-1">
+        {days.map((day, i) => {
+          const h = hours[day];
+          return (
+            <div key={day} className="flex justify-between text-xs text-muted-foreground" data-testid={`hours-${day}`}>
+              <span className="font-medium w-10">{DAY_NAMES_SHORT[i]}</span>
+              {h?.open ? (
+                <span>{h.from || "09:00"} - {h.to || "18:00"}</span>
+              ) : (
+                <span className="italic">Cerrado</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ReviewsSummary({ slug }: { slug: string }) {
+  const { data } = useQuery<{ averageRating: number; totalReviews: number; reviews: any[] }>({
+    queryKey: ["/api/public/branch", slug, "reviews"],
+    queryFn: async () => {
+      const res = await fetch(`/api/public/branch/${slug}/reviews`);
+      if (!res.ok) return { averageRating: 0, totalReviews: 0, reviews: [] };
+      return res.json();
+    },
+  });
+
+  if (!data || data.totalReviews === 0) {
+    return (
+      <div className="flex items-center gap-2">
+        <Star className="h-4 w-4 text-yellow-500" />
+        <span className="text-sm font-medium" data-testid="text-no-reviews">Sin calificaciones aún</span>
+      </div>
+    );
+  }
+
+  return (
+    <div data-testid="section-reviews-summary">
+      <div className="flex items-center gap-2 mb-2">
+        <Star className="h-4 w-4 text-yellow-500 fill-yellow-500" />
+        <span className="text-sm font-medium" data-testid="text-review-avg">{data.averageRating.toFixed(1)}</span>
+        <span className="text-xs text-muted-foreground" data-testid="text-review-count">({data.totalReviews} reseñas)</span>
+      </div>
+      {data.reviews.slice(0, 3).map((r: any) => (
+        <div key={r.id} className="border-t py-2" data-testid={`review-${r.id}`}>
+          <div className="flex items-center gap-1 mb-1">
+            {[1, 2, 3, 4, 5].map((s) => (
+              <Star key={s} className={`h-3 w-3 ${s <= r.rating ? "text-yellow-500 fill-yellow-500" : "text-muted-foreground/30"}`} />
+            ))}
+            <span className="text-[10px] text-muted-foreground ml-1">{r.userName}</span>
+          </div>
+          {r.comment && <p className="text-xs text-muted-foreground">{r.comment}</p>}
+          {r.adminReply && (
+            <p className="text-xs text-muted-foreground mt-1 pl-3 border-l-2 italic">{r.adminReply}</p>
+          )}
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -866,16 +987,13 @@ export default function BranchPublicPage() {
         <Card>
           <CardContent className="p-4 space-y-3">
             {branch.description && (
-              <p className="text-sm">{branch.description}</p>
+              <p className="text-sm" data-testid="text-branch-description">{branch.description}</p>
             )}
-            <div className="flex items-center gap-2">
-              <Star className="h-4 w-4 text-yellow-500" />
-              <span className="text-sm font-medium">Sin calificaciones aún</span>
-            </div>
+            <ReviewsSummary slug={slug!} />
             {branch.address && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <MapPin className="h-4 w-4 shrink-0" />
-                <span>{branch.address}</span>
+                <span data-testid="text-branch-address">{branch.address}</span>
               </div>
             )}
             {branch.city && !branch.address && (
@@ -884,16 +1002,19 @@ export default function BranchPublicPage() {
                 <span>{branch.city}</span>
               </div>
             )}
-            {!branch.address && !branch.city && (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <MapPin className="h-4 w-4" />
-                <span>Ubicación por configurar</span>
-              </div>
+            {(branch as any).googleMapsUrl && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full"
+                onClick={() => window.open((branch as any).googleMapsUrl, "_blank")}
+                data-testid="button-google-maps"
+              >
+                <Navigation className="h-4 w-4 mr-2" />
+                Ver en Google Maps
+              </Button>
             )}
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Clock className="h-4 w-4" />
-              <span>Horarios por configurar</span>
-            </div>
+            <OperatingHoursDisplay hours={(branch as any).operatingHours} />
           </CardContent>
         </Card>
 

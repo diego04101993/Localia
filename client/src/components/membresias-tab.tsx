@@ -22,6 +22,13 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -40,8 +47,24 @@ interface MembershipPlan {
   price: number;
   durationDays: number | null;
   classLimit: number | null;
+  cycleMonths: number;
   isActive: boolean;
   createdAt: string;
+}
+
+const CYCLE_OPTIONS = [
+  { value: "1", label: "Mensual", months: 1 },
+  { value: "3", label: "Trimestral", months: 3 },
+  { value: "6", label: "Semestral", months: 6 },
+  { value: "12", label: "Anual", months: 12 },
+  { value: "custom", label: "Personalizado", months: 0 },
+] as const;
+
+function getCycleLabel(months: number): string {
+  const preset = CYCLE_OPTIONS.find((o) => o.months === months && o.value !== "custom");
+  if (preset) return preset.label;
+  if (months === 1) return "Mensual";
+  return `${months} meses`;
 }
 
 function formatPrice(cents: number): string {
@@ -60,24 +83,34 @@ function PlanFormDialog({
   const { toast } = useToast();
   const isEdit = !!editPlan;
 
+  const editCycleMonths = editPlan?.cycleMonths ?? 1;
+  const isPresetCycle = [1, 3, 6, 12].includes(editCycleMonths);
+  const initialCycleSelect = isPresetCycle ? String(editCycleMonths) : "custom";
+
   const [name, setName] = useState(editPlan?.name || "");
   const [description, setDescription] = useState(editPlan?.description || "");
   const [priceStr, setPriceStr] = useState(editPlan ? (editPlan.price / 100).toString() : "");
-  const [durationStr, setDurationStr] = useState(editPlan?.durationDays?.toString() || "");
   const [classLimitStr, setClassLimitStr] = useState(editPlan?.classLimit?.toString() || "");
   const [unlimitedClasses, setUnlimitedClasses] = useState(editPlan ? !editPlan.classLimit : false);
-  const [noExpiry, setNoExpiry] = useState(editPlan ? !editPlan.durationDays : false);
+  const [cycleSelect, setCycleSelect] = useState(initialCycleSelect);
+  const [customMonthsStr, setCustomMonthsStr] = useState(
+    !isPresetCycle && editCycleMonths > 0 ? String(editCycleMonths) : ""
+  );
+
+  const cycleMonths =
+    cycleSelect === "custom"
+      ? parseInt(customMonthsStr || "0")
+      : parseInt(cycleSelect || "1");
 
   const priceValue = parseFloat(priceStr || "0");
-  const daysValue = parseInt(durationStr || "0");
   const classesValue = parseInt(classLimitStr || "0");
 
   const isValidPrice = !isNaN(priceValue) && priceValue > 0;
-  const isValidDays = true;
   const isValidClasses = unlimitedClasses || (classesValue >= 1 && classesValue <= 999);
   const isValidName = name.trim().length > 0 && name.length <= 60;
   const isValidDesc = description.length <= 200;
-  const canSubmit = isValidName && isValidPrice && isValidDays && isValidClasses && isValidDesc;
+  const isValidCycle = cycleMonths >= 1 && cycleMonths <= 36;
+  const canSubmit = isValidName && isValidPrice && isValidClasses && isValidDesc && isValidCycle;
 
   const mutation = useMutation({
     mutationFn: async (data: any) => {
@@ -104,10 +137,17 @@ function PlanFormDialog({
     if (!canSubmit) return;
 
     const price = Math.round(priceValue * 100);
-    const durationDays = 30;
+    const durationDays = cycleMonths * 30;
     const classLimit = unlimitedClasses ? null : classesValue;
 
-    mutation.mutate({ name: name.trim(), description: description.trim() || undefined, price, durationDays, classLimit });
+    mutation.mutate({
+      name: name.trim(),
+      description: description.trim() || undefined,
+      price,
+      durationDays,
+      classLimit,
+      cycleMonths,
+    });
   }
 
   return (
@@ -150,7 +190,7 @@ function PlanFormDialog({
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label htmlFor="plan-price">Precio *</Label>
+              <Label htmlFor="plan-price">Precio total del ciclo *</Label>
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">MXN $</span>
                 <Input
@@ -173,16 +213,47 @@ function PlanFormDialog({
 
             <div className="space-y-2">
               <Label>Ciclo</Label>
-              <div className="flex items-center gap-2 h-10 px-3 rounded-md border bg-muted/50">
-                <Calendar className="h-4 w-4 text-muted-foreground" />
-                <span className="text-sm font-medium">Mensual (30 días)</span>
-              </div>
-              <input type="hidden" value="30" />
+              <Select
+                value={cycleSelect}
+                onValueChange={(val) => {
+                  setCycleSelect(val);
+                  if (val !== "custom") setCustomMonthsStr("");
+                }}
+              >
+                <SelectTrigger data-testid="select-cycle">
+                  <SelectValue placeholder="Selecciona ciclo" />
+                </SelectTrigger>
+                <SelectContent>
+                  {CYCLE_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value} data-testid={`option-cycle-${opt.value}`}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {cycleSelect === "custom" && (
+                <div className="relative">
+                  <Input
+                    type="number"
+                    min="1"
+                    max="36"
+                    value={customMonthsStr}
+                    onChange={(e) => setCustomMonthsStr(e.target.value)}
+                    placeholder="Número de meses"
+                    className="pr-16"
+                    data-testid="input-custom-months"
+                  />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">meses</span>
+                </div>
+              )}
+              {cycleSelect === "custom" && customMonthsStr && !isValidCycle && (
+                <p className="text-[10px] text-red-500">Entre 1 y 36 meses</p>
+              )}
             </div>
 
             <div className="space-y-2 sm:col-span-2">
               <div className="flex items-center justify-between">
-                <Label htmlFor="plan-classes">Clases incluidas</Label>
+                <Label htmlFor="plan-classes">Clases incluidas en todo el ciclo</Label>
                 <div className="flex items-center gap-1.5">
                   <Switch
                     id="toggle-unlimited"
@@ -211,6 +282,9 @@ function PlanFormDialog({
               {!unlimitedClasses && classLimitStr && !isValidClasses && (
                 <p className="text-[10px] text-red-500">Entre 1 y 999 clases</p>
               )}
+              <p className="text-[10px] text-muted-foreground">
+                Total de clases que el cliente puede tomar durante todo el ciclo de {cycleMonths >= 1 ? getCycleLabel(cycleMonths).toLowerCase() : "—"}
+              </p>
             </div>
           </div>
 
@@ -218,9 +292,12 @@ function PlanFormDialog({
             <div className="rounded-md bg-muted/50 p-3 text-sm" data-testid="plan-summary">
               <p className="font-medium mb-1">Resumen del plan</p>
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                <span>Precio mensual: <strong className="text-foreground">${priceValue.toFixed(2)} MXN</strong></span>
-                <span>Ciclo: <strong className="text-foreground">Mensual</strong></span>
+                <span>Precio total del ciclo: <strong className="text-foreground">${priceValue.toFixed(2)} MXN</strong></span>
+                <span>Ciclo: <strong className="text-foreground">{getCycleLabel(cycleMonths)}</strong></span>
                 <span>Clases por ciclo: <strong className="text-foreground">{unlimitedClasses ? "Ilimitadas" : `${classesValue}`}</strong></span>
+                {cycleMonths > 1 && (
+                  <span>Precio mensual equiv.: <strong className="text-foreground">${(priceValue / cycleMonths).toFixed(2)} MXN</strong></span>
+                )}
               </div>
             </div>
           )}
@@ -342,7 +419,7 @@ export default function MembresiasTab() {
                   <div className="flex items-center gap-3 text-xs text-muted-foreground">
                     <span className="flex items-center gap-1">
                       <Calendar className="h-3 w-3" />
-                      Mensual
+                      {getCycleLabel(plan.cycleMonths ?? 1)}
                     </span>
                     <span className="flex items-center gap-1">
                       <Hash className="h-3 w-3" />
@@ -356,6 +433,11 @@ export default function MembresiasTab() {
                   <div className="flex flex-wrap gap-1">
                     {!plan.classLimit && (
                       <Badge variant="secondary" className="text-[10px]" data-testid={`badge-unlimited-${plan.id}`}>Ilimitadas</Badge>
+                    )}
+                    {(plan.cycleMonths ?? 1) > 1 && (
+                      <Badge variant="secondary" className="text-[10px]" data-testid={`badge-cycle-${plan.id}`}>
+                        {getCycleLabel(plan.cycleMonths)}
+                      </Badge>
                     )}
                   </div>
                   <div className="flex gap-2 pt-1">
@@ -399,7 +481,7 @@ export default function MembresiasTab() {
                         <Badge variant="secondary" data-testid={`badge-plan-status-${plan.id}`}>Inactivo</Badge>
                       </div>
                       <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                        <span>Mensual</span>
+                        <span>{getCycleLabel(plan.cycleMonths ?? 1)}</span>
                         <span>{plan.classLimit ? `${plan.classLimit} clases/ciclo` : "Ilimitadas"}</span>
                       </div>
                       <Button

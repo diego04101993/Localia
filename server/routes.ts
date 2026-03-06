@@ -570,13 +570,14 @@ export async function registerRoutes(
     try {
       const daysAhead = parseInt(req.query.daysAhead as string) || 3;
       const daysSince = parseInt(req.query.daysSince as string) || 30;
-      const [expiringMemberships, expiredMemberships, inactiveClients, clientsWithoutClasses] = await Promise.all([
+      const [expiringMemberships, expiredMemberships, inactiveClients, clientsWithoutClasses, upcomingBirthdays] = await Promise.all([
         storage.getExpiringMemberships(user.branchId, daysAhead),
         storage.getExpiredMemberships(user.branchId),
         storage.getInactiveClients(user.branchId, daysSince),
         storage.getClientsWithoutClasses(user.branchId),
+        storage.getUpcomingBirthdays(user.branchId, 7),
       ]);
-      res.json({ expiringMemberships, expiredMemberships, inactiveClients, clientsWithoutClasses });
+      res.json({ expiringMemberships, expiredMemberships, inactiveClients, clientsWithoutClasses, upcomingBirthdays });
     } catch (err: any) {
       console.error(`[BRANCH_ALERTS] Error:`, err.stack || err);
       res.status(500).json({ message: "Error al obtener alertas" });
@@ -1155,8 +1156,9 @@ export async function registerRoutes(
         name: data.name,
         description: data.description || null,
         price: data.price,
-        durationDays: data.durationDays ?? null,
+        durationDays: (data.cycleMonths || 1) * 30,
         classLimit: data.classLimit ?? null,
+        cycleMonths: data.cycleMonths || 1,
       });
 
       await storage.createAuditLog({
@@ -1192,7 +1194,7 @@ export async function registerRoutes(
         ...(data.name !== undefined && { name: data.name }),
         ...(data.description !== undefined && { description: data.description || null }),
         ...(data.price !== undefined && { price: data.price }),
-        ...(data.durationDays !== undefined && { durationDays: data.durationDays ?? null }),
+        ...(data.cycleMonths !== undefined && { cycleMonths: data.cycleMonths, durationDays: (data.cycleMonths || 1) * 30 }),
         ...(data.classLimit !== undefined && { classLimit: data.classLimit ?? null }),
         ...(data.isActive !== undefined && { isActive: data.isActive }),
       });
@@ -1259,10 +1261,9 @@ export async function registerRoutes(
       const classesRemaining = plan.classLimit ?? null;
       const classesTotal = plan.classLimit ?? null;
       let expiresAt: Date | null = null;
-      if (plan.durationDays) {
-        expiresAt = new Date();
-        expiresAt.setDate(expiresAt.getDate() + plan.durationDays);
-      }
+      const durationDays = (plan.cycleMonths || 1) * 30;
+      expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + durationDays);
 
       const membership = await storage.assignPlanToMembership(membershipId, planId, classesRemaining, classesTotal, expiresAt);
       if (!membership) {
@@ -1331,7 +1332,7 @@ export async function registerRoutes(
 
       const now = new Date();
       const expiresAt = new Date(now);
-      const duration = plan.durationDays || 30;
+      const duration = (plan.cycleMonths || 1) * 30;
       expiresAt.setDate(expiresAt.getDate() + duration);
 
       const classesRemaining = plan.classLimit ?? null;
@@ -1947,7 +1948,7 @@ export async function registerRoutes(
   app.post("/api/branch/products", requireBranchAdmin, async (req, res) => {
     const actor = req.user as any;
     try {
-      const { name, description, price, imageUrl } = req.body;
+      const { name, description, price, imageUrl, type, durationMinutes } = req.body;
       if (!name) {
         return res.status(400).json({ message: "Se requiere nombre del producto" });
       }
@@ -1962,6 +1963,8 @@ export async function registerRoutes(
         description: description || null,
         price,
         imageUrl: imageUrl || null,
+        type: type || "product",
+        durationMinutes: durationMinutes || null,
         displayOrder: existing.length,
       });
 
@@ -1990,13 +1993,15 @@ export async function registerRoutes(
         return res.status(404).json({ message: "Producto no encontrado" });
       }
 
-      const { name, description, price, imageUrl, isActive } = req.body;
+      const { name, description, price, imageUrl, isActive, type, durationMinutes } = req.body;
       const updated = await storage.updateBranchProduct(productId, {
         ...(name !== undefined && { name }),
         ...(description !== undefined && { description: description || null }),
         ...(price !== undefined && { price }),
         ...(imageUrl !== undefined && { imageUrl: imageUrl || null }),
         ...(isActive !== undefined && { isActive }),
+        ...(type !== undefined && { type }),
+        ...(durationMinutes !== undefined && { durationMinutes: durationMinutes || null }),
       });
 
       console.log(`[PRODUCTS] Updated "${productId}" by ${actor.email}`);
@@ -2186,6 +2191,63 @@ export async function registerRoutes(
     }
   });
 
+  app.patch("/api/branch/profile", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const { description, address, city, googleMapsUrl, operatingHours, category, subcategory, latitude, longitude } = req.body;
+      const updated = await storage.updateBranchProfile(actor.branchId, {
+        ...(description !== undefined && { description }),
+        ...(address !== undefined && { address }),
+        ...(city !== undefined && { city }),
+        ...(googleMapsUrl !== undefined && { googleMapsUrl }),
+        ...(operatingHours !== undefined && { operatingHours }),
+        ...(category !== undefined && { category }),
+        ...(subcategory !== undefined && { subcategory }),
+        ...(latitude !== undefined && { latitude: latitude ? parseFloat(latitude) : null }),
+        ...(longitude !== undefined && { longitude: longitude ? parseFloat(longitude) : null }),
+      });
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "UPDATE_BRANCH_PROFILE",
+        branchId: actor.branchId,
+        metadata: { fields: Object.keys(req.body) },
+      });
+      res.json(updated);
+    } catch (err: any) {
+      console.error(`[BRANCH_PROFILE] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al actualizar perfil" });
+    }
+  });
+
+  app.get("/api/public/branch/:slug/reviews", async (req, res) => {
+    try {
+      const branch = await storage.getBranchBySlug(req.params.slug);
+      if (!branch) return res.status(404).json({ message: "Sucursal no encontrada" });
+      const [reviews, summary] = await Promise.all([
+        storage.getBranchReviews(branch.id),
+        storage.getBranchReviewsSummary(branch.id),
+      ]);
+      res.json({ reviews, ...summary });
+    } catch (err: any) {
+      console.error(`[REVIEWS] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al obtener reseñas" });
+    }
+  });
+
+  app.get("/api/branch/reviews", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const [reviews, summary] = await Promise.all([
+        storage.getBranchReviews(actor.branchId),
+        storage.getBranchReviewsSummary(actor.branchId),
+      ]);
+      res.json({ reviews, ...summary });
+    } catch (err: any) {
+      console.error(`[REVIEWS] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al obtener reseñas" });
+    }
+  });
+
   // --- WhatsApp Templates ---
   app.get("/api/branch/whatsapp-templates", requireBranchAdmin, async (req, res) => {
     const actor = req.user as any;
@@ -2196,6 +2258,7 @@ export async function registerRoutes(
         expired_membership: "Hola {firstName}, tu membresía en {branchName} ha vencido. ¡Renueva para seguir entrenando!",
         expiring_membership: "Hola {firstName}, tu membresía en {branchName} vence pronto ({expiresAt}). ¡Renueva a tiempo!",
         no_classes: "Hola {firstName}, te has quedado sin clases disponibles en {branchName}. Contacta al estudio para renovar.",
+        birthday_greeting: "Hola {firstName}, todo el equipo de {branchName} te desea un feliz cumpleaños. Te esperamos pronto!",
       };
       const saved = (branch as any).whatsappTemplates || {};
       res.json({ ...defaults, ...saved });
@@ -2212,7 +2275,7 @@ export async function registerRoutes(
       if (!templates || typeof templates !== "object") {
         return res.status(400).json({ message: "Datos inválidos" });
       }
-      const allowed = ["expired_membership", "expiring_membership", "no_classes", "booking_confirmed"];
+      const allowed = ["expired_membership", "expiring_membership", "no_classes", "booking_confirmed", "birthday_greeting"];
       const filtered: Record<string, string> = {};
       for (const key of allowed) {
         if (typeof templates[key] === "string" && templates[key].trim().length > 0) {

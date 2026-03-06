@@ -68,6 +68,8 @@ export const branches = pgTable("branches", {
   description: text("description"),
   cancelCutoffMinutes: integer("cancel_cutoff_minutes").notNull().default(120),
   whatsappTemplates: jsonb("whatsapp_templates"),
+  googleMapsUrl: text("google_maps_url"),
+  operatingHours: jsonb("operating_hours"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
 });
@@ -115,6 +117,7 @@ export const membershipPlans = pgTable("membership_plans", {
   price: integer("price").notNull().default(0),
   durationDays: integer("duration_days"),
   classLimit: integer("class_limit"),
+  cycleMonths: integer("cycle_months").notNull().default(1),
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
@@ -328,6 +331,7 @@ export const createPlanSchema = z.object({
   price: z.number().int().min(0, "El precio no puede ser negativo"),
   durationDays: z.number().int().min(1).nullable().optional(),
   classLimit: z.number().int().min(1).nullable().optional(),
+  cycleMonths: z.number().int().min(1).default(1),
 });
 
 export const assignPlanSchema = z.object({
@@ -416,6 +420,8 @@ export const branchProducts = pgTable("branch_products", {
   description: text("description"),
   price: integer("price").notNull().default(0),
   imageUrl: text("image_url"),
+  type: text("type").notNull().default("product"),
+  durationMinutes: integer("duration_minutes"),
   displayOrder: integer("display_order").notNull().default(0),
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -484,6 +490,30 @@ export const insertBranchAnnouncementSchema = createInsertSchema(branchAnnouncem
 
 export type BranchAnnouncement = typeof branchAnnouncements.$inferSelect;
 export type InsertBranchAnnouncement = z.infer<typeof insertBranchAnnouncementSchema>;
+
+export const branchReviews = pgTable("branch_reviews", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  userId: varchar("user_id", { length: 36 })
+    .notNull()
+    .references(() => users.id),
+  rating: integer("rating").notNull(),
+  comment: text("comment"),
+  adminReply: text("admin_reply"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const insertBranchReviewSchema = createInsertSchema(branchReviews).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type BranchReview = typeof branchReviews.$inferSelect;
+export type InsertBranchReview = z.infer<typeof insertBranchReviewSchema>;
 
 export const BRANCH_CATEGORIES = [
   { value: "box", label: "Box / CrossFit" },

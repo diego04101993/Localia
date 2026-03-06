@@ -1,0 +1,232 @@
+DO NOT summarize old tasks. DO NOT mention T001–T004. DO NOT audit previous work.
+
+This is a NEW incremental feature request on a currently working Branch Admin dashboard.
+Current stable tabs: Resumen, Clientes, Membresías, Reservas, Contenido, TV Mode.
+Keep all existing behavior working exactly as is.
+
+IMPORTANT ANTI-BREAK RULES
+- No mass refactors.
+- No folder restructuring.
+- No renaming existing working endpoints unless strictly necessary.
+- Minimal DB migrations only.
+- Preserve current data and backfill safely.
+- If something already exists partially, EXTEND it instead of replacing it.
+- Month length for billing logic = ALWAYS 30 days exactly.
+
+IMPLEMENT IN 3 PHASES IN THIS SAME RUN.
+At the end, report:
+1) exact files modified
+2) DB changes/migrations
+3) manual test checklist per phase
+
+==================================================
+PHASE 1 — MULTI-MONTH MEMBERSHIP PLANS
+==================================================
+
+PROBLEM:
+Right now plans are effectively monthly only. We now need support for:
+- 1 month
+- 3 months
+- 6 months
+- 12 months
+- custom number of months if needed
+
+BUSINESS RULE:
+- 1 month = 30 days exactly
+- 3 months = 90 days
+- 6 months = 180 days
+- 12 months = 360 days
+- If a plan says 36 classes for 3 months, that means 36 classes FOR THE FULL CYCLE, not per month.
+
+REQUIRED CHANGES
+
+A) Plan model
+Add a new integer field to membership plans:
+- cycleMonths (default 1)
+
+Backfill:
+- existing plans => cycleMonths = 1
+
+B) Create/Edit plan UI
+In the Memberships tab:
+- Replace fixed “Mensual (30 días)” with a configurable cycle selector.
+- Use a clean select with options:
+  - Mensual (1 mes / 30 días)
+  - Trimestral (3 meses / 90 días)
+  - Semestral (6 meses / 180 días)
+  - Anual (12 meses / 360 días)
+  - Personalizado
+- If “Personalizado”, show numeric input for months > 0
+
+Labels:
+- “Ciclo”
+- “Clases incluidas en todo el ciclo”
+- “Precio total del ciclo”
+
+Add helper text under classes:
+- “Estas clases aplican para todo el ciclo completo, no por mes.”
+
+C) Membership assignment / renewal logic
+When assigning a plan to a client:
+- paidAt = now
+- expiresAt = now + (cycleMonths * 30 days)
+- totalClassesPerCycle = plan.classesIncluded
+- remainingClasses = plan.classesIncluded (or null if unlimited)
+- status stays compatible with current logic
+
+When renewing:
+- preserve same plan and same cycleMonths
+- paidAt = now
+- expiresAt = now + (cycleMonths * 30 days)
+- reset classes for the new cycle if not unlimited
+
+D) Plan cards / client profile
+Everywhere a plan is shown, display:
+- cycle label:
+  - Mensual / Trimestral / Semestral / Anual
+  - or “{N} meses”
+- exact duration in days
+- classes per cycle
+- price total
+
+In client profile show:
+- “Pagó el”
+- “Vence el”
+- “Ciclo”
+- “Clases restantes”
+- “Días restantes”
+
+E) Alerts compatibility
+Existing alerts (expired / expiring / no classes) must continue working using the new expiresAt logic.
+
+==================================================
+PHASE 2 — NEW TAB: PERFIL PÚBLICO
+==================================================
+
+GOAL:
+Create a dedicated new dashboard tab for the branch admin to manage what customers see on /app/:slug.
+
+DO NOT overload Resumen for this.
+Create a new tab in the Branch dashboard navigation:
+- “Perfil público”
+
+In this new tab, allow editing the public profile with these sections:
+
+A) Basic profile
+- Profile image (1)
+- Branch short description
+- Branch category/subcategory if already exists, reuse it
+- Optional cover image if easy to support (only if minimal)
+
+B) Gallery / carousel
+- Up to 5 images
+- Reorder buttons ↑ ↓
+- Delete image
+- These must appear in the public page as a carousel/gallery section
+
+C) Location
+- Address text
+- Google Maps URL
+- Optional latitude/longitude if already supported
+- On public page show:
+  - address text
+  - “Ver en Google Maps” button
+
+D) Hours
+- Simple weekly schedule editor:
+  - Monday to Sunday
+  - open/close or closed
+- On public page show branch hours nicely
+
+E) Services / Products / Menu
+This must be generic and multirubro.
+Do NOT make it fitness-only.
+
+Add a repeatable list section called:
+- “Servicios y productos”
+
+Each item supports:
+- type: service | product
+- title
+- short description
+- price (optional)
+- image (optional)
+- durationMinutes (optional, useful for services)
+- active/inactive
+- order
+
+Allow:
+- Add item
+- Edit
+- Delete
+- Reorder ↑ ↓
+
+Public page /app/:slug must render this section.
+Examples:
+- gym: plan, guantes, agua
+- spa: masaje, facial
+- doctor: consulta general, ultrasonido
+- freelancer: asesoría, sesión, paquete
+
+F) Reviews summary
+In this new tab show read-only review summary:
+- average stars
+- total reviews
+- latest comments (read-only)
+No editing of customer reviews.
+If review response is easy and minimal, add optional admin reply field later; otherwise skip for now.
+
+==================================================
+PHASE 3 — BIRTHDAY ALERTS IN RESUMEN
+==================================================
+
+Add a lightweight dashboard alert card in Resumen:
+
+Card title:
+- “Cumpleaños próximos”
+
+Show customers whose birthDate is within next 7 days.
+Per row show:
+- client name
+- birthday date
+- age turning (if calculable from birthDate)
+- WhatsApp button if phone exists
+
+If phone exists:
+Open wa.me with a friendly message using a new branch WhatsApp template key:
+- birthday_greeting
+
+Default template:
+“Hola {firstName}, todo el equipo de {branchName} te desea un feliz cumpleaños 🎉. ¡Te esperamos pronto!”
+
+If branch has no customers with birthDate, show empty state:
+- “Sin cumpleaños próximos”
+
+==================================================
+PUBLIC PAGE RENDERING REQUIREMENTS
+==================================================
+
+Update /app/:slug to display:
+1) announcement (already exists)
+2) membership badge / agenda (already exists)
+3) profile/gallery section from new Perfil público tab
+4) services/products section
+5) location + Google Maps link
+6) reviews summary
+
+Keep the current clean style.
+Do not break booking UI.
+
+==================================================
+DELIVERABLES REQUIRED
+==================================================
+
+At the end, output:
+1) exact files modified
+2) DB migration details
+3) list of new/updated endpoints
+4) manual test checklist for:
+   - multi-month plans
+   - public profile tab
+   - services/products rendering
+   - birthday alerts

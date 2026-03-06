@@ -42,6 +42,8 @@ import {
   branchAnnouncements,
   type BranchAnnouncement,
   type InsertBranchAnnouncement,
+  branchReviews,
+  type BranchReview,
 } from "@shared/schema";
 
 export interface BranchMetrics {
@@ -151,6 +153,10 @@ export interface IStorage {
   softDeleteMembership(membershipId: string): Promise<any>;
   getUpcomingBookingsForUser(branchId: string, userId: string, fromDate: string, limit?: number): Promise<any[]>;
   updateBranchWhatsappTemplates(branchId: string, templates: Record<string, string>): Promise<any>;
+  updateBranchProfile(branchId: string, data: { description?: string | null; address?: string | null; city?: string | null; googleMapsUrl?: string | null; operatingHours?: any; category?: string | null; subcategory?: string | null; latitude?: number | null; longitude?: number | null }): Promise<any>;
+  getUpcomingBirthdays(branchId: string, daysAhead?: number): Promise<any[]>;
+  getBranchReviews(branchId: string): Promise<any[]>;
+  getBranchReviewsSummary(branchId: string): Promise<{ averageRating: number; totalReviews: number }>;
   getBranchAnnouncements(branchId: string): Promise<BranchAnnouncement[]>;
   createAnnouncement(data: InsertBranchAnnouncement): Promise<BranchAnnouncement>;
   deleteAnnouncement(id: string): Promise<void>;
@@ -1464,6 +1470,88 @@ export class DatabaseStorage implements IStorage {
       .update(branchAnnouncements)
       .set({ isActive: false })
       .where(and(eq(branchAnnouncements.branchId, branchId), eq(branchAnnouncements.isActive, true)));
+  }
+
+  async updateBranchProfile(branchId: string, data: { description?: string | null; address?: string | null; city?: string | null; googleMapsUrl?: string | null; operatingHours?: any; category?: string | null; subcategory?: string | null; latitude?: number | null; longitude?: number | null }): Promise<any> {
+    const setData: any = {};
+    if (data.description !== undefined) setData.description = data.description;
+    if (data.address !== undefined) setData.address = data.address;
+    if (data.city !== undefined) setData.city = data.city;
+    if (data.googleMapsUrl !== undefined) setData.googleMapsUrl = data.googleMapsUrl;
+    if (data.operatingHours !== undefined) setData.operatingHours = data.operatingHours;
+    if (data.category !== undefined) setData.category = data.category;
+    if (data.subcategory !== undefined) setData.subcategory = data.subcategory;
+    if (data.latitude !== undefined) setData.latitude = data.latitude;
+    if (data.longitude !== undefined) setData.longitude = data.longitude;
+
+    if (Object.keys(setData).length === 0) return null;
+
+    const [updated] = await db
+      .update(branches)
+      .set(setData)
+      .where(eq(branches.id, branchId))
+      .returning();
+    return updated;
+  }
+
+  async getUpcomingBirthdays(branchId: string, daysAhead: number = 7): Promise<any[]> {
+    const results = await db.execute(sql`
+      SELECT u.id as "userId", u.name, u.last_name as "lastName", u.phone, u.birth_date as "birthDate",
+             m.id as "membershipId"
+      FROM users u
+      INNER JOIN memberships m ON m.user_id = u.id
+      WHERE m.branch_id = ${branchId}
+        AND m.status = 'active'
+        AND u.birth_date IS NOT NULL
+        AND u.birth_date != ''
+        AND (
+          TO_DATE(u.birth_date, 'YYYY-MM-DD') IS NOT NULL
+          AND (
+            (EXTRACT(MONTH FROM TO_DATE(u.birth_date, 'YYYY-MM-DD')) = EXTRACT(MONTH FROM CURRENT_DATE)
+             AND EXTRACT(DAY FROM TO_DATE(u.birth_date, 'YYYY-MM-DD')) >= EXTRACT(DAY FROM CURRENT_DATE)
+             AND EXTRACT(DAY FROM TO_DATE(u.birth_date, 'YYYY-MM-DD')) <= EXTRACT(DAY FROM (CURRENT_DATE + ${daysAhead}::int)))
+            OR
+            (EXTRACT(MONTH FROM TO_DATE(u.birth_date, 'YYYY-MM-DD')) = EXTRACT(MONTH FROM (CURRENT_DATE + ${daysAhead}::int))
+             AND EXTRACT(MONTH FROM CURRENT_DATE) != EXTRACT(MONTH FROM (CURRENT_DATE + ${daysAhead}::int))
+             AND EXTRACT(DAY FROM TO_DATE(u.birth_date, 'YYYY-MM-DD')) <= EXTRACT(DAY FROM (CURRENT_DATE + ${daysAhead}::int)))
+          )
+        )
+      ORDER BY EXTRACT(MONTH FROM TO_DATE(u.birth_date, 'YYYY-MM-DD')), EXTRACT(DAY FROM TO_DATE(u.birth_date, 'YYYY-MM-DD'))
+    `);
+    return results.rows as any[];
+  }
+
+  async getBranchReviews(branchId: string): Promise<any[]> {
+    const results = await db
+      .select({
+        id: branchReviews.id,
+        rating: branchReviews.rating,
+        comment: branchReviews.comment,
+        adminReply: branchReviews.adminReply,
+        createdAt: branchReviews.createdAt,
+        userName: users.name,
+        userLastName: users.lastName,
+      })
+      .from(branchReviews)
+      .innerJoin(users, eq(branchReviews.userId, users.id))
+      .where(eq(branchReviews.branchId, branchId))
+      .orderBy(desc(branchReviews.createdAt))
+      .limit(20);
+    return results;
+  }
+
+  async getBranchReviewsSummary(branchId: string): Promise<{ averageRating: number; totalReviews: number }> {
+    const result = await db
+      .select({
+        avgRating: sql<number>`COALESCE(AVG(${branchReviews.rating}), 0)`,
+        total: sql<number>`COUNT(*)`,
+      })
+      .from(branchReviews)
+      .where(eq(branchReviews.branchId, branchId));
+    return {
+      averageRating: Number(result[0]?.avgRating || 0),
+      totalReviews: Number(result[0]?.total || 0),
+    };
   }
 }
 
