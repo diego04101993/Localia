@@ -10,6 +10,7 @@ import {
   Navigation,
   Filter,
   ArrowLeft,
+  LogOut,
   Dumbbell,
   Stethoscope,
   Scale,
@@ -183,7 +184,7 @@ function CategoryFilter({
 }
 
 export default function ExplorePage() {
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const [searchQuery, setSearchQuery] = useState("");
@@ -285,6 +286,21 @@ export default function ExplorePage() {
             <h1 className="font-bold text-lg" data-testid="text-explore-title">
               Explorar
             </h1>
+            {user && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="ml-auto text-muted-foreground"
+                onClick={async () => {
+                  await logout();
+                  navigate("/auth");
+                }}
+                data-testid="button-logout"
+              >
+                <LogOut className="h-4 w-4 mr-1" />
+                Salir
+              </Button>
+            )}
           </div>
           <div className="flex gap-2">
             <div className="relative flex-1">

@@ -10,6 +10,7 @@ import {
   Heart,
   Compass,
   ArrowLeft,
+  LogOut,
   ChevronLeft,
   ChevronRight,
   Play,
@@ -754,7 +755,7 @@ export default function BranchPublicPage() {
   const params = useParams<{ slug: string }>();
   const slug = params.slug;
   const [, navigate] = useLocation();
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const { toast } = useToast();
 
   const { data: branch, isLoading, error } = useQuery<Branch>({
@@ -873,20 +874,34 @@ export default function BranchPublicPage() {
             </Button>
             <div className="flex items-center gap-1">
               {user && (
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className="bg-white/20 backdrop-blur text-white"
-                  onClick={() =>
-                    favMutation.mutate({ branchId: branch.id, isFavorite: !isFavorite })
-                  }
-                  disabled={favMutation.isPending}
-                  data-testid="button-branch-favorite"
-                >
-                  <Heart
-                    className={`h-4 w-4 ${isFavorite ? "fill-red-500 text-red-500" : ""}`}
-                  />
-                </Button>
+                <>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="bg-white/20 backdrop-blur text-white"
+                    onClick={() =>
+                      favMutation.mutate({ branchId: branch.id, isFavorite: !isFavorite })
+                    }
+                    disabled={favMutation.isPending}
+                    data-testid="button-branch-favorite"
+                  >
+                    <Heart
+                      className={`h-4 w-4 ${isFavorite ? "fill-red-500 text-red-500" : ""}`}
+                    />
+                  </Button>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="bg-white/20 backdrop-blur text-white"
+                    onClick={async () => {
+                      await logout();
+                      navigate("/auth");
+                    }}
+                    data-testid="button-logout"
+                  >
+                    <LogOut className="h-4 w-4" />
+                  </Button>
+                </>
               )}
             </div>
           </div>
