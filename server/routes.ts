@@ -25,6 +25,16 @@ import { z } from "zod";
 
 const DEFAULT_CANCEL_CUTOFF_MINUTES = 180;
 
+function addCalendarMonths(from: Date, months: number): Date {
+  const result = new Date(from);
+  const dayOfMonth = result.getDate();
+  result.setMonth(result.getMonth() + months);
+  if (result.getDate() !== dayOfMonth) {
+    result.setDate(0);
+  }
+  return result;
+}
+
 const uploadsDir = path.join(process.cwd(), "uploads");
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
@@ -568,6 +578,7 @@ export async function registerRoutes(
     }
     if (!user.branchId) return res.status(400).json({ message: "No hay sucursal asignada" });
     try {
+      await storage.reconcilePastBookings(user.branchId);
       const daysAhead = parseInt(req.query.daysAhead as string) || 3;
       const daysSince = parseInt(req.query.daysSince as string) || 30;
       const [expiringMemberships, expiredMemberships, inactiveClients, clientsWithoutClasses, upcomingBirthdays] = await Promise.all([
@@ -1260,10 +1271,7 @@ export async function registerRoutes(
 
       const classesRemaining = plan.classLimit ?? null;
       const classesTotal = plan.classLimit ?? null;
-      let expiresAt: Date | null = null;
-      const durationDays = (plan.cycleMonths || 1) * 30;
-      expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + durationDays);
+      const expiresAt = addCalendarMonths(new Date(), plan.cycleMonths || 1);
 
       const membership = await storage.assignPlanToMembership(membershipId, planId, classesRemaining, classesTotal, expiresAt);
       if (!membership) {
@@ -1331,9 +1339,7 @@ export async function registerRoutes(
       }
 
       const now = new Date();
-      const expiresAt = new Date(now);
-      const duration = (plan.cycleMonths || 1) * 30;
-      expiresAt.setDate(expiresAt.getDate() + duration);
+      const expiresAt = addCalendarMonths(now, plan.cycleMonths || 1);
 
       const classesRemaining = plan.classLimit ?? null;
       const classesTotal = plan.classLimit ?? null;
@@ -1669,6 +1675,18 @@ export async function registerRoutes(
 
       if (lateCancellation) {
         await storage.markBookingLateCancellation(bookingId);
+      }
+
+      if (status === "attended" && !alreadyProcessed) {
+        try {
+          await storage.createAttendance({
+            userId: existing.userId,
+            branchId: actor.branchId,
+            registeredBy: actor.id,
+          });
+        } catch (attErr: any) {
+          console.error(`[BOOKINGS] Error creating attendance record:`, attErr.message);
+        }
       }
 
       // Class deduction rules:

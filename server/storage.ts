@@ -513,6 +513,7 @@ export class DatabaseStorage implements IStorage {
         membershipStartDate: memberships.membershipStartDate,
         membershipEndDate: memberships.membershipEndDate,
         planName: membershipPlans.name,
+        cycleMonths: membershipPlans.cycleMonths,
       })
       .from(memberships)
       .innerJoin(users, eq(memberships.userId, users.id))

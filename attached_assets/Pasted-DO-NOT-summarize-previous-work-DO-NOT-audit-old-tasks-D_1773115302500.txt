@@ -1,0 +1,161 @@
+DO NOT summarize previous work. DO NOT audit old tasks. DO NOT refactor unrelated code.
+
+This is a small corrective/improvement pass on an already working Branch Admin dashboard.
+Current working tabs: Resumen, Clientes, Membresías, Reservas, Contenido, Perfil Público, TV Mode.
+Keep everything that already works exactly as is.
+
+IMPORTANT RULES
+- Minimal change set only
+- No folder restructuring
+- No mass refactor
+- Do not rename working endpoints unless strictly required
+- Preserve existing data
+- Extend current logic, do not replace stable features
+- If possible, fix with focused backend + UI adjustments only
+
+Implement these 4 corrections/improvements:
+
+==================================================
+TASK 1 — FIX MEMBERSHIP EXPIRATION DATE LOGIC
+==================================================
+
+PROBLEM:
+Currently plan expiration is being calculated by adding cycleMonths * 30 days.
+This causes date drift.
+Example observed:
+paidAt = 09 Mar 2026
+quarterly plan should expire = 09 Jun 2026
+but current logic shows 07 Jun 2026.
+
+BUSINESS RULE:
+Expiration must preserve the same calendar day number whenever possible.
+
+Expected examples:
+- paid 09 Mar 2026 + monthly => 09 Apr 2026
+- paid 09 Mar 2026 + quarterly => 09 Jun 2026
+- paid 09 Mar 2026 + annual => 09 Mar 2027
+
+Implementation rule:
+- Use calendar month arithmetic, NOT raw day arithmetic
+- cycleMonths = 1, 3, 6, 12, or custom N months
+- If a month does not contain that day (example Jan 31 + 1 month), choose the last valid day of target month safely
+
+Update this logic in:
+- assign membership
+- renew membership
+- any place that computes expiresAt from cycleMonths
+
+Also update client profile and alerts to keep using the corrected expiresAt.
+
+==================================================
+TASK 2 — RESERVATION / ATTENDANCE MUST SYNC WITH CLIENT PROFILE
+==================================================
+
+PROBLEM:
+When a branch admin marks a class booking as "Asistió" from Reservas tab,
+the change should immediately affect the customer profile data, but currently it is not fully reflected everywhere.
+
+REQUIRED:
+When booking status becomes attended:
+- increment total attendance count
+- update last attendance date/time
+- decrement classesRemaining by 1 if the plan is not unlimited
+- update any summary cards / profile values / client list badges that depend on this
+
+Where this must reflect:
+1. Clientes tab → client profile dialog
+2. Clientes list row summary (if plan/classes shown there)
+3. Resumen stats if affected
+4. Any existing attendance history section
+
+IMPORTANT:
+Do not double-discount if already processed once.
+If attended was already processed, repeated clicks must not decrement again.
+
+==================================================
+TASK 3 — AUTO-CONSUME MISSED BOOKINGS AFTER CLASS TIME
+==================================================
+
+PROBLEM:
+If class time passes and the customer did not cancel in time, the class should be consumed automatically.
+
+BUSINESS RULE:
+If booking is confirmed and class end time has already passed:
+- if customer cancelled before cutoff => no discount
+- if customer did not cancel in time / no-show => mark as no_show and discount 1 class
+- this must reflect in the client profile and classes remaining
+
+REQUIRED:
+Verify/fix existing reconciliation logic so it updates all dependent UI data consistently:
+- booking status
+- classesRemaining
+- attendance summary / last activity if applicable
+- client profile
+- client list quick summary
+
+Add/update a lightweight label in Reservas when useful:
+- Asistió
+- No asistió
+- Canceló
+
+Do not change the current UX heavily.
+Just make sure the data is correct everywhere.
+
+==================================================
+TASK 4 — IMPROVE CLIENT LIST QUICK INFO
+==================================================
+
+GOAL:
+In Clientes tab list rows, show more useful plan info at a glance.
+
+For each client row, display compact badges/text:
+- plan name
+- cycle label (Mensual / Trimestral / Semestral / Anual / N meses)
+- classes remaining / total, e.g. 7/8 clases
+- expiresAt date, e.g. "Vence 09 abr 2026"
+
+If no plan:
+- show "Sin plan"
+
+If unlimited:
+- show "Ilimitado"
+
+If expired:
+- show red/orange badge "Vencido"
+
+Keep the row clean and professional.
+Do not overcrowd mobile layout.
+
+==================================================
+OPTIONAL SMALL UX POLISH (ONLY IF MINIMAL)
+==================================================
+
+In client profile plan block:
+- if cycleMonths=1 show "Mensual"
+- if 3 show "Trimestral"
+- if 6 show "Semestral"
+- if 12 show "Anual"
+- otherwise show "{N} meses"
+
+Also in plan block:
+- show paidAt
+- show expiresAt
+- show remaining/total classes clearly
+
+==================================================
+DELIVERABLES REQUIRED
+==================================================
+
+At the end, respond with:
+1. Exact files modified
+2. What logic was changed for expiresAt
+3. What logic was changed for attended/no_show processing
+4. Manual test checklist with these scenarios:
+   - assign monthly plan on Mar 9 → verify Apr 9
+   - assign quarterly plan on Mar 9 → verify Jun 9
+   - mark attended from Reservas → verify classes go down in Clientes profile
+   - let a confirmed booking pass without cancellation → verify no_show + class discount
+   - verify Clientes list now shows plan + cycle + classes remaining + expiration
+
+Do not say “already implemented” unless you verified the exact issue is already solved in the current code.
+If something already exists partially, extend/fix it instead of skipping.

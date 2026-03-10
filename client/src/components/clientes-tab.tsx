@@ -190,6 +190,14 @@ function displayName(name: string, lastName: string | null): string {
   return lastName ? `${name} ${lastName}` : name;
 }
 
+function cycleLabel(cycleMonths: number | null | undefined): string {
+  if (!cycleMonths || cycleMonths === 1) return "Mensual";
+  if (cycleMonths === 3) return "Trimestral";
+  if (cycleMonths === 6) return "Semestral";
+  if (cycleMonths === 12) return "Anual";
+  return `${cycleMonths} meses`;
+}
+
 function clientStatusLabel(s: string): string {
   if (s === "active") return "Activo";
   if (s === "inactive") return "Inactivo";
@@ -1136,7 +1144,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete }:
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <div className="bg-background rounded-md p-2">
                       <div className="text-muted-foreground mb-0.5">Ciclo</div>
-                      <div className="font-medium" data-testid="text-billing-cycle">Mensual</div>
+                      <div className="font-medium" data-testid="text-billing-cycle">{cycleLabel(profile.plan?.cycleMonths)}</div>
                     </div>
                     <div className="bg-background rounded-md p-2">
                       <div className="text-muted-foreground mb-0.5">Precio</div>
@@ -1182,7 +1190,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete }:
                         data-testid="button-renew-plan"
                       >
                         {renewMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Calendar className="h-4 w-4 mr-1" />}
-                        Renovar ciclo mensual
+                        Renovar ciclo
                       </Button>
                     </div>
                   )}
@@ -1555,17 +1563,42 @@ export default function ClientesTab() {
                         </span>
                       )}
                     </div>
-                    <div className="flex items-center gap-3 text-xs text-muted-foreground mt-0.5">
-                      <span className="truncate">{client.email}</span>
-                      {client.phone && <span>{client.phone}</span>}
-                      {client.planName && (
-                        <Badge
-                          variant={client.planStatus === "expired" ? "destructive" : client.planStatus === "deleted" ? "outline" : "outline"}
-                          className={`text-[10px] px-1.5 py-0 ${client.planStatus === "deleted" ? "border-orange-400 text-orange-600" : ""}`}
-                          data-testid={`badge-plan-${client.userId}`}
-                        >
-                          {client.planStatus === "deleted" ? "Plan eliminado" : `${client.planName}${client.planStatus === "expired" ? " (vencido)" : ""}`}
-                        </Badge>
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground mt-0.5 flex-wrap">
+                      <span className="truncate max-w-[140px]">{client.email}</span>
+                      {client.phone && <span className="hidden sm:inline">{client.phone}</span>}
+                    </div>
+                    <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                      {client.planName ? (
+                        <>
+                          <Badge
+                            variant={client.planStatus === "expired" ? "destructive" : client.planStatus === "deleted" ? "outline" : "outline"}
+                            className={`text-[10px] px-1.5 py-0 ${client.planStatus === "deleted" ? "border-orange-400 text-orange-600" : ""}`}
+                            data-testid={`badge-plan-${client.userId}`}
+                          >
+                            {client.planStatus === "deleted" ? "Plan eliminado" : client.planName}
+                          </Badge>
+                          {client.planStatus !== "deleted" && (
+                            <>
+                              <Badge variant="secondary" className="text-[10px] px-1.5 py-0" data-testid={`badge-cycle-${client.userId}`}>
+                                {cycleLabel(client.cycleMonths)}
+                              </Badge>
+                              {client.classesRemaining !== null && client.classesTotal !== null ? (
+                                <span className="text-[10px] text-muted-foreground" data-testid={`text-classes-${client.userId}`}>
+                                  {client.classesRemaining}/{client.classesTotal} clases
+                                </span>
+                              ) : client.classesRemaining === null && client.classesTotal === null ? (
+                                <span className="text-[10px] text-muted-foreground">Ilimitado</span>
+                              ) : null}
+                              {client.expiresAt && (
+                                <span className={`text-[10px] ${client.planStatus === "expired" ? "text-red-500 font-medium" : "text-muted-foreground"}`} data-testid={`text-expires-${client.userId}`}>
+                                  {client.planStatus === "expired" ? "Vencido" : `Vence ${formatDate(client.expiresAt)}`}
+                                </span>
+                              )}
+                            </>
+                          )}
+                        </>
+                      ) : (
+                        <span className="text-[10px] text-muted-foreground" data-testid={`text-no-plan-${client.userId}`}>Sin plan</span>
                       )}
                     </div>
                   </div>
