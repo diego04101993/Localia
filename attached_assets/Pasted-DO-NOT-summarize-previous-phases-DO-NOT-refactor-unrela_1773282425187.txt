@@ -1,0 +1,179 @@
+DO NOT summarize previous phases. DO NOT refactor unrelated files. DO NOT restructure the app.
+
+This is a focused bugfix + small feature pass on an already working Branch Admin dashboard and public customer app.
+
+Current working areas that must remain intact:
+- Branch Admin tabs: Resumen, Clientes, Membresías, Reservas, Contenido, Perfil Público, TV Mode
+- Public customer page /app/:slug with agenda and booking
+- Membership assignment and manual attendance deduction
+- Alerts, WhatsApp templates, announcements, profile, gallery, reviews
+
+IMPORTANT RULES
+- Minimal change set only
+- Preserve all working UI and endpoints
+- No mass refactor
+- No renaming of stable endpoints unless absolutely necessary
+- Fix the exact issues below
+- Extend current logic safely
+
+Implement these 4 tasks:
+
+==================================================
+TASK 1 — FIX WRONG DATE DISPLAY IN CUSTOMER “MIS RESERVAS”
+==================================================
+
+BUG:
+When a customer books a class from the public app agenda, the booking is saved, but in the "Mis reservas" section the displayed weekday/date can be wrong (example: class is on Wednesday 11 Mar, but "Mis reservas" shows Thursday 12 Mar).
+
+REQUIRED:
+- Find the exact source of the date shift
+- Make sure all booking date rendering uses the true class local date for the branch/app
+- Avoid timezone drift caused by parsing YYYY-MM-DD as UTC
+- If needed, treat booking dates as local branch dates, not UTC midnights
+
+Verify/fix in:
+- Public customer agenda card
+- "Mis reservas" card
+- Any booking date label shown after reserve/cancel
+
+EXPECTED:
+If class is created for Wednesday 11 March at 20:00–21:00, then:
+- Agenda shows Wednesday 11
+- Mis reservas shows Wednesday 11
+- Branch dashboard also shows Wednesday 11
+
+==================================================
+TASK 2 — AUTO-PROCESS PAST BOOKINGS AFTER CLASS END TIME
+==================================================
+
+BUG:
+If a customer books a class and does not cancel before the class time, the system is not automatically consuming the booking after the class passes.
+Right now the branch admin still has to click manually "Asistió" or "No asistió".
+
+BUSINESS RULE:
+When a class has already ended:
+- if booking is still confirmed and was not cancelled in time:
+  - auto-process it
+  - mark it as consumed (preferably no_show)
+  - discount 1 class if membership is limited
+- if booking was cancelled on time:
+  - no discount
+- if booking was already processed:
+  - do nothing again
+
+IMPORTANT:
+The automatic processing must update all connected areas:
+- Reservas tab
+- Clientes profile summary
+- classesRemaining
+- last attendance / last activity if applicable
+- alerts if relevant
+
+REQUIRED:
+- Ensure reconcilePastBookings (or existing equivalent) runs in a place that actually keeps dashboard/public data fresh
+- Make sure it compares against class END time, not just start time
+- Make sure it runs not only in one screen but whenever relevant data is queried
+- Do not double-discount
+
+EXPECTED:
+Example:
+- Class 20:00–21:00 on 11 March
+- Customer books it
+- After 21:00 passes and customer did not cancel
+- System auto-marks as processed and deducts 1 class
+- Branch admin should no longer need to click manually
+
+==================================================
+TASK 3 — SUPPORT “PAY PER DAY / PAY PER CLASS” CUSTOMERS
+==================================================
+
+NEED:
+Some customers do not buy a monthly package. They just pay for one class that day.
+
+We need the cleanest implementation without breaking the current membership model.
+
+IMPLEMENT THIS SAFE APPROACH:
+Add support for a plan type that still uses the membership engine:
+- plan kind / mode = "drop_in" OR equivalent
+- intended for one-off class purchases
+- can be assigned by branch admin quickly
+- recommended behavior:
+  - 1 class included
+  - short validity (same day or configurable by branch)
+- once used, it is consumed normally by attendance/no_show logic
+
+REQUIRED UI:
+In Membresías:
+- allow creating a “Pago por clase” / “Clase individual” style plan
+- this can be just a normal plan with 1 class and 1-day validity OR a dedicated mode if minimal
+
+In Clientes/Profile:
+- branch admin can assign it like any other plan
+- after attendance, it decrements to 0
+- if unused and expired, it should show expired
+- it should not break monthly/trimestral plans
+
+GOAL:
+Do NOT create a whole separate payment system.
+Reuse the current plan/membership flow in the smallest safe way.
+
+==================================================
+TASK 4 — CLEAN UP CLIENT PROFILE BOOKING HISTORY DISPLAY
+==================================================
+
+ISSUE:
+The client summary/profile should not become overloaded forever with old reservations over many months.
+
+REQUIRED:
+Do NOT delete audit/history data aggressively.
+Instead improve what is displayed in UI:
+
+In client profile summary:
+- "Próxima reserva" should show only the next upcoming confirmed booking
+- Attendance summary should show recent attendance cleanly
+- Booking history displayed in profile should be limited to a recent window (example: current active cycle or latest 10 items)
+- Old bookings should not clutter the visible summary forever
+
+If there is already a booking history section:
+- keep it, but cap visible rows
+- optional “Ver más” only if minimal
+
+IMPORTANT:
+Do not destroy historical records from database unless absolutely necessary.
+This is mainly a UI/data-selection cleanup.
+
+==================================================
+SMALL UX IMPROVEMENTS (ONLY IF MINIMAL)
+==================================================
+
+1. In Reservas tab, after a booking is already auto-processed:
+- show a clear badge like:
+  - Asistió
+  - No asistió
+  - Canceló
+- avoid leaving an ambiguous pending state after end time
+
+2. In Clientes list row:
+- if customer has a plan, show a compact summary like:
+  - Plan 2 clases
+  - 7/8 clases
+  - Vence 11 abr 2026
+
+==================================================
+DELIVERABLES REQUIRED
+==================================================
+
+At the end, reply with:
+1. Exact files modified
+2. What caused the wrong booking date and how it was fixed
+3. Where auto-processing now runs and how no_show deduction works
+4. How “Pago por clase” was implemented
+5. Manual test checklist with these scenarios:
+   - Create class on Wednesday 11 Mar 20:00–21:00, reserve from app, verify "Mis reservas" shows the same day correctly
+   - Let a confirmed booking pass the class end time without cancelling, verify auto no_show + class discount
+   - Assign a “Pago por clase” style plan to a customer, reserve a class, process attendance, verify it consumes correctly
+   - Verify client profile shows clean summary without endless old booking clutter
+   - Verify Reservas tab shows processed status clearly
+
+Do not answer “already implemented” unless you verify the exact bug is fixed in current behavior.
+If something partially exists, fix/extend it instead of skipping.

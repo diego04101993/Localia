@@ -53,15 +53,17 @@ interface MembershipPlan {
 }
 
 const CYCLE_OPTIONS = [
+  { value: "0", label: "Pago por clase", months: 0 },
   { value: "1", label: "Mensual", months: 1 },
   { value: "3", label: "Trimestral", months: 3 },
   { value: "6", label: "Semestral", months: 6 },
   { value: "12", label: "Anual", months: 12 },
-  { value: "custom", label: "Personalizado", months: 0 },
+  { value: "custom", label: "Personalizado", months: -1 },
 ] as const;
 
 function getCycleLabel(months: number): string {
-  const preset = CYCLE_OPTIONS.find((o) => o.months === months && o.value !== "custom");
+  if (months === 0) return "Pago por clase";
+  const preset = CYCLE_OPTIONS.find((o) => o.months === months && o.value !== "custom" && o.value !== "0");
   if (preset) return preset.label;
   if (months === 1) return "Mensual";
   return `${months} meses`;
@@ -84,7 +86,7 @@ function PlanFormDialog({
   const isEdit = !!editPlan;
 
   const editCycleMonths = editPlan?.cycleMonths ?? 1;
-  const isPresetCycle = [1, 3, 6, 12].includes(editCycleMonths);
+  const isPresetCycle = [0, 1, 3, 6, 12].includes(editCycleMonths);
   const initialCycleSelect = isPresetCycle ? String(editCycleMonths) : "custom";
 
   const [name, setName] = useState(editPlan?.name || "");
@@ -97,19 +99,21 @@ function PlanFormDialog({
     !isPresetCycle && editCycleMonths > 0 ? String(editCycleMonths) : ""
   );
 
+  const isDropIn = cycleSelect === "0";
+
   const cycleMonths =
     cycleSelect === "custom"
-      ? parseInt(customMonthsStr || "0")
+      ? parseInt(customMonthsStr || "1")
       : parseInt(cycleSelect || "1");
 
   const priceValue = parseFloat(priceStr || "0");
   const classesValue = parseInt(classLimitStr || "0");
 
   const isValidPrice = !isNaN(priceValue) && priceValue > 0;
-  const isValidClasses = unlimitedClasses || (classesValue >= 1 && classesValue <= 999);
+  const isValidClasses = isDropIn || unlimitedClasses || (classesValue >= 1 && classesValue <= 999);
   const isValidName = name.trim().length > 0 && name.length <= 60;
   const isValidDesc = description.length <= 200;
-  const isValidCycle = cycleMonths >= 1 && cycleMonths <= 36;
+  const isValidCycle = isDropIn || (cycleMonths >= 1 && cycleMonths <= 36);
   const canSubmit = isValidName && isValidPrice && isValidClasses && isValidDesc && isValidCycle;
 
   const mutation = useMutation({
@@ -137,8 +141,8 @@ function PlanFormDialog({
     if (!canSubmit) return;
 
     const price = Math.round(priceValue * 100);
-    const durationDays = cycleMonths * 30;
-    const classLimit = unlimitedClasses ? null : classesValue;
+    const durationDays = isDropIn ? 1 : cycleMonths * 30;
+    const classLimit = isDropIn ? 1 : unlimitedClasses ? null : classesValue;
 
     mutation.mutate({
       name: name.trim(),
@@ -251,51 +255,59 @@ function PlanFormDialog({
               )}
             </div>
 
-            <div className="space-y-2 sm:col-span-2">
-              <div className="flex items-center justify-between">
-                <Label htmlFor="plan-classes">Clases incluidas en todo el ciclo</Label>
-                <div className="flex items-center gap-1.5">
-                  <Switch
-                    id="toggle-unlimited"
-                    checked={unlimitedClasses}
-                    onCheckedChange={(v) => { setUnlimitedClasses(v); if (v) setClassLimitStr(""); }}
-                    data-testid="toggle-unlimited-classes"
-                  />
-                  <Label htmlFor="toggle-unlimited" className="text-[10px] text-muted-foreground cursor-pointer">Ilimitadas</Label>
+            {isDropIn ? (
+              <div className="sm:col-span-2 rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3 text-xs text-amber-800 dark:text-amber-300">
+                <strong>Pago por clase:</strong> cada asignación de este plan otorga 1 clase con vigencia de 1 día. Sin ciclo mensual.
+              </div>
+            ) : (
+              <div className="space-y-2 sm:col-span-2">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="plan-classes">Clases incluidas en todo el ciclo</Label>
+                  <div className="flex items-center gap-1.5">
+                    <Switch
+                      id="toggle-unlimited"
+                      checked={unlimitedClasses}
+                      onCheckedChange={(v) => { setUnlimitedClasses(v); if (v) setClassLimitStr(""); }}
+                      data-testid="toggle-unlimited-classes"
+                    />
+                    <Label htmlFor="toggle-unlimited" className="text-[10px] text-muted-foreground cursor-pointer">Ilimitadas</Label>
+                  </div>
                 </div>
+                <div className="relative">
+                  <Input
+                    id="plan-classes"
+                    type="number"
+                    min="1"
+                    max="999"
+                    value={classLimitStr}
+                    onChange={(e) => setClassLimitStr(e.target.value)}
+                    placeholder="12"
+                    disabled={unlimitedClasses}
+                    className="pr-16"
+                    data-testid="input-plan-classes"
+                  />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">clases</span>
+                </div>
+                {!unlimitedClasses && classLimitStr && !isValidClasses && (
+                  <p className="text-[10px] text-red-500">Entre 1 y 999 clases</p>
+                )}
+                <p className="text-[10px] text-muted-foreground">
+                  Total de clases que el cliente puede tomar durante todo el ciclo de {cycleMonths >= 1 ? getCycleLabel(cycleMonths).toLowerCase() : "—"}
+                </p>
               </div>
-              <div className="relative">
-                <Input
-                  id="plan-classes"
-                  type="number"
-                  min="1"
-                  max="999"
-                  value={classLimitStr}
-                  onChange={(e) => setClassLimitStr(e.target.value)}
-                  placeholder="12"
-                  disabled={unlimitedClasses}
-                  className="pr-16"
-                  data-testid="input-plan-classes"
-                />
-                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">clases</span>
-              </div>
-              {!unlimitedClasses && classLimitStr && !isValidClasses && (
-                <p className="text-[10px] text-red-500">Entre 1 y 999 clases</p>
-              )}
-              <p className="text-[10px] text-muted-foreground">
-                Total de clases que el cliente puede tomar durante todo el ciclo de {cycleMonths >= 1 ? getCycleLabel(cycleMonths).toLowerCase() : "—"}
-              </p>
-            </div>
+            )}
           </div>
 
           {canSubmit && (
             <div className="rounded-md bg-muted/50 p-3 text-sm" data-testid="plan-summary">
               <p className="font-medium mb-1">Resumen del plan</p>
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                <span>Precio total del ciclo: <strong className="text-foreground">${priceValue.toFixed(2)} MXN</strong></span>
-                <span>Ciclo: <strong className="text-foreground">{getCycleLabel(cycleMonths)}</strong></span>
-                <span>Clases por ciclo: <strong className="text-foreground">{unlimitedClasses ? "Ilimitadas" : `${classesValue}`}</strong></span>
-                {cycleMonths > 1 && (
+                <span>Precio: <strong className="text-foreground">${priceValue.toFixed(2)} MXN</strong></span>
+                <span>Tipo: <strong className="text-foreground">{isDropIn ? "Pago por clase (1 día)" : getCycleLabel(cycleMonths)}</strong></span>
+                {!isDropIn && (
+                  <span>Clases por ciclo: <strong className="text-foreground">{unlimitedClasses ? "Ilimitadas" : `${classesValue}`}</strong></span>
+                )}
+                {!isDropIn && cycleMonths > 1 && (
                   <span>Precio mensual equiv.: <strong className="text-foreground">${(priceValue / cycleMonths).toFixed(2)} MXN</strong></span>
                 )}
               </div>
@@ -421,17 +433,22 @@ export default function MembresiasTab() {
                       <Calendar className="h-3 w-3" />
                       {getCycleLabel(plan.cycleMonths ?? 1)}
                     </span>
-                    <span className="flex items-center gap-1">
-                      <Hash className="h-3 w-3" />
-                      {plan.classLimit ? `${plan.classLimit} clases/ciclo` : (
-                        <span className="flex items-center gap-0.5">
-                          <Infinity className="h-3 w-3" /> Ilimitadas
-                        </span>
-                      )}
-                    </span>
+                    {(plan.cycleMonths ?? 1) !== 0 && (
+                      <span className="flex items-center gap-1">
+                        <Hash className="h-3 w-3" />
+                        {plan.classLimit ? `${plan.classLimit} clases/ciclo` : (
+                          <span className="flex items-center gap-0.5">
+                            <Infinity className="h-3 w-3" /> Ilimitadas
+                          </span>
+                        )}
+                      </span>
+                    )}
                   </div>
                   <div className="flex flex-wrap gap-1">
-                    {!plan.classLimit && (
+                    {(plan.cycleMonths ?? 1) === 0 && (
+                      <Badge variant="secondary" className="text-[10px] bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300" data-testid={`badge-dropin-${plan.id}`}>Pago por clase</Badge>
+                    )}
+                    {!plan.classLimit && (plan.cycleMonths ?? 1) !== 0 && (
                       <Badge variant="secondary" className="text-[10px]" data-testid={`badge-unlimited-${plan.id}`}>Ilimitadas</Badge>
                     )}
                     {(plan.cycleMonths ?? 1) > 1 && (

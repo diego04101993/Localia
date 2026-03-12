@@ -191,6 +191,7 @@ function displayName(name: string, lastName: string | null): string {
 }
 
 function cycleLabel(cycleMonths: number | null | undefined): string {
+  if (cycleMonths === 0) return "Por clase";
   if (!cycleMonths || cycleMonths === 1) return "Mensual";
   if (cycleMonths === 3) return "Trimestral";
   if (cycleMonths === 6) return "Semestral";

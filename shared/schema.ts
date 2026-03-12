@@ -331,7 +331,7 @@ export const createPlanSchema = z.object({
   price: z.number().int().min(0, "El precio no puede ser negativo"),
   durationDays: z.number().int().min(1).nullable().optional(),
   classLimit: z.number().int().min(1).nullable().optional(),
-  cycleMonths: z.number().int().min(1).default(1),
+  cycleMonths: z.number().int().min(0).default(1),
 });
 
 export const assignPlanSchema = z.object({

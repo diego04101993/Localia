@@ -26,6 +26,11 @@ import { z } from "zod";
 const DEFAULT_CANCEL_CUTOFF_MINUTES = 180;
 
 function addCalendarMonths(from: Date, months: number): Date {
+  if (months === 0) {
+    const result = new Date(from);
+    result.setDate(result.getDate() + 1);
+    return result;
+  }
   const result = new Date(from);
   const dayOfMonth = result.getDate();
   result.setMonth(result.getMonth() + months);
@@ -1162,14 +1167,15 @@ export async function registerRoutes(
     const actor = req.user as any;
     try {
       const data = createPlanSchema.parse(req.body);
+      const cm = data.cycleMonths ?? 1;
       const plan = await storage.createPlan({
         branchId: actor.branchId,
         name: data.name,
         description: data.description || null,
         price: data.price,
-        durationDays: (data.cycleMonths || 1) * 30,
+        durationDays: cm === 0 ? 1 : cm * 30,
         classLimit: data.classLimit ?? null,
-        cycleMonths: data.cycleMonths || 1,
+        cycleMonths: cm,
       });
 
       await storage.createAuditLog({
@@ -1205,7 +1211,7 @@ export async function registerRoutes(
         ...(data.name !== undefined && { name: data.name }),
         ...(data.description !== undefined && { description: data.description || null }),
         ...(data.price !== undefined && { price: data.price }),
-        ...(data.cycleMonths !== undefined && { cycleMonths: data.cycleMonths, durationDays: (data.cycleMonths || 1) * 30 }),
+        ...(data.cycleMonths !== undefined && { cycleMonths: data.cycleMonths, durationDays: data.cycleMonths === 0 ? 1 : (data.cycleMonths ?? 1) * 30 }),
         ...(data.classLimit !== undefined && { classLimit: data.classLimit ?? null }),
         ...(data.isActive !== undefined && { isActive: data.isActive }),
       });
@@ -2482,6 +2488,7 @@ export async function registerRoutes(
       if (!mem || mem.status !== "active") {
         return res.json({ bookings: [], membership: null });
       }
+      await storage.reconcilePastBookings(branch.id);
       const allBookings = await storage.getBookingsForDate(branch.id, req.query.date as string || new Date().toISOString().split("T")[0]);
       const myBookings = allBookings.filter((b: any) => b.userId === user.id);
       res.json({
@@ -2514,6 +2521,7 @@ export async function registerRoutes(
       if (!mem || mem.status !== "active") {
         return res.json([]);
       }
+      await storage.reconcilePastBookings(branch.id);
       const today = new Date().toISOString().split("T")[0];
       const bookings = await storage.getUpcomingBookingsForUser(branch.id, user.id, today, 5);
       res.json(bookings);

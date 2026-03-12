@@ -377,20 +377,25 @@ function formatBookingDate(dateStr: string) {
   return d.toLocaleDateString("es-MX", { weekday: "short", day: "2-digit", month: "short" });
 }
 
+function localDateStr(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 function getWeekDates(offset: number): { date: Date; dateStr: string; dayOfWeek: number; label: string; isToday: boolean }[] {
   const today = new Date();
+  const todayStr = localDateStr(today);
   const monday = new Date(today);
   monday.setDate(today.getDate() - ((today.getDay() + 6) % 7) + offset * 7);
   return Array.from({ length: 7 }, (_, i) => {
     const d = new Date(monday);
     d.setDate(monday.getDate() + i);
-    const dateStr = d.toISOString().split("T")[0];
+    const dateStr = localDateStr(d);
     return {
       date: d,
       dateStr,
       dayOfWeek: d.getDay(),
       label: `${DAY_LABELS[d.getDay()]} ${d.getDate()}`,
-      isToday: dateStr === today.toISOString().split("T")[0],
+      isToday: dateStr === todayStr,
     };
   });
 }
@@ -398,10 +403,7 @@ function getWeekDates(offset: number): { date: Date; dateStr: string; dayOfWeek:
 function CustomerScheduleSection({ slug }: { slug: string }) {
   const { toast } = useToast();
   const [weekOffset, setWeekOffset] = useState(0);
-  const [selectedDay, setSelectedDay] = useState(() => {
-    const today = new Date();
-    return today.toISOString().split("T")[0];
-  });
+  const [selectedDay, setSelectedDay] = useState(() => localDateStr(new Date()));
   const [cancelConfirm, setCancelConfirm] = useState<{ bookingId: string; isLate: boolean } | null>(null);
 
   const weekDates = getWeekDates(weekOffset);
