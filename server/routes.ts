@@ -724,6 +724,7 @@ export async function registerRoutes(
   app.get("/api/branch/clients", requireBranchAdmin, async (req, res) => {
     const user = req.user as any;
     try {
+      await storage.reconcilePastBookings(user.branchId);
       const includeLeft = req.query.include_left === "true";
       const clients = await storage.getBranchClients(user.branchId, includeLeft);
       res.json(clients);
@@ -1284,11 +1285,16 @@ export async function registerRoutes(
         return res.status(404).json({ message: "Membresía no encontrada" });
       }
 
+      const cancelled = await storage.cancelFutureBookingsForUser(membership.userId, actor.branchId);
+      if (cancelled > 0) {
+        console.log(`[PLAN] Cancelled ${cancelled} future bookings for user ${membership.userId} on plan assignment`);
+      }
+
       await storage.createAuditLog({
         actorUserId: actor.id,
         action: "ASSIGN_PLAN",
         branchId: actor.branchId,
-        metadata: { membershipId, planId, planName: plan.name },
+        metadata: { membershipId, planId, planName: plan.name, cancelledBookings: cancelled },
       });
 
       console.log(`[PLAN] Assigned "${plan.name}" to membership ${membershipId} by ${actor.email}`);
@@ -1311,11 +1317,16 @@ export async function registerRoutes(
         return res.status(404).json({ message: "Membresía no encontrada" });
       }
 
+      const cancelled = await storage.cancelFutureBookingsForUser(membership.userId, actor.branchId);
+      if (cancelled > 0) {
+        console.log(`[PLAN] Cancelled ${cancelled} future bookings for user ${membership.userId} on plan removal`);
+      }
+
       await storage.createAuditLog({
         actorUserId: actor.id,
         action: "REMOVE_PLAN",
         branchId: actor.branchId,
-        metadata: { membershipId },
+        metadata: { membershipId, cancelledBookings: cancelled },
       });
 
       console.log(`[PLAN] Removed plan from membership ${membershipId} by ${actor.email}`);
@@ -2453,6 +2464,7 @@ export async function registerRoutes(
       if (!branch || branch.deletedAt || branch.status !== "active") {
         return res.status(404).json({ message: "Sucursal no encontrada" });
       }
+      await storage.reconcilePastBookings(branch.id);
       const schedules = await storage.getBranchClassSchedules(branch.id);
       const activeSchedules = schedules.filter(s => s.isActive);
 

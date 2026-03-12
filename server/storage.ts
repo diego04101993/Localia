@@ -106,6 +106,7 @@ export interface IStorage {
   removePlanFromMembership(membershipId: string): Promise<Membership | undefined>;
   getMembershipByUserAndBranch(userId: string, branchId: string): Promise<Membership | undefined>;
   reconcilePastBookings(branchId: string): Promise<number>;
+  cancelFutureBookingsForUser(userId: string, branchId: string): Promise<number>;
   decrementClassesRemaining(membershipId: string): Promise<Membership | undefined>;
   getBranchClassSchedules(branchId: string): Promise<ClassSchedule[]>;
   createClassSchedule(data: InsertClassSchedule): Promise<ClassSchedule>;
@@ -811,6 +812,23 @@ export class DatabaseStorage implements IStorage {
       count++;
     }
     return count;
+  }
+
+  async cancelFutureBookingsForUser(userId: string, branchId: string): Promise<number> {
+    const today = new Date().toISOString().split("T")[0];
+    const result = await db
+      .update(classBookings)
+      .set({ status: "cancelled" as any })
+      .where(
+        and(
+          eq(classBookings.userId, userId),
+          eq(classBookings.branchId, branchId),
+          eq(classBookings.status, "confirmed"),
+          gte(classBookings.bookingDate, today)
+        )
+      )
+      .returning({ id: classBookings.id });
+    return result.length;
   }
 
   async decrementClassesRemaining(membershipId: string): Promise<Membership | undefined> {

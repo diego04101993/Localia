@@ -1,0 +1,314 @@
+Prompt para Replit
+
+Quiero una corrección puntual de bugs en el sistema actual de Box Manager / dashboard de sucursal. No rehagas arquitectura, no cambies diseño general, no rompas nada que ya funciona. Haz cambios mínimos, seguros y consistentes con el código actual.
+
+Objetivo
+
+Corregir solo estos 3 bugs del flujo de reservas, planes y agenda pública del cliente.
+
+BUG 1 — Al quitar y volver a asignar un plan, NO se borran las reservas anteriores del cliente
+Problema observado
+
+Si a un cliente le quito su plan actual y luego le asigno otro nuevo, las reservas que tenía con el plan anterior siguen apareciendo.
+Eso no debe pasar.
+
+Regla correcta
+
+Cuando un cliente:
+
+pierde su plan,
+
+cambia de plan,
+
+o se le reasigna un nuevo ciclo,
+
+se deben limpiar sus reservas futuras pendientes/confirmadas del ciclo anterior, para que el nuevo plan empiece limpio.
+
+Comportamiento esperado
+
+Si quito un plan a un cliente:
+
+eliminar o cancelar automáticamente sus reservas futuras activas (confirmed) asociadas a su membresía/ciclo anterior.
+
+Si después le asigno un nuevo plan:
+
+el cliente empieza con su plan nuevo sin arrastrar reservas del plan anterior.
+
+No borrar historial pasado:
+
+reservas históricas ya asistidas/no_show/canceladas pueden quedarse para auditoría.
+
+solo limpiar futuras activas.
+
+Implementación esperada
+
+Revisar dónde se ejecuta “quitar plan” y “asignar plan”.
+
+Al quitar plan:
+
+cancelar o borrar solo bookings futuras confirmed del cliente en esa sucursal.
+
+Al asignar nuevo plan:
+
+confirmar que el cliente no conserva bookings activas previas.
+
+Si existe relación membershipId en bookings, usarla.
+
+Si no existe, usar:
+
+userId
+
+branchId
+
+status = confirmed
+
+class start >= now
+
+Entregable
+
+Explica qué archivo(s) tocaste
+
+Qué query usaste para limpiar reservas futuras
+
+Checklist manual de 3 pasos
+
+BUG 2 — Las reservas hechas por el cliente desde la app NO se reflejan correctamente en “Mis reservas”
+Problema observado
+
+En la app pública del cliente /app/:slug:
+
+las clases sí aparecen en la agenda,
+
+el cliente puede reservar,
+
+la reserva sí aparece en el dashboard de la sucursal,
+
+pero no aparece correctamente en “Mis reservas” del cliente, o aparece mal/inconsistente.
+
+Regla correcta
+
+Si el cliente reserva una clase desde la app:
+
+Debe verse inmediatamente en:
+
+el dashboard de la sucursal,
+
+y también en la tarjeta “Mis reservas” del propio cliente.
+
+Debe mostrar la fecha correcta, hora correcta y clase correcta.
+
+Si cancela, debe desaparecer de “Mis reservas”.
+
+Si la clase ya pasó y fue procesada, ya no debe quedarse como “Confirmada” ahí.
+
+Comportamiento esperado
+
+Mis reservas debe mostrar solo próximas reservas activas/confirmadas.
+
+Si una reserva ya pasó y fue atendida/no_show/cancelada:
+
+no debe seguir en la lista de próximas.
+
+La fecha mostrada debe coincidir con la del calendario visible.
+
+Implementación esperada
+
+Revisar:
+
+endpoint de próximas reservas del cliente
+
+endpoint de agenda pública
+
+timezone/local date handling
+
+filtro por status
+
+filtro por fecha futura
+
+invalidación/refetch de query después de reservar o cancelar
+
+Asegúrate de esto
+
+Después de reservar desde /app/:slug, hacer refresh de:
+
+agenda
+
+mis reservas
+
+Mis reservas debe usar una fuente confiable:
+
+solo bookings del usuario logueado
+
+misma sucursal
+
+status confirmed
+
+fecha/hora futura real
+
+Corregir cualquier mismatch entre fecha local y UTC
+
+Entregable
+
+Archivo(s) modificados
+
+Qué endpoint alimenta Mis reservas
+
+Cómo garantizaste refetch tras reservar/cancelar
+
+Checklist manual de 4 pasos
+
+BUG 3 — Si pasa la hora de la clase y el cliente no cancela, NO se procesa automáticamente el no_show ni el descuento
+Problema observado
+
+Si una clase ya pasó y el cliente no canceló:
+
+no se marca solo,
+
+no se descuenta la clase,
+
+y tengo que ir manualmente al dashboard a poner “Asistió” o “No asistió”.
+
+Eso está mal.
+
+Regla correcta
+
+Si una reserva está en confirmed y ya pasó la hora de la clase:
+
+el sistema debe procesarla automáticamente.
+
+Si no canceló antes:
+
+cambiar a no_show
+
+descontar 1 clase si aplica
+
+Si ya estaba marcada manualmente como attended, no tocarla.
+
+Nunca duplicar descuentos.
+
+Comportamiento esperado
+
+El procesamiento automático debe ejecutarse también aunque yo no entre a la pestaña de Reservas.
+
+Debe correr cuando el cliente abra su app, o cuando el admin abra dashboard/resumen/clientes/reservas.
+
+Si ya pasó la clase:
+
+el booking deja de ser confirmed
+
+pasa a no_show
+
+se descuenta clase
+
+se refleja en perfil del cliente
+
+baja contador de clases restantes
+
+Mis reservas ya no debe mostrar esa clase como próxima.
+
+Implementación esperada
+
+Ya existe lógica de reconciliación, pero no está impactando bien todos los lugares.
+
+Quiero que hagas esto:
+
+Reusar la reconciliación existente, no crear una segunda lógica distinta.
+
+Ejecutarla también en:
+
+endpoint de agenda pública del cliente
+
+endpoint de mis próximas reservas
+
+endpoints de resumen/alertas/clientes relevantes del dashboard de sucursal
+
+Asegurar idempotencia:
+
+no descontar dos veces
+
+no cambiar si ya está attended o cancelled
+
+Asegurar que si el booking pasa a no_show:
+
+desaparezca de próximas reservas
+
+se refleje en perfil del cliente
+
+Importante
+
+No inventes cron jobs todavía si no existen.
+Prefiero usar reconciliación al cargar vistas/endpoints críticos, para no romper nada.
+
+Entregable
+
+Qué función de reconciliación reutilizaste
+
+En qué endpoints la llamaste ahora
+
+Cómo evitaste doble descuento
+
+Checklist manual de 5 pasos
+
+Restricciones importantes
+
+No romper nada existente
+
+No rediseñar UI completa
+
+No cambiar nombres de tabs
+
+No tocar Super Admin
+
+No tocar WhatsApp templates
+
+No tocar Perfil Público salvo que sea necesario para refrescar agenda/reservas
+
+No meter nuevas librerías si no son estrictamente necesarias
+
+Mantener estilo actual React + Express + PostgreSQL + Drizzle
+
+Mantener textos en español
+
+Mantener compatibilidad con dark mode
+
+Mantener data-testid existentes
+
+Qué quiero al final
+
+Cuando termines, dame este resumen exacto:
+
+Archivos modificados
+
+Qué cambió en cada bug
+
+Qué queries o funciones nuevas/agregadas usaste
+
+Cómo probar manualmente cada bug
+
+Confirmación de que no rompiste
+
+crear reserva
+
+cancelar reserva
+
+marcar asistencia manual
+
+asignar plan
+
+quitar plan
+
+agenda pública del cliente
+
+lista de clientes
+
+contador de clases restantes
+
+Mi opinión de mejora
+
+Tus observaciones están bien puestas.
+Yo además agregaría una regla pequeña dentro de esta misma corrección:
+
+Cuando un booking pase a no_show automáticamente,
+que en el dashboard de sucursal se vea con badge gris o naranja “No asistió” en vez de dejarlo ambiguo.
+
+Pero eso solo si sale fácil y sin romper nada.
