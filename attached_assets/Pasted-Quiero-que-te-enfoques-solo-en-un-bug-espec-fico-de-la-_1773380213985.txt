@@ -1,0 +1,146 @@
+Quiero que te enfoques solo en un bug específico de la app pública del cliente (/app/:slug) y no toques nada más del sistema.
+
+Bug actual
+
+En la app del cliente, cuando creo clases nocturnas desde el dashboard de la sucursal, por ejemplo:
+
+jueves 12 de marzo
+
+23:00 a 00:00
+
+la clase sí aparece en la agenda pública, pero se muestra como “Pasada” antes de tiempo, aunque todavía no sean las 11:00 pm.
+
+También ya habíamos visto inconsistencias donde:
+
+en “Mis reservas” puede aparecer el día incorrecto
+
+o puede verse una fecha/hora corrida respecto a la que se creó en el dashboard
+
+Objetivo exacto
+
+Corregir la lógica de fecha/hora en la app pública del cliente para que:
+
+Una clase de 23:00 a 00:00 del jueves:
+
+se considere activa y reservable hasta antes de las 23:00 del jueves
+
+se marque como pasada solo después de terminar realmente
+
+si termina a las 00:00, debe entenderse que termina al día siguiente correctamente
+
+“Mis reservas” debe mostrar:
+
+el día correcto
+
+la hora correcta
+
+exactamente la misma fecha/hora que se creó desde el dashboard de la sucursal
+
+El badge o estado de “Pasada” debe calcularse correctamente también para:
+
+clases normales en el mismo día
+
+clases que cruzan medianoche (ej. 23:00 → 00:00, 23:30 → 01:00)
+
+Muy importante
+
+No quiero un arreglo visual solamente.
+Quiero corregir la lógica base de interpretación de fecha/hora en la app pública del cliente.
+
+Sospecha técnica
+
+El bug probablemente viene de una mezcla incorrecta entre:
+
+bookingDate
+
+selectedDay
+
+startTime
+
+endTime
+
+timezone local del navegador
+
+clases que cruzan medianoche
+
+Probablemente la lógica actual está construyendo mal los objetos Date para comparar si una clase ya pasó.
+
+Qué debes hacer
+
+Revisa y corrige la lógica en estos puntos:
+
+render de agenda pública del cliente en /app/:slug
+
+cálculo de:
+
+clase pasada
+
+reservable/no reservable
+
+fecha/hora mostrada en “Mis reservas”
+
+manejo correcto de clases que terminan al día siguiente cuando endTime < startTime
+
+Regla correcta esperada
+
+Si una clase tiene:
+
+fecha base: 2026-03-12
+
+hora inicio: 23:00
+
+hora fin: 00:00
+
+entonces:
+
+inicio real = 2026-03-12 23:00
+
+fin real = 2026-03-13 00:00
+
+No debe compararse fin contra el mismo día si la hora fin cruza medianoche.
+
+Restricciones
+
+No rompas dashboard de sucursal
+
+No cambies reglas de negocio de membresías
+
+No toques reconciliación de no_show en esta tarea
+
+No modifiques otras pestañas
+
+haz el cambio mínimo pero correcto
+
+mantén compatible lo que ya funciona
+
+Entregables obligatorios
+
+Al terminar, dame:
+
+Archivos exactos modificados
+
+Explicación breve de la causa raíz
+
+Qué lógica corregiste
+
+Checklist manual de 5 pruebas, incluyendo:
+
+clase normal en el mismo día
+
+clase nocturna 23:00 → 00:00
+
+clase 23:30 → 01:00
+
+reserva mostrada en “Mis reservas”
+
+validación de que “Pasada” aparece solo cuando realmente terminó
+
+Antes de terminar
+
+Haz una verificación para confirmar que:
+
+una clase futura nocturna ya no aparezca como pasada
+
+la fecha en “Mis reservas” coincida exactamente con la del calendario de la sucursal
+
+Trabaja solo este bug.

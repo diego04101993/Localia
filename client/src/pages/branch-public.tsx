@@ -381,6 +381,14 @@ function localDateStr(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+function classEndDateTime(bookingDate: string, startTime: string, endTime: string): Date {
+  const end = new Date(`${bookingDate}T${endTime}:00`);
+  if (endTime < startTime) {
+    end.setDate(end.getDate() + 1);
+  }
+  return end;
+}
+
 function getWeekDates(offset: number): { date: Date; dateStr: string; dayOfWeek: number; label: string; isToday: boolean }[] {
   const today = new Date();
   const todayStr = localDateStr(today);
@@ -647,7 +655,7 @@ function CustomerScheduleSection({ slug }: { slug: string }) {
                 const myBooking = myBookings.find(
                   (b) => b.classScheduleId === cls.id && b.bookingDate === selectedDay && b.status === "confirmed"
                 );
-                const isPast = selectedDate && new Date(`${selectedDay}T${cls.endTime}:00`) < new Date();
+                const isPast = selectedDate && classEndDateTime(selectedDay, cls.startTime, cls.endTime) < new Date();
                 const taken = spotsTaken[cls.id] || 0;
                 const spotsLeft = cls.capacity - taken;
                 const isFull = spotsLeft <= 0;
