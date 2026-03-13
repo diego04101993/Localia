@@ -1556,7 +1556,7 @@ export async function registerRoutes(
   // --- Bookings ---
   app.get("/api/branch/bookings", requireBranchAdmin, async (req, res) => {
     const actor = req.user as any;
-    const date = (req.query.date as string) || new Date().toISOString().split("T")[0];
+    const date = (req.query.date as string) || new Date().toLocaleDateString("en-CA", { timeZone: "America/Mexico_City" });
     try {
       const reconciled = await storage.reconcilePastBookings(actor.branchId);
       if (reconciled > 0) {
@@ -1573,7 +1573,7 @@ export async function registerRoutes(
   app.get("/api/branch/bookings/class/:classId", requireBranchAdmin, async (req, res) => {
     const actor = req.user as any;
     const classScheduleId = req.params.classId as string;
-    const date = (req.query.date as string) || new Date().toISOString().split("T")[0];
+    const date = (req.query.date as string) || new Date().toLocaleDateString("en-CA", { timeZone: "America/Mexico_City" });
     try {
       const schedule = await storage.getClassSchedule(classScheduleId);
       if (!schedule || schedule.branchId !== actor.branchId) {
@@ -2179,7 +2179,7 @@ export async function registerRoutes(
   app.get("/api/branch/tv-data", requireBranchAdmin, async (req, res) => {
     const user = req.user as any;
     try {
-      const date = (req.query.date as string) || new Date().toISOString().split("T")[0];
+      const date = (req.query.date as string) || new Date().toLocaleDateString("en-CA", { timeZone: "America/Mexico_City" });
       const data = await storage.getTvModeData(user.branchId, date);
       res.json(data);
     } catch (err: any) {
@@ -2501,7 +2501,7 @@ export async function registerRoutes(
         return res.json({ bookings: [], membership: null });
       }
       await storage.reconcilePastBookings(branch.id);
-      const allBookings = await storage.getBookingsForDate(branch.id, req.query.date as string || new Date().toISOString().split("T")[0]);
+      const allBookings = await storage.getBookingsForDate(branch.id, req.query.date as string || new Date().toLocaleDateString("en-CA", { timeZone: "America/Mexico_City" }));
       const myBookings = allBookings.filter((b: any) => b.userId === user.id);
       res.json({
         bookings: myBookings,
@@ -2534,7 +2534,7 @@ export async function registerRoutes(
         return res.json([]);
       }
       await storage.reconcilePastBookings(branch.id);
-      const today = new Date().toISOString().split("T")[0];
+      const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Mexico_City" });
       const bookings = await storage.getUpcomingBookingsForUser(branch.id, user.id, today, 5);
       res.json(bookings);
     } catch (err: any) {

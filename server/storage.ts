@@ -46,6 +46,20 @@ import {
   type BranchReview,
 } from "@shared/schema";
 
+const BRANCH_TIMEZONE = "America/Mexico_City";
+
+function getMxLocalDate(): string {
+  return new Date().toLocaleDateString("en-CA", { timeZone: BRANCH_TIMEZONE });
+}
+
+function getMxLocalDateAndTime(): { today: string; currentTime: string } {
+  const now = new Date();
+  const today = now.toLocaleDateString("en-CA", { timeZone: BRANCH_TIMEZONE });
+  const timeStr = now.toLocaleTimeString("en-GB", { timeZone: BRANCH_TIMEZONE, hour12: false });
+  const currentTime = timeStr.substring(0, 5);
+  return { today, currentTime };
+}
+
 export interface BranchMetrics {
   branchId: string;
   customerCount: number;
@@ -586,7 +600,7 @@ export class DatabaseStorage implements IStorage {
       .from(attendances)
       .where(and(eq(attendances.userId, userId), eq(attendances.branchId, branchId)));
 
-    const today = new Date().toISOString().split("T")[0];
+    const today = getMxLocalDate();
     const nextBookingResults = await db
       .select({
         bookingDate: classBookings.bookingDate,
@@ -780,15 +794,18 @@ export class DatabaseStorage implements IStorage {
   // 2. Client cancels >3hrs before class → no deduction (classesRemaining stays same)
   // 3. Client cancels <3hrs before class → lateCancellation=true, classesRemaining decremented
   async reconcilePastBookings(branchId: string): Promise<number> {
-    const today = new Date().toISOString().split("T")[0];
-    const now = new Date();
-    const currentTime = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+    const { today, currentTime } = getMxLocalDateAndTime();
 
-    const pendingBookings = await db
+    // Fetch confirmed bookings up to and including today (local time).
+    // We include today because same-day classes that have already ended need reconciling.
+    // We use JavaScript to filter — not SQL — so we can properly handle
+    // midnight-crossing classes (e.g. 23:00→00:00 where endTime < startTime).
+    const candidates = await db
       .select({
         bookingId: classBookings.id,
         userId: classBookings.userId,
         bookingDate: classBookings.bookingDate,
+        startTime: classSchedules.startTime,
         endTime: classSchedules.endTime,
       })
       .from(classBookings)
@@ -797,12 +814,29 @@ export class DatabaseStorage implements IStorage {
         and(
           eq(classBookings.branchId, branchId),
           eq(classBookings.status, "confirmed"),
-          sql`(${classBookings.bookingDate} < ${today} OR (${classBookings.bookingDate} = ${today} AND ${classSchedules.endTime} <= ${currentTime}))`
+          sql`${classBookings.bookingDate} <= ${today}`
         )
       );
 
     let count = 0;
-    for (const booking of pendingBookings) {
+    for (const booking of candidates) {
+      const { startTime, endTime, bookingDate } = booking;
+
+      // Determine actual end date. If endTime < startTime the class crosses midnight.
+      let endDate = bookingDate;
+      if (endTime < startTime) {
+        const d = new Date(bookingDate + "T12:00:00");
+        d.setDate(d.getDate() + 1);
+        endDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      }
+
+      // The booking is past only when the real end datetime is in the past.
+      const isPast =
+        endDate < today ||
+        (endDate === today && endTime <= currentTime);
+
+      if (!isPast) continue;
+
       await db.update(classBookings).set({ status: "no_show" as any }).where(eq(classBookings.id, booking.bookingId));
 
       const mem = await this.getMembershipByUserAndBranch(booking.userId, branchId);
@@ -815,7 +849,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async cancelFutureBookingsForUser(userId: string, branchId: string): Promise<number> {
-    const today = new Date().toISOString().split("T")[0];
+    const today = getMxLocalDate();
     const result = await db
       .update(classBookings)
       .set({ status: "cancelled" as any })
@@ -938,7 +972,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getTodayBookingsCount(branchId: string): Promise<number> {
-    const today = new Date().toISOString().split("T")[0];
+    const today = getMxLocalDate();
     const [result] = await db
       .select({ count: sql<number>`COUNT(*)`.as("count") })
       .from(classBookings)
@@ -951,8 +985,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getNextBooking(branchId: string): Promise<{ className: string; startTime: string; bookingDate: string } | null> {
-    const today = new Date().toISOString().split("T")[0];
-    const now = new Date().toTimeString().slice(0, 5);
+    const { today, currentTime: now } = getMxLocalDateAndTime();
     const results = await db
       .select({
         className: classSchedules.name,

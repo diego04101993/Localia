@@ -1,0 +1,274 @@
+corregir reservas del cliente que no se guardan / no aparecen / no reflejan en sucursal
+
+Quiero que te enfoques solo en el flujo de reservas del cliente en la app pública (/app/:slug) porque ahorita quedó mal y necesito que lo dejes 100% funcional sin romper nada más.
+
+Problema actual real
+
+Hice esta prueba:
+
+Desde el dashboard de la sucursal creé una clase para:
+
+viernes 13 de marzo
+
+00:00 a 01:00
+
+La clase sí aparece en la app pública del cliente (/app/:slug)
+
+En la app del cliente el botón Reservar aparece disponible
+
+Le doy Reservar
+
+Sale toast de “Reserva confirmada”
+
+Pero no aparece en “Mis reservas” del cliente
+
+Y tampoco aparece en el dashboard de la sucursal, en la pestaña Reservas
+
+O sea: el frontend dice que reservó, pero la reserva no quedó registrada correctamente
+
+Objetivo exacto
+
+Quiero que corrijas el flujo completo para que una reserva hecha desde la app del cliente:
+
+Sí se guarde realmente en base de datos
+
+Sí aparezca en “Mis reservas” del cliente
+
+Sí aparezca en el dashboard de la sucursal
+
+Sí cuente ocupación/lugares tomados
+
+Funcione bien también con clases nocturnas y horarios como:
+
+23:00 → 00:00
+
+00:00 → 01:00
+
+23:30 → 01:00
+
+Qué revisar exactamente
+1) Flujo de crear reserva desde app pública
+
+Revisa completo el flujo cuando el cliente da clic en Reservar en /app/:slug:
+
+mutation frontend
+
+payload que se manda
+
+endpoint backend que recibe
+
+validación de fecha/hora
+
+inserción real en tabla de bookings
+
+invalidación/refetch de queries
+
+respuesta devuelta al cliente
+
+Quiero confirmar que:
+
+el booking se esté guardando con el bookingDate correcto
+
+el scheduleId correcto
+
+el userId correcto
+
+el branchId correcto
+
+el status correcto (confirmed)
+
+y que no esté fallando silenciosamente por una comparación de fecha/hora o timezone
+
+2) “Mis reservas” del cliente
+
+Revisa por qué “Mis reservas” no muestra la reserva recién hecha.
+
+Necesito que verifiques:
+
+query usada para “Mis reservas”
+
+filtros por fecha
+
+filtros por status
+
+filtros por branch
+
+si el booking recién creado está quedando fuera por:
+
+día incorrecto
+
+hora incorrecta
+
+timezone
+
+fecha UTC/local
+
+cruce de medianoche
+
+3) Dashboard de sucursal > Reservas
+
+Revisa por qué la reserva hecha desde la app del cliente no aparece en el dashboard de la sucursal.
+
+Necesito que confirmes:
+
+si la reserva realmente no se guardó
+
+o si sí se guardó pero el query del dashboard no la está trayendo
+
+o si queda guardada con una fecha equivocada y por eso no aparece en el día esperado
+
+4) Clases que cruzan medianoche
+
+Hay que dejar bien resuelto este caso porque aquí está el origen de muchos bugs.
+
+Regla correcta:
+
+Si la clase es:
+
+fecha base: viernes 13 de marzo
+
+hora inicio: 00:00
+
+hora fin: 01:00
+
+entonces pertenece al viernes 13, no al jueves.
+
+Si la clase es:
+
+jueves 12
+
+inicio 23:00
+
+fin 00:00
+
+entonces:
+
+inicio real = jueves 12 23:00
+
+fin real = viernes 13 00:00
+
+La reserva, visualización en agenda, “Mis reservas”, dashboard de sucursal y ocupación deben ser consistentes con esa lógica.
+
+Lo que NO debes romper
+
+No toques ni rompas estas partes si no es necesario:
+
+anuncios
+
+clientes
+
+membresías
+
+perfil público
+
+TV mode
+
+WhatsApp templates
+
+alertas
+
+asistencias manuales que ya funcionan
+
+lógica de planes, salvo si una validación de reservas depende directamente de ello
+
+Haz cambio mínimo pero correcto.
+
+Qué quiero que arregles exactamente al final
+Caso 1
+
+Clase creada por sucursal:
+
+viernes 13
+
+00:00 a 01:00
+
+Desde la app pública del cliente:
+
+se ve
+
+se puede reservar
+
+al reservar:
+
+aparece en “Mis reservas”
+
+aparece en dashboard de sucursal
+
+aumenta ocupación
+
+aparece en el día correcto
+
+Caso 2
+
+Clase creada por sucursal:
+
+jueves 12
+
+23:00 a 00:00
+
+Desde la app pública del cliente:
+
+se ve en el día correcto
+
+se puede reservar antes de empezar
+
+la reserva aparece en ambos lados
+
+Caso 3
+
+Clase creada por sucursal:
+
+jueves 12
+
+23:30 a 01:00
+
+Misma consistencia total.
+
+Entregables obligatorios
+
+Al terminar, dame exactamente esto:
+
+Archivos modificados
+
+Causa raíz exacta
+
+Qué corregiste en backend
+
+Qué corregiste en frontend
+
+Qué corregiste en manejo de fechas/horas
+
+Checklist manual de 6 pruebas, incluyendo:
+
+reservar clase normal
+
+reservar clase 23:00 → 00:00
+
+reservar clase 00:00 → 01:00
+
+validar “Mis reservas”
+
+validar dashboard sucursal
+
+validar ocupación/lugares tomados
+
+Antes de cerrar
+
+Quiero que tú mismo verifiques lógicamente que:
+
+una reserva desde /app/:slug sí persiste
+
+sí aparece en “Mis reservas”
+
+sí aparece en dashboard de sucursal
+
+el día y hora coinciden en ambos lados
+
+no se perdió la reserva por timezone ni por cruce de medianoche
+
+Importante
+
+No me digas que “todo ya está implementado” sin revisar el flujo real.
+Aquí sí hay bug, porque el toast dice confirmada pero la reserva no aparece ni en la app ni en el dashboard.
+
+Enfócate solo en reparar este flujo de reservas del cliente y dejarlo estable.
