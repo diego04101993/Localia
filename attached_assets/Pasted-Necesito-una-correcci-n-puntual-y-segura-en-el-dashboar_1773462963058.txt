@@ -1,0 +1,100 @@
+Necesito una corrección puntual y segura en el dashboard de la sucursal.
+
+IMPORTANTE:
+No quiero refactor grande.
+No quiero cambios de arquitectura.
+No quiero que toques lo que ya funciona.
+Solo quiero corregir este bug específico sin romper nada.
+
+CONTEXTO REAL DEL BUG
+
+Ya hice esta prueba completa:
+
+1. En el dashboard de sucursal creé una clase:
+   - Viernes
+   - 23:00 a 00:00
+   - Box
+
+2. La clase aparece correctamente en la app pública del cliente en el día y hora correctos.
+
+3. Desde la app del cliente hice la reserva y la reserva sí se guarda correctamente.
+
+4. En “Mis reservas” del cliente aparece correctamente esa clase:
+   - viernes 13 de marzo
+   - 23:00 - 00:00
+   - Jonathan
+   - Confirmada
+
+PROBLEMA ACTUAL
+
+En el dashboard de la sucursal, en:
+Reservas → Calendario → detalle de la clase
+
+NO aparece el nombre del cliente que reservó esa clase.
+
+Actualmente el dashboard muestra:
+- 0/10
+- “Sin reservas para esta clase”
+
+Eso es incorrecto, porque sí existe una reserva real hecha desde la app del cliente.
+
+OBJETIVO EXACTO
+
+Quiero que en el dashboard de la sucursal, al abrir una clase del calendario, se muestre correctamente:
+
+1. El cliente o clientes que reservaron esa clase
+2. El contador correcto de lugares ocupados
+3. Si hay una reserva, NO debe aparecer “Sin reservas para esta clase”
+4. Si hay varios clientes, deben aparecer todos sus nombres
+5. Debe funcionar también con clases nocturnas como 23:00 → 00:00
+
+REGLAS CRÍTICAS
+
+- NO rompas la creación de clases
+- NO rompas la app pública del cliente
+- NO rompas “Mis reservas”
+- NO cambies el flujo de reservar/cancelar
+- NO hagas refactor general
+- SOLO corrige la consulta y render del dashboard de sucursal para mostrar las reservas reales de esa clase
+
+LO QUE NECESITO QUE ANALICES
+
+Revisa exactamente:
+
+1. Qué endpoint usa el dashboard para obtener los bookings de una clase en una fecha
+2. Si ese endpoint está consultando la fecha correcta para clases nocturnas
+3. Si el endpoint sí obtiene bookings pero no trae la información del usuario/cliente
+4. Si el contador de ocupación en dashboard usa una lógica distinta a la app pública
+5. Si el frontend del dashboard está renderizando mal una lista vacía cuando sí hay reservas
+
+RESULTADO ESPERADO
+
+Cuando una clase tenga reservas hechas desde la app pública:
+- el dashboard debe mostrar el nombre del cliente reservado
+- el contador debe reflejar el número real de reservas
+- debe desaparecer el mensaje “Sin reservas para esta clase”
+
+Si una clase tiene 1 reserva:
+- debe mostrar 1 nombre
+- debe mostrar 1/x ocupados
+
+Si tiene varias:
+- debe listar a todos
+
+IMPORTANTE
+
+Quiero que primero identifiques la causa exacta y luego hagas el cambio mínimo necesario.
+No inventes otra lógica paralela.
+Reutiliza la lógica correcta que ya hace que la app pública muestre bien la reserva, si eso ayuda.
+
+FORMATO DE RESPUESTA OBLIGATORIO
+
+Respóndeme en este formato:
+
+1. Causa raíz exacta
+2. Archivo(s) que corregiste
+3. Qué cambio hiciste
+4. Por qué no rompe lo demás
+5. Qué debo probar manualmente
+
+Haz la corrección ahora.
