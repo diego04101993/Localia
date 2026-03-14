@@ -1,0 +1,156 @@
+Necesito una corrección MUY puntual y controlada en el sistema de reservas/membresías.
+
+IMPORTANTE:
+NO quiero refactor grande.
+NO quiero cambios de arquitectura.
+NO quiero que modifiques partes que ya funcionan.
+NO toques frontend si no es estrictamente necesario.
+NO cambies el flujo actual de reservar, cancelar, mis reservas, dashboard o membresías.
+SOLO quiero automatizar una acción que hoy ya funciona manualmente.
+
+CONTEXTO REAL YA PROBADO
+
+Ya validé manualmente que:
+
+1. El cliente reserva una clase desde la app pública correctamente
+2. La reserva aparece correctamente en el dashboard de sucursal
+3. Si el admin en el dashboard de sucursal marca manualmente “Asistió”:
+   - se registra la asistencia
+   - se descuenta 1 clase de la membresía
+   - se actualiza “Última asistencia”
+   - el resumen del cliente baja correctamente, por ejemplo de 8 a 7 clases
+
+Eso significa que la lógica manual YA funciona bien.
+
+PROBLEMA ACTUAL
+
+Lo que falta es automatizar esa misma lógica.
+
+Escenario real:
+
+- Un cliente tiene una reserva CONFIRMADA para una clase
+- Ejemplo: viernes 13 de marzo, 23:00 a 00:00
+- Si llega la hora de inicio de la clase (23:00 o unos segundos/minutos después)
+- y el cliente NO canceló antes de esa hora
+
+Entonces el sistema debe hacer AUTOMÁTICAMENTE lo siguiente:
+
+1. Marcar asistencia
+2. Descontar 1 clase de la membresía
+3. Actualizar “Última asistencia”
+
+Hoy eso NO ocurre automáticamente.
+Solo pasa si el admin lo marca manualmente.
+
+COMPORTAMIENTO EXACTO QUE QUIERO
+
+REGLA 1
+Si una reserva está en estado confirmed y llega la hora de inicio de la clase, y el cliente no canceló:
+- marcar automáticamente como asistió
+- descontar automáticamente 1 clase
+- actualizar última asistencia
+
+REGLA 2
+Si el cliente canceló antes de la hora de inicio:
+- NO marcar asistencia
+- NO descontar clase
+
+REGLA 3
+La automatización debe reutilizar la misma lógica del botón manual “Asistió”.
+NO quiero una segunda lógica paralela distinta.
+
+REGLA 4
+Debe ser idempotente:
+- nunca debe descontar dos veces la misma clase
+- nunca debe registrar dos asistencias para el mismo booking
+- si ya fue procesado manualmente o automáticamente, no volverlo a procesar
+
+REGLA 5
+Debe funcionar también con clases nocturnas, por ejemplo:
+- 23:00 → 00:00
+
+IMPORTANTE SOBRE EL ALCANCE
+
+No quiero que cambies:
+- creación de clases
+- app pública del cliente
+- cancelaciones
+- mis reservas
+- vista de reservas ya corregida
+- lógica visual del dashboard
+- reglas de membresía ya existentes
+
+SOLO quiero agregar el proceso automático que, al llegar la hora de inicio de la clase, procese bookings confirmados pendientes.
+
+SOLUCIÓN TÉCNICA ESPERADA
+
+Quiero que implementes un proceso backend mínimo y seguro que:
+
+1. Busque bookings confirmed pendientes de procesar
+2. Detecte si la clase ya llegó a su hora de inicio real
+3. Ejecute exactamente la misma función o flujo que hoy usa el botón manual “Asistió”
+4. Marque el booking de forma que no pueda procesarse dos veces
+
+IMPORTANTE:
+- Si ya existe una función tipo markAttendance / markAsAttended / registerAttendance, reutilízala
+- No dupliques lógica
+- No inventes otra ruta paralela para descontar clases
+- No hagas refactor innecesario
+
+SI NECESITAS DEFINIR LA REGLA DE TIEMPO
+
+Puedes procesarlo así:
+- si now >= classStartDateTime
+- booking.status === "confirmed"
+- booking no está cancelado
+- booking aún no fue reconciliado/procesado
+
+Entonces:
+- marcar asistencia
+- descontar clase
+- actualizar resumen
+
+PERO HAZLO CON EL CAMBIO MÁS PEQUEÑO POSIBLE.
+
+TAREA EXACTA
+
+Quiero que hagas esto en orden:
+
+1. Identifica cuál función backend usa actualmente el botón manual “Asistió”
+2. Reutiliza esa misma lógica
+3. Agrega un proceso automático mínimo para bookings confirmados al llegar la hora de la clase
+4. Evita doble procesamiento
+5. No rompas nada más
+
+FORMATO DE RESPUESTA OBLIGATORIO
+
+Respóndeme exactamente así:
+
+1. Causa raíz exacta
+2. Función o flujo manual que reutilizaste
+3. Archivo(s) que corregiste
+4. Qué cambio mínimo hiciste
+5. Cómo evitaste doble descuento o doble asistencia
+6. Por qué no rompe lo demás
+7. Qué pruebas manuales debo hacer
+
+PRUEBAS QUE DEBE SEGUIR FUNCIONANDO
+
+Después del cambio quiero que sigan funcionando sin romperse:
+
+- reservar desde la app pública
+- cancelar desde la app pública
+- volver a reservar
+- ver cliente reservado en dashboard
+- marcar “Asistió” manualmente
+- descuento manual correcto
+- clases nocturnas
+- resumen del cliente
+- membresía con clases restantes
+
+NO QUIERO REFACTOR GRANDE.
+NO QUIERO CAMBIOS DE UI.
+NO QUIERO NUEVA LÓGICA PARA MEMBRESÍAS.
+SOLO QUIERO AUTOMATIZAR LA LÓGICA MANUAL QUE YA FUNCIONA.
+
+Haz únicamente esa corrección.

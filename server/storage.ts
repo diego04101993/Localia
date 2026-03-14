@@ -120,6 +120,8 @@ export interface IStorage {
   removePlanFromMembership(membershipId: string): Promise<Membership | undefined>;
   getMembershipByUserAndBranch(userId: string, branchId: string): Promise<Membership | undefined>;
   reconcilePastBookings(branchId: string): Promise<number>;
+  autoMarkAttendedBookings(branchId: string): Promise<number>;
+  getAllActiveBranchIds(): Promise<string[]>;
   cancelFutureBookingsForUser(userId: string, branchId: string): Promise<number>;
   decrementClassesRemaining(membershipId: string): Promise<Membership | undefined>;
   getBranchClassSchedules(branchId: string): Promise<ClassSchedule[]>;
@@ -794,6 +796,9 @@ export class DatabaseStorage implements IStorage {
   // 2. Client cancels >3hrs before class → no deduction (classesRemaining stays same)
   // 3. Client cancels <3hrs before class → lateCancellation=true, classesRemaining decremented
   async reconcilePastBookings(branchId: string): Promise<number> {
+    // First: auto-mark attended for bookings whose class START has passed.
+    await this.autoMarkAttendedBookings(branchId);
+
     const { today, currentTime } = getMxLocalDateAndTime();
 
     // Fetch confirmed bookings up to and including today (local time).
@@ -846,6 +851,76 @@ export class DatabaseStorage implements IStorage {
       count++;
     }
     return count;
+  }
+
+  // Auto-mark attended: runs on page load (via reconcilePastBookings) and from background job.
+  // Finds confirmed bookings whose class START time has already passed and marks them as attended,
+  // creating an attendance record and deducting 1 class — exactly the same as the manual "Asistió" button.
+  // Guard: only processes status === "confirmed"; once attended or no_show, never re-processed.
+  async autoMarkAttendedBookings(branchId: string): Promise<number> {
+    const { today, currentTime } = getMxLocalDateAndTime();
+
+    const candidates = await db
+      .select({
+        bookingId: classBookings.id,
+        userId: classBookings.userId,
+        branchId: classBookings.branchId,
+        bookingDate: classBookings.bookingDate,
+        startTime: classSchedules.startTime,
+      })
+      .from(classBookings)
+      .innerJoin(classSchedules, eq(classBookings.classScheduleId, classSchedules.id))
+      .where(
+        and(
+          eq(classBookings.branchId, branchId),
+          eq(classBookings.status, "confirmed"),
+          sql`${classBookings.bookingDate} <= ${today}`
+        )
+      );
+
+    let count = 0;
+    for (const booking of candidates) {
+      // Class start is always on bookingDate (no midnight-crossing needed for start time).
+      const classStarted =
+        booking.bookingDate < today ||
+        (booking.bookingDate === today && booking.startTime <= currentTime);
+
+      if (!classStarted) continue;
+
+      await db
+        .update(classBookings)
+        .set({ status: "attended" as any })
+        .where(eq(classBookings.id, booking.bookingId));
+
+      // Create attendance record — same as manual "Asistió". registeredBy = userId (system auto check-in).
+      try {
+        await this.createAttendance({
+          userId: booking.userId,
+          branchId: booking.branchId,
+          registeredBy: booking.userId,
+        });
+      } catch (attErr: any) {
+        console.error(`[AUTO-ATTEND] Error creating attendance record:`, attErr.message);
+      }
+
+      // Deduct 1 class from membership if applicable — same logic as manual button.
+      const mem = await this.getMembershipByUserAndBranch(booking.userId, branchId);
+      if (mem && mem.classesRemaining !== null && mem.classesRemaining > 0) {
+        await this.decrementClassesRemaining(mem.id);
+      }
+
+      console.log(`[AUTO-ATTEND] Marked booking ${booking.bookingId} as attended for user ${booking.userId}`);
+      count++;
+    }
+    return count;
+  }
+
+  async getAllActiveBranchIds(): Promise<string[]> {
+    const result = await db
+      .select({ id: branches.id })
+      .from(branches)
+      .where(and(eq(branches.status, "active"), isNull(branches.deletedAt)));
+    return result.map(r => r.id);
   }
 
   async cancelFutureBookingsForUser(userId: string, branchId: string): Promise<number> {

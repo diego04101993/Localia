@@ -2754,5 +2754,22 @@ export async function registerRoutes(
     console.error("Seed error:", e);
   }
 
+  // Background job: every 60 seconds, auto-mark attended for confirmed bookings
+  // whose class start time has passed, for all active branches.
+  // This is the same logic as the manual "Asistió" button — no separate deduction logic.
+  setInterval(async () => {
+    try {
+      const branchIds = await storage.getAllActiveBranchIds();
+      for (const branchId of branchIds) {
+        const count = await storage.autoMarkAttendedBookings(branchId);
+        if (count > 0) {
+          console.log(`[AUTO-ATTEND] Processed ${count} booking(s) for branch ${branchId}`);
+        }
+      }
+    } catch (err: any) {
+      console.error("[AUTO-ATTEND] Background job error:", err.message);
+    }
+  }, 60_000);
+
   return httpServer;
 }
