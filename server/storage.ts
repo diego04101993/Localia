@@ -945,7 +945,21 @@ export class DatabaseStorage implements IStorage {
         eq(classBookings.bookingDate, date)
       ))
       .orderBy(asc(users.name));
-    return results;
+
+    // Deduplicate: keep only the most relevant booking per user.
+    // A user may have multiple records if they booked, cancelled, and rebooked.
+    // Priority: attended (1) > confirmed (2) > no_show (3) > cancelled (4)
+    const statusPriority: Record<string, number> = { attended: 1, confirmed: 2, no_show: 3, cancelled: 4 };
+    const byUser = new Map<string, typeof results[0]>();
+    for (const row of results) {
+      const existing = byUser.get(row.userId);
+      const rowPriority = statusPriority[row.status] ?? 99;
+      const existingPriority = existing ? (statusPriority[existing.status] ?? 99) : 99;
+      if (!existing || rowPriority < existingPriority) {
+        byUser.set(row.userId, row);
+      }
+    }
+    return Array.from(byUser.values()).sort((a, b) => a.userName.localeCompare(b.userName));
   }
 
   async createBooking(data: InsertClassBooking): Promise<ClassBooking> {

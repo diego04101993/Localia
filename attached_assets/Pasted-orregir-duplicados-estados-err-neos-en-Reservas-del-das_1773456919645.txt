@@ -1,0 +1,215 @@
+orregir duplicados / estados erróneos en Reservas del dashboard de sucursal
+
+Quiero que te enfoques solo en corregir el bug de cómo se muestran las reservas en el dashboard de la sucursal, pestaña Reservas > Calendario, porque el flujo del cliente ya mejoró, pero ahora el panel de sucursal está mostrando datos incorrectos.
+
+Bug real detectado
+
+Hice esta prueba manual:
+
+Creé una clase en el dashboard de sucursal:
+
+viernes 13 de marzo
+
+00:30 a 01:30
+
+En la app pública del cliente (/app/:slug) la clase:
+
+sí aparece correctamente
+
+sí deja reservar
+
+sí aparece en “Mis reservas”
+
+sí deja cancelar y volver a reservar
+
+Pero al revisar esa misma clase en el dashboard de la sucursal, aparece mal:
+
+el cliente correcto sí aparece una vez como confirmado
+
+pero además salen varias líneas repetidas del mismo cliente en secciones como:
+
+“No asistieron”
+
+“Canceladas”
+
+eso es incorrecto y parece que la misma reserva se está duplicando o se están mezclando estados históricos/anteriores de manera incorrecta
+
+Objetivo exacto
+
+Quiero que una reserva hecha por el cliente desde /app/:slug se vea en el dashboard de sucursal una sola vez y con su estado real actual.
+
+Para cada clase, la sucursal debe ver claramente solo esto:
+
+Confirmadas: reservas activas de esa clase
+
+Asistió: reservas marcadas como attended
+
+No asistió: reservas no_show de esa clase
+
+Canceladas: reservas canceladas de esa clase
+
+Regla importante
+
+Una misma reserva no debe aparecer en más de una sección.
+Cada booking debe pertenecer a un solo estado actual.
+
+Qué revisar exactamente
+1) Query que alimenta Reservas > Calendario en sucursal
+
+Revisa el endpoint/query que trae las reservas por clase en el dashboard de sucursal.
+
+Verifica si:
+
+está trayendo registros duplicados por joins
+
+está mezclando reservas viejas canceladas con la reserva actual confirmada
+
+está trayendo múltiples bookings del mismo usuario para la misma clase y mismo día que ya no deberían mostrarse así
+
+está pintando reservas históricas repetidas como si fueran activas
+
+2) Modelo correcto esperado por clase
+
+Para una clase concreta (schedule + fecha), el dashboard debe mostrar:
+
+lista de bookings de esa clase y esa fecha
+
+agrupados por status
+
+sin duplicados visuales
+
+sin repetir el mismo booking en varias secciones
+
+3) Posible causa raíz
+
+Revisa si el bug viene de una de estas causas:
+
+el cliente reservó, canceló y volvió a reservar la misma clase varias veces, y el dashboard está mostrando todo el historial crudo
+
+el query no está diferenciando correctamente reservas activas vs historial
+
+el frontend está renderizando mal la agrupación
+
+se usa mal bookingDate, scheduleId, userId o status
+
+hay reconciliación que cambia estados pero el render sigue acumulando anteriores
+
+4) Comportamiento correcto que quiero
+
+Para una clase específica del día:
+
+Si el cliente reservó una vez y sigue confirmada:
+
+debe aparecer solo una vez en confirmadas
+
+Si canceló:
+
+debe aparecer solo una vez en canceladas
+
+Si luego volvió a reservar:
+
+puede existir historial en BD, sí
+
+pero en la UI del dashboard no quiero que se vea como un caos
+
+quiero una visualización limpia y entendible
+
+Regla de UI recomendada
+
+Puedes hacer cualquiera de estas dos opciones, pero déjalo consistente:
+
+Opción A — Mostrar historial completo pero limpio
+
+mostrar cada booking real una sola vez en su sección real
+
+con timestamp si hace falta
+
+sin duplicados por render
+
+Opción B — Mostrar solo el estado vigente/relevante por usuario para esa clase
+
+preferible si simplifica UX
+
+por ejemplo:
+
+1 confirmada
+
+cancelaciones pasadas en una sección colapsable o resumen
+
+pero que no ensucie la vista
+
+Prefiero la opción que deje el dashboard más claro para la sucursal.
+
+Restricciones
+
+No rompas nada de esto:
+
+reservas desde app pública que ya volvieron a funcionar
+
+“Mis reservas” del cliente
+
+cancelar desde cliente
+
+agenda pública
+
+clientes
+
+membresías
+
+anuncios
+
+perfil público
+
+TV mode
+
+Haz cambio mínimo pero correcto.
+
+Qué quiero que entregues al final
+
+Dame exactamente esto:
+
+Archivos modificados
+
+Causa raíz exacta
+
+Qué corregiste en backend
+
+Qué corregiste en frontend
+
+Cómo evitaste duplicados visuales
+
+Checklist manual de 5 pruebas, incluyendo:
+
+reservar una clase desde app del cliente
+
+cancelar y volver a reservar la misma clase
+
+revisar dashboard de sucursal
+
+confirmar que el booking no aparece repetido
+
+confirmar que cada booking aparece solo en su estado correcto
+
+Resultado esperado final
+
+Para una clase como:
+
+viernes 13
+
+00:30 a 01:30
+
+si Irene reserva desde la app del cliente, en el dashboard de sucursal esa clase debe mostrar algo limpio como:
+
+Irene en confirmadas, una sola vez
+o
+
+Irene en asistió / no asistió / canceladas, una sola vez según corresponda
+
+No quiero ver a Irene repetida muchas veces en varias secciones si solo hice una o pocas acciones.
+
+Importante
+
+No me respondas que “ya está implementado”.
+Aquí sí hay bug visual/lógico en el dashboard de sucursal y quiero que lo corrijas de verdad.
+
+Enfócate solo en ese bug de reservas duplicadas/mezcladas en el panel de sucursal.
