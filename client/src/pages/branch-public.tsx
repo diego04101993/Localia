@@ -21,6 +21,7 @@ import {
   AlertTriangle,
   XCircle,
   Navigation,
+  Bookmark,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -36,6 +37,10 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogContent,
+} from "@/components/ui/dialog";
 import { useAuth } from "@/lib/auth";
 import { apiRequest, queryClient, getQueryFn } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -143,6 +148,7 @@ function PublicPosts({ posts }: { posts: BranchPost[] }) {
 }
 
 function PublicProducts({ products }: { products: BranchProduct[] }) {
+  const [selected, setSelected] = useState<BranchProduct | null>(null);
   const sorted = [...products].filter(p => p.isActive).sort((a, b) => a.displayOrder - b.displayOrder);
   if (sorted.length === 0) return null;
 
@@ -150,67 +156,128 @@ function PublicProducts({ products }: { products: BranchProduct[] }) {
   const prods = sorted.filter(p => (p as any).type !== "service");
 
   return (
-    <Card data-testid="card-public-products">
-      <CardContent className="p-4 space-y-4">
-        {services.length > 0 && (
-          <div>
-            <h3 className="font-semibold text-sm mb-3 flex items-center gap-2" data-testid="text-services-title">
-              <Star className="h-4 w-4" />
-              Servicios
-            </h3>
-            <div className="space-y-2">
-              {services.map((s) => (
-                <div key={s.id} className="flex items-center gap-3 p-2 border rounded-lg" data-testid={`public-service-${s.id}`}>
-                  {s.imageUrl ? (
-                    <img src={s.imageUrl} alt={s.name} className="h-14 w-14 rounded object-cover shrink-0" />
-                  ) : (
-                    <div className="h-14 w-14 rounded bg-muted flex items-center justify-center shrink-0">
-                      <Star className="h-5 w-5 text-muted-foreground/40" />
+    <>
+      <Card data-testid="card-public-products">
+        <CardContent className="p-4 space-y-4">
+          {services.length > 0 && (
+            <div>
+              <h3 className="font-semibold text-sm mb-3 flex items-center gap-2" data-testid="text-services-title">
+                <Star className="h-4 w-4" />
+                Servicios
+              </h3>
+              <div className="space-y-2">
+                {services.map((s) => (
+                  <button
+                    key={s.id}
+                    className="flex items-center gap-3 p-2 border rounded-lg w-full text-left active:bg-muted/70 transition-colors"
+                    data-testid={`public-service-${s.id}`}
+                    onClick={() => setSelected(s as any)}
+                  >
+                    {s.imageUrl ? (
+                      <img src={s.imageUrl} alt={s.name} className="h-14 w-14 rounded-lg object-cover shrink-0" />
+                    ) : (
+                      <div className="h-14 w-14 rounded-lg bg-muted flex items-center justify-center shrink-0">
+                        <Star className="h-5 w-5 text-muted-foreground/40" />
+                      </div>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold truncate">{s.name}</p>
+                      {s.description && <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5">{s.description}</p>}
+                      <div className="flex items-center gap-2 mt-1">
+                        {s.price > 0 && <span className="text-xs font-bold text-primary">${(s.price / 100).toFixed(0)} MXN</span>}
+                        {(s as any).durationMinutes && (
+                          <span className="text-xs text-muted-foreground flex items-center gap-0.5">
+                            <Clock className="h-3 w-3" />{(s as any).durationMinutes} min
+                          </span>
+                        )}
+                      </div>
                     </div>
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium truncate">{s.name}</p>
-                    {s.description && <p className="text-xs text-muted-foreground line-clamp-2">{s.description}</p>}
-                    <div className="flex items-center gap-2 mt-1">
-                      {s.price > 0 && <span className="text-xs font-semibold text-primary">${(s.price / 100).toFixed(0)} MXN</span>}
-                      {(s as any).durationMinutes && <span className="text-xs text-muted-foreground">{(s as any).durationMinutes} min</span>}
-                    </div>
-                  </div>
-                </div>
-              ))}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
-        )}
-        {prods.length > 0 && (
-          <div>
-            <h3 className="font-semibold text-sm mb-3 flex items-center gap-2" data-testid="text-products-title">
-              <ShoppingBag className="h-4 w-4" />
-              Productos
-            </h3>
-            <div className="grid grid-cols-2 gap-3">
-              {prods.map((product) => (
-                <div key={product.id} className="border rounded-lg overflow-hidden" data-testid={`public-product-${product.id}`}>
-                  {product.imageUrl ? (
-                    <img src={product.imageUrl} alt={product.name} className="h-24 w-full object-cover" data-testid={`img-public-product-${product.id}`} />
-                  ) : (
-                    <div className="h-24 w-full bg-muted flex items-center justify-center">
-                      <ShoppingBag className="h-6 w-6 text-muted-foreground/40" />
+          )}
+          {prods.length > 0 && (
+            <div>
+              <h3 className="font-semibold text-sm mb-3 flex items-center gap-2" data-testid="text-products-title">
+                <ShoppingBag className="h-4 w-4" />
+                Productos
+              </h3>
+              <div className="grid grid-cols-2 gap-3">
+                {prods.map((product) => (
+                  <button
+                    key={product.id}
+                    className="border rounded-xl overflow-hidden text-left active:scale-95 transition-transform cursor-pointer"
+                    data-testid={`public-product-${product.id}`}
+                    onClick={() => setSelected(product)}
+                  >
+                    <div className="relative aspect-square bg-muted">
+                      {product.imageUrl ? (
+                        <img
+                          src={product.imageUrl}
+                          alt={product.name}
+                          className="w-full h-full object-cover"
+                          data-testid={`img-public-product-${product.id}`}
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <ShoppingBag className="h-8 w-8 text-muted-foreground/30" />
+                        </div>
+                      )}
+                      {product.price > 0 && (
+                        <div className="absolute bottom-1.5 right-1.5">
+                          <span className="bg-black/65 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full backdrop-blur-sm">
+                            ${(product.price / 100).toFixed(0)}
+                          </span>
+                        </div>
+                      )}
                     </div>
-                  )}
-                  <div className="p-2">
-                    <p className="text-xs font-medium truncate" data-testid={`text-public-product-name-${product.id}`}>{product.name}</p>
-                    {product.description && <p className="text-[10px] text-muted-foreground truncate">{product.description}</p>}
-                    <p className="text-xs font-semibold text-primary" data-testid={`text-public-product-price-${product.id}`}>
-                      ${(product.price / 100).toFixed(0)} MXN
-                    </p>
-                  </div>
-                </div>
-              ))}
+                    <div className="p-2 pb-2.5">
+                      <p className="text-xs font-semibold leading-tight truncate" data-testid={`text-public-product-name-${product.id}`}>{product.name}</p>
+                      {product.description && (
+                        <p className="text-[10px] text-muted-foreground line-clamp-1 mt-0.5">{product.description}</p>
+                      )}
+                    </div>
+                  </button>
+                ))}
+              </div>
             </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Product / service detail modal */}
+      <Dialog open={!!selected} onOpenChange={() => setSelected(null)}>
+        <DialogContent className="max-w-sm p-0 overflow-hidden rounded-2xl gap-0">
+          {selected?.imageUrl ? (
+            <div className="aspect-square w-full bg-muted overflow-hidden">
+              <img src={selected.imageUrl} alt={selected.name} className="w-full h-full object-cover" />
+            </div>
+          ) : (
+            <div className="aspect-square w-full bg-muted flex items-center justify-center">
+              <ShoppingBag className="h-16 w-16 text-muted-foreground/20" />
+            </div>
+          )}
+          <div className="p-5 space-y-2">
+            <h3 className="font-bold text-base leading-tight">{selected?.name}</h3>
+            {(selected as any)?.durationMinutes && (
+              <p className="text-xs text-muted-foreground flex items-center gap-1">
+                <Clock className="h-3.5 w-3.5" />
+                {(selected as any).durationMinutes} min
+              </p>
+            )}
+            {selected?.description && (
+              <p className="text-sm text-muted-foreground leading-relaxed">{selected.description}</p>
+            )}
+            {selected && selected.price > 0 && (
+              <p className="text-xl font-bold text-primary pt-1" data-testid={`text-public-product-price-${selected.id}`}>
+                ${(selected.price / 100).toFixed(0)} MXN
+              </p>
+            )}
           </div>
-        )}
-      </CardContent>
-    </Card>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
@@ -225,13 +292,37 @@ function PublicVideos({ videos }: { videos: BranchVideo[] }) {
           <Play className="h-4 w-4" />
           Videos
         </h3>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-4">
           {sorted.map((video) => (
-            <div key={video.id} className="rounded-lg overflow-hidden border" data-testid={`public-video-${video.id}`}>
-              <video src={video.url} controls className="w-full h-32 object-cover bg-black" data-testid={`video-public-player-${video.id}`} />
-              {video.title && (
-                <p className="text-xs font-medium p-2 truncate" data-testid={`text-public-video-title-${video.id}`}>{video.title}</p>
-              )}
+            <div
+              key={video.id}
+              className="rounded-xl overflow-hidden border shadow-sm bg-black"
+              data-testid={`public-video-${video.id}`}
+            >
+              <div className="aspect-video w-full bg-black">
+                <video
+                  src={video.url}
+                  controls
+                  playsInline
+                  poster={video.thumbnailUrl ?? undefined}
+                  className="w-full h-full object-contain"
+                  data-testid={`video-public-player-${video.id}`}
+                />
+              </div>
+              <div className="bg-card px-3 py-2.5 flex items-center justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  {video.title && (
+                    <p className="text-sm font-semibold leading-tight truncate" data-testid={`text-public-video-title-${video.id}`}>
+                      {video.title}
+                    </p>
+                  )}
+                </div>
+                {/* Stub action icons — reserved for future like/save feature */}
+                <div className="flex items-center gap-3 shrink-0 text-muted-foreground/40 select-none">
+                  <Heart className="h-4 w-4" />
+                  <Bookmark className="h-4 w-4" />
+                </div>
+              </div>
             </div>
           ))}
         </div>

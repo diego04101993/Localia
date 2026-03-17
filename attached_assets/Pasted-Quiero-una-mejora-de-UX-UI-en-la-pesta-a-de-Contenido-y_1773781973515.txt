@@ -1,0 +1,135 @@
+Quiero una mejora de UX/UI en la pestaña de Contenido y en la app pública del cliente, pero SIN romper nada de la lógica actual.
+
+IMPORTANTE:
+- No quiero refactor grande
+- No quiero tocar backend si no es necesario
+- No quiero cambiar la lógica de subida, edición, eliminación o sincronización
+- Todo lo actual ya funciona bien
+- Solo quiero mejorar presentación y experiencia visual
+
+CONTEXTO YA VALIDADO
+
+En el dashboard de la sucursal ya funciona correctamente:
+- subir foto de perfil
+- subir fotos de instalaciones (hasta 5)
+- crear posts fijos (hasta 3)
+- crear productos
+- subir videos de entrenamiento / reels
+- editar, eliminar, reordenar y demás botones ya funcionan
+
+Y en la app pública del cliente ya se refleja correctamente todo ese contenido.
+
+Así que NO quiero que cambies la lógica CRUD ni la sincronización.
+Solo quiero mejorar cómo se ve.
+
+OBJETIVO GENERAL
+
+Mejorar la experiencia visual del contenido en la app pública del cliente, manteniendo el formato de scroll único, pero haciéndolo más atractivo, claro y moderno.
+
+MEJORAS ESPECÍFICAS
+
+1) PRODUCTOS EN APP CLIENTE
+Actualmente los productos sí aparecen, pero:
+- algunas imágenes se recortan mal
+- no lucen tan bien visualmente
+- al tocar el producto no abre detalle
+
+Quiero mejorar esto así:
+- que las imágenes del producto se vean mejor, evitando recortes feos
+- usar una proporción visual más limpia
+- permitir que al tocar un producto se abra un modal o vista simple con:
+  - imagen más grande
+  - nombre
+  - precio
+  - descripción
+- mantener el diseño limpio y móvil primero
+
+2) VIDEOS EN APP CLIENTE
+Actualmente el video sí aparece, pero se ve muy simple, como embed básico.
+
+Quiero que la sección de videos se vea más estilo red social / reel, sin volverla complicada.
+
+Me gustaría:
+- cards visualmente más atractivos
+- mejor presentación del video vertical
+- portada o contenedor que luzca tipo reel/post
+- botón play claro
+- título debajo
+- diseño moderno, limpio y mobile-first
+
+Opcional:
+- dejar preparada la UI para un botón de “me gusta” o “guardar” a futuro
+- si agregarlo ahora complica la lógica, por ahora solo deja el diseño listo, sin backend
+
+3) MANTENER EL SCROLL ÚNICO
+Quiero mantener la app del cliente en un solo scroll.
+No quiero separar esto en muchas pantallas todavía.
+
+Pero quiero que el orden y presentación se sientan más premium.
+
+ORDEN RECOMENDADO EN APP CLIENTE
+Mantén o ajusta para que el orden quede así:
+1. Header del negocio
+2. Promo destacada
+3. Estado del miembro / clases restantes / vencimiento
+4. Agenda
+5. Instalaciones
+6. Posts fijos
+7. Productos
+8. Videos
+9. Opiniones / resto del perfil
+
+4) DASHBOARD DE SUCURSAL
+No quiero rediseñar todo.
+Solo pequeñas mejoras visuales si son necesarias para:
+- preview de productos
+- preview de videos
+- consistencia de cards
+- mejor uso del espacio
+
+Pero:
+- no cambies botones ni lógica
+- no toques límites actuales
+- no rompas editar/eliminar/subir
+
+REGLAS CRÍTICAS
+
+- NO rompas nada que ya funciona
+- NO cambies lógica de backend sin necesidad
+- NO cambies la estructura de datos
+- NO toques reservas, membresías, clientes ni asistencias
+- NO rompas sincronización dashboard -> app cliente
+- Enfócate solo en UX/UI y presentación visual
+
+ESTILO DESEADO
+
+Quiero que la app se vea:
+- moderna
+- clara
+- mobile-first
+- limpia
+- tipo mezcla entre perfil de negocio + agenda + mini tienda + contenido social
+
+TAREA EXACTA
+
+1. Revisa los componentes de Contenido en dashboard y en app pública
+2. Mejora la UI de productos en app cliente
+3. Mejora la UI de videos en app cliente estilo social/reel
+4. Si es viable, agrega apertura de detalle al tocar producto
+5. Mantén el scroll único
+6. Haz solo cambios pequeños y seguros
+
+FORMATO DE RESPUESTA OBLIGATORIO
+
+Respóndeme así:
+1. Qué mejorarás exactamente
+2. Qué archivos tocarás
+3. Qué NO vas a tocar para no romper el sistema
+4. Qué cambios visuales harás en productos
+5. Qué cambios visuales harás en videos
+6. Qué debo probar manualmente
+
+IMPORTANTE FINAL
+
+Prefiero una mejora visual pequeña pero bien hecha, antes que una refactorización grande.
+Haz cambios controlados, elegantes y seguros.
