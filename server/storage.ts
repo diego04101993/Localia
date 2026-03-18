@@ -1613,13 +1613,14 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(branchAnnouncements.branchId, branchId), eq(branchAnnouncements.isActive, true)));
   }
 
-  async updateBranchProfile(branchId: string, data: { description?: string | null; address?: string | null; city?: string | null; googleMapsUrl?: string | null; operatingHours?: any; category?: string | null; subcategory?: string | null; latitude?: number | null; longitude?: number | null }): Promise<any> {
+  async updateBranchProfile(branchId: string, data: { description?: string | null; address?: string | null; city?: string | null; googleMapsUrl?: string | null; operatingHours?: any; locations?: any; category?: string | null; subcategory?: string | null; latitude?: number | null; longitude?: number | null }): Promise<any> {
     const setData: any = {};
     if (data.description !== undefined) setData.description = data.description;
     if (data.address !== undefined) setData.address = data.address;
     if (data.city !== undefined) setData.city = data.city;
     if (data.googleMapsUrl !== undefined) setData.googleMapsUrl = data.googleMapsUrl;
     if (data.operatingHours !== undefined) setData.operatingHours = data.operatingHours;
+    if (data.locations !== undefined) setData.locations = data.locations;
     if (data.category !== undefined) setData.category = data.category;
     if (data.subcategory !== undefined) setData.subcategory = data.subcategory;
     if (data.latitude !== undefined) setData.latitude = data.latitude;

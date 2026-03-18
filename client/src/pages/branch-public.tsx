@@ -400,8 +400,8 @@ const DAY_NAMES_SHORT = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
 function OperatingHoursDisplay({ hours }: { hours: any }) {
   if (!hours || typeof hours !== "object") {
     return (
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Clock className="h-4 w-4" />
+      <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+        <Clock className="h-3.5 w-3.5 shrink-0" />
         <span>Horarios por configurar</span>
       </div>
     );
@@ -411,26 +411,108 @@ function OperatingHoursDisplay({ hours }: { hours: any }) {
 
   return (
     <div data-testid="section-operating-hours">
-      <div className="flex items-center gap-2 mb-2">
-        <Clock className="h-4 w-4 text-muted-foreground" />
-        <span className="text-sm font-medium">Horarios</span>
+      <div className="flex items-center gap-1.5 mb-3">
+        <Clock className="h-4 w-4 text-muted-foreground shrink-0" />
+        <span className="text-sm font-semibold">Horarios</span>
       </div>
-      <div className="space-y-1">
+      <div className="space-y-1.5">
         {days.map((day, i) => {
           const h = hours[day];
+          const isOpen = h?.open;
           return (
-            <div key={day} className="flex justify-between text-xs text-muted-foreground" data-testid={`hours-${day}`}>
-              <span className="font-medium w-10">{DAY_NAMES_SHORT[i]}</span>
-              {h?.open ? (
-                <span>{h.from || "09:00"} - {h.to || "18:00"}</span>
+            <div
+              key={day}
+              className="flex items-center justify-between gap-2"
+              data-testid={`hours-${day}`}
+            >
+              <span className={`text-sm w-14 shrink-0 ${isOpen ? "font-medium text-foreground" : "text-muted-foreground"}`}>
+                {DAY_NAMES_SHORT[i]}
+              </span>
+              {isOpen ? (
+                <span className="text-sm text-foreground font-mono tabular-nums">
+                  {h.from || "09:00"} – {h.to || "18:00"}
+                </span>
               ) : (
-                <span className="italic">Cerrado</span>
+                <span className="text-xs text-muted-foreground italic">Cerrado</span>
               )}
             </div>
           );
         })}
       </div>
     </div>
+  );
+}
+
+type LocEntry = { name: string; address: string; googleMapsUrl: string };
+
+function PublicLocationSection({ branch }: { branch: any }) {
+  const locs: LocEntry[] =
+    branch.locations && branch.locations.length > 0
+      ? branch.locations
+      : branch.address || branch.city || branch.googleMapsUrl
+      ? [{ name: "", address: branch.address || branch.city || "", googleMapsUrl: branch.googleMapsUrl || "" }]
+      : [];
+
+  const [active, setActive] = useState(0);
+
+  const noAddress = locs.length === 0;
+  const noHours = !branch.operatingHours;
+
+  if (noAddress && noHours) return null;
+
+  const current = locs[active] || locs[0];
+
+  return (
+    <Card data-testid="card-public-location">
+      <CardContent className="p-4 space-y-3">
+        {locs.length > 1 && (
+          <div className="flex gap-1 p-1 bg-muted rounded-lg" data-testid="tabs-locations">
+            {locs.map((l, i) => (
+              <button
+                key={i}
+                className={`flex-1 text-xs py-1.5 px-2 rounded-md font-medium transition-all ${
+                  active === i
+                    ? "bg-background shadow-sm text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+                onClick={() => setActive(i)}
+                data-testid={`button-location-tab-${i}`}
+              >
+                {l.name || `Ubicación ${i + 1}`}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {current?.address && (
+          <div className="flex items-start gap-2.5">
+            <MapPin className="h-4 w-4 text-primary shrink-0 mt-0.5" />
+            <span className="text-sm leading-snug" data-testid="text-branch-address">
+              {current.address}
+            </span>
+          </div>
+        )}
+
+        {current?.googleMapsUrl && (
+          <Button
+            size="sm"
+            className="w-full"
+            onClick={() => window.open(current.googleMapsUrl, "_blank")}
+            data-testid="button-google-maps"
+          >
+            <Navigation className="h-4 w-4 mr-2" />
+            Ver en Google Maps
+          </Button>
+        )}
+
+        {branch.operatingHours && (
+          <>
+            <div className="border-t" />
+            <OperatingHoursDisplay hours={branch.operatingHours} />
+          </>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -1164,38 +1246,17 @@ export default function BranchPublicPage() {
           <CustomerScheduleSection slug={slug} />
         )}
 
-        <Card>
-          <CardContent className="p-4 space-y-3">
-            {branch.description && (
-              <p className="text-sm" data-testid="text-branch-description">{branch.description}</p>
-            )}
-            {branch.address && (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <MapPin className="h-4 w-4 shrink-0" />
-                <span data-testid="text-branch-address">{branch.address}</span>
-              </div>
-            )}
-            {branch.city && !branch.address && (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <MapPin className="h-4 w-4 shrink-0" />
-                <span>{branch.city}</span>
-              </div>
-            )}
-            {(branch as any).googleMapsUrl && (
-              <Button
-                variant="outline"
-                size="sm"
-                className="w-full"
-                onClick={() => window.open((branch as any).googleMapsUrl, "_blank")}
-                data-testid="button-google-maps"
-              >
-                <Navigation className="h-4 w-4 mr-2" />
-                Ver en Google Maps
-              </Button>
-            )}
-            <OperatingHoursDisplay hours={(branch as any).operatingHours} />
-          </CardContent>
-        </Card>
+        {branch.description && (
+          <Card>
+            <CardContent className="p-4">
+              <p className="text-sm leading-relaxed" data-testid="text-branch-description">
+                {branch.description}
+              </p>
+            </CardContent>
+          </Card>
+        )}
+
+        <PublicLocationSection branch={branch} />
 
         {content && <PublicPosts posts={content.posts} />}
         {content && <PublicProducts products={content.products} />}

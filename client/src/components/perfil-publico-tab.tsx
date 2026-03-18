@@ -294,19 +294,41 @@ function GallerySection() {
   );
 }
 
+type LocEntry = { name: string; address: string; googleMapsUrl: string };
+
 function LocationSection() {
   const { toast } = useToast();
   const { user, refetch } = useAuth();
   const branch = user?.branch as Branch | null;
 
-  const [address, setAddress] = useState(branch?.address || "");
-  const [googleMapsUrl, setGoogleMapsUrl] = useState((branch as any)?.googleMapsUrl || "");
+  const initLocations = (): LocEntry[] => {
+    const saved = (branch as any)?.locations as LocEntry[] | null;
+    if (saved && saved.length > 0) return saved;
+    return [{ name: "", address: branch?.address || "", googleMapsUrl: (branch as any)?.googleMapsUrl || "" }];
+  };
+
+  const [locations, setLocations] = useState<LocEntry[]>(initLocations);
   const [saving, setSaving] = useState(false);
+
+  const update = (idx: number, field: keyof LocEntry, value: string) => {
+    setLocations((prev) => prev.map((l, i) => (i === idx ? { ...l, [field]: value } : l)));
+  };
+
+  const addSecond = () => {
+    if (locations.length < 2) setLocations((prev) => [...prev, { name: "", address: "", googleMapsUrl: "" }]);
+  };
+
+  const removeSecond = () => setLocations((prev) => prev.slice(0, 1));
 
   const handleSave = async () => {
     setSaving(true);
     try {
-      await apiRequest("PATCH", "/api/branch/profile", { address, googleMapsUrl });
+      const locs = locations.filter((l) => l.address.trim() || l.googleMapsUrl.trim());
+      await apiRequest("PATCH", "/api/branch/profile", {
+        locations: locs,
+        address: locs[0]?.address || "",
+        googleMapsUrl: locs[0]?.googleMapsUrl || "",
+      });
       await refetch();
       queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
       toast({ title: "Ubicación actualizada" });
@@ -322,40 +344,80 @@ function LocationSection() {
       <CardHeader className="pb-3">
         <CardTitle className="text-base flex items-center gap-2">
           <MapPin className="h-4 w-4" />
-          Ubicación
+          Ubicaciones
         </CardTitle>
       </CardHeader>
-      <CardContent className="space-y-4">
-        <div>
-          <Label>Dirección</Label>
-          <Input
-            value={address}
-            onChange={(e) => setAddress(e.target.value)}
-            placeholder="Av. Ejemplo 123, Col. Centro, Ciudad"
-            data-testid="input-address"
-          />
-        </div>
-        <div>
-          <Label>URL de Google Maps</Label>
-          <Input
-            value={googleMapsUrl}
-            onChange={(e) => setGoogleMapsUrl(e.target.value)}
-            placeholder="https://maps.google.com/..."
-            data-testid="input-google-maps-url"
-          />
-          <p className="text-xs text-muted-foreground mt-1">
-            Pega el enlace de tu ubicación en Google Maps.
-          </p>
-        </div>
-        {googleMapsUrl && (
+      <CardContent className="space-y-5">
+        {locations.map((loc, idx) => (
+          <div key={idx} className="space-y-3">
+            {idx > 0 && <div className="border-t pt-1" />}
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold text-muted-foreground">
+                {idx === 0 ? "Ubicación principal" : "Segunda ubicación"}
+              </span>
+              {idx === 1 && (
+                <button
+                  onClick={removeSecond}
+                  className="text-muted-foreground hover:text-destructive transition-colors"
+                  data-testid="button-remove-location-2"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+            <div>
+              <Label>Nombre (opcional)</Label>
+              <Input
+                value={loc.name}
+                onChange={(e) => update(idx, "name", e.target.value)}
+                placeholder={idx === 0 ? "Ej. Sucursal Norte" : "Ej. Sucursal Sur"}
+                data-testid={`input-location-name-${idx}`}
+              />
+            </div>
+            <div>
+              <Label>Dirección</Label>
+              <Input
+                value={loc.address}
+                onChange={(e) => update(idx, "address", e.target.value)}
+                placeholder="Av. Ejemplo 123, Col. Centro, Ciudad"
+                data-testid={idx === 0 ? "input-address" : `input-address-${idx}`}
+              />
+            </div>
+            <div>
+              <Label>URL de Google Maps</Label>
+              <Input
+                value={loc.googleMapsUrl}
+                onChange={(e) => update(idx, "googleMapsUrl", e.target.value)}
+                placeholder="https://maps.google.com/..."
+                data-testid={idx === 0 ? "input-google-maps-url" : `input-google-maps-url-${idx}`}
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Pega el enlace de tu ubicación en Google Maps.
+              </p>
+            </div>
+            {loc.googleMapsUrl && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => window.open(loc.googleMapsUrl, "_blank")}
+                data-testid={idx === 0 ? "button-preview-maps" : `button-preview-maps-${idx}`}
+              >
+                <ExternalLink className="h-4 w-4 mr-1" />
+                Ver en Google Maps
+              </Button>
+            )}
+          </div>
+        ))}
+        {locations.length < 2 && (
           <Button
             variant="outline"
             size="sm"
-            onClick={() => window.open(googleMapsUrl, "_blank")}
-            data-testid="button-preview-maps"
+            onClick={addSecond}
+            className="w-full"
+            data-testid="button-add-location"
           >
-            <ExternalLink className="h-4 w-4 mr-1" />
-            Ver en Google Maps
+            <Plus className="h-4 w-4 mr-1" />
+            Agregar segunda ubicación
           </Button>
         )}
         <Button onClick={handleSave} disabled={saving} data-testid="button-save-location">

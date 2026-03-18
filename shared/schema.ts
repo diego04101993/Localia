@@ -70,6 +70,7 @@ export const branches = pgTable("branches", {
   whatsappTemplates: jsonb("whatsapp_templates"),
   googleMapsUrl: text("google_maps_url"),
   operatingHours: jsonb("operating_hours"),
+  locations: jsonb("locations").$type<Array<{ name: string; address: string; googleMapsUrl: string }>>(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
 });

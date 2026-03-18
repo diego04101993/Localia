@@ -2229,13 +2229,14 @@ export async function registerRoutes(
   app.patch("/api/branch/profile", requireBranchAdmin, async (req, res) => {
     const actor = req.user as any;
     try {
-      const { description, address, city, googleMapsUrl, operatingHours, category, subcategory, latitude, longitude } = req.body;
+      const { description, address, city, googleMapsUrl, operatingHours, locations, category, subcategory, latitude, longitude } = req.body;
       const updated = await storage.updateBranchProfile(actor.branchId, {
         ...(description !== undefined && { description }),
         ...(address !== undefined && { address }),
         ...(city !== undefined && { city }),
         ...(googleMapsUrl !== undefined && { googleMapsUrl }),
         ...(operatingHours !== undefined && { operatingHours }),
+        ...(locations !== undefined && { locations }),
         ...(category !== undefined && { category }),
         ...(subcategory !== undefined && { subcategory }),
         ...(latitude !== undefined && { latitude: latitude ? parseFloat(latitude) : null }),
