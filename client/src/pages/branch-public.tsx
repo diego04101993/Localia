@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
 import {
@@ -281,6 +281,99 @@ function PublicProducts({ products }: { products: BranchProduct[] }) {
   );
 }
 
+function VideoCard({ video }: { video: BranchVideo }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [liked, setLiked] = useState(false);
+  const [likes, setLikes] = useState(0);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          el.play().catch(() => {});
+        } else {
+          el.pause();
+        }
+      },
+      { threshold: 0.55 }
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
+
+  const handleLike = () => {
+    setLiked((prev) => {
+      setLikes((c) => (prev ? c - 1 : c + 1));
+      return !prev;
+    });
+  };
+
+  return (
+    <div
+      className="rounded-xl overflow-hidden border shadow-sm bg-black"
+      data-testid={`public-video-${video.id}`}
+    >
+      <div className="aspect-video w-full bg-black">
+        <video
+          ref={videoRef}
+          src={video.url}
+          controls
+          playsInline
+          muted
+          loop
+          poster={video.thumbnailUrl ?? undefined}
+          className="w-full h-full object-contain"
+          data-testid={`video-public-player-${video.id}`}
+        />
+      </div>
+      <div className="bg-card px-3 py-2.5 flex items-center justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          {video.title && (
+            <p
+              className="text-sm font-semibold leading-tight truncate"
+              data-testid={`text-public-video-title-${video.id}`}
+            >
+              {video.title}
+            </p>
+          )}
+        </div>
+        <div className="flex items-center gap-3 shrink-0">
+          <button
+            className="flex items-center gap-1"
+            onClick={handleLike}
+            data-testid={`button-like-video-${video.id}`}
+          >
+            <Heart
+              className={`h-4 w-4 transition-all duration-150 ${
+                liked ? "fill-red-500 text-red-500 scale-110" : "text-muted-foreground/50"
+              }`}
+            />
+            {likes > 0 && (
+              <span className="text-xs text-muted-foreground" data-testid={`text-like-count-${video.id}`}>
+                {likes}
+              </span>
+            )}
+          </button>
+          <button
+            className="transition-colors"
+            onClick={() => setSaved((s) => !s)}
+            data-testid={`button-save-video-${video.id}`}
+          >
+            <Bookmark
+              className={`h-4 w-4 transition-all duration-150 ${
+                saved ? "fill-primary text-primary" : "text-muted-foreground/50"
+              }`}
+            />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PublicVideos({ videos }: { videos: BranchVideo[] }) {
   const sorted = [...videos].sort((a, b) => a.displayOrder - b.displayOrder);
   if (sorted.length === 0) return null;
@@ -294,36 +387,7 @@ function PublicVideos({ videos }: { videos: BranchVideo[] }) {
         </h3>
         <div className="space-y-4">
           {sorted.map((video) => (
-            <div
-              key={video.id}
-              className="rounded-xl overflow-hidden border shadow-sm bg-black"
-              data-testid={`public-video-${video.id}`}
-            >
-              <div className="aspect-video w-full bg-black">
-                <video
-                  src={video.url}
-                  controls
-                  playsInline
-                  poster={video.thumbnailUrl ?? undefined}
-                  className="w-full h-full object-contain"
-                  data-testid={`video-public-player-${video.id}`}
-                />
-              </div>
-              <div className="bg-card px-3 py-2.5 flex items-center justify-between gap-2">
-                <div className="min-w-0 flex-1">
-                  {video.title && (
-                    <p className="text-sm font-semibold leading-tight truncate" data-testid={`text-public-video-title-${video.id}`}>
-                      {video.title}
-                    </p>
-                  )}
-                </div>
-                {/* Stub action icons — reserved for future like/save feature */}
-                <div className="flex items-center gap-3 shrink-0 text-muted-foreground/40 select-none">
-                  <Heart className="h-4 w-4" />
-                  <Bookmark className="h-4 w-4" />
-                </div>
-              </div>
-            </div>
+            <VideoCard key={video.id} video={video} />
           ))}
         </div>
       </CardContent>
@@ -1105,7 +1169,6 @@ export default function BranchPublicPage() {
             {branch.description && (
               <p className="text-sm" data-testid="text-branch-description">{branch.description}</p>
             )}
-            <ReviewsSummary slug={slug!} />
             {branch.address && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <MapPin className="h-4 w-4 shrink-0" />
@@ -1134,10 +1197,20 @@ export default function BranchPublicPage() {
           </CardContent>
         </Card>
 
-        {content && <PhotoGallery photos={content.photos} />}
         {content && <PublicPosts posts={content.posts} />}
         {content && <PublicProducts products={content.products} />}
+        {content && <PhotoGallery photos={content.photos} />}
         {content && <PublicVideos videos={content.videos} />}
+
+        <Card data-testid="card-public-reviews">
+          <CardContent className="p-4">
+            <h3 className="font-semibold text-sm mb-3 flex items-center gap-2" data-testid="text-reviews-title">
+              <Star className="h-4 w-4 text-yellow-500" />
+              Reseñas
+            </h3>
+            <ReviewsSummary slug={slug!} />
+          </CardContent>
+        </Card>
 
         <div className="flex gap-2">
           <Button

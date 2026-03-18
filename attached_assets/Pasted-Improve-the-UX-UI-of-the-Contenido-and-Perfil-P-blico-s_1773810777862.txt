@@ -1,0 +1,124 @@
+Improve the UX/UI of the "Contenido" and "Perfil Público" sections without modifying existing working logic, endpoints, or data structures.
+
+GOALS:
+
+* Enhance visual presentation and user interaction
+* Keep all current functionality intact (create, edit, delete, upload)
+* Do NOT break any existing behavior
+
+---
+
+1. PRODUCTS IMPROVEMENT
+
+* Ensure product images display fully using "object-fit: contain" or similar
+* Add click interaction on each product card:
+  → Open modal with:
+
+  * Full image
+  * Title
+  * Price
+  * Full description
+  * Optional CTA button (e.g., "Contactar" or "Comprar")
+
+---
+
+2. VIDEOS → SOCIAL FEED TRANSFORMATION
+
+Transform "Videos de Entrenamiento" into a vertical social-style feed:
+
+* Vertical scroll layout (like TikTok / Reels)
+
+* Autoplay videos when visible
+
+* Add UI overlay:
+
+  * Like button (heart icon)
+  * Like counter (UI only for now, no backend required)
+  * Optional: save/share icons (UI only)
+
+* Maintain current upload functionality
+
+---
+
+3. SERVICES VS PRODUCTS SEPARATION
+
+* Clearly separate:
+
+  * "Servicios"
+  * "Productos"
+
+* Display order in client app:
+
+  1. Servicios (priority)
+  2. Productos
+
+* Services should support:
+
+  * Title
+  * Description
+  * Image
+  * CTA: "Reservar" (UI only if needed)
+
+---
+
+4. MULTIPLE LOCATIONS SUPPORT (UI PREP)
+
+* Allow multiple locations instead of a single one
+* Display:
+
+  * List of locations
+  * Each with:
+
+    * Address
+    * Google Maps link
+* Keep backend compatible (can simulate multiple entries for now)
+
+---
+
+5. PROFILE STRUCTURE IMPROVEMENT
+
+Reorder client profile sections:
+
+1. Header (logo, name, category)
+2. Featured post
+3. Main CTA (Agendar / Contactar)
+4. Agenda
+5. Description + rating + location
+6. Servicios
+7. Productos
+8. Instalaciones (gallery)
+9. Videos (new feed style)
+10. Reseñas
+
+---
+
+6. DASHBOARD IMPROVEMENTS
+
+Add non-intrusive UX enhancements:
+
+* Profile completion indicator (e.g., 60% completo)
+
+* Suggestions:
+
+  * "Agrega videos para atraer más clientes"
+  * "Sube productos para vender más"
+
+* Add button:
+  → "Vista previa del perfil"
+
+---
+
+IMPORTANT:
+
+* Do NOT modify backend logic
+* Do NOT change APIs
+* Do NOT remove any current feature
+* Only improve UI/UX and structure
+
+Focus on modern, clean, mobile-first design inspired by:
+
+* Airbnb
+* Instagram
+* TikTok
+
+---
