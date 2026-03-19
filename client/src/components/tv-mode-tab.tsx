@@ -88,6 +88,32 @@ function getDateLabel(dateStr: string): string {
   return `${days[d.getDay()]} ${d.getDate()} ${months[d.getMonth()]}`;
 }
 
+function RoutineDisplay({ text, isFullscreen, slotId }: { text: string; isFullscreen: boolean; slotId: string }) {
+  const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
+  const isList = lines.length > 1 || lines.some(l => /^[-•*]/.test(l));
+  const textColor = isFullscreen ? "text-gray-300" : "";
+  if (isList) {
+    return (
+      <ul className={`space-y-1 text-sm list-none ${textColor}`} data-testid={`text-tv-routine-${slotId}`}>
+        {lines.map((line, i) => {
+          const clean = line.replace(/^[-•*]\s*/, "");
+          return (
+            <li key={i} className="flex items-start gap-1.5">
+              <span className={`mt-0.5 text-xs ${isFullscreen ? "text-gray-500" : "text-muted-foreground"}`}>›</span>
+              <span>{clean}</span>
+            </li>
+          );
+        })}
+      </ul>
+    );
+  }
+  return (
+    <p className={`text-sm whitespace-pre-wrap ${textColor}`} data-testid={`text-tv-routine-${slotId}`}>
+      {text}
+    </p>
+  );
+}
+
 function StatusIcon({ status }: { status: string }) {
   if (status === "attended") return <CheckCircle2 className="h-4 w-4 text-green-500" />;
   if (status === "cancelled") return <XCircle className="h-4 w-4 text-red-400" />;
@@ -183,9 +209,7 @@ function ClassSlotCard({
                 <Dumbbell className="h-3 w-3" /> Rutina
               </h4>
               {slot.routineDescription && (
-                <p className={`text-sm whitespace-pre-wrap ${isFullscreen ? "text-gray-300" : ""}`} data-testid={`text-tv-routine-${slot.id}`}>
-                  {slot.routineDescription}
-                </p>
+                <RoutineDisplay text={slot.routineDescription} isFullscreen={isFullscreen} slotId={slot.id} />
               )}
               {slot.routineImageUrl && (
                 <img

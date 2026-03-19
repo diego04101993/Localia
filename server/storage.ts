@@ -1100,7 +1100,9 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getTvModeData(branchId: string, date: string): Promise<any[]> {
-    const dayOfWeek = new Date(date + "T12:00:00Z").getUTCDay();
+    // Use same day-of-week computation as getBookingsForClassOnDate callers:
+    // parse as local noon to avoid UTC boundary issues
+    const dayOfWeek = new Date(date + "T12:00:00").getDay();
     const schedules = await db
       .select()
       .from(classSchedules)
@@ -1111,9 +1113,11 @@ export class DatabaseStorage implements IStorage {
       ))
       .orderBy(asc(classSchedules.startTime));
 
+    const statusPriority: Record<string, number> = { attended: 1, confirmed: 2, no_show: 3, cancelled: 4 };
+
     const result = [];
     for (const schedule of schedules) {
-      const bookings = await db
+      const rawBookings = await db
         .select({
           id: classBookings.id,
           userId: classBookings.userId,
@@ -1128,6 +1132,18 @@ export class DatabaseStorage implements IStorage {
           eq(classBookings.bookingDate, date)
         ))
         .orderBy(asc(users.name));
+
+      // Deduplicate per user — same logic as getBookingsForClassOnDate
+      const byUser = new Map<string, typeof rawBookings[0]>();
+      for (const row of rawBookings) {
+        const existing = byUser.get(row.userId);
+        const rowPriority = statusPriority[row.status] ?? 99;
+        const existingPriority = existing ? (statusPriority[existing.status] ?? 99) : 99;
+        if (!existing || rowPriority < existingPriority) {
+          byUser.set(row.userId, row);
+        }
+      }
+      const bookings = Array.from(byUser.values()).sort((a, b) => a.userName.localeCompare(b.userName));
 
       const attended = bookings.filter(b => b.status === "attended").length;
       const confirmed = bookings.filter(b => b.status === "confirmed").length;

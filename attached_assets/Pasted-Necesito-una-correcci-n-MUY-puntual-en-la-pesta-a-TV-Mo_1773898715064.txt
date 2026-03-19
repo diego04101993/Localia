@@ -1,0 +1,114 @@
+Necesito una corrección MUY puntual en la pestaña TV Mode del dashboard de sucursal.
+
+IMPORTANTE:
+- NO quiero refactor grande
+- NO quiero tocar otras pestañas que ya funcionan
+- NO quiero romper Reservas, Clientes, Membresías, Contenido, Perfil Público ni la app del cliente
+- SOLO quiero corregir y alinear TV Mode con la lógica correcta que ya existe en Reservas
+
+CONTEXTO YA VALIDADO
+
+La pestaña Reservas ya funciona correctamente:
+- muestra las clases correctas
+- muestra los horarios correctos
+- muestra los alumnos correctos
+- refleja bien las reservas hechas desde la app del cliente
+- maneja bien clases nocturnas y estados actuales
+
+La app del cliente también muestra correctamente:
+- horarios
+- reservas
+- clases
+- alumnos reservados / lugares ocupados
+
+PROBLEMA ACTUAL EN TV MODE
+
+En TV Mode están pasando estos errores:
+
+1. Los horarios de las clases NO coinciden con los horarios reales que sí aparecen correctamente en la pestaña Reservas
+2. Los alumnos reservados NO aparecen en TV Mode, aunque sí aparecen correctamente en Reservas y en la app del cliente
+3. TV Mode parece usar una fuente de datos distinta, desactualizada o mal transformada
+
+OBJETIVO EXACTO
+
+Quiero que TV Mode use la MISMA lógica y la MISMA fuente de datos correctos que ya usa la pestaña Reservas.
+
+TV Mode debe mostrar exactamente:
+- las mismas clases del día
+- los mismos horarios
+- los mismos alumnos reservados
+- el mismo conteo de lugares ocupados
+- el mismo estado actual real de cada clase
+
+REGLA CRÍTICA
+
+NO quiero lógica paralela.
+NO quiero otro cálculo separado para TV Mode.
+Quiero que TV Mode reutilice la misma consulta / endpoint / transformación que ya hace funcionar bien la pestaña Reservas.
+
+Si Reservas muestra:
+- clase correcta
+- horario correcto
+- alumno correcto
+
+entonces TV Mode debe reflejar exactamente eso.
+
+RUTINA
+
+El modal de rutina ya funciona, pero quiero una mejora pequeña y segura:
+
+- permitir escribir la rutina como texto multilínea
+- respetar saltos de línea
+- mostrar la rutina en TV Mode como lista clara
+- si el texto viene con guiones o líneas separadas, renderizarlo limpio como lista
+- no romper la edición actual
+
+IMPORTANTE SOBRE EL ALCANCE
+
+NO tocar:
+- reservas
+- clientes
+- membresías
+- contenido
+- perfil público
+- app pública del cliente
+- lógica de asistencia
+- lógica de membresía
+- lógica de cancelación
+
+SOLO tocar lo necesario para que TV Mode:
+1. lea los mismos datos correctos que Reservas
+2. muestre horarios correctos
+3. muestre alumnos correctos
+4. muestre rutina más limpia como lista
+
+MEJORAS VISUALES PERMITIDAS (solo si son pequeñas y seguras)
+
+Si puedes, sin romper nada:
+- hacer más visible el nombre de la clase
+- hacer más visible el horario
+- mostrar mejor el número de alumnos
+- mantener el modo pantalla completa como está, porque ya se ve bien
+
+FORMATO DE RESPUESTA OBLIGATORIO
+
+Respóndeme así:
+
+1. Causa raíz exacta
+2. Qué fuente de datos estaba usando mal TV Mode
+3. Qué archivo(s) corregiste
+4. Qué cambio mínimo hiciste para sincronizar TV Mode con Reservas
+5. Qué hiciste para que la rutina se vea como lista limpia
+6. Por qué no rompe las demás pestañas
+7. Qué pruebas manuales debo hacer
+
+IMPORTANTE FINAL
+
+La prioridad es consistencia total entre:
+- Reservas
+- App del cliente
+- TV Mode
+
+Si Reservas está bien, TV Mode debe reflejar exactamente lo mismo.
+
+Haz el cambio mínimo, seguro y sin romper nada más.
