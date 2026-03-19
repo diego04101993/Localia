@@ -1,0 +1,68 @@
+Necesito una mejora puntual y segura en el sistema, sin romper nada de lo que ya funciona.
+
+CONTEXTO
+Ya funciona correctamente el dashboard de sucursal, perfil público, contenido, reservas, membresías, app del cliente y TV Mode.
+
+Ahora quiero preparar el sistema para búsquedas por cercanía en la app del cliente.
+
+OBJETIVO
+Agregar campos de latitud y longitud en el dashboard de la sucursal, dentro de la sección de Perfil Público / Ubicación, para que cada sucursal pueda capturar su ubicación exacta.
+
+IMPORTANTE
+- No romper nada existente
+- No cambiar la lógica actual de reservas, membresías, contenido, perfil público ni app del cliente
+- No integrar todavía Google Maps API
+- Solo agregar soporte manual para coordenadas
+- El master después podrá editar esto desde su dashboard, pero por ahora quiero dejarlo funcional en el dashboard de sucursal
+
+REQUERIMIENTO EXACTO
+
+1. En la pestaña Perfil Público del dashboard de sucursal, dentro de Ubicación, agregar estos campos:
+- Latitud
+- Longitud
+
+2. Mantener también los campos actuales:
+- Dirección
+- URL de Google Maps
+
+3. Guardar latitud y longitud junto con la ubicación de la sucursal en la base de datos
+
+4. Mostrar ayuda visual pequeña debajo de esos campos, por ejemplo:
+“Tip: puedes obtener tus coordenadas desde Google Maps”
+
+5. Validar que:
+- latitud y longitud acepten números decimales
+- no se rompa el guardado actual de dirección y URL
+
+6. No cambiar cómo se ve actualmente la app del cliente, excepto dejar listos esos datos para uso futuro
+
+7. Si existe ya un modelo de branch / business / profile / public profile, reutilizarlo y extenderlo con los campos:
+- latitude
+- longitude
+
+ALCANCE
+Solo quiero:
+- agregar los campos
+- guardarlos correctamente
+- cargarlos al editar
+- no romper nada más
+
+NO QUIERO
+- refactor grande
+- API de mapas todavía
+- cambios en reservas
+- cambios en contenido
+- cambios en TV Mode
+- cambios en membresías
+
+FORMATO DE RESPUESTA OBLIGATORIO
+Respóndeme así:
+1. Qué modelo o tabla extendiste
+2. Qué archivos corregiste
+3. Qué cambio hiciste en frontend
+4. Qué cambio hiciste en backend
+5. Cómo validaste latitud y longitud
+6. Por qué no rompe nada existente
+7. Qué debo probar manualmente
+
+Haz el cambio mínimo, limpio y seguro.

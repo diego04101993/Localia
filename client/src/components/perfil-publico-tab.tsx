@@ -308,6 +308,9 @@ function LocationSection() {
   };
 
   const [locations, setLocations] = useState<LocEntry[]>(initLocations);
+  const [latitude, setLatitude] = useState<string>((branch as any)?.latitude?.toString() || "");
+  const [longitude, setLongitude] = useState<string>((branch as any)?.longitude?.toString() || "");
+  const [coordError, setCoordError] = useState<string>("");
   const [saving, setSaving] = useState(false);
 
   const update = (idx: number, field: keyof LocEntry, value: string) => {
@@ -321,6 +324,17 @@ function LocationSection() {
   const removeSecond = () => setLocations((prev) => prev.slice(0, 1));
 
   const handleSave = async () => {
+    setCoordError("");
+    const lat = latitude.trim() ? parseFloat(latitude) : null;
+    const lng = longitude.trim() ? parseFloat(longitude) : null;
+    if (latitude.trim() && (isNaN(lat!) || lat! < -90 || lat! > 90)) {
+      setCoordError("Latitud inválida. Debe ser un número entre -90 y 90.");
+      return;
+    }
+    if (longitude.trim() && (isNaN(lng!) || lng! < -180 || lng! > 180)) {
+      setCoordError("Longitud inválida. Debe ser un número entre -180 y 180.");
+      return;
+    }
     setSaving(true);
     try {
       const locs = locations.filter((l) => l.address.trim() || l.googleMapsUrl.trim());
@@ -328,6 +342,8 @@ function LocationSection() {
         locations: locs,
         address: locs[0]?.address || "",
         googleMapsUrl: locs[0]?.googleMapsUrl || "",
+        latitude: lat,
+        longitude: lng,
       });
       await refetch();
       queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
@@ -420,6 +436,39 @@ function LocationSection() {
             Agregar segunda ubicación
           </Button>
         )}
+
+        <div className="border-t pt-4 space-y-3">
+          <p className="text-sm font-semibold text-muted-foreground">Coordenadas (para búsqueda por cercanía)</p>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>Latitud</Label>
+              <Input
+                value={latitude}
+                onChange={(e) => setLatitude(e.target.value)}
+                placeholder="Ej. 20.6736"
+                inputMode="decimal"
+                data-testid="input-latitude"
+              />
+            </div>
+            <div>
+              <Label>Longitud</Label>
+              <Input
+                value={longitude}
+                onChange={(e) => setLongitude(e.target.value)}
+                placeholder="Ej. -103.3441"
+                inputMode="decimal"
+                data-testid="input-longitude"
+              />
+            </div>
+          </div>
+          {coordError && (
+            <p className="text-xs text-destructive" data-testid="text-coord-error">{coordError}</p>
+          )}
+          <p className="text-xs text-muted-foreground">
+            Tip: abre Google Maps, haz clic derecho en tu ubicación y copia las coordenadas que aparecen.
+          </p>
+        </div>
+
         <Button onClick={handleSave} disabled={saving} data-testid="button-save-location">
           {saving ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Save className="h-4 w-4 mr-1" />}
           Guardar
