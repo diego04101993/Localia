@@ -1,0 +1,105 @@
+Necesito agregar envío MANUAL de WhatsApp en el dashboard de sucursal, sin romper nada existente.
+
+IMPORTANTE:
+- NO quiero integración compleja con WhatsApp Business API todavía
+- NO quiero automatización real todavía
+- NO quiero refactor grande
+- Quiero la solución más simple, útil y segura
+- El envío debe ser manual usando enlace de WhatsApp con mensaje precargado
+
+CONTEXTO ACTUAL
+Ya existe una sección “Plantillas WhatsApp” en la pestaña Resumen.
+Ahí se guardan varias plantillas para mensajes como:
+- Plan vencido
+- Membresía por vencer
+- Sin clases disponibles
+- Cumpleaños
+
+También agregaré una plantilla nueva:
+- Renovaste tu plan
+
+Actualmente quiero que esas plantillas sirvan para envío MANUAL desde la pestaña Clientes.
+
+OBJETIVO EXACTO
+
+Quiero implementar una experiencia UX limpia así:
+
+1. En la pestaña Clientes, cada cliente debe tener una acción nueva:
+- Botón o ícono de WhatsApp
+
+2. Al hacer clic en ese botón, abrir un modal con:
+- Nombre del cliente
+- Teléfono del cliente
+- Selector de plantilla
+- Vista previa del mensaje ya con variables reemplazadas
+- Opción para editar manualmente el mensaje antes de enviarlo
+- Botón “Abrir WhatsApp”
+
+3. El botón “Abrir WhatsApp” debe abrir WhatsApp con el mensaje precargado usando wa.me o el formato correcto para WhatsApp web/app
+
+4. Debe usar los datos reales del cliente y reemplazar variables como:
+- {firstName}
+- {fullName}
+- {branchName}
+- {expiresAt}
+- {classesRemaining}
+- {classesTotal}
+- {planName}
+
+5. Agregar una nueva plantilla:
+- Renovaste tu plan
+
+Texto sugerido:
+Hola {firstName}, tu renovación en {branchName} quedó lista. Tu plan {planName} ya está activo y vence el {expiresAt}. ¡Gracias por continuar con nosotros!
+
+RECOMENDACIÓN UX
+
+La función principal debe vivir en:
+- Pestaña Clientes → acción por cliente
+
+Opcionalmente, si ya existe una pantalla de detalle del cliente:
+- agregar también ahí un botón “Enviar WhatsApp”
+
+Pero NO quiero que el envío principal viva en la pestaña Resumen.
+Resumen debe seguir siendo solo para administrar plantillas.
+
+ALCANCE
+Quiero que hagas solo esto:
+
+1. Auditar cómo están guardadas hoy las plantillas
+2. Confirmar si ya existe reemplazo de variables
+3. Agregar la plantilla “Renovaste tu plan”
+4. Agregar botón de WhatsApp por cliente en la pestaña Clientes
+5. Abrir modal con selector de plantilla + preview + edición manual
+6. Abrir WhatsApp con el mensaje precargado
+
+NO QUIERO TODAVÍA
+- envío automático real
+- cron jobs
+- integración con Meta / Twilio / WhatsApp Business API
+- refactor grande de clientes
+- cambios en reservas, membresías, contenido, perfil público o TV Mode
+
+DETALLES IMPORTANTES
+
+- Si el teléfono del cliente no existe o está vacío, mostrar mensaje claro
+- Limpiar el teléfono para usarlo correctamente en el link de WhatsApp
+- Mantener estilo visual consistente con el dashboard actual
+- No romper edición ni listado de clientes
+
+FORMATO DE RESPUESTA OBLIGATORIO
+
+Respóndeme así:
+1. Qué funciona hoy realmente en Plantillas WhatsApp
+2. Qué plantillas existen y cómo se guardan
+3. Si las variables ya se reemplazan o no
+4. Qué archivos corregiste
+5. Qué cambio hiciste en la pestaña Clientes
+6. Cómo implementaste el modal de WhatsApp
+7. Cómo generaste el enlace manual a WhatsApp
+8. Cómo agregaste la plantilla “Renovaste tu plan”
+9. Qué debo probar manualmente
+
+PRIORIDAD
+Haz el cambio mínimo, limpio y seguro.
+La meta es que la sucursal pueda enviar WhatsApp MANUALMENTE a cualquier cliente desde la pestaña Clientes usando plantillas guardadas.

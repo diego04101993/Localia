@@ -1,4 +1,5 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
+import { useAuth } from "@/lib/auth";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import {
   Users,
@@ -219,6 +220,127 @@ function normalizePhoneMX(phone: string): string {
   if (digits.startsWith("1") && digits.length === 11) return "52" + digits.slice(1);
   if (digits.length === 10) return "52" + digits;
   return digits;
+}
+
+type WaModalTarget = {
+  name: string;
+  lastName: string | null;
+  phone: string | null;
+  expiresAt: string | null;
+  classesRemaining: number | null;
+  classesTotal: number | null;
+  planName: string | null;
+};
+
+const TEMPLATE_LABELS: Record<string, string> = {
+  expired_membership: "Membresía vencida",
+  expiring_membership: "Membresía por vencer",
+  no_classes: "Sin clases disponibles",
+  birthday_greeting: "Feliz cumpleaños",
+  plan_renewal: "Renovaste tu plan",
+};
+
+function fillTemplate(template: string, vars: Record<string, string>): string {
+  return template.replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? `{${key}}`);
+}
+
+function WhatsAppModal({ target, branchName, onClose }: {
+  target: WaModalTarget | null;
+  branchName: string;
+  onClose: () => void;
+}) {
+  const [selectedTemplate, setSelectedTemplate] = useState("expired_membership");
+  const [message, setMessage] = useState("");
+
+  const { data: templates } = useQuery<Record<string, string>>({
+    queryKey: ["/api/branch/whatsapp-templates"],
+    enabled: !!target,
+  });
+
+  const vars = useMemo<Record<string, string>>(() => {
+    if (!target) return {};
+    return {
+      firstName: target.name,
+      fullName: displayName(target.name, target.lastName),
+      branchName,
+      expiresAt: target.expiresAt ? formatDate(target.expiresAt) ?? "" : "",
+      classesRemaining: target.classesRemaining?.toString() ?? "",
+      classesTotal: target.classesTotal?.toString() ?? "",
+      planName: target.planName ?? "",
+    };
+  }, [target, branchName]);
+
+  useEffect(() => {
+    if (templates && templates[selectedTemplate]) {
+      setMessage(fillTemplate(templates[selectedTemplate], vars));
+    }
+  }, [selectedTemplate, templates, vars]);
+
+  const phone = target?.phone ? normalizePhoneMX(target.phone) : null;
+  const waLink = phone && message.trim()
+    ? `https://wa.me/${phone}?text=${encodeURIComponent(message)}`
+    : null;
+
+  return (
+    <Dialog open={!!target} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent data-testid="dialog-whatsapp">
+        <DialogHeader>
+          <DialogTitle>Enviar WhatsApp</DialogTitle>
+          <DialogDescription>
+            {target ? `Para: ${displayName(target.name, target.lastName)}` : ""}
+          </DialogDescription>
+        </DialogHeader>
+        {!target?.phone ? (
+          <p className="text-sm text-muted-foreground py-2" data-testid="text-wa-no-phone">
+            Este cliente no tiene número de teléfono registrado. Edita su perfil para agregarlo.
+          </p>
+        ) : (
+          <div className="space-y-4">
+            <div className="flex items-center gap-2 text-sm">
+              <Phone className="h-3.5 w-3.5 text-muted-foreground" />
+              <span data-testid="text-wa-phone">{target.phone}</span>
+            </div>
+            <div>
+              <Label>Plantilla</Label>
+              <Select value={selectedTemplate} onValueChange={setSelectedTemplate}>
+                <SelectTrigger className="mt-1" data-testid="select-wa-template">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.entries(TEMPLATE_LABELS).map(([key, label]) => (
+                    <SelectItem key={key} value={key} data-testid={`option-wa-${key}`}>{label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Mensaje (puedes editarlo antes de enviar)</Label>
+              <Textarea
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                rows={5}
+                className="mt-1 text-sm"
+                data-testid="textarea-wa-message"
+              />
+            </div>
+          </div>
+        )}
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} data-testid="button-wa-cancel">Cancelar</Button>
+          {waLink && (
+            <Button
+              onClick={() => window.open(waLink, "_blank")}
+              className="bg-green-600 hover:bg-green-700 text-white"
+              data-testid="button-wa-open"
+            >
+              <MessageCircle className="h-4 w-4 mr-1" />
+              Abrir WhatsApp
+            </Button>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 function getInitials(name: string, lastName: string | null): string {
@@ -859,12 +981,13 @@ function ClientStatusSelector({ clientId, currentStatus }: { clientId: string; c
   );
 }
 
-function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete }: {
+function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, onWhatsApp }: {
   clientId: string | null;
   open: boolean;
   onOpenChange: (v: boolean) => void;
   onEdit: (id: string) => void;
   onDelete: (id: string, name: string) => void;
+  onWhatsApp?: (target: WaModalTarget) => void;
 }) {
   const { toast } = useToast();
   const [noteContent, setNoteContent] = useState("");
@@ -996,17 +1119,26 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete }:
                 <div className="flex items-center gap-2 text-sm text-muted-foreground mt-1">
                   <Phone className="h-3.5 w-3.5" />
                   <span data-testid="text-profile-phone">{profile.user.phone}</span>
-                  <a
-                    href={`https://wa.me/${normalizePhoneMX(profile.user.phone)}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  <button
+                    type="button"
                     className="inline-flex items-center gap-1 text-xs text-green-600 hover:text-green-700 hover:underline ml-1"
                     data-testid="client-whatsapp"
-                    onClick={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onWhatsApp?.({
+                        name: profile.user.name,
+                        lastName: profile.user.lastName,
+                        phone: profile.user.phone,
+                        expiresAt: profile.membership?.expiresAt ?? null,
+                        classesRemaining: profile.membership?.classesRemaining ?? null,
+                        classesTotal: profile.membership?.classesTotal ?? null,
+                        planName: profile.membership?.planName ?? null,
+                      });
+                    }}
                   >
                     <MessageCircle className="h-3 w-3" />
                     WhatsApp
-                  </a>
+                  </button>
                   <button
                     type="button"
                     className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 hover:underline"
@@ -1397,6 +1529,8 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete }:
 
 export default function ClientesTab() {
   const { toast } = useToast();
+  const { user } = useAuth();
+  const branchName = (user?.branch as any)?.name ?? "";
   const [search, setSearch] = useState("");
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [showInviteDialog, setShowInviteDialog] = useState(false);
@@ -1405,6 +1539,7 @@ export default function ClientesTab() {
   const [editClientId, setEditClientId] = useState<string | null>(null);
   const [showEditDialog, setShowEditDialog] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
+  const [waTarget, setWaTarget] = useState<WaModalTarget | null>(null);
 
   const { data: clients, isLoading } = useQuery<BranchClient[]>({
     queryKey: ["/api/branch/clients"],
@@ -1607,6 +1742,19 @@ export default function ClientesTab() {
                     <Button
                       variant="ghost"
                       size="sm"
+                      className="h-7 w-7 p-0 text-green-600 hover:text-green-700"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setWaTarget({ name: client.name, lastName: client.lastName, phone: client.phone, expiresAt: client.expiresAt, classesRemaining: client.classesRemaining, classesTotal: client.classesTotal, planName: client.planName });
+                      }}
+                      data-testid={`button-wa-client-${client.userId}`}
+                      title="Enviar WhatsApp"
+                    >
+                      <MessageCircle className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       className="h-7 w-7 p-0"
                       onClick={(e) => { e.stopPropagation(); openEdit(client.userId); }}
                       data-testid={`button-edit-client-${client.userId}`}
@@ -1651,7 +1799,9 @@ export default function ClientesTab() {
         onOpenChange={setShowProfileDialog}
         onEdit={openEdit}
         onDelete={openDelete}
+        onWhatsApp={setWaTarget}
       />
+      <WhatsAppModal target={waTarget} branchName={branchName} onClose={() => setWaTarget(null)} />
 
       <AlertDialog open={!!deleteTarget} onOpenChange={(o) => { if (!o) setDeleteTarget(null); }}>
         <AlertDialogContent>

@@ -2295,6 +2295,7 @@ export async function registerRoutes(
         expiring_membership: "Hola {firstName}, tu membresía en {branchName} vence pronto ({expiresAt}). ¡Renueva a tiempo!",
         no_classes: "Hola {firstName}, te has quedado sin clases disponibles en {branchName}. Contacta al estudio para renovar.",
         birthday_greeting: "Hola {firstName}, todo el equipo de {branchName} te desea un feliz cumpleaños. Te esperamos pronto!",
+        plan_renewal: "Hola {firstName}, tu renovación en {branchName} quedó lista. Tu plan {planName} ya está activo y vence el {expiresAt}. ¡Gracias por continuar con nosotros!",
       };
       const saved = (branch as any).whatsappTemplates || {};
       res.json({ ...defaults, ...saved });
@@ -2311,7 +2312,7 @@ export async function registerRoutes(
       if (!templates || typeof templates !== "object") {
         return res.status(400).json({ message: "Datos inválidos" });
       }
-      const allowed = ["expired_membership", "expiring_membership", "no_classes", "booking_confirmed", "birthday_greeting"];
+      const allowed = ["expired_membership", "expiring_membership", "no_classes", "booking_confirmed", "birthday_greeting", "plan_renewal"];
       const filtered: Record<string, string> = {};
       for (const key of allowed) {
         if (typeof templates[key] === "string" && templates[key].trim().length > 0) {
