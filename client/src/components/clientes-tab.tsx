@@ -172,6 +172,13 @@ function timeAgo(dateStr: string | null) {
   return `Hace ${Math.floor(days / 30)} meses`;
 }
 
+function isBirthdayToday(birthDate: string | null): boolean {
+  if (!birthDate) return false;
+  const today = new Date();
+  const [, monthStr, dayStr] = birthDate.split("-");
+  return parseInt(monthStr) === today.getMonth() + 1 && parseInt(dayStr) === today.getDate();
+}
+
 function calcAge(birthDate: string | null): number | null {
   if (!birthDate) return null;
   const birth = new Date(birthDate);
@@ -1792,7 +1799,7 @@ export default function ClientesTab() {
                 <div className="flex items-center gap-3">
                   <ClientAvatar avatarUrl={client.avatarUrl} name={client.name} lastName={client.lastName} size="md" />
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <p className="font-medium text-sm truncate" data-testid={`text-client-name-${client.userId}`}>
                         {displayName(client.name, client.lastName)}
                       </p>
@@ -1803,6 +1810,11 @@ export default function ClientesTab() {
                       >
                         {clientStatusLabel(client.clientStatus)}
                       </Badge>
+                      {isBirthdayToday(client.birthDate) && (
+                        <span className="inline-flex items-center gap-0.5 text-[10px] text-pink-600 font-medium bg-pink-50 dark:bg-pink-950/40 px-1.5 py-0 rounded-full border border-pink-200 dark:border-pink-800" data-testid={`badge-birthday-${client.userId}`}>
+                          🎂 Hoy cumple
+                        </span>
+                      )}
                       {client.hasDebt && (
                         <span className="inline-flex items-center gap-0.5 text-[10px] text-red-500 font-medium" data-testid={`badge-debt-${client.userId}`}>
                           <DollarSign className="h-3 w-3" />

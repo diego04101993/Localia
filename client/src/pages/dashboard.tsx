@@ -172,6 +172,13 @@ function normalizePhoneMX(phone: string): string {
   return digits;
 }
 
+function isBirthdayToday(birthDate: string): boolean {
+  if (!birthDate) return false;
+  const today = new Date();
+  const [, monthStr, dayStr] = birthDate.split("-");
+  return parseInt(monthStr) === today.getMonth() + 1 && parseInt(dayStr) === today.getDate();
+}
+
 function renderTemplate(template: string, vars: Record<string, string>): string {
   return template.replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? "");
 }
@@ -198,6 +205,58 @@ function WhatsAppButton({ phone, template, vars, testId }: { phone: string | nul
       <MessageCircle className="h-3 w-3 mr-0.5" />
       WA
     </Button>
+  );
+}
+
+function TodayBirthdaysSection({ alerts, branchName, whatsappTemplates, onViewClient }: { alerts: AlertsData | undefined; branchName: string; whatsappTemplates: WhatsAppTemplates; onViewClient: (userId: string) => void }) {
+  const todayBirthdays = (alerts?.upcomingBirthdays ?? []).filter((b) => isBirthdayToday(b.birthDate));
+  if (todayBirthdays.length === 0) return null;
+
+  return (
+    <Card className="border-pink-200 dark:border-pink-800 bg-pink-50/50 dark:bg-pink-950/20" data-testid="card-today-birthdays">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center gap-2 text-pink-700 dark:text-pink-400">
+          <Cake className="h-4 w-4" />
+          Cumpleaños de hoy
+          <span className="ml-1 inline-flex items-center justify-center h-5 w-5 rounded-full bg-pink-500 text-white text-[11px] font-bold">{todayBirthdays.length}</span>
+        </CardTitle>
+        <p className="text-xs text-muted-foreground">Sugerencia: ofrécele una promoción o beneficio especial 🎁</p>
+      </CardHeader>
+      <CardContent className="p-4 pt-0">
+        <div className="space-y-2">
+          {todayBirthdays.map((b) => {
+            const firstName = b.name.split(" ")[0];
+            const fullName = [b.name, b.lastName].filter(Boolean).join(" ");
+            const template = whatsappTemplates.birthday_greeting || "Hola {firstName}, todo el equipo de {branchName} te desea un feliz cumpleaños. ¡Te esperamos pronto!";
+            return (
+              <div key={b.userId} className="flex items-center justify-between gap-2 p-2 rounded-lg bg-white dark:bg-card border border-pink-100 dark:border-pink-900" data-testid={`birthday-today-${b.userId}`}>
+                <div className="flex items-center gap-2">
+                  <span className="text-lg">🎂</span>
+                  <div>
+                    <p className="text-sm font-medium" data-testid={`text-birthday-name-${b.userId}`}>{fullName}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <WhatsAppButton
+                    phone={b.phone}
+                    template={template}
+                    vars={{ firstName, fullName, branchName }}
+                    testId={`button-wa-birthday-today-${b.userId}`}
+                  />
+                  <button
+                    className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2"
+                    onClick={() => onViewClient(b.userId)}
+                    data-testid={`button-view-birthday-today-${b.userId}`}
+                  >
+                    Ver perfil
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -1069,6 +1128,8 @@ function ResumenTab({ branchStats, branchStatus, branchSlug, branchId, branchNam
           </CardContent>
         </Card>
       </div>
+
+      <TodayBirthdaysSection alerts={alerts} branchName={branchName} whatsappTemplates={whatsappTemplates || {}} onViewClient={onViewClient} />
 
       <AlertsSection alerts={alerts} isLoading={alertsLoading} branchName={branchName} whatsappTemplates={whatsappTemplates || {}} onViewClient={onViewClient} />
 

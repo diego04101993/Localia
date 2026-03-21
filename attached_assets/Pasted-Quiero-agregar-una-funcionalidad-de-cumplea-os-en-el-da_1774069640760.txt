@@ -1,0 +1,78 @@
+Quiero agregar una funcionalidad de cumpleaños en el dashboard de sucursal sin romper nada existente.
+
+OBJETIVO:
+Mostrar a la sucursal qué clientes cumplen años hoy y permitir felicitarlos fácilmente.
+
+IMPORTANTE:
+- NO romper ninguna funcionalidad existente
+- Reutilizar el sistema de WhatsApp ya implementado
+- Cambios simples, seguros y modulares
+
+==================================================
+TAREA 1: DETECTAR CUMPLEAÑOS
+==================================================
+
+En el modelo de cliente:
+- usar campo existente de fecha de nacimiento (si no existe, agregarlo opcional)
+
+Crear lógica:
+- obtener fecha actual
+- filtrar clientes donde:
+  día y mes coincidan con hoy
+
+==================================================
+TAREA 2: MOSTRAR EN DASHBOARD (RESUMEN)
+==================================================
+
+Agregar un bloque nuevo en la pestaña Resumen:
+
+Título:
+“🎉 Cumpleaños de hoy”
+
+Contenido:
+- lista de clientes que cumplen hoy
+- mostrar nombre
+
+Si no hay:
+- mostrar “No hay cumpleaños hoy”
+
+Cada cliente debe tener botón:
+“Enviar felicitación”
+
+==================================================
+TAREA 3: REUTILIZAR WHATSAPP
+==================================================
+
+Al hacer click en “Enviar felicitación”:
+- abrir el mismo modal de WhatsApp ya existente
+- seleccionar automáticamente plantilla: “Feliz cumpleaños”
+- precargar mensaje
+
+==================================================
+TAREA 4: BADGE EN LISTA DE CLIENTES
+==================================================
+
+En la pestaña Clientes:
+- si un cliente cumple hoy:
+  mostrar badge:
+  “🎂 Hoy cumple”
+
+==================================================
+TAREA 5: UX EXTRA (OPCIONAL)
+==================================================
+
+Agregar texto pequeño:
+“Sugerencia: ofrécele promoción o beneficio especial”
+
+==================================================
+FORMATO DE RESPUESTA
+
+1. Cómo detectas cumpleaños
+2. Dónde agregaste el bloque en Resumen
+3. Cómo conectaste el botón con WhatsApp
+4. Cómo agregaste el badge en Clientes
+5. Qué archivos modificaste
+6. Qué debo probar
+
+PRIORIDAD:
+Que sea visual, útil y conectado con WhatsApp ya existente.
