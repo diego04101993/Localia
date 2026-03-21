@@ -1,0 +1,69 @@
+La funcionalidad de cumpleaños NO está visible y NO quedó bien implementada.
+
+PROBLEMA ACTUAL
+- En la pestaña Resumen no aparece ningún bloque de cumpleaños
+- En la pestaña Clientes no aparece ningún badge de cumpleaños
+- En el detalle del cliente tampoco veo nada relacionado a cumpleaños
+- Por lo tanto, la funcionalidad no está terminada o no está conectada
+
+OBJETIVO EXACTO
+Quiero que implementes correctamente y de forma visible la función de cumpleaños, sin romper nada más.
+
+REQUISITOS OBLIGATORIOS
+
+1. En la pestaña Resumen debe aparecer SIEMPRE un bloque llamado:
+- “Cumpleaños de hoy”
+
+2. Ese bloque debe comportarse así:
+- si hoy no hay cumpleaños: mostrar “No hay cumpleaños hoy”
+- si sí hay cumpleaños: mostrar lista de clientes que cumplen hoy
+
+3. Cada cliente que cumpla hoy debe mostrar:
+- nombre
+- botón “Enviar felicitación”
+Ese botón debe reutilizar el modal de WhatsApp y seleccionar automáticamente la plantilla de cumpleaños
+
+4. En la pestaña Clientes:
+- si un cliente cumple hoy, mostrar badge:
+  “🎂 Hoy cumple”
+
+5. Si hoy no hay cumpleaños, no mostrar badge en clientes, pero el bloque de Resumen sí debe seguir apareciendo con el texto “No hay cumpleaños hoy”
+
+6. Usar el campo de fecha de nacimiento real del cliente
+Comparar solo:
+- día
+- mes
+contra la fecha actual
+
+7. Si el campo de fecha de nacimiento no existe o no está bien conectado, arréglalo
+
+8. No romper:
+- clientes
+- membresías
+- reservas
+- contenido
+- perfil público
+- TV Mode
+- WhatsApp manual
+
+IMPORTANTE
+No quiero que esta función quede escondida dentro del detalle del cliente.
+La prioridad principal es:
+- Resumen
+- Clientes
+
+FORMATO DE RESPUESTA OBLIGATORIO
+Respóndeme así:
+1. Causa raíz exacta de por qué no aparecía
+2. Qué archivo(s) corregiste
+3. Cómo detectas cumpleaños
+4. Cómo agregaste el bloque visible en Resumen
+5. Cómo agregaste el badge en Clientes
+6. Cómo conectaste “Enviar felicitación” con WhatsApp
+7. Qué debo probar manualmente
+
+PRUEBA OBLIGATORIA
+Para que se vea claramente funcionando, usa un cliente de prueba con fecha de nacimiento de hoy y confirma que:
+- aparece en Resumen
+- aparece con badge en Clientes
+- se puede abrir WhatsApp con la plantilla de cumpleaños
