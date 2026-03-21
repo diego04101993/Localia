@@ -1,0 +1,119 @@
+Necesito hacer 2 correcciones puntuales en el dashboard de sucursal, sin romper nada existente.
+
+IMPORTANTE:
+- NO quiero refactor grande
+- NO romper Clientes, Membresías, Reservas, Contenido, Perfil Público, TV Mode ni la app del cliente
+- Quiero cambios mínimos, limpios y seguros
+
+CONTEXTO
+Ya se implementó correctamente el envío manual de WhatsApp desde la pestaña Clientes:
+- aparece ícono de WhatsApp por cliente
+- abre modal
+- permite elegir plantilla
+- hace preview del mensaje
+- abre WhatsApp con el mensaje precargado
+
+Eso ya quedó bien.
+
+==================================================
+TAREA 1: QUITAR “PLANTILLAS WHATSAPP” DE RESUMEN
+==================================================
+
+Ahora que el flujo útil de WhatsApp ya vive en la pestaña Clientes, la sección “Plantillas WhatsApp” en la pestaña Resumen ya no debe mostrarse.
+
+Quiero:
+1. Eliminar visualmente esa sección de la pestaña Resumen
+2. NO borrar la lógica interna ni las plantillas guardadas si todavía son necesarias para el modal de WhatsApp en Clientes
+3. Solo quitarla del Resumen para no duplicar funciones ni confundir al usuario
+
+IMPORTANTE:
+- Si las plantillas del modal de Clientes dependen de esa configuración, conserva backend/modelo
+- Solo quitar el bloque visual de Resumen
+
+==================================================
+TAREA 2: CREDENCIALES DE ACCESO DEL CLIENTE
+==================================================
+
+Cuando la sucursal crea un cliente, necesito que también pueda gestionar su acceso a la app del cliente.
+
+OBJETIVO
+Al crear un cliente, el sistema debe:
+1. Generar o asignar credenciales de acceso para ese cliente
+2. Mostrar esas credenciales al terminar de crear el cliente
+3. Mostrar también el link de acceso de la app del negocio/sucursal
+4. Permitir copiar fácilmente esos datos
+5. Poder reenviarlos después si el cliente los pierde
+6. Poder resetear/generar nueva contraseña temporal desde el dashboard de sucursal
+
+REQUERIMIENTO EXACTO
+
+A) Al crear cliente:
+- después de guardar, mostrar modal o confirmación con:
+  - nombre del cliente
+  - usuario de acceso
+  - contraseña temporal
+  - link de acceso a la app del cliente
+- botones:
+  - Copiar acceso
+  - Enviar acceso por WhatsApp
+  - Cerrar
+
+B) En la vista de clientes o detalle del cliente:
+agregar una sección o acción llamada por ejemplo:
+- “Acceso del cliente”
+o
+- “Credenciales”
+
+Con opciones:
+- ver usuario actual
+- generar nueva contraseña temporal
+- copiar acceso
+- enviar acceso por WhatsApp
+
+C) Si el cliente cambió su contraseña y la olvidó:
+- la sucursal debe poder resetearla desde el dashboard
+- se genera una nueva contraseña temporal
+- se puede copiar o enviar por WhatsApp
+
+D) El link que se debe mostrar debe llevar al perfil/app del negocio correspondiente
+ejemplo:
+- /app/natacion
+o el link absoluto si ya existe base URL configurada
+
+REGLAS IMPORTANTES
+- No romper el alta actual de clientes
+- No romper la app del cliente
+- No romper login existente si ya hay lógica parcial
+- Reutilizar la estructura actual de usuarios/clientes si ya existe
+- Si hoy no existe contraseña separada, implementa la forma más segura y mínima posible
+- No exponer contraseñas antiguas si ya están hasheadas; si no se pueden leer, usar “restablecer contraseña temporal”
+
+RECOMENDACIÓN UX
+Si la contraseña no puede mostrarse porque está protegida:
+- mostrar solo usuario
+- agregar botón “Generar nueva contraseña temporal”
+- luego mostrar esa nueva contraseña una sola vez en modal
+
+IMPORTANTE DE SEGURIDAD
+- No mostrar contraseñas viejas almacenadas si eso no es seguro
+- Mejor usar reset / nueva temporal si aplica
+
+FORMATO DE RESPUESTA OBLIGATORIO
+
+Respóndeme así:
+1. Qué quitaste del Resumen
+2. Qué lógica conservaste para WhatsApp
+3. Cómo funciona hoy el acceso del cliente
+4. Qué archivos corregiste
+5. Qué hiciste al crear cliente
+6. Cómo implementaste usuario / contraseña temporal / link
+7. Cómo funciona el reset de contraseña
+8. Cómo se copia o envía acceso por WhatsApp
+9. Qué debo probar manualmente
+
+PRIORIDAD
+Haz el cambio mínimo, seguro y profesional.
+La meta es:
+- dejar Resumen más limpio
+- dejar Clientes completo con acceso y recuperación de acceso
+- no romper nada del sistema actual

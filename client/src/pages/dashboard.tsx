@@ -1072,8 +1072,6 @@ function ResumenTab({ branchStats, branchStatus, branchSlug, branchId, branchNam
 
       <AlertsSection alerts={alerts} isLoading={alertsLoading} branchName={branchName} whatsappTemplates={whatsappTemplates || {}} onViewClient={onViewClient} />
 
-      <WhatsAppTemplatesSection branchName={branchName} />
-
       <AnnouncementsSection branchId={branchId} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

@@ -1137,6 +1137,35 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/branch/clients/:id/reset-password", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const clientId = req.params.id as string;
+    try {
+      const membership = await storage.getMembership(clientId, actor.branchId);
+      if (!membership) return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+
+      const client = await storage.getUser(clientId);
+      if (!client) return res.status(404).json({ message: "Usuario no encontrado" });
+
+      const newPassword = generateSecurePassword(12);
+      const hash = await bcrypt.hash(newPassword, 10);
+      await storage.updateUserPassword(clientId, hash);
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "RESET_CLIENT_PASSWORD",
+        branchId: actor.branchId,
+        metadata: { clientId, clientEmail: client.email },
+      });
+
+      console.log(`[RESET_CLIENT_PASSWORD] Reset password for ${client.email} by ${actor.email}`);
+      res.json({ email: client.email, password: newPassword });
+    } catch (err: any) {
+      console.error(`[RESET_CLIENT_PASSWORD] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al resetear contraseña" });
+    }
+  });
+
   app.get("/api/branch/invite-link", requireBranchAdmin, async (req, res) => {
     const user = req.user as any;
     try {

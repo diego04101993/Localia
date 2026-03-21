@@ -31,6 +31,8 @@ import {
   ImageOff,
   MessageCircle,
   DollarSign,
+  KeyRound,
+  RefreshCw,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -454,6 +456,9 @@ function AvatarUploadSection({ clientId, avatarUrl, name, lastName }: { clientId
 
 function CreateClientDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
   const { toast } = useToast();
+  const { user } = useAuth();
+  const branchSlug = (user?.branch as any)?.slug ?? "";
+  const appLink = branchSlug ? `${window.location.origin}/app/${branchSlug}` : "";
   const [name, setName] = useState("");
   const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
@@ -508,33 +513,47 @@ function CreateClientDialog({ open, onOpenChange }: { open: boolean; onOpenChang
   }
 
   if (createdPassword) {
+    const clientName = [name, lastName].filter(Boolean).join(" ");
+    const accessText = `Hola ${name}, aquí están tus datos de acceso para ${(user?.branch as any)?.name ?? "el estudio"}:\n\nUsuario (email): ${email}\nContraseña: ${createdPassword}${appLink ? `\nApp: ${appLink}` : ""}`;
+    const waPhone = phone ? normalizePhoneMX(phone) : null;
     return (
       <Dialog open={open} onOpenChange={() => resetAndClose()}>
-        <DialogContent>
+        <DialogContent data-testid="dialog-credentials">
           <DialogHeader>
             <DialogTitle>Cliente creado</DialogTitle>
-            <DialogDescription>Comparte estas credenciales con el cliente</DialogDescription>
+            <DialogDescription>Comparte las credenciales de acceso con {clientName}</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
-            <div className="bg-muted rounded-md p-3 space-y-2 text-sm">
-              <p><span className="font-medium">Email:</span> {email}</p>
-              <p><span className="font-medium">Contraseña:</span> {createdPassword}</p>
+            <div className="bg-muted rounded-md p-3 space-y-2 text-sm font-mono" data-testid="box-credentials">
+              <p><span className="font-sans font-medium">Email:</span> {email}</p>
+              <p><span className="font-sans font-medium">Contraseña:</span> {createdPassword}</p>
+              {appLink && <p><span className="font-sans font-medium">App:</span> {appLink}</p>}
             </div>
             <Button
               variant="outline"
               className="w-full"
               onClick={() => {
-                navigator.clipboard.writeText(`Email: ${email}\nContraseña: ${createdPassword}`);
+                navigator.clipboard.writeText(accessText);
                 toast({ title: "Copiado al portapapeles" });
               }}
               data-testid="button-copy-credentials"
             >
               <Copy className="h-4 w-4 mr-2" />
-              Copiar credenciales
+              Copiar acceso completo
             </Button>
+            {waPhone && (
+              <Button
+                className="w-full bg-green-600 hover:bg-green-700 text-white"
+                onClick={() => window.open(`https://wa.me/${waPhone}?text=${encodeURIComponent(accessText)}`, "_blank")}
+                data-testid="button-wa-credentials"
+              >
+                <MessageCircle className="h-4 w-4 mr-2" />
+                Enviar acceso por WhatsApp
+              </Button>
+            )}
           </div>
           <DialogFooter>
-            <Button onClick={resetAndClose} data-testid="button-close-credentials">Cerrar</Button>
+            <Button variant="outline" onClick={resetAndClose} data-testid="button-close-credentials">Cerrar</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -990,9 +1009,13 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
   onWhatsApp?: (target: WaModalTarget) => void;
 }) {
   const { toast } = useToast();
+  const { user } = useAuth();
+  const branchSlug = (user?.branch as any)?.slug ?? "";
+  const appLink = branchSlug ? `${window.location.origin}/app/${branchSlug}` : "";
   const [noteContent, setNoteContent] = useState("");
   const [showAllNotes, setShowAllNotes] = useState(false);
   const [showPlanSelect, setShowPlanSelect] = useState(false);
+  const [resetPasswordResult, setResetPasswordResult] = useState<{ email: string; password: string } | null>(null);
 
   const { data: profile, isLoading } = useQuery<ClientProfile>({
     queryKey: ["/api/branch/clients", clientId],
@@ -1031,6 +1054,20 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
     },
     onError: (err: any) => {
       toast({ title: "Error", description: err.message || "Error al registrar asistencia", variant: "destructive" });
+    },
+  });
+
+  const resetPasswordMutation = useMutation({
+    mutationFn: async () => {
+      const resp = await apiRequest("POST", `/api/branch/clients/${clientId}/reset-password`);
+      return resp.json();
+    },
+    onSuccess: (data: { email: string; password: string }) => {
+      setResetPasswordResult(data);
+      toast({ title: "Contraseña reiniciada" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message || "Error al reiniciar contraseña", variant: "destructive" });
     },
   });
 
@@ -1464,6 +1501,80 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
               {!profile.user.emergencyContactName && !profile.user.emergencyContactPhone && !profile.user.medicalNotes && !profile.user.injuriesNotes && !profile.user.medicalWarnings && !profile.user.parqAccepted && (
                 <p className="text-xs text-muted-foreground italic">Sin datos de salud registrados</p>
               )}
+            </div>
+
+            <div>
+              <h4 className="text-sm font-medium mb-2 flex items-center gap-1.5">
+                <KeyRound className="h-3.5 w-3.5" />
+                Acceso del cliente
+              </h4>
+              <div className="space-y-2">
+                <div className="bg-muted rounded-md p-3 space-y-1 text-sm">
+                  <p><span className="font-medium">Email:</span> {profile.user.email}</p>
+                  {appLink && <p className="text-muted-foreground"><span className="font-medium text-foreground">App:</span> {appLink}</p>}
+                </div>
+                {resetPasswordResult ? (
+                  <div className="space-y-2">
+                    <div className="bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-md p-3 space-y-1 text-sm font-mono" data-testid="box-reset-credentials">
+                      <p><span className="font-sans font-medium">Email:</span> {resetPasswordResult.email}</p>
+                      <p><span className="font-sans font-medium">Contraseña nueva:</span> {resetPasswordResult.password}</p>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1"
+                        onClick={() => {
+                          const text = `Email: ${resetPasswordResult.email}\nContraseña: ${resetPasswordResult.password}${appLink ? `\nApp: ${appLink}` : ""}`;
+                          navigator.clipboard.writeText(text);
+                          toast({ title: "Copiado al portapapeles" });
+                        }}
+                        data-testid="button-copy-reset-credentials"
+                      >
+                        <Copy className="h-3.5 w-3.5 mr-2" />
+                        Copiar
+                      </Button>
+                      {profile.user.phone && (
+                        <Button
+                          size="sm"
+                          className="flex-1 bg-green-600 hover:bg-green-700 text-white"
+                          onClick={() => {
+                            const firstName = profile.user.name.split(" ")[0];
+                            const branchName = (user?.branch as any)?.name ?? "el estudio";
+                            const text = `Hola ${firstName}, tu contraseña de acceso en ${branchName} fue reiniciada.\n\nUsuario (email): ${resetPasswordResult.email}\nContraseña: ${resetPasswordResult.password}${appLink ? `\nApp: ${appLink}` : ""}`;
+                            const wa = normalizePhoneMX(profile.user.phone!);
+                            window.open(`https://wa.me/${wa}?text=${encodeURIComponent(text)}`, "_blank");
+                          }}
+                          data-testid="button-wa-reset-credentials"
+                        >
+                          <MessageCircle className="h-3.5 w-3.5 mr-2" />
+                          Enviar por WhatsApp
+                        </Button>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setResetPasswordResult(null)}
+                        data-testid="button-hide-reset-credentials"
+                      >
+                        Ocultar
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full"
+                    onClick={() => resetPasswordMutation.mutate()}
+                    disabled={resetPasswordMutation.isPending}
+                    data-testid="button-reset-password"
+                  >
+                    {resetPasswordMutation.isPending ? <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5 mr-2" />}
+                    Generar nueva contraseña
+                  </Button>
+                )}
+              </div>
             </div>
 
             <div>
