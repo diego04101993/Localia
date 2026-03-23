@@ -564,7 +564,7 @@ function ImpersonateButton({ branch, hasAdmin }: { branch: Branch; hasAdmin?: bo
       return resp.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
+      queryClient.clear();
       toast({ title: `Modo soporte: ${branch.name}` });
       setTimeout(() => {
         refetch();

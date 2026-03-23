@@ -278,6 +278,8 @@ export class DatabaseStorage implements IStorage {
         activeMemberships: sql<number>`COUNT(CASE WHEN ${memberships.status} = 'active' THEN 1 END)`.as("active_memberships"),
       })
       .from(memberships)
+      .innerJoin(branches, eq(memberships.branchId, branches.id))
+      .where(isNull(branches.deletedAt))
       .groupBy(memberships.branchId);
 
     return results.map((r) => ({

@@ -1,0 +1,122 @@
+Necesito corregir 2 bugs puntuales en el dashboard del Super Admin, sin romper nada del dashboard de sucursal ni de la app del cliente.
+
+IMPORTANTE:
+- NO quiero refactor grande
+- NO romper dashboard de sucursal
+- NO romper clientes, membresías, reservas, contenido, perfil público ni TV Mode
+- NO romper login ni credenciales
+- Solo corregir estas 2 cosas de forma precisa y segura
+
+==================================================
+BUG 1: CONTEOS DEL SUPER ADMIN NO COINCIDEN
+==================================================
+
+En el dashboard del Super Admin, los contadores superiores muestran:
+- Sucursales
+- Activas
+- Clientes (activos)
+- Membresías activas
+
+Sucursales y Activas sí coinciden.
+
+Pero:
+- Clientes (activos)
+- Membresías activas
+
+NO coinciden con la suma real de clientes y membresías que tiene cada sucursal.
+
+OBJETIVO
+Corregir la lógica de estos 2 contadores para que:
+- Clientes (activos) sea la suma real correcta de clientes activos de todas las sucursales
+- Membresías activas sea la suma real correcta de membresías activas de todas las sucursales
+
+IMPORTANTE
+- Revisar si hoy está contando mal por duplicados, filtros incorrectos o consultas globales erróneas
+- Quiero que el número mostrado arriba coincida exactamente con la suma de las tarjetas de sucursales
+
+==================================================
+BUG 2: EL SUPER ADMIN ENTRA A SUCURSALES DISTINTAS PERO VE SIEMPRE LOS DATOS DE NATACION
+==================================================
+
+Este bug es CRÍTICO.
+
+Contexto real:
+- Desde el dashboard del Super Admin puedo ver varias sucursales
+- Cada sucursal tiene su propio nombre, slug, correo y contraseña
+- Si doy clic al icono de “entrar como admin” o soporte en una sucursal, sí entra al dashboard de sucursal
+- Pero si entro a una sucursal distinta (por ejemplo Hyrox), me muestra toda la información de la sucursal Natacion:
+  - clientes
+  - clases
+  - fotos
+  - contenido
+  - posts
+  - etc.
+
+Eso significa que el sistema NO está aislando correctamente la sucursal al entrar desde Super Admin.
+
+OBJETIVO EXACTO
+Quiero que cuando el Super Admin entre al dashboard de una sucursal:
+- vea ÚNICAMENTE la información real de ESA sucursal
+- no reutilice el contexto, contenido ni branchId de otra sucursal
+- no se arrastre la información de Natacion a otras sucursales
+
+ESTO DEBE FUNCIONAR ASÍ:
+- Entrar a Natacion → ver solo Natacion
+- Entrar a Hyrox → ver solo Hyrox
+- Entrar a Estética Luz → ver solo Estética Luz
+- etc.
+
+REGLA CRÍTICA
+Cada sucursal debe ser completamente independiente.
+
+Quiero que revises cuidadosamente:
+1. cómo funciona hoy el “entrar como admin” / soporte / impersonación
+2. cómo se guarda el contexto de sucursal actual
+3. si el frontend reutiliza datos cacheados de la sucursal anterior
+4. si el backend está ignorando el branchId correcto
+5. si hay un session variable / localStorage / token / context mal fijado a Natacion
+
+==================================================
+ALCANCE
+==================================================
+
+Quiero SOLO estos dos arreglos:
+1. corregir los contadores del Super Admin
+2. corregir el aislamiento real entre sucursales al entrar como admin
+
+NO QUIERO
+- cambios visuales grandes
+- tocar dashboard de sucursal que ya funciona
+- tocar la app del cliente
+- tocar reservas, membresías, contenido o TV Mode fuera del contexto de filtrado correcto
+- no cambiar credenciales ni login salvo que sea estrictamente necesario para fijar bien el contexto de sucursal
+
+==================================================
+FORMATO DE RESPUESTA OBLIGATORIO
+==================================================
+
+Respóndeme así:
+
+1. Causa raíz exacta del conteo incorrecto
+2. Cómo corregiste clientes activos y membresías activas en el Super Admin
+3. Causa raíz exacta del problema de sucursales mezcladas
+4. Qué parte estaba arrastrando siempre los datos de Natacion
+5. Qué archivos corregiste
+6. Qué cambio mínimo hiciste para fijar correctamente el contexto/branch al entrar como admin
+7. Por qué no rompe nada del dashboard de sucursal
+8. Qué pruebas manuales debo hacer
+
+==================================================
+PRUEBAS OBLIGATORIAS
+==================================================
+
+Quiero que confirmes que después del fix:
+- el total de clientes activos coincide con la suma real de todas las sucursales
+- el total de membresías activas coincide con la suma real de todas las sucursales
+- entrar a Natacion muestra solo Natacion
+- entrar a Hyrox muestra solo Hyrox
+- entrar a otra sucursal distinta NO muestra datos de Natacion
+- cambiar entre sucursales desde Super Admin actualiza correctamente el contexto sin arrastrar datos previos
+
+PRIORIDAD ABSOLUTA:
+Arreglar el aislamiento entre sucursales sin romper lo demás.

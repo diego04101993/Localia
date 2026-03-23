@@ -1226,7 +1226,7 @@ export default function DashboardPage() {
       await apiRequest("POST", "/api/superadmin/impersonate/end");
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
+      queryClient.clear();
       toast({ title: "Modo soporte finalizado" });
       setTimeout(() => {
         refetch();
