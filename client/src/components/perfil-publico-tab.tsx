@@ -294,7 +294,7 @@ function GallerySection() {
   );
 }
 
-type LocEntry = { name: string; address: string; googleMapsUrl: string };
+type LocEntry = { name: string; address: string; googleMapsUrl: string; lat: string; lng: string };
 
 function LocationSection() {
   const { toast } = useToast();
@@ -302,15 +302,27 @@ function LocationSection() {
   const branch = user?.branch as Branch | null;
 
   const initLocations = (): LocEntry[] => {
-    const saved = (branch as any)?.locations as LocEntry[] | null;
-    if (saved && saved.length > 0) return saved;
-    return [{ name: "", address: branch?.address || "", googleMapsUrl: (branch as any)?.googleMapsUrl || "" }];
+    const saved = (branch as any)?.locations as any[] | null;
+    if (saved && saved.length > 0) {
+      return saved.map((l: any, i: number) => ({
+        name: l.name || "",
+        address: l.address || "",
+        googleMapsUrl: l.googleMapsUrl || "",
+        lat: l.lat !== undefined && l.lat !== null ? String(l.lat) : (i === 0 ? ((branch as any)?.latitude?.toString() || "") : ""),
+        lng: l.lng !== undefined && l.lng !== null ? String(l.lng) : (i === 0 ? ((branch as any)?.longitude?.toString() || "") : ""),
+      }));
+    }
+    return [{
+      name: "",
+      address: branch?.address || "",
+      googleMapsUrl: (branch as any)?.googleMapsUrl || "",
+      lat: (branch as any)?.latitude?.toString() || "",
+      lng: (branch as any)?.longitude?.toString() || "",
+    }];
   };
 
   const [locations, setLocations] = useState<LocEntry[]>(initLocations);
-  const [latitude, setLatitude] = useState<string>((branch as any)?.latitude?.toString() || "");
-  const [longitude, setLongitude] = useState<string>((branch as any)?.longitude?.toString() || "");
-  const [coordError, setCoordError] = useState<string>("");
+  const [coordErrors, setCoordErrors] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
 
   const update = (idx: number, field: keyof LocEntry, value: string) => {
@@ -318,32 +330,49 @@ function LocationSection() {
   };
 
   const addSecond = () => {
-    if (locations.length < 2) setLocations((prev) => [...prev, { name: "", address: "", googleMapsUrl: "" }]);
+    if (locations.length < 2) setLocations((prev) => [...prev, { name: "", address: "", googleMapsUrl: "", lat: "", lng: "" }]);
   };
 
   const removeSecond = () => setLocations((prev) => prev.slice(0, 1));
 
   const handleSave = async () => {
-    setCoordError("");
-    const lat = latitude.trim() ? parseFloat(latitude) : null;
-    const lng = longitude.trim() ? parseFloat(longitude) : null;
-    if (latitude.trim() && (isNaN(lat!) || lat! < -90 || lat! > 90)) {
-      setCoordError("Latitud inválida. Debe ser un número entre -90 y 90.");
-      return;
+    const errors: string[] = [];
+    for (let i = 0; i < locations.length; i++) {
+      const loc = locations[i];
+      const label = i === 0 ? "principal" : "segunda";
+      const latVal = loc.lat.trim() ? parseFloat(loc.lat) : null;
+      const lngVal = loc.lng.trim() ? parseFloat(loc.lng) : null;
+      if (loc.lat.trim() && (isNaN(latVal!) || latVal! < -90 || latVal! > 90)) {
+        errors.push(`Latitud de la ubicación ${label} inválida. Debe ser entre -90 y 90.`);
+      }
+      if (loc.lng.trim() && (isNaN(lngVal!) || lngVal! < -180 || lngVal! > 180)) {
+        errors.push(`Longitud de la ubicación ${label} inválida. Debe ser entre -180 y 180.`);
+      }
     }
-    if (longitude.trim() && (isNaN(lng!) || lng! < -180 || lng! > 180)) {
-      setCoordError("Longitud inválida. Debe ser un número entre -180 y 180.");
-      return;
-    }
+    setCoordErrors(errors);
+    if (errors.length > 0) return;
+
     setSaving(true);
     try {
-      const locs = locations.filter((l) => l.address.trim() || l.googleMapsUrl.trim());
+      const locs = locations
+        .filter((l) => l.address.trim() || l.googleMapsUrl.trim())
+        .map((l) => ({
+          name: l.name,
+          address: l.address,
+          googleMapsUrl: l.googleMapsUrl,
+          lat: l.lat.trim() ? parseFloat(l.lat) : null,
+          lng: l.lng.trim() ? parseFloat(l.lng) : null,
+        }));
+
+      const firstLat = locs[0]?.lat ?? null;
+      const firstLng = locs[0]?.lng ?? null;
+
       await apiRequest("PATCH", "/api/branch/profile", {
         locations: locs,
         address: locs[0]?.address || "",
         googleMapsUrl: locs[0]?.googleMapsUrl || "",
-        latitude: lat,
-        longitude: lng,
+        latitude: firstLat,
+        longitude: firstLng,
       });
       await refetch();
       queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
@@ -422,8 +451,42 @@ function LocationSection() {
                 Ver en Google Maps
               </Button>
             )}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Latitud</Label>
+                <Input
+                  value={loc.lat}
+                  onChange={(e) => update(idx, "lat", e.target.value)}
+                  placeholder="Ej. 20.6736"
+                  inputMode="decimal"
+                  data-testid={idx === 0 ? "input-latitude" : `input-latitude-${idx}`}
+                />
+              </div>
+              <div>
+                <Label>Longitud</Label>
+                <Input
+                  value={loc.lng}
+                  onChange={(e) => update(idx, "lng", e.target.value)}
+                  placeholder="Ej. -103.3441"
+                  inputMode="decimal"
+                  data-testid={idx === 0 ? "input-longitude" : `input-longitude-${idx}`}
+                />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Tip: abre Google Maps, haz clic derecho en tu ubicación y copia las coordenadas.
+            </p>
           </div>
         ))}
+
+        {coordErrors.length > 0 && (
+          <div className="space-y-1">
+            {coordErrors.map((err, i) => (
+              <p key={i} className="text-xs text-destructive" data-testid={`text-coord-error-${i}`}>{err}</p>
+            ))}
+          </div>
+        )}
+
         {locations.length < 2 && (
           <Button
             variant="outline"
@@ -436,38 +499,6 @@ function LocationSection() {
             Agregar segunda ubicación
           </Button>
         )}
-
-        <div className="border-t pt-4 space-y-3">
-          <p className="text-sm font-semibold text-muted-foreground">Coordenadas (para búsqueda por cercanía)</p>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label>Latitud</Label>
-              <Input
-                value={latitude}
-                onChange={(e) => setLatitude(e.target.value)}
-                placeholder="Ej. 20.6736"
-                inputMode="decimal"
-                data-testid="input-latitude"
-              />
-            </div>
-            <div>
-              <Label>Longitud</Label>
-              <Input
-                value={longitude}
-                onChange={(e) => setLongitude(e.target.value)}
-                placeholder="Ej. -103.3441"
-                inputMode="decimal"
-                data-testid="input-longitude"
-              />
-            </div>
-          </div>
-          {coordError && (
-            <p className="text-xs text-destructive" data-testid="text-coord-error">{coordError}</p>
-          )}
-          <p className="text-xs text-muted-foreground">
-            Tip: abre Google Maps, haz clic derecho en tu ubicación y copia las coordenadas que aparecen.
-          </p>
-        </div>
 
         <Button onClick={handleSave} disabled={saving} data-testid="button-save-location">
           {saving ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Save className="h-4 w-4 mr-1" />}
