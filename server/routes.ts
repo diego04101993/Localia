@@ -2139,6 +2139,10 @@ export async function registerRoutes(
       }
 
       const existing = await storage.getBranchVideos(actor.branchId);
+      if (existing.length >= 2) {
+        return res.status(400).json({ message: "Tu plan actual permite máximo 2 videos" });
+      }
+
       const video = await storage.addBranchVideo({
         branchId: actor.branchId,
         title: title || null,

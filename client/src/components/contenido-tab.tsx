@@ -822,6 +822,27 @@ function ProductsSection() {
   );
 }
 
+const VIDEO_MAX_COUNT = 2;
+const VIDEO_MAX_DURATION_SECONDS = 60;
+const VIDEO_MAX_SIZE_MB = 25;
+
+function getVideoDuration(file: File): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video");
+    video.preload = "metadata";
+    const blobUrl = URL.createObjectURL(file);
+    video.onloadedmetadata = () => {
+      URL.revokeObjectURL(blobUrl);
+      resolve(video.duration);
+    };
+    video.onerror = () => {
+      URL.revokeObjectURL(blobUrl);
+      reject(new Error("No se pudo leer el video"));
+    };
+    video.src = blobUrl;
+  });
+}
+
 function VideosSection() {
   const { toast } = useToast();
   const { data: videos, isLoading } = useQuery<BranchVideo[]>({
@@ -830,6 +851,7 @@ function VideosSection() {
   const [uploading, setUploading] = useState(false);
 
   const sortedVideos = (videos || []).sort((a, b) => a.displayOrder - b.displayOrder);
+  const atLimit = sortedVideos.length >= VIDEO_MAX_COUNT;
 
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
@@ -854,8 +876,21 @@ function VideosSection() {
   });
 
   const handleUpload = async (file: File) => {
+    if (sortedVideos.length >= VIDEO_MAX_COUNT) {
+      toast({ title: "Límite alcanzado", description: `Tu plan actual permite máximo ${VIDEO_MAX_COUNT} videos`, variant: "destructive" });
+      return;
+    }
+    if (file.size > VIDEO_MAX_SIZE_MB * 1024 * 1024) {
+      toast({ title: "Archivo demasiado grande", description: `El archivo excede el tamaño máximo permitido (${VIDEO_MAX_SIZE_MB} MB)`, variant: "destructive" });
+      return;
+    }
     setUploading(true);
     try {
+      const duration = await getVideoDuration(file);
+      if (duration > VIDEO_MAX_DURATION_SECONDS) {
+        toast({ title: "Video demasiado largo", description: `Cada video debe durar máximo ${VIDEO_MAX_DURATION_SECONDS} segundos`, variant: "destructive" });
+        return;
+      }
       const url = await uploadFile(file);
       await apiRequest("POST", "/api/branch/videos", { url, title: file.name.replace(/\.[^.]+$/, "") });
       queryClient.invalidateQueries({ queryKey: ["/api/branch/videos"] });
@@ -880,22 +915,27 @@ function VideosSection() {
     <Card data-testid="card-videos">
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-base flex items-center gap-2">
-            <Video className="h-4 w-4" />
-            Videos de Entrenamiento
-            {sortedVideos.length > 0 && (
+          <div>
+            <CardTitle className="text-base flex items-center gap-2">
+              <Video className="h-4 w-4" />
+              Videos de Entrenamiento
               <Badge variant="secondary" className="text-xs" data-testid="badge-videos-count">
-                {sortedVideos.length}
+                {sortedVideos.length}/{VIDEO_MAX_COUNT}
               </Badge>
-            )}
-          </CardTitle>
-          <FileUploadButton
-            accept="video/mp4,video/webm"
-            onUpload={handleUpload}
-            uploading={uploading}
-            label="Agregar"
-            testId="button-add-video"
-          />
+            </CardTitle>
+            <p className="text-xs text-muted-foreground mt-0.5">Máximo {VIDEO_MAX_COUNT} videos · hasta {VIDEO_MAX_DURATION_SECONDS} seg · {VIDEO_MAX_SIZE_MB} MB · mp4</p>
+          </div>
+          {!atLimit ? (
+            <FileUploadButton
+              accept="video/mp4"
+              onUpload={handleUpload}
+              uploading={uploading}
+              label="Agregar"
+              testId="button-add-video"
+            />
+          ) : (
+            <span className="text-xs text-muted-foreground" data-testid="text-videos-limit-reached">Límite alcanzado</span>
+          )}
         </div>
       </CardHeader>
       <CardContent>
