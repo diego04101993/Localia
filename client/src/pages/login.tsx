@@ -13,7 +13,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { useToast } from "@/hooks/use-toast";
-import localia_logo from "@assets/Logo_Localia_1774386009489.png";
+import localia_logo from "@assets/localia_logo.png";
 
 export default function LoginPage() {
   const { login } = useAuth();
