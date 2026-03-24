@@ -1098,8 +1098,9 @@ export default function BranchPublicPage() {
   );
 
   return (
-    <div className="min-h-screen bg-background">
-      <div className="relative h-52 bg-gradient-to-br from-primary/80 to-primary overflow-hidden">
+    <div className="min-h-screen bg-muted/30">
+      {/* Hero */}
+      <div className="relative h-60 bg-gradient-to-br from-primary to-primary/70 overflow-hidden">
         {branch.coverImageUrl && (
           <img
             src={branch.coverImageUrl}
@@ -1107,93 +1108,82 @@ export default function BranchPublicPage() {
             className="absolute inset-0 w-full h-full object-cover"
           />
         )}
-        <div className="absolute inset-0 bg-black/40" />
-        <div className="relative z-10 h-full flex flex-col justify-between p-4 max-w-lg mx-auto">
-          <div className="flex items-center justify-between">
-            <Button
-              size="icon"
-              variant="ghost"
-              className="bg-white/20 backdrop-blur text-white"
-              onClick={() => navigate("/explore")}
-              data-testid="button-branch-back"
-            >
-              <ArrowLeft className="h-4 w-4" />
-            </Button>
-            <div className="flex items-center gap-1">
-              {user && (
-                <>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="bg-white/20 backdrop-blur text-white"
-                    onClick={() =>
-                      favMutation.mutate({ branchId: branch.id, isFavorite: !isFavorite })
-                    }
-                    disabled={favMutation.isPending}
-                    data-testid="button-branch-favorite"
-                  >
-                    <Heart
-                      className={`h-4 w-4 ${isFavorite ? "fill-red-500 text-red-500" : ""}`}
-                    />
-                  </Button>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="bg-white/20 backdrop-blur text-white"
-                    onClick={async () => {
-                      await logout();
-                      navigate("/auth");
-                    }}
-                    data-testid="button-logout"
-                  >
-                    <LogOut className="h-4 w-4" />
-                  </Button>
-                </>
-              )}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-black/10" />
+
+        {/* Top bar */}
+        <div className="relative z-10 flex items-center justify-between p-4 max-w-lg mx-auto">
+          <button
+            onClick={() => navigate("/explore")}
+            className="h-9 w-9 flex items-center justify-center rounded-full bg-black/30 backdrop-blur-sm text-white hover:bg-black/50 transition-colors"
+            data-testid="button-branch-back"
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </button>
+          {user && (
+            <div className="flex items-center gap-1.5">
+              <button
+                className="h-9 w-9 flex items-center justify-center rounded-full bg-black/30 backdrop-blur-sm text-white hover:bg-black/50 transition-colors"
+                onClick={() => favMutation.mutate({ branchId: branch.id, isFavorite: !isFavorite })}
+                disabled={favMutation.isPending}
+                data-testid="button-branch-favorite"
+              >
+                <Heart className={`h-4 w-4 ${isFavorite ? "fill-red-400 text-red-400" : ""}`} />
+              </button>
+              <button
+                className="h-9 w-9 flex items-center justify-center rounded-full bg-black/30 backdrop-blur-sm text-white hover:bg-black/50 transition-colors"
+                onClick={async () => { await logout(); navigate("/auth"); }}
+                data-testid="button-logout"
+              >
+                <LogOut className="h-4 w-4" />
+              </button>
             </div>
-          </div>
-          <div className="flex items-center gap-3 mb-1">
+          )}
+        </div>
+
+        {/* Bottom info */}
+        <div className="absolute bottom-0 left-0 right-0 px-4 pb-5 max-w-lg mx-auto">
+          <div className="flex items-end gap-3">
             {profilePhoto ? (
               <img
                 src={profilePhoto.url}
                 alt={branch.name}
-                className="w-12 h-12 rounded-md object-cover border-2 border-white/30"
+                className="w-16 h-16 rounded-2xl object-cover border-2 border-white/40 shadow-lg shrink-0"
                 data-testid="img-branch-profile-photo"
               />
             ) : (
-              <div className="flex items-center justify-center w-12 h-12 rounded-md bg-white/20 backdrop-blur">
-                <Dumbbell className="h-6 w-6 text-white" />
+              <div className="w-16 h-16 rounded-2xl bg-white/20 backdrop-blur-sm flex items-center justify-center border-2 border-white/30 shadow-lg shrink-0">
+                <span className="text-2xl font-bold text-white">{branch.name.charAt(0).toUpperCase()}</span>
               </div>
             )}
-            <div>
+            <div className="min-w-0 pb-0.5">
               <h1
-                className="text-2xl font-bold text-white"
+                className="text-xl font-bold text-white leading-tight drop-shadow-sm"
                 data-testid="text-branch-public-name"
               >
                 {branch.name}
               </h1>
-              <div className="flex items-center gap-2">
-                <p className="text-white/70 text-sm">/{branch.slug}</p>
+              <div className="flex items-center gap-2 mt-1 flex-wrap">
                 {branch.category && (
-                  <Badge variant="secondary" className="text-xs bg-white/20 text-white border-0">
+                  <span className="inline-block bg-white/20 backdrop-blur-sm text-white text-[10px] font-semibold px-2.5 py-0.5 rounded-full">
                     {getCategoryLabel(branch.category)}
-                  </Badge>
+                  </span>
                 )}
+                <span className="text-white/60 text-[10px]">/{branch.slug}</span>
               </div>
             </div>
           </div>
         </div>
       </div>
 
-      <div className="max-w-lg mx-auto p-4 space-y-4 -mt-4 relative z-20">
+      <div className="max-w-lg mx-auto px-3 pt-3 pb-6 space-y-3 relative z-20">
         {announcements && announcements.length > 0 && (
           <div
-            className="p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 space-y-2"
+            className="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 space-y-2"
             data-testid="banner-announcement"
           >
-            <div className="flex items-center gap-2">
-              <Megaphone className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
-              <p className="text-sm font-medium text-amber-800 dark:text-amber-200" data-testid="text-announcement-banner">
+            <div className="flex items-start gap-2.5">
+              <Megaphone className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+              <p className="text-sm font-medium text-amber-800 dark:text-amber-200 leading-snug" data-testid="text-announcement-banner">
                 {announcements[0].message}
               </p>
             </div>
@@ -1201,7 +1191,7 @@ export default function BranchPublicPage() {
               <img
                 src={announcements[0].imageUrl}
                 alt="Anuncio"
-                className="w-full rounded-md max-h-48 object-cover"
+                className="w-full rounded-lg max-h-48 object-cover"
                 data-testid="img-announcement-banner"
               />
             )}
@@ -1209,37 +1199,36 @@ export default function BranchPublicPage() {
         )}
 
         {user && !isMember && (
-          <Card>
-            <CardContent className="p-4 flex items-center justify-between gap-3 flex-wrap">
-              <div>
-                <h3 className="font-semibold text-sm">Únete a este negocio</h3>
-                <p className="text-xs text-muted-foreground">
-                  Accede a beneficios exclusivos
-                </p>
-              </div>
-              <Button
-                onClick={() => joinMutation.mutate(branch.slug)}
-                disabled={joinMutation.isPending}
-                data-testid="button-join-branch"
-              >
-                {joinMutation.isPending ? (
-                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                ) : null}
-                Unirme
-              </Button>
-            </CardContent>
-          </Card>
+          <div
+            className="rounded-xl border border-primary/20 bg-background p-4 flex items-center justify-between gap-3"
+          >
+            <div>
+              <h3 className="font-semibold text-sm">Únete a este negocio</h3>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Accede a clases, reservas y más
+              </p>
+            </div>
+            <Button
+              onClick={() => joinMutation.mutate(branch.slug)}
+              disabled={joinMutation.isPending}
+              className="shrink-0 rounded-xl"
+              data-testid="button-join-branch"
+            >
+              {joinMutation.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
+              ) : null}
+              Unirme
+            </Button>
+          </div>
         )}
 
         {isMember && (
-          <Card>
-            <CardContent className="p-4 flex items-center gap-3">
-              <Badge variant="default">Miembro</Badge>
-              <span className="text-sm text-muted-foreground">
-                Ya eres parte de este negocio
-              </span>
-            </CardContent>
-          </Card>
+          <div className="rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20 px-4 py-2.5 flex items-center gap-2.5">
+            <div className="h-2 w-2 rounded-full bg-emerald-500 shrink-0" />
+            <span className="text-sm font-medium text-emerald-700 dark:text-emerald-300">
+              Ya eres miembro de este negocio
+            </span>
+          </div>
         )}
 
         {user && isMember && slug && (
@@ -1247,9 +1236,9 @@ export default function BranchPublicPage() {
         )}
 
         {branch.description && (
-          <Card>
+          <Card className="border-border/60 shadow-sm">
             <CardContent className="p-4">
-              <p className="text-sm leading-relaxed" data-testid="text-branch-description">
+              <p className="text-sm leading-relaxed text-foreground/80" data-testid="text-branch-description">
                 {branch.description}
               </p>
             </CardContent>
@@ -1263,20 +1252,20 @@ export default function BranchPublicPage() {
         {content && <PhotoGallery photos={content.photos} />}
         {content && <PublicVideos videos={content.videos} />}
 
-        <Card data-testid="card-public-reviews">
+        <Card className="border-border/60 shadow-sm" data-testid="card-public-reviews">
           <CardContent className="p-4">
             <h3 className="font-semibold text-sm mb-3 flex items-center gap-2" data-testid="text-reviews-title">
-              <Star className="h-4 w-4 text-yellow-500" />
+              <Star className="h-4 w-4 text-yellow-500 fill-yellow-500" />
               Reseñas
             </h3>
             <ReviewsSummary slug={slug!} />
           </CardContent>
         </Card>
 
-        <div className="flex gap-2">
+        <div className="flex gap-2 pt-1">
           <Button
             variant="outline"
-            className="flex-1"
+            className="flex-1 rounded-xl"
             onClick={() => navigate("/explore")}
             data-testid="button-explore-nearby"
           >
@@ -1286,7 +1275,7 @@ export default function BranchPublicPage() {
           {user && (
             <Button
               variant="outline"
-              className="flex-1"
+              className="flex-1 rounded-xl"
               onClick={() => navigate("/favorites")}
               data-testid="button-my-favorites"
             >

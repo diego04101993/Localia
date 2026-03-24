@@ -1,0 +1,166 @@
+Necesito una mejora visual fuerte de UX/UI en la app del cliente (PWA) de Localia, SIN romper ninguna funcionalidad existente.
+
+IMPORTANTE:
+- NO romper login
+- NO romper búsqueda
+- NO romper filtros por categoría
+- NO romper geolocalización / cercanía
+- NO romper abrir negocio
+- NO romper perfil del negocio
+- NO romper reservas, membresías, videos, productos, ubicaciones ni contenido
+- Solo quiero mejorar la presentación visual y corregir errores visuales
+
+OBJETIVO GENERAL
+Quiero que la app del cliente se vea más premium, más moderna y más llamativa en celular.
+Debe sentirse como una app real lista para mercado, no solo funcional.
+
+REFERENCIA DE ESTILO
+Pensar en una mezcla de:
+- Google Maps (descubrir)
+- Doctoralia (confianza)
+- Airbnb (limpieza)
+- Instagram (atractivo visual)
+
+==================================================
+TAREA 1: MEJORAR PANTALLA "EXPLORAR"
+==================================================
+
+Problemas actuales:
+- el diseño se siente muy plano
+- las tarjetas de negocios se ven vacías
+- no luce la marca ni el logo del negocio
+- el buscador tiene un error visual: la X y la lupa se ven mal alineadas
+- el header general puede verse mejor
+
+Quiero mejorar:
+
+1. Header de Explorar
+- que se vea más limpio y moderno
+- mantener botón atrás y salir
+- mejor jerarquía visual
+- agregar sensación de app premium
+
+2. Buscador
+- corregir alineación de la lupa y la X
+- la X para limpiar debe quedar visualmente dentro del input o bien alineada a la derecha
+- el botón de ubicación/cercanía debe quedar alineado y limpio
+- no quiero elementos montados o desacomodados
+
+3. Chips de categorías
+- hacerlos más elegantes
+- mantener scroll horizontal
+- que la categoría activa se vea clara
+- mejor espaciado y consistencia
+
+4. Estado de “ordenando por cercanía”
+- que se vea más limpio y elegante
+- mejorar el chip y el botón de quitar
+
+==================================================
+TAREA 2: MEJORAR CARDS DE NEGOCIOS EN EXPLORAR
+==================================================
+
+Problema actual:
+- los cards se ven demasiado vacíos
+- arriba aparece un bloque genérico morado con ícono placeholder
+- aunque algunas sucursales sí tienen logo, no se está mostrando correctamente en explorar
+
+Quiero que:
+1. Si el negocio/sucursal tiene logo cargado, ese logo se muestre en la card
+2. Si no tiene logo, usar placeholder actual
+3. La card se vea más premium y móvil-first
+
+Cada card debe mostrar mejor:
+- logo o imagen representativa
+- nombre
+- categoría
+- distancia si existe
+- ciudad o dirección corta si existe
+- descripción corta si existe
+- botón “Ver negocio”
+
+Mejorar:
+- padding
+- sombras
+- bordes
+- jerarquía tipográfica
+- uso del espacio
+
+==================================================
+TAREA 3: MEJORAR PERFIL DEL NEGOCIO EN APP CLIENTE
+==================================================
+
+La pantalla del negocio ya funciona y muestra contenido correctamente.
+NO quiero cambiar lógica.
+Solo mejorar el look para que se vea más atractivo.
+
+Quiero mejorar:
+- header del negocio
+- protagonismo del logo
+- nombre del negocio
+- chips de categoría
+- botón “Unirme”
+- bloque de ubicaciones
+- tabs o selector de sucursales
+- separación entre bloques
+- consistencia visual
+
+Mantener toda la funcionalidad actual:
+- contenido
+- fotos
+- videos
+- productos
+- membresías
+- unirme
+- mapas
+- reseñas
+- agenda
+
+==================================================
+TAREA 4: CONSISTENCIA VISUAL DE LOCALIA
+==================================================
+
+Quiero que toda la PWA del cliente tenga una identidad visual más fuerte:
+- moderna
+- clara
+- premium
+- mobile-first
+- llamativa pero limpia
+
+Usar bien:
+- morado actual como color principal
+- fondos claros
+- cards más bonitos
+- botones con mejor presencia
+- espaciados más consistentes
+- mejores vacíos visuales
+
+==================================================
+REGLAS CRÍTICAS
+==================================================
+
+- NO romper ninguna funcionalidad existente
+- NO tocar backend si no es necesario
+- NO cambiar lógica de negocio
+- NO romper los filtros ni la búsqueda
+- NO romper la geolocalización
+- NO romper la carga del perfil del negocio
+- NO romper la navegación
+- NO romper el contenido subido por las sucursales
+
+==================================================
+FORMATO DE RESPUESTA OBLIGATORIO
+==================================================
+
+Respóndeme así:
+1. Qué errores visuales corregiste
+2. Cómo corregiste el buscador
+3. Cómo hiciste que se muestre el logo real en las cards cuando exista
+4. Qué mejoras visuales hiciste en explorar
+5. Qué mejoras visuales hiciste en el perfil del negocio
+6. Qué archivos tocaste
+7. Por qué no rompe nada existente
+8. Qué debo probar manualmente
+
+PRIORIDAD:
+Quiero que la app del cliente se vea mucho más atractiva y profesional en celular, sin perder nada de lo que ya funciona.

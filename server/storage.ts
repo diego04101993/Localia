@@ -343,6 +343,8 @@ export class DatabaseStorage implements IStorage {
         )
       `;
 
+      const profileImgSubquery = sql<string | null>`(SELECT url FROM branch_photos WHERE branch_id = branches.id AND type = 'profile' LIMIT 1)`;
+
       const results = await db
         .select({
           id: branches.id,
@@ -360,6 +362,7 @@ export class DatabaseStorage implements IStorage {
           createdAt: branches.createdAt,
           deletedAt: branches.deletedAt,
           distance_km: haversine.as("distance_km"),
+          profileImageUrl: profileImgSubquery.as("profile_image_url"),
         })
         .from(branches)
         .where(and(...conditions, sql`${branches.latitude} IS NOT NULL`, sql`${branches.longitude} IS NOT NULL`))
@@ -370,7 +373,28 @@ export class DatabaseStorage implements IStorage {
       );
 
       const withoutCoords = await db
-        .select()
+        .select({
+          id: branches.id,
+          name: branches.name,
+          slug: branches.slug,
+          status: branches.status,
+          category: branches.category,
+          subcategory: branches.subcategory,
+          latitude: branches.latitude,
+          longitude: branches.longitude,
+          city: branches.city,
+          address: branches.address,
+          coverImageUrl: branches.coverImageUrl,
+          description: branches.description,
+          cancelCutoffMinutes: branches.cancelCutoffMinutes,
+          whatsappTemplates: branches.whatsappTemplates,
+          googleMapsUrl: branches.googleMapsUrl,
+          operatingHours: branches.operatingHours,
+          locations: branches.locations,
+          createdAt: branches.createdAt,
+          deletedAt: branches.deletedAt,
+          profileImageUrl: profileImgSubquery.as("profile_image_url"),
+        })
         .from(branches)
         .where(
           and(
@@ -386,16 +410,39 @@ export class DatabaseStorage implements IStorage {
           distance_km: r.distance_km ? Math.round(r.distance_km * 10) / 10 : undefined,
         })),
         ...withoutCoords.map((b) => ({ ...b, distance_km: undefined })),
-      ] as (Branch & { distance_km?: number })[];
+      ] as (Branch & { distance_km?: number; profileImageUrl?: string | null })[];
     }
 
+    const profileImgSubquery = sql<string | null>`(SELECT url FROM branch_photos WHERE branch_id = branches.id AND type = 'profile' LIMIT 1)`;
+
     const results = await db
-      .select()
+      .select({
+        id: branches.id,
+        name: branches.name,
+        slug: branches.slug,
+        status: branches.status,
+        category: branches.category,
+        subcategory: branches.subcategory,
+        latitude: branches.latitude,
+        longitude: branches.longitude,
+        city: branches.city,
+        address: branches.address,
+        coverImageUrl: branches.coverImageUrl,
+        description: branches.description,
+        cancelCutoffMinutes: branches.cancelCutoffMinutes,
+        whatsappTemplates: branches.whatsappTemplates,
+        googleMapsUrl: branches.googleMapsUrl,
+        operatingHours: branches.operatingHours,
+        locations: branches.locations,
+        createdAt: branches.createdAt,
+        deletedAt: branches.deletedAt,
+        profileImageUrl: profileImgSubquery.as("profile_image_url"),
+      })
       .from(branches)
       .where(and(...conditions))
       .orderBy(branches.createdAt);
 
-    return results.map((b) => ({ ...b, distance_km: undefined }));
+    return results.map((b) => ({ ...b, distance_km: undefined })) as (Branch & { distance_km?: number; profileImageUrl?: string | null })[];
   }
 
   async getMembership(userId: string, branchId: string): Promise<Membership | undefined> {
