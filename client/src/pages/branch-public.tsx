@@ -68,55 +68,56 @@ function PhotoGallery({ photos }: { photos: BranchPhoto[] }) {
 
   const scroll = (direction: "left" | "right") => {
     if (scrollRef.current) {
-      scrollRef.current.scrollBy({ left: direction === "left" ? -200 : 200, behavior: "smooth" });
+      scrollRef.current.scrollBy({ left: direction === "left" ? -260 : 260, behavior: "smooth" });
     }
   };
 
   return (
-    <Card data-testid="card-public-gallery">
-      <CardContent className="p-4">
-        <h3 className="font-semibold text-sm mb-3" data-testid="text-gallery-title">Instalaciones</h3>
-        <div className="relative">
-          {facilityPhotos.length > 2 && (
-            <>
-              <Button
-                size="icon"
-                variant="ghost"
-                className="absolute left-0 top-1/2 -translate-y-1/2 z-10 h-8 w-8 bg-background/80 backdrop-blur"
-                onClick={() => scroll("left")}
-                data-testid="button-gallery-left"
-              >
-                <ChevronLeft className="h-4 w-4" />
-              </Button>
-              <Button
-                size="icon"
-                variant="ghost"
-                className="absolute right-0 top-1/2 -translate-y-1/2 z-10 h-8 w-8 bg-background/80 backdrop-blur"
-                onClick={() => scroll("right")}
-                data-testid="button-gallery-right"
-              >
-                <ChevronRight className="h-4 w-4" />
-              </Button>
-            </>
-          )}
-          <div
-            ref={scrollRef}
-            className="flex gap-2 overflow-x-auto scrollbar-hide snap-x snap-mandatory pb-1"
-            style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
-          >
-            {facilityPhotos.map((photo) => (
-              <img
-                key={photo.id}
-                src={photo.url}
-                alt="Instalación"
-                className="h-36 min-w-[200px] rounded-lg object-cover snap-start shrink-0"
-                data-testid={`img-gallery-${photo.id}`}
-              />
-            ))}
-          </div>
+    <div data-testid="card-public-gallery">
+      <div className="flex items-center gap-2 px-1 mb-3">
+        <div className="h-4 w-1 rounded-full bg-primary" />
+        <h3 className="font-bold text-sm tracking-tight" data-testid="text-gallery-title">Instalaciones</h3>
+      </div>
+      <div className="relative -mx-3">
+        {facilityPhotos.length > 1 && (
+          <>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="absolute left-1 top-1/2 -translate-y-1/2 z-10 h-8 w-8 bg-background/80 backdrop-blur-sm shadow-sm border border-border/40"
+              onClick={() => scroll("left")}
+              data-testid="button-gallery-left"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="absolute right-1 top-1/2 -translate-y-1/2 z-10 h-8 w-8 bg-background/80 backdrop-blur-sm shadow-sm border border-border/40"
+              onClick={() => scroll("right")}
+              data-testid="button-gallery-right"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </>
+        )}
+        <div
+          ref={scrollRef}
+          className="flex gap-2.5 overflow-x-auto snap-x snap-mandatory px-3 pb-1"
+          style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
+        >
+          {facilityPhotos.map((photo, idx) => (
+            <img
+              key={photo.id}
+              src={photo.url}
+              alt="Instalación"
+              className={`${idx === 0 && facilityPhotos.length > 1 ? "h-52 min-w-[260px]" : "h-52 min-w-[220px]"} rounded-xl object-cover snap-start shrink-0 shadow-sm`}
+              data-testid={`img-gallery-${photo.id}`}
+            />
+          ))}
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }
 
@@ -157,94 +158,97 @@ function PublicProducts({ products }: { products: BranchProduct[] }) {
 
   return (
     <>
-      <Card data-testid="card-public-products">
-        <CardContent className="p-4 space-y-4">
-          {services.length > 0 && (
-            <div>
-              <h3 className="font-semibold text-sm mb-3 flex items-center gap-2" data-testid="text-services-title">
-                <Star className="h-4 w-4" />
-                Servicios
-              </h3>
-              <div className="space-y-2">
-                {services.map((s) => (
-                  <button
-                    key={s.id}
-                    className="flex items-center gap-3 p-2 border rounded-lg w-full text-left active:bg-muted/70 transition-colors"
-                    data-testid={`public-service-${s.id}`}
-                    onClick={() => setSelected(s as any)}
-                  >
-                    {s.imageUrl ? (
-                      <img src={s.imageUrl} alt={s.name} className="h-14 w-14 rounded-lg object-cover shrink-0" />
+      <div data-testid="card-public-products" className="space-y-5">
+        {services.length > 0 && (
+          <div>
+            <div className="flex items-center gap-2 px-1 mb-3">
+              <div className="h-4 w-1 rounded-full bg-primary" />
+              <h3 className="font-bold text-sm tracking-tight" data-testid="text-services-title">Servicios</h3>
+            </div>
+            <div className="space-y-2">
+              {services.map((s) => (
+                <button
+                  key={s.id}
+                  className="flex items-center gap-3 p-3 bg-background border border-border/60 rounded-xl w-full text-left active:bg-muted/60 transition-colors shadow-sm"
+                  data-testid={`public-service-${s.id}`}
+                  onClick={() => setSelected(s as any)}
+                >
+                  {s.imageUrl ? (
+                    <img src={s.imageUrl} alt={s.name} className="h-16 w-16 rounded-xl object-cover shrink-0 shadow-sm" />
+                  ) : (
+                    <div className="h-16 w-16 rounded-xl bg-primary/8 border border-primary/15 flex items-center justify-center shrink-0">
+                      <Star className="h-6 w-6 text-primary/50" />
+                    </div>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold truncate">{s.name}</p>
+                    {s.description && <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5 leading-relaxed">{s.description}</p>}
+                    <div className="flex items-center gap-3 mt-1.5">
+                      {s.price > 0 && (
+                        <span className="text-xs font-bold text-primary bg-primary/8 px-2 py-0.5 rounded-full">
+                          ${(s.price / 100).toFixed(0)} MXN
+                        </span>
+                      )}
+                      {(s as any).durationMinutes && (
+                        <span className="text-xs text-muted-foreground flex items-center gap-1">
+                          <Clock className="h-3 w-3" />{(s as any).durationMinutes} min
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <ChevronRight className="h-4 w-4 text-muted-foreground/40 shrink-0" />
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {prods.length > 0 && (
+          <div>
+            <div className="flex items-center gap-2 px-1 mb-3">
+              <div className="h-4 w-1 rounded-full bg-primary" />
+              <h3 className="font-bold text-sm tracking-tight" data-testid="text-products-title">Productos</h3>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              {prods.map((product) => (
+                <button
+                  key={product.id}
+                  className="bg-background border border-border/60 rounded-xl overflow-hidden text-left active:scale-95 transition-transform cursor-pointer shadow-sm"
+                  data-testid={`public-product-${product.id}`}
+                  onClick={() => setSelected(product)}
+                >
+                  <div className="relative aspect-square bg-muted">
+                    {product.imageUrl ? (
+                      <img
+                        src={product.imageUrl}
+                        alt={product.name}
+                        className="w-full h-full object-cover"
+                        data-testid={`img-public-product-${product.id}`}
+                      />
                     ) : (
-                      <div className="h-14 w-14 rounded-lg bg-muted flex items-center justify-center shrink-0">
-                        <Star className="h-5 w-5 text-muted-foreground/40" />
+                      <div className="w-full h-full flex items-center justify-center bg-muted">
+                        <ShoppingBag className="h-8 w-8 text-muted-foreground/30" />
                       </div>
                     )}
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-semibold truncate">{s.name}</p>
-                      {s.description && <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5">{s.description}</p>}
-                      <div className="flex items-center gap-2 mt-1">
-                        {s.price > 0 && <span className="text-xs font-bold text-primary">${(s.price / 100).toFixed(0)} MXN</span>}
-                        {(s as any).durationMinutes && (
-                          <span className="text-xs text-muted-foreground flex items-center gap-0.5">
-                            <Clock className="h-3 w-3" />{(s as any).durationMinutes} min
-                          </span>
-                        )}
+                    {product.price > 0 && (
+                      <div className="absolute bottom-2 right-2">
+                        <span className="bg-black/70 text-white text-[10px] font-bold px-2 py-0.5 rounded-full backdrop-blur-sm">
+                          ${(product.price / 100).toFixed(0)}
+                        </span>
                       </div>
-                    </div>
-                  </button>
-                ))}
-              </div>
+                    )}
+                  </div>
+                  <div className="px-2.5 py-2 pb-3">
+                    <p className="text-xs font-semibold leading-tight truncate" data-testid={`text-public-product-name-${product.id}`}>{product.name}</p>
+                    {product.description && (
+                      <p className="text-[10px] text-muted-foreground line-clamp-1 mt-0.5">{product.description}</p>
+                    )}
+                  </div>
+                </button>
+              ))}
             </div>
-          )}
-          {prods.length > 0 && (
-            <div>
-              <h3 className="font-semibold text-sm mb-3 flex items-center gap-2" data-testid="text-products-title">
-                <ShoppingBag className="h-4 w-4" />
-                Productos
-              </h3>
-              <div className="grid grid-cols-2 gap-3">
-                {prods.map((product) => (
-                  <button
-                    key={product.id}
-                    className="border rounded-xl overflow-hidden text-left active:scale-95 transition-transform cursor-pointer"
-                    data-testid={`public-product-${product.id}`}
-                    onClick={() => setSelected(product)}
-                  >
-                    <div className="relative aspect-square bg-muted">
-                      {product.imageUrl ? (
-                        <img
-                          src={product.imageUrl}
-                          alt={product.name}
-                          className="w-full h-full object-cover"
-                          data-testid={`img-public-product-${product.id}`}
-                        />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center">
-                          <ShoppingBag className="h-8 w-8 text-muted-foreground/30" />
-                        </div>
-                      )}
-                      {product.price > 0 && (
-                        <div className="absolute bottom-1.5 right-1.5">
-                          <span className="bg-black/65 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full backdrop-blur-sm">
-                            ${(product.price / 100).toFixed(0)}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                    <div className="p-2 pb-2.5">
-                      <p className="text-xs font-semibold leading-tight truncate" data-testid={`text-public-product-name-${product.id}`}>{product.name}</p>
-                      {product.description && (
-                        <p className="text-[10px] text-muted-foreground line-clamp-1 mt-0.5">{product.description}</p>
-                      )}
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+          </div>
+        )}
+      </div>
 
       {/* Product / service detail modal */}
       <Dialog open={!!selected} onOpenChange={() => setSelected(null)}>
@@ -286,6 +290,7 @@ function VideoCard({ video }: { video: BranchVideo }) {
   const [liked, setLiked] = useState(false);
   const [likes, setLikes] = useState(0);
   const [saved, setSaved] = useState(false);
+  const [isVertical, setIsVertical] = useState(false);
 
   useEffect(() => {
     const el = videoRef.current;
@@ -298,11 +303,16 @@ function VideoCard({ video }: { video: BranchVideo }) {
           el.pause();
         }
       },
-      { threshold: 0.55 }
+      { threshold: 0.45 }
     );
     obs.observe(el);
     return () => obs.disconnect();
   }, []);
+
+  const handleMetadata = () => {
+    const el = videoRef.current;
+    if (el) setIsVertical(el.videoHeight > el.videoWidth);
+  };
 
   const handleLike = () => {
     setLiked((prev) => {
@@ -313,10 +323,10 @@ function VideoCard({ video }: { video: BranchVideo }) {
 
   return (
     <div
-      className="rounded-xl overflow-hidden border shadow-sm bg-black"
+      className="rounded-2xl overflow-hidden border border-border/50 shadow-sm bg-zinc-950"
       data-testid={`public-video-${video.id}`}
     >
-      <div className="aspect-video w-full bg-black">
+      <div className={`w-full relative ${isVertical ? "aspect-[9/16]" : "aspect-video"} bg-zinc-950`}>
         <video
           ref={videoRef}
           src={video.url}
@@ -325,11 +335,12 @@ function VideoCard({ video }: { video: BranchVideo }) {
           muted
           loop
           poster={video.thumbnailUrl ?? undefined}
-          className="w-full h-full object-contain"
+          onLoadedMetadata={handleMetadata}
+          className={`w-full h-full ${isVertical ? "object-cover" : "object-contain"}`}
           data-testid={`video-public-player-${video.id}`}
         />
       </div>
-      <div className="bg-card px-3 py-2.5 flex items-center justify-between gap-2">
+      <div className="bg-card px-4 py-3 flex items-center justify-between gap-2">
         <div className="min-w-0 flex-1">
           {video.title && (
             <p
@@ -340,15 +351,15 @@ function VideoCard({ video }: { video: BranchVideo }) {
             </p>
           )}
         </div>
-        <div className="flex items-center gap-3 shrink-0">
+        <div className="flex items-center gap-4 shrink-0">
           <button
-            className="flex items-center gap-1"
+            className="flex items-center gap-1.5"
             onClick={handleLike}
             data-testid={`button-like-video-${video.id}`}
           >
             <Heart
-              className={`h-4 w-4 transition-all duration-150 ${
-                liked ? "fill-red-500 text-red-500 scale-110" : "text-muted-foreground/50"
+              className={`h-5 w-5 transition-all duration-150 ${
+                liked ? "fill-red-500 text-red-500 scale-110" : "text-muted-foreground/40"
               }`}
             />
             {likes > 0 && (
@@ -363,8 +374,8 @@ function VideoCard({ video }: { video: BranchVideo }) {
             data-testid={`button-save-video-${video.id}`}
           >
             <Bookmark
-              className={`h-4 w-4 transition-all duration-150 ${
-                saved ? "fill-primary text-primary" : "text-muted-foreground/50"
+              className={`h-5 w-5 transition-all duration-150 ${
+                saved ? "fill-primary text-primary" : "text-muted-foreground/40"
               }`}
             />
           </button>
@@ -379,19 +390,17 @@ function PublicVideos({ videos }: { videos: BranchVideo[] }) {
   if (sorted.length === 0) return null;
 
   return (
-    <Card data-testid="card-public-videos">
-      <CardContent className="p-4">
-        <h3 className="font-semibold text-sm mb-3 flex items-center gap-2" data-testid="text-videos-title">
-          <Play className="h-4 w-4" />
-          Videos
-        </h3>
-        <div className="space-y-4">
-          {sorted.map((video) => (
-            <VideoCard key={video.id} video={video} />
-          ))}
-        </div>
-      </CardContent>
-    </Card>
+    <div data-testid="card-public-videos">
+      <div className="flex items-center gap-2 px-1 mb-3">
+        <div className="h-4 w-1 rounded-full bg-primary" />
+        <h3 className="font-bold text-sm tracking-tight" data-testid="text-videos-title">Videos</h3>
+      </div>
+      <div className="space-y-4">
+        {sorted.map((video) => (
+          <VideoCard key={video.id} video={video} />
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -463,56 +472,62 @@ function PublicLocationSection({ branch }: { branch: any }) {
   const current = locs[active] || locs[0];
 
   return (
-    <Card data-testid="card-public-location">
-      <CardContent className="p-4 space-y-3">
-        {locs.length > 1 && (
-          <div className="flex gap-1 p-1 bg-muted rounded-lg" data-testid="tabs-locations">
-            {locs.map((l, i) => (
-              <button
-                key={i}
-                className={`flex-1 text-xs py-1.5 px-2 rounded-md font-medium transition-all ${
-                  active === i
-                    ? "bg-background shadow-sm text-foreground"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-                onClick={() => setActive(i)}
-                data-testid={`button-location-tab-${i}`}
-              >
-                {l.name || `Ubicación ${i + 1}`}
-              </button>
-            ))}
-          </div>
-        )}
+    <div>
+      <div className="flex items-center gap-2 px-1 mb-3">
+        <div className="h-4 w-1 rounded-full bg-primary" />
+        <h3 className="font-bold text-sm tracking-tight">Ubicación</h3>
+      </div>
+      <Card data-testid="card-public-location" className="border-border/50 shadow-sm rounded-2xl">
+        <CardContent className="p-4 space-y-3">
+          {locs.length > 1 && (
+            <div className="flex gap-1 p-1 bg-muted rounded-xl" data-testid="tabs-locations">
+              {locs.map((l, i) => (
+                <button
+                  key={i}
+                  className={`flex-1 text-xs py-1.5 px-2 rounded-lg font-medium transition-all ${
+                    active === i
+                      ? "bg-background shadow-sm text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                  onClick={() => setActive(i)}
+                  data-testid={`button-location-tab-${i}`}
+                >
+                  {l.name || `Ubicación ${i + 1}`}
+                </button>
+              ))}
+            </div>
+          )}
 
-        {current?.address && (
-          <div className="flex items-start gap-2.5">
-            <MapPin className="h-4 w-4 text-primary shrink-0 mt-0.5" />
-            <span className="text-sm leading-snug" data-testid="text-branch-address">
-              {current.address}
-            </span>
-          </div>
-        )}
+          {current?.address && (
+            <div className="flex items-start gap-2.5">
+              <MapPin className="h-4 w-4 text-primary shrink-0 mt-0.5" />
+              <span className="text-sm leading-snug" data-testid="text-branch-address">
+                {current.address}
+              </span>
+            </div>
+          )}
 
-        {current?.googleMapsUrl && (
-          <Button
-            size="sm"
-            className="w-full"
-            onClick={() => window.open(current.googleMapsUrl, "_blank")}
-            data-testid="button-google-maps"
-          >
-            <Navigation className="h-4 w-4 mr-2" />
-            Ver en Google Maps
-          </Button>
-        )}
+          {current?.googleMapsUrl && (
+            <Button
+              size="sm"
+              className="w-full rounded-xl"
+              onClick={() => window.open(current.googleMapsUrl, "_blank")}
+              data-testid="button-google-maps"
+            >
+              <Navigation className="h-4 w-4 mr-2" />
+              Ver en Google Maps
+            </Button>
+          )}
 
-        {branch.operatingHours && (
-          <>
-            <div className="border-t" />
-            <OperatingHoursDisplay hours={branch.operatingHours} />
-          </>
-        )}
-      </CardContent>
-    </Card>
+          {branch.operatingHours && (
+            <>
+              <div className="border-t" />
+              <OperatingHoursDisplay hours={branch.operatingHours} />
+            </>
+          )}
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 
@@ -1092,29 +1107,29 @@ export default function BranchPublicPage() {
   const isMember = membership && membership.status === "active";
 
   const profilePhoto = content?.photos?.find((p) => p.type === "profile");
-  const hasContent = content && (
-    content.photos.length > 0 || content.posts.length > 0 ||
-    content.products.length > 0 || content.videos.length > 0
-  );
+  const firstFacilityPhoto = content?.photos?.find((p) => p.type === "facility");
+  const heroImage = branch.coverImageUrl || firstFacilityPhoto?.url || null;
 
   return (
     <div className="min-h-screen bg-muted/30">
       {/* Hero */}
-      <div className="relative h-60 bg-gradient-to-br from-primary to-primary/70 overflow-hidden">
-        {branch.coverImageUrl && (
+      <div className="relative h-72 overflow-hidden" style={{ background: "linear-gradient(135deg, hsl(var(--primary)) 0%, hsl(var(--primary)/0.6) 100%)" }}>
+        {heroImage && (
           <img
-            src={branch.coverImageUrl}
+            src={heroImage}
             alt={branch.name}
             className="absolute inset-0 w-full h-full object-cover"
           />
         )}
-        <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-black/10" />
+        {/* Multi-layer overlay for premium depth */}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-black/5" />
+        <div className="absolute inset-0 bg-gradient-to-r from-black/20 to-transparent" />
 
         {/* Top bar */}
         <div className="relative z-10 flex items-center justify-between p-4 max-w-lg mx-auto">
           <button
             onClick={() => navigate("/explore")}
-            className="h-9 w-9 flex items-center justify-center rounded-full bg-black/30 backdrop-blur-sm text-white hover:bg-black/50 transition-colors"
+            className="h-9 w-9 flex items-center justify-center rounded-full bg-black/35 backdrop-blur-md text-white hover:bg-black/55 transition-colors border border-white/10"
             data-testid="button-branch-back"
           >
             <ArrowLeft className="h-4 w-4" />
@@ -1122,7 +1137,7 @@ export default function BranchPublicPage() {
           {user && (
             <div className="flex items-center gap-1.5">
               <button
-                className="h-9 w-9 flex items-center justify-center rounded-full bg-black/30 backdrop-blur-sm text-white hover:bg-black/50 transition-colors"
+                className="h-9 w-9 flex items-center justify-center rounded-full bg-black/35 backdrop-blur-md text-white hover:bg-black/55 transition-colors border border-white/10"
                 onClick={() => favMutation.mutate({ branchId: branch.id, isFavorite: !isFavorite })}
                 disabled={favMutation.isPending}
                 data-testid="button-branch-favorite"
@@ -1130,7 +1145,7 @@ export default function BranchPublicPage() {
                 <Heart className={`h-4 w-4 ${isFavorite ? "fill-red-400 text-red-400" : ""}`} />
               </button>
               <button
-                className="h-9 w-9 flex items-center justify-center rounded-full bg-black/30 backdrop-blur-sm text-white hover:bg-black/50 transition-colors"
+                className="h-9 w-9 flex items-center justify-center rounded-full bg-black/35 backdrop-blur-md text-white hover:bg-black/55 transition-colors border border-white/10"
                 onClick={async () => { await logout(); navigate("/auth"); }}
                 data-testid="button-logout"
               >
@@ -1141,47 +1156,46 @@ export default function BranchPublicPage() {
         </div>
 
         {/* Bottom info */}
-        <div className="absolute bottom-0 left-0 right-0 px-4 pb-5 max-w-lg mx-auto">
-          <div className="flex items-end gap-3">
+        <div className="absolute bottom-0 left-0 right-0 px-4 pb-6 max-w-lg mx-auto">
+          <div className="flex items-end gap-4">
             {profilePhoto ? (
               <img
                 src={profilePhoto.url}
                 alt={branch.name}
-                className="w-16 h-16 rounded-2xl object-cover border-2 border-white/40 shadow-lg shrink-0"
+                className="w-20 h-20 rounded-2xl object-cover border-2 border-white/50 shadow-xl shrink-0"
                 data-testid="img-branch-profile-photo"
               />
             ) : (
-              <div className="w-16 h-16 rounded-2xl bg-white/20 backdrop-blur-sm flex items-center justify-center border-2 border-white/30 shadow-lg shrink-0">
-                <span className="text-2xl font-bold text-white">{branch.name.charAt(0).toUpperCase()}</span>
+              <div className="w-20 h-20 rounded-2xl bg-white/20 backdrop-blur-md flex items-center justify-center border-2 border-white/30 shadow-xl shrink-0">
+                <span className="text-3xl font-bold text-white">{branch.name.charAt(0).toUpperCase()}</span>
               </div>
             )}
-            <div className="min-w-0 pb-0.5">
+            <div className="min-w-0 pb-1">
               <h1
-                className="text-xl font-bold text-white leading-tight drop-shadow-sm"
+                className="text-2xl font-bold text-white leading-tight drop-shadow-md"
                 data-testid="text-branch-public-name"
               >
                 {branch.name}
               </h1>
-              <div className="flex items-center gap-2 mt-1 flex-wrap">
+              <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                 {branch.category && (
-                  <span className="inline-block bg-white/20 backdrop-blur-sm text-white text-[10px] font-semibold px-2.5 py-0.5 rounded-full">
+                  <span className="inline-flex items-center bg-white/25 backdrop-blur-sm text-white text-[11px] font-semibold px-3 py-1 rounded-full border border-white/20">
                     {getCategoryLabel(branch.category)}
                   </span>
                 )}
-                <span className="text-white/60 text-[10px]">/{branch.slug}</span>
               </div>
             </div>
           </div>
         </div>
       </div>
 
-      <div className="max-w-lg mx-auto px-3 pt-3 pb-6 space-y-3 relative z-20">
+      <div className="max-w-lg mx-auto px-3 pt-4 pb-8 space-y-5 relative z-20">
         {announcements && announcements.length > 0 && (
           <div
-            className="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 space-y-2"
+            className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 space-y-2"
             data-testid="banner-announcement"
           >
-            <div className="flex items-start gap-2.5">
+            <div className="flex items-start gap-3">
               <Megaphone className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
               <p className="text-sm font-medium text-amber-800 dark:text-amber-200 leading-snug" data-testid="text-announcement-banner">
                 {announcements[0].message}
@@ -1191,7 +1205,7 @@ export default function BranchPublicPage() {
               <img
                 src={announcements[0].imageUrl}
                 alt="Anuncio"
-                className="w-full rounded-lg max-h-48 object-cover"
+                className="w-full rounded-xl max-h-52 object-cover"
                 data-testid="img-announcement-banner"
               />
             )}
@@ -1199,9 +1213,7 @@ export default function BranchPublicPage() {
         )}
 
         {user && !isMember && (
-          <div
-            className="rounded-xl border border-primary/20 bg-background p-4 flex items-center justify-between gap-3"
-          >
+          <div className="rounded-2xl border border-primary/20 bg-background p-4 flex items-center justify-between gap-3 shadow-sm">
             <div>
               <h3 className="font-semibold text-sm">Únete a este negocio</h3>
               <p className="text-xs text-muted-foreground mt-0.5">
@@ -1223,9 +1235,9 @@ export default function BranchPublicPage() {
         )}
 
         {isMember && (
-          <div className="rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20 px-4 py-2.5 flex items-center gap-2.5">
-            <div className="h-2 w-2 rounded-full bg-emerald-500 shrink-0" />
-            <span className="text-sm font-medium text-emerald-700 dark:text-emerald-300">
+          <div className="rounded-2xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20 px-4 py-3 flex items-center gap-3 shadow-sm">
+            <div className="h-2.5 w-2.5 rounded-full bg-emerald-500 shrink-0" />
+            <span className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">
               Ya eres miembro de este negocio
             </span>
           </div>
@@ -1236,7 +1248,7 @@ export default function BranchPublicPage() {
         )}
 
         {branch.description && (
-          <Card className="border-border/60 shadow-sm">
+          <Card className="border-border/50 shadow-sm rounded-2xl">
             <CardContent className="p-4">
               <p className="text-sm leading-relaxed text-foreground/80" data-testid="text-branch-description">
                 {branch.description}
@@ -1252,15 +1264,17 @@ export default function BranchPublicPage() {
         {content && <PhotoGallery photos={content.photos} />}
         {content && <PublicVideos videos={content.videos} />}
 
-        <Card className="border-border/60 shadow-sm" data-testid="card-public-reviews">
-          <CardContent className="p-4">
-            <h3 className="font-semibold text-sm mb-3 flex items-center gap-2" data-testid="text-reviews-title">
-              <Star className="h-4 w-4 text-yellow-500 fill-yellow-500" />
-              Reseñas
-            </h3>
-            <ReviewsSummary slug={slug!} />
-          </CardContent>
-        </Card>
+        <div data-testid="card-public-reviews">
+          <div className="flex items-center gap-2 px-1 mb-3">
+            <div className="h-4 w-1 rounded-full bg-primary" />
+            <h3 className="font-bold text-sm tracking-tight" data-testid="text-reviews-title">Reseñas</h3>
+          </div>
+          <Card className="border-border/50 shadow-sm rounded-2xl">
+            <CardContent className="p-4">
+              <ReviewsSummary slug={slug!} />
+            </CardContent>
+          </Card>
+        </div>
 
         <div className="flex gap-2 pt-1">
           <Button

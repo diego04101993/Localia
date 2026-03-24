@@ -1,0 +1,127 @@
+Necesito mejorar visualmente la UX/UI del perfil del negocio en la app del cliente (PWA), sin romper nada de la funcionalidad actual.
+
+IMPORTANTE:
+- NO romper navegación
+- NO romper membresías
+- NO romper agenda
+- NO romper mapas
+- NO romper productos, servicios, videos, instalaciones, reseñas ni contenido
+- NO cambiar lógica backend si no es necesario
+- Solo mejorar presentación visual y layout
+
+OBJETIVO GENERAL
+Quiero que el perfil del negocio/sucursal se vea más premium, más atractivo y más moderno en celular.
+La funcionalidad ya está bien; ahora quiero que se vea mucho mejor visualmente.
+
+==================================================
+TAREA 1: MEJORAR HEADER DEL PERFIL DEL NEGOCIO
+==================================================
+
+Problema actual:
+- la parte superior con fondo morado funciona, pero todavía se puede ver más atractiva
+- el logo sí aparece, pero el bloque superior puede sentirse más premium y con más personalidad visual
+
+Quiero mejorar el header así:
+1. Mantener el logo visible
+2. Mejorar el fondo del header
+3. Si existen imágenes de instalaciones o galería, usar una imagen destacada o carrusel visual como hero de fondo del perfil
+4. Aplicar overlay oscuro o morado para mantener legibilidad
+5. Hacer que nombre del negocio y categoría se vean más premium
+6. Mantener botón atrás, favorito y salir, pero con mejor integración visual
+
+Si no hay imágenes disponibles:
+- usar el diseño actual mejorado con degradado y mejor composición
+
+==================================================
+TAREA 2: MEJORAR LA SECCIÓN DE VIDEOS
+==================================================
+
+Problema actual:
+- el video se ve con fondo negro y no luce tipo reel
+- se siente como embed básico, no como contenido moderno
+
+Quiero que los videos se vean tipo reel/post vertical:
+1. Si el video es vertical, mostrarlo en card vertical y que se vea completo
+2. Reducir o eliminar el efecto de “orillas negras” lo más posible
+3. Mantener controles de reproducción
+4. Card más elegante, con bordes redondeados y mejor padding
+5. El título debajo debe seguir visible
+6. Mantener la funcionalidad actual, solo mejorar la presentación
+
+==================================================
+TAREA 3: MEJORAR EL DISEÑO GENERAL DEL PERFIL
+==================================================
+
+Quiero una mejora visual general, mobile-first, sin cambiar la lógica:
+
+1. Mejorar separación y ritmo visual de bloques
+2. Dar más aire entre:
+- Agenda
+- Ubicaciones
+- Servicios
+- Productos
+- Instalaciones
+- Videos
+- Reseñas
+
+3. Hacer que “Servicios” se vea más bonito y claro
+4. Hacer que “Productos” se vea más comercial y ordenado
+5. Hacer que “Instalaciones” se vea como galería más premium
+6. Mantener estilo consistente con Localia:
+- moderno
+- limpio
+- visualmente atractivo
+- orientado a celular
+
+==================================================
+TAREA 4: NO ROMPER NADA
+==================================================
+
+No quiero cambios funcionales.
+Solo visuales.
+
+NO romper:
+- botón Unirme
+- agenda
+- clases
+- membresías
+- maps
+- tabs de ubicaciones
+- productos
+- servicios
+- instalaciones
+- videos
+- favoritos
+- navegación
+
+==================================================
+ESTILO DESEADO
+==================================================
+
+Quiero que el perfil se sienta como mezcla de:
+- Airbnb
+- Doctoralia
+- Instagram
+- app premium móvil
+
+Debe verse:
+- más bonito
+- más claro
+- más “marca”
+- más vendible para negocios reales
+
+==================================================
+FORMATO DE RESPUESTA OBLIGATORIO
+==================================================
+
+Respóndeme así:
+1. Qué mejoraste en el header
+2. Cómo hiciste más premium el bloque superior
+3. Cómo mejoraste la sección de videos tipo reel
+4. Qué mejoras visuales hiciste al resto del perfil
+5. Qué archivos tocaste
+6. Por qué no rompe nada existente
+7. Qué debo probar manualmente
+
+PRIORIDAD:
+Quiero un perfil de negocio mucho más atractivo visualmente en celular, sin perder ninguna funcionalidad.
