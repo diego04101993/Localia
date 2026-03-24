@@ -54,22 +54,13 @@ export default function LoginPage() {
     >
       <div className="w-full max-w-sm">
         {/* Logo + marca */}
-        <div className="flex flex-col items-center mb-8 gap-1">
+        <div className="flex flex-col items-center mb-8">
           <img
             src={localia_logo}
             alt="Localia"
-            className="h-20 w-20 object-contain mb-1"
-          />
-          <h1
-            className="text-2xl font-bold tracking-tight"
-            style={{ color: "#4B2ED6" }}
+            className="h-40 w-40 object-contain"
             data-testid="text-login-title"
-          >
-            Localia
-          </h1>
-          <p className="text-sm text-center" style={{ color: "#7c6ba0" }}>
-            Descubre, reserva y conecta con negocios cerca de ti
-          </p>
+          />
         </div>
 
         {/* Card */}
