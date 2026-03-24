@@ -1,0 +1,173 @@
+Quiero que trabajes como Arquitecto de Software, Product Manager y Senior Fullstack Developer sobre mi proyecto actual en Replit.
+
+REGLA MÁXIMA:
+NO ROMPER NADA DE LO QUE YA FUNCIONA.
+NO hacer refactors grandes.
+NO reemplazar módulos completos.
+NO cambiar nombres ni estructuras existentes si no es necesario.
+Haz cambios mínimos, seguros, progresivos y compatibles con la arquitectura actual.
+
+CONTEXTO ACTUAL Y PRUEBA YA HECHA
+
+Ya hice una prueba real:
+
+1. Desde la app del cliente entré al botón de "Mi Perfil".
+2. Edité el nombre del cliente y agregué un apellido más.
+3. El cambio se guardó correctamente.
+4. También se reflejó correctamente en el dashboard de las sucursales donde existe ese cliente.
+
+Eso significa que:
+- la sincronización de nombre ya funciona bien
+- la entidad principal del cliente ya está conectada entre app del cliente y dashboards
+- NO quiero que toques esa lógica si no es necesario
+
+Después hice otra prueba:
+
+1. Como en la app del cliente todavía NO existe la opción para cambiar foto de perfil, fui al dashboard de la sucursal.
+2. Desde el dashboard de la sucursal cambié la foto del cliente.
+3. Esa foto sí se actualizó correctamente en los dashboards de sucursales donde aparece ese cliente.
+
+PERO:
+- esa nueva foto NO aparece en el perfil de la app del cliente
+- en la app del cliente sigue saliendo el avatar con iniciales
+- falta unir la foto de perfil entre dashboard y app del cliente
+- también falta poder modificar la foto desde la app del cliente
+
+OBJETIVO DE ESTA TAREA
+
+Quiero que la foto de perfil del cliente quede totalmente unificada entre:
+- app del cliente
+- dashboard de sucursal
+- cualquier otro lugar donde se muestre ese cliente
+
+Quiero que:
+1. Si la foto se cambia desde el dashboard de sucursal, se vea en la app del cliente
+2. Si la foto se cambia desde la app del cliente, se vea en el dashboard de sucursal
+3. Si no existe foto, se siga mostrando el avatar con iniciales como fallback
+4. Todo quede conectado a la misma fuente de verdad del usuario/cliente
+5. No se rompa nada del flujo actual de edición de nombre, teléfono y datos
+
+LO QUE YA FUNCIONA Y NO DEBES ROMPER
+
+- login
+- navegación
+- perfil del cliente en la app
+- edición de nombre/apellido/teléfono desde la app
+- sincronización de nombre hacia dashboard de sucursal
+- dashboard de sucursal
+- clientes dentro del dashboard
+- cambio de foto desde dashboard de sucursal
+- membresías
+- reservas
+- favoritos
+- exploración de negocios
+- perfiles de negocio
+
+PROBLEMA A RESOLVER
+
+Necesito que revises por qué la foto sí se actualiza en dashboards pero NO se muestra en la app del cliente.
+
+Quiero que detectes si el problema está en una de estas capas:
+- el endpoint que devuelve los datos del perfil del cliente no incluye foto_url / avatar_url / profile_image
+- el frontend de la app del cliente no está leyendo la propiedad correcta
+- la pantalla Mi Perfil está ignorando la foto y siempre usa iniciales
+- el backend guarda la foto en un campo distinto al que consume la app
+- la serialización del usuario hacia la app no incluye el campo correcto
+
+NO asumas nombres inventados si primero puedes inspeccionar el proyecto.
+
+FORMA DE TRABAJO OBLIGATORIA
+
+Antes de tocar código, haz esto:
+
+1. Inspecciona el proyecto actual
+2. Ubica los archivos reales relacionados con:
+   - pantalla Mi Perfil del cliente
+   - componente de avatar o perfil del cliente
+   - endpoint GET del usuario actual
+   - endpoint PUT/PATCH del perfil del cliente
+   - modelo de usuario/cliente
+   - lógica de subida/cambio de foto desde dashboard de sucursal
+3. Dime claramente:
+   - cuál es el problema exacto
+   - por qué la foto no aparece en la app del cliente
+   - qué archivos exactos vas a modificar
+   - por qué esos cambios no rompen lo actual
+
+DESPUÉS IMPLEMENTA EN ESTE ORDEN
+
+FASE 1 — LECTURA CORRECTA DE FOTO EN APP DEL CLIENTE
+Objetivo:
+- que la app del cliente muestre la foto real si ya existe
+- que si la foto fue cambiada desde dashboard, aparezca en Mi Perfil
+- mantener fallback a iniciales si no hay foto
+
+Qué debes hacer:
+- revisar qué campo usa el backend para la foto del cliente
+- revisar qué campo espera el frontend
+- unificar eso sin romper compatibilidad
+- corregir la UI de Mi Perfil para mostrar imagen real cuando exista
+
+IMPORTANTE:
+Primero resuelve solo la visualización y lectura.
+NO cambies todavía la subida de foto desde la app hasta validar esta fase.
+
+FASE 2 — EDITAR FOTO DESDE LA APP DEL CLIENTE
+Objetivo:
+- permitir que el cliente cambie su foto desde su propia app
+
+Qué debe incluir:
+- botón visible tipo “Cambiar foto”
+- selector de archivo o imagen
+- subida segura al backend existente o reutilizando la lógica existente
+- actualización inmediata en la UI
+- reflejo automático en dashboards de sucursal
+- mantener fallback si algo falla
+
+MUY IMPORTANTE:
+Si ya existe una lógica de subida de foto usada por el dashboard de sucursal, reutilízala o adáptala.
+NO crees un sistema paralelo si no es necesario.
+NO dupliques endpoints si ya hay uno útil.
+
+FASE 3 — VALIDACIÓN DE SINCRONIZACIÓN
+Después de implementar:
+- verificar que al cambiar foto en app se vea en dashboard
+- verificar que al cambiar foto en dashboard se vea en app
+- verificar que nombre, apellido y teléfono sigan funcionando
+- verificar que si no hay foto, se mantengan las iniciales
+- verificar que no se rompa la carga del perfil
+
+RESTRICCIONES TÉCNICAS
+
+- No rehacer el modelo de usuario si no es indispensable
+- No cambiar la estructura de tablas si no hace falta
+- No tocar membresías, reservas, favoritos ni dashboards que no estén relacionados con la foto
+- No crear deuda técnica innecesaria
+- Si debes agregar un campo faltante al schema/serializer, hazlo de forma compatible con lo actual
+- Si el frontend usa un avatar fallback, mantenlo
+- Si el backend ya devuelve varios campos posibles de imagen, normaliza eso con el menor impacto posible
+
+ESTILO DE ENTREGA QUE QUIERO
+
+Primero quiero este formato:
+
+1. Diagnóstico técnico breve
+2. Causa exacta del problema
+3. Estrategia segura
+4. Archivos que vas a modificar
+5. Implementación por fases
+
+Después sí escribe el código.
+
+OBJETIVO FINAL DE ESTA TAREA
+
+Quiero dejar la foto de perfil del cliente completamente unificada:
+- visible en app del cliente
+- editable desde app del cliente
+- visible en dashboard de sucursal
+- editable desde dashboard de sucursal
+- sincronizada en todos lados
+- sin romper nada de la lógica actual
+
+Empieza inspeccionando el proyecto real y resuelve primero la FASE 1: que la foto ya existente sí se vea en la app del cliente.
+No hagas cambios grandes sin validación.

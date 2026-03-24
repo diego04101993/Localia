@@ -109,8 +109,19 @@ export default function ProfilePage() {
       <main className="max-w-3xl mx-auto p-4 space-y-4">
         {/* Avatar + nombre */}
         <div className="flex flex-col items-center py-6 gap-3">
-          <div className="h-20 w-20 rounded-full bg-primary/10 flex items-center justify-center text-2xl font-bold text-primary border-2 border-primary/20" data-testid="avatar-initials">
-            {initials}
+          <div className="h-20 w-20 rounded-full border-2 border-primary/20 overflow-hidden shrink-0" data-testid="avatar-container">
+            {(user as any).avatarUrl ? (
+              <img
+                src={(user as any).avatarUrl}
+                alt="Foto de perfil"
+                className="w-full h-full object-cover"
+                data-testid="avatar-image"
+              />
+            ) : (
+              <div className="w-full h-full bg-primary/10 flex items-center justify-center text-2xl font-bold text-primary" data-testid="avatar-initials">
+                {initials}
+              </div>
+            )}
           </div>
           {!editing && (
             <>
