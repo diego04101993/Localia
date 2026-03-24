@@ -1,0 +1,103 @@
+Necesito hacer ajustes finales de UX/UI y agregar funcionalidad clave en la app del cliente (PWA), sin romper nada existente.
+
+IMPORTANTE:
+- NO romper login
+- NO romper navegación
+- NO romper perfil del negocio
+- NO romper agenda, membresías, productos, videos ni mapas
+- NO cambiar lógica existente innecesariamente
+- Solo mejorar UI + agregar funcionalidad de reseñas
+
+==================================================
+TAREA 1: MEJORAR SECCIÓN DE VIDEO
+==================================================
+
+Problema:
+- Actualmente hay más de un icono (favorito y otro)
+- Se ve saturado
+
+Quiero:
+1. Dejar SOLO el icono de corazón (favorito)
+2. Eliminar cualquier otro icono innecesario
+3. Mantener funcionalidad de favorito
+4. Mantener diseño limpio tipo reel
+
+==================================================
+TAREA 2: MEJORAR SECCIÓN "INSTALACIONES"
+==================================================
+
+Problema:
+- Las flechas están muy pegadas al título
+- Se ve visualmente apretado
+- No se siente como galería premium
+
+Quiero:
+1. Separar claramente:
+   - título "Instalaciones"
+   - controles (flechas)
+2. Agregar padding/margin adecuado
+3. Hacer que el carrusel se vea más limpio
+4. Mantener funcionalidad actual
+
+==================================================
+TAREA 3: ACTIVAR SISTEMA DE RESEÑAS (CRÍTICO)
+==================================================
+
+Actualmente:
+- Existe sección "Reseñas"
+- Existe botón o intención de calificar
+- Pero no funciona
+
+Quiero implementar:
+
+1. Que el usuario pueda calificar el negocio con:
+   - estrellas (1 a 5)
+   - comentario opcional
+
+2. Guardar la reseña en base de datos:
+   - usuario_id
+   - negocio_id
+   - rating
+   - comentario
+   - fecha
+
+3. Mostrar:
+   - promedio de estrellas
+   - número de reseñas
+   - lista de reseñas
+
+4. Validaciones:
+   - un usuario solo puede dejar UNA reseña por negocio
+   - puede editar su reseña
+
+5. UX:
+   - modal o sección clara para calificar
+   - estrellas interactivas
+   - botón “Enviar reseña”
+
+6. No romper nada existente
+
+==================================================
+TAREA 4: MEJORAS VISUALES GENERALES
+==================================================
+
+Pequeños ajustes:
+- mejorar espaciados entre bloques
+- mantener consistencia visual
+- mantener estilo moderno y limpio
+
+==================================================
+FORMATO DE RESPUESTA OBLIGATORIO
+==================================================
+
+1. Qué hiciste en la sección de video
+2. Cómo mejoraste instalaciones
+3. Cómo implementaste reseñas (frontend + backend)
+4. Qué tablas/modelos creaste o modificaste
+5. Qué archivos tocaste
+6. Cómo evitar duplicados de reseñas
+7. Qué debo probar paso a paso
+
+PRIORIDAD:
+- Activar reseñas funcionales
+- Mejorar UI final sin romper nada

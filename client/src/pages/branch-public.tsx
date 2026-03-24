@@ -1,5 +1,5 @@
 import { useRef, useState, useEffect } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
 import {
   Dumbbell,
@@ -21,7 +21,6 @@ import {
   AlertTriangle,
   XCircle,
   Navigation,
-  Bookmark,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -74,33 +73,35 @@ function PhotoGallery({ photos }: { photos: BranchPhoto[] }) {
 
   return (
     <div data-testid="card-public-gallery">
-      <div className="flex items-center gap-2 px-1 mb-3">
-        <div className="h-4 w-1 rounded-full bg-primary" />
-        <h3 className="font-bold text-sm tracking-tight" data-testid="text-gallery-title">Instalaciones</h3>
-      </div>
-      <div className="relative -mx-3">
+      <div className="flex items-center justify-between px-1 mb-3">
+        <div className="flex items-center gap-2">
+          <div className="h-4 w-1 rounded-full bg-primary" />
+          <h3 className="font-bold text-sm tracking-tight" data-testid="text-gallery-title">Instalaciones</h3>
+        </div>
         {facilityPhotos.length > 1 && (
-          <>
+          <div className="flex items-center gap-1">
             <Button
               size="icon"
-              variant="ghost"
-              className="absolute left-1 top-1/2 -translate-y-1/2 z-10 h-8 w-8 bg-background/80 backdrop-blur-sm shadow-sm border border-border/40"
+              variant="outline"
+              className="h-7 w-7 rounded-full border-border/60"
               onClick={() => scroll("left")}
               data-testid="button-gallery-left"
             >
-              <ChevronLeft className="h-4 w-4" />
+              <ChevronLeft className="h-3.5 w-3.5" />
             </Button>
             <Button
               size="icon"
-              variant="ghost"
-              className="absolute right-1 top-1/2 -translate-y-1/2 z-10 h-8 w-8 bg-background/80 backdrop-blur-sm shadow-sm border border-border/40"
+              variant="outline"
+              className="h-7 w-7 rounded-full border-border/60"
               onClick={() => scroll("right")}
               data-testid="button-gallery-right"
             >
-              <ChevronRight className="h-4 w-4" />
+              <ChevronRight className="h-3.5 w-3.5" />
             </Button>
-          </>
+          </div>
         )}
+      </div>
+      <div className="-mx-3">
         <div
           ref={scrollRef}
           className="flex gap-2.5 overflow-x-auto snap-x snap-mandatory px-3 pb-1"
@@ -111,7 +112,7 @@ function PhotoGallery({ photos }: { photos: BranchPhoto[] }) {
               key={photo.id}
               src={photo.url}
               alt="Instalación"
-              className={`${idx === 0 && facilityPhotos.length > 1 ? "h-52 min-w-[260px]" : "h-52 min-w-[220px]"} rounded-xl object-cover snap-start shrink-0 shadow-sm`}
+              className={`${idx === 0 && facilityPhotos.length > 1 ? "h-56 min-w-[270px]" : "h-56 min-w-[230px]"} rounded-2xl object-cover snap-start shrink-0 shadow-md`}
               data-testid={`img-gallery-${photo.id}`}
             />
           ))}
@@ -289,7 +290,6 @@ function VideoCard({ video }: { video: BranchVideo }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [liked, setLiked] = useState(false);
   const [likes, setLikes] = useState(0);
-  const [saved, setSaved] = useState(false);
   const [isVertical, setIsVertical] = useState(false);
 
   useEffect(() => {
@@ -351,35 +351,22 @@ function VideoCard({ video }: { video: BranchVideo }) {
             </p>
           )}
         </div>
-        <div className="flex items-center gap-4 shrink-0">
-          <button
-            className="flex items-center gap-1.5"
-            onClick={handleLike}
-            data-testid={`button-like-video-${video.id}`}
-          >
-            <Heart
-              className={`h-5 w-5 transition-all duration-150 ${
-                liked ? "fill-red-500 text-red-500 scale-110" : "text-muted-foreground/40"
-              }`}
-            />
-            {likes > 0 && (
-              <span className="text-xs text-muted-foreground" data-testid={`text-like-count-${video.id}`}>
-                {likes}
-              </span>
-            )}
-          </button>
-          <button
-            className="transition-colors"
-            onClick={() => setSaved((s) => !s)}
-            data-testid={`button-save-video-${video.id}`}
-          >
-            <Bookmark
-              className={`h-5 w-5 transition-all duration-150 ${
-                saved ? "fill-primary text-primary" : "text-muted-foreground/40"
-              }`}
-            />
-          </button>
-        </div>
+        <button
+          className="flex items-center gap-1.5 shrink-0"
+          onClick={handleLike}
+          data-testid={`button-like-video-${video.id}`}
+        >
+          <Heart
+            className={`h-5 w-5 transition-all duration-150 ${
+              liked ? "fill-red-500 text-red-500 scale-110" : "text-muted-foreground/40"
+            }`}
+          />
+          {likes > 0 && (
+            <span className="text-xs text-muted-foreground" data-testid={`text-like-count-${video.id}`}>
+              {likes}
+            </span>
+          )}
+        </button>
       </div>
     </div>
   );
@@ -531,7 +518,40 @@ function PublicLocationSection({ branch }: { branch: any }) {
   );
 }
 
+function StarPicker({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  const [hovered, setHovered] = useState(0);
+  return (
+    <div className="flex items-center gap-1" data-testid="star-picker">
+      {[1, 2, 3, 4, 5].map((s) => (
+        <button
+          key={s}
+          type="button"
+          className="p-0.5 transition-transform hover:scale-110"
+          onMouseEnter={() => setHovered(s)}
+          onMouseLeave={() => setHovered(0)}
+          onClick={() => onChange(s)}
+          data-testid={`star-pick-${s}`}
+        >
+          <Star
+            className={`h-6 w-6 transition-colors ${
+              s <= (hovered || value) ? "text-yellow-400 fill-yellow-400" : "text-muted-foreground/30"
+            }`}
+          />
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function ReviewsSummary({ slug }: { slug: string }) {
+  const { user } = useAuth();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+
+  const [showForm, setShowForm] = useState(false);
+  const [rating, setRating] = useState(0);
+  const [comment, setComment] = useState("");
+
   const { data } = useQuery<{ averageRating: number; totalReviews: number; reviews: any[] }>({
     queryKey: ["/api/public/branch", slug, "reviews"],
     queryFn: async () => {
@@ -541,36 +561,146 @@ function ReviewsSummary({ slug }: { slug: string }) {
     },
   });
 
-  if (!data || data.totalReviews === 0) {
-    return (
-      <div className="flex items-center gap-2">
-        <Star className="h-4 w-4 text-yellow-500" />
-        <span className="text-sm font-medium" data-testid="text-no-reviews">Sin calificaciones aún</span>
-      </div>
-    );
-  }
+  const { data: myReviewData } = useQuery<{ review: any | null }>({
+    queryKey: ["/api/public/branch", slug, "my-review"],
+    queryFn: async () => {
+      const res = await fetch(`/api/public/branch/${slug}/my-review`);
+      if (!res.ok) return { review: null };
+      return res.json();
+    },
+    enabled: !!user,
+  });
+
+  const myReview = myReviewData?.review ?? null;
+
+  const openForm = () => {
+    if (myReview) {
+      setRating(myReview.rating);
+      setComment(myReview.comment || "");
+    } else {
+      setRating(0);
+      setComment("");
+    }
+    setShowForm(true);
+  };
+
+  const submitMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`/api/public/branch/${slug}/reviews`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rating, comment }),
+      });
+      if (!res.ok) {
+        const e = await res.json();
+        throw new Error(e.message || "Error al guardar");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ description: myReview ? "Reseña actualizada" : "Reseña enviada" });
+      setShowForm(false);
+      queryClient.invalidateQueries({ queryKey: ["/api/public/branch", slug, "reviews"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/public/branch", slug, "my-review"] });
+    },
+    onError: (e: any) => {
+      toast({ description: e.message, variant: "destructive" });
+    },
+  });
+
+  const STAR_LABELS = ["", "Malo", "Regular", "Bueno", "Muy bueno", "Excelente"];
 
   return (
-    <div data-testid="section-reviews-summary">
-      <div className="flex items-center gap-2 mb-2">
-        <Star className="h-4 w-4 text-yellow-500 fill-yellow-500" />
-        <span className="text-sm font-medium" data-testid="text-review-avg">{data.averageRating.toFixed(1)}</span>
-        <span className="text-xs text-muted-foreground" data-testid="text-review-count">({data.totalReviews} reseñas)</span>
-      </div>
-      {data.reviews.slice(0, 3).map((r: any) => (
-        <div key={r.id} className="border-t py-2" data-testid={`review-${r.id}`}>
-          <div className="flex items-center gap-1 mb-1">
-            {[1, 2, 3, 4, 5].map((s) => (
-              <Star key={s} className={`h-3 w-3 ${s <= r.rating ? "text-yellow-500 fill-yellow-500" : "text-muted-foreground/30"}`} />
-            ))}
-            <span className="text-[10px] text-muted-foreground ml-1">{r.userName}</span>
-          </div>
-          {r.comment && <p className="text-xs text-muted-foreground">{r.comment}</p>}
-          {r.adminReply && (
-            <p className="text-xs text-muted-foreground mt-1 pl-3 border-l-2 italic">{r.adminReply}</p>
+    <div data-testid="section-reviews-summary" className="space-y-4">
+      {/* Summary row */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          {data && data.totalReviews > 0 ? (
+            <>
+              <Star className="h-4 w-4 text-yellow-500 fill-yellow-500" />
+              <span className="text-sm font-semibold" data-testid="text-review-avg">{data.averageRating.toFixed(1)}</span>
+              <span className="text-xs text-muted-foreground" data-testid="text-review-count">({data.totalReviews} {data.totalReviews === 1 ? "reseña" : "reseñas"})</span>
+            </>
+          ) : (
+            <>
+              <Star className="h-4 w-4 text-muted-foreground/40" />
+              <span className="text-sm text-muted-foreground" data-testid="text-no-reviews">Sin calificaciones aún</span>
+            </>
           )}
         </div>
-      ))}
+        {user && !showForm && (
+          <button
+            className="text-xs text-primary font-medium underline underline-offset-2"
+            onClick={openForm}
+            data-testid="button-open-review-form"
+          >
+            {myReview ? "Editar mi reseña" : "Calificar"}
+          </button>
+        )}
+      </div>
+
+      {/* Submission form */}
+      {showForm && (
+        <div className="bg-muted/40 rounded-2xl p-4 space-y-3 border border-border/40" data-testid="section-review-form">
+          <p className="text-sm font-semibold">{myReview ? "Editar tu reseña" : "Deja tu calificación"}</p>
+          <div className="space-y-1">
+            <StarPicker value={rating} onChange={setRating} />
+            {rating > 0 && (
+              <p className="text-xs text-muted-foreground">{STAR_LABELS[rating]}</p>
+            )}
+          </div>
+          <textarea
+            className="w-full bg-background text-sm rounded-xl border border-border/60 px-3 py-2 resize-none focus:outline-none focus:ring-1 focus:ring-primary/50 placeholder:text-muted-foreground/50"
+            rows={3}
+            placeholder="Comentario opcional..."
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            maxLength={500}
+            data-testid="input-review-comment"
+          />
+          <div className="flex gap-2 justify-end">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowForm(false)}
+              data-testid="button-cancel-review"
+            >
+              Cancelar
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => submitMutation.mutate()}
+              disabled={rating === 0 || submitMutation.isPending}
+              data-testid="button-submit-review"
+            >
+              {submitMutation.isPending ? "Guardando..." : myReview ? "Actualizar" : "Enviar reseña"}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Review list */}
+      {data && data.reviews.length > 0 && (
+        <div className="space-y-3">
+          {data.reviews.slice(0, 5).map((r: any) => (
+            <div key={r.id} className="border-t pt-3" data-testid={`review-${r.id}`}>
+              <div className="flex items-center gap-1.5 mb-1">
+                {[1, 2, 3, 4, 5].map((s) => (
+                  <Star key={s} className={`h-3 w-3 ${s <= r.rating ? "text-yellow-400 fill-yellow-400" : "text-muted-foreground/20"}`} />
+                ))}
+                <span className="text-xs font-medium ml-1">{r.userName} {r.userLastName}</span>
+              </div>
+              {r.comment && <p className="text-xs text-muted-foreground leading-relaxed">{r.comment}</p>}
+              {r.adminReply && (
+                <div className="mt-2 pl-3 border-l-2 border-primary/30">
+                  <p className="text-[10px] text-muted-foreground/60 font-medium mb-0.5">Respuesta del negocio</p>
+                  <p className="text-xs text-muted-foreground italic">{r.adminReply}</p>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

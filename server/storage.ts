@@ -174,6 +174,8 @@ export interface IStorage {
   getUpcomingBirthdays(branchId: string, daysAhead?: number): Promise<any[]>;
   getBranchReviews(branchId: string): Promise<any[]>;
   getBranchReviewsSummary(branchId: string): Promise<{ averageRating: number; totalReviews: number }>;
+  getUserReview(branchId: string, userId: string): Promise<BranchReview | null>;
+  createOrUpdateReview(branchId: string, userId: string, rating: number, comment?: string | null): Promise<BranchReview>;
   getBranchAnnouncements(branchId: string): Promise<BranchAnnouncement[]>;
   createAnnouncement(data: InsertBranchAnnouncement): Promise<BranchAnnouncement>;
   deleteAnnouncement(id: string): Promise<void>;
@@ -1759,6 +1761,32 @@ export class DatabaseStorage implements IStorage {
       averageRating: Number(result[0]?.avgRating || 0),
       totalReviews: Number(result[0]?.total || 0),
     };
+  }
+
+  async getUserReview(branchId: string, userId: string): Promise<BranchReview | null> {
+    const result = await db
+      .select()
+      .from(branchReviews)
+      .where(and(eq(branchReviews.branchId, branchId), eq(branchReviews.userId, userId)))
+      .limit(1);
+    return result[0] || null;
+  }
+
+  async createOrUpdateReview(branchId: string, userId: string, rating: number, comment?: string | null): Promise<BranchReview> {
+    const existing = await this.getUserReview(branchId, userId);
+    if (existing) {
+      const updated = await db
+        .update(branchReviews)
+        .set({ rating, comment: comment || null })
+        .where(eq(branchReviews.id, existing.id))
+        .returning();
+      return updated[0];
+    }
+    const inserted = await db
+      .insert(branchReviews)
+      .values({ branchId, userId, rating, comment: comment || null })
+      .returning();
+    return inserted[0];
   }
 }
 

@@ -2303,6 +2303,38 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/public/branch/:slug/my-review", async (req, res) => {
+    if (!req.isAuthenticated()) return res.json({ review: null });
+    try {
+      const actor = req.user as any;
+      const branch = await storage.getBranchBySlug(req.params.slug);
+      if (!branch) return res.status(404).json({ message: "Sucursal no encontrada" });
+      const review = await storage.getUserReview(branch.id, actor.id);
+      res.json({ review });
+    } catch (err: any) {
+      console.error(`[MY-REVIEW] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al obtener reseña" });
+    }
+  });
+
+  app.post("/api/public/branch/:slug/reviews", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ message: "No autenticado" });
+    try {
+      const actor = req.user as any;
+      const branch = await storage.getBranchBySlug(req.params.slug);
+      if (!branch) return res.status(404).json({ message: "Sucursal no encontrada" });
+      const { rating, comment } = req.body;
+      if (!rating || rating < 1 || rating > 5) {
+        return res.status(400).json({ message: "Calificación inválida (1-5)" });
+      }
+      const review = await storage.createOrUpdateReview(branch.id, actor.id, Number(rating), comment || null);
+      res.json({ review });
+    } catch (err: any) {
+      console.error(`[POST-REVIEW] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al guardar reseña" });
+    }
+  });
+
   app.get("/api/branch/reviews", requireBranchAdmin, async (req, res) => {
     const actor = req.user as any;
     try {
