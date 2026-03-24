@@ -1,0 +1,109 @@
+Quiero que actúes como diseñador UX/UI senior + frontend engineer sobre mi proyecto actual.
+
+REGLA PRINCIPAL:
+NO ROMPER LA FUNCIONALIDAD ACTUAL DEL LOGIN.
+Solo mejorar diseño visual y experiencia.
+
+OBJETIVO:
+Rediseñar completamente la pantalla de inicio de sesión para convertirla en una interfaz moderna tipo SaaS premium (estilo Airbnb / Stripe / Uber).
+
+CAMBIOS PRINCIPALES:
+
+1. REEMPLAZAR MARCA ACTUAL
+- Eliminar completamente el nombre "Box Manager"
+- Eliminar el logo actual
+- Integrar el nuevo branding:
+  - Nombre: "Localia"
+  - Logo: (usar el logo proporcionado, icono tipo pin morado con letra L)
+- Colocar el logo arriba centrado
+- Debajo del logo colocar el texto:
+  "Localia"
+- Debajo una frase sutil:
+  "Descubre, reserva y conecta con negocios cerca de ti"
+
+2. DISEÑO GENERAL (IMPORTANTE)
+- Estilo minimalista, moderno y limpio
+- Mucho espacio en blanco
+- Bordes redondeados suaves
+- Sombras sutiles (no exageradas)
+- Colores principales:
+  - Morado (#6C4CF1)
+  - Morado oscuro (#4B2ED6)
+  - Blanco
+  - Gris muy claro de fondo
+
+3. FONDO (CLAVE VISUAL)
+- Fondo tipo degradado suave (blanco a gris o morado muy claro)
+- O agregar un fondo con blur suave tipo glass effect
+- Evitar fondos pesados
+
+4. TARJETA DE LOGIN
+- Centrada vertical y horizontalmente
+- Estilo "card"
+- Bordes redondeados (border-radius grande)
+- Sombra suave
+- Padding cómodo (espaciado amplio)
+
+5. INPUTS (MEJORAR UX)
+- Inputs modernos:
+  - borde redondeado
+  - efecto focus con color morado
+  - icono dentro del input (correo / candado)
+- Placeholder claro
+- Animación sutil en focus
+
+6. BOTÓN
+- Botón principal:
+  - full width
+  - color morado con degradado
+  - texto blanco
+  - borde redondeado
+  - efecto hover / press
+- Texto: "Ingresar"
+
+7. RESPONSIVE (MUY IMPORTANTE)
+Diseñar pensando primero en mobile:
+
+📱 MOBILE:
+- Logo centrado arriba
+- Card ocupa casi todo el ancho
+- Padding cómodo
+- Botón grande y fácil de tocar
+
+💻 DESKTOP:
+- Card centrada
+- Tamaño máximo controlado (no muy ancho)
+- Espacio alrededor elegante
+
+8. DETALLES PREMIUM
+- Transiciones suaves
+- Microinteracciones (hover, focus)
+- Tipografía moderna (Inter o similar)
+- Iconos minimalistas
+
+9. NO CAMBIAR:
+- lógica de login
+- endpoints
+- validaciones
+- estructura funcional
+
+Solo diseño visual.
+
+10. RESULTADO ESPERADO
+Quiero una pantalla de login:
+- moderna
+- minimalista
+- premium
+- lista para SaaS real
+- coherente con una app tipo marketplace geolocalizado
+
+FORMATO DE RESPUESTA:
+1. Explica qué cambios harás
+2. Muestra estructura del layout
+3. Da el código actualizado (HTML + CSS o componente)
+4. Asegura que es responsive
+
+IMPORTANTE:
+No sobrecargar el diseño.
+Menos es más.
+Quiero algo elegante, no algo exagerado.
