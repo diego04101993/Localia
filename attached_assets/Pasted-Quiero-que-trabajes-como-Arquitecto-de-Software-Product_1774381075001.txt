@@ -1,0 +1,254 @@
+Quiero que trabajes como Arquitecto de Software, Product Manager y Senior Fullstack Developer sobre mi proyecto actual en Replit.
+
+IMPORTANTE:
+NO rompas nada de lo que ya funciona.
+NO rehagas módulos completos si no es necesario.
+NO cambies lógica existente que ya está estable.
+Haz cambios pequeños, seguros, progresivos y compatibles con la arquitectura actual.
+Antes de modificar, analiza dependencias.
+Si algo ya existe, reutilízalo.
+Si necesitas crear algo nuevo, hazlo de forma aislada y limpia.
+
+CONTEXTO DEL PROYECTO
+
+Estoy desarrollando una plataforma SaaS tipo app + dashboard llamada estilo “Localia”, una app moderna tipo mezcla entre Google Maps + Doctoralia + Airbnb + Instagram.
+
+La plataforma tiene:
+
+1. APP DEL CLIENTE (PWA mobile-first)
+Los usuarios pueden:
+- Buscar negocios cercanos
+- Filtrar por categorías
+- Ver perfiles de negocios/sucursales
+- Agendar citas o reservar clases
+- Comprar productos
+- Ver videos tipo reels
+- Unirse como miembros a negocios
+- Marcar negocios como favoritos
+- Ver promociones
+- Dejar reseñas
+
+2. DASHBOARD DE SUCURSAL
+Cada negocio/sucursal puede:
+- Editar su perfil público
+- Subir imágenes, videos, servicios y productos
+- Configurar ubicaciones con lat/lng
+- Crear agenda de clases o citas
+- Ver clientes
+- Asignar membresías
+- Gestionar contenido
+
+3. DASHBOARD SUPER ADMIN
+Yo puedo:
+- Crear sucursales
+- Cambiar estados: activa, suspendida, bloqueada
+- Administrar todo el sistema
+
+STACK ACTUAL
+- Backend en FastAPI
+- Frontend PWA mobile-first
+- Proyecto en Replit
+- Código ya guardado en GitHub
+
+LO QUE YA FUNCIONA Y NO SE DEBE ROMPER
+
+- Login
+- Navegación general
+- Exploración de negocios
+- Filtro por categoría
+- Geolocalización manual
+- Ver perfil de negocio
+- Unirse a negocio
+- Agenda de clases
+- Membresías con descuento automático de clases
+- Productos
+- Videos
+- Instalaciones
+- Dashboard de sucursal completo
+- Dashboard super admin completo
+- Ubicaciones con lat/lng
+- Favoritos desde perfil de negocio
+- Dashboard ya muestra clientes
+- Parte de reseñas ya existe visualmente
+
+OBJETIVO ACTUAL
+
+Estoy en la fase final de la app del cliente y quiero pulir UX/UI y terminar funciones clave antes de producción.
+
+NECESITO IMPLEMENTAR AHORA
+
+1. BOTÓN DE FAVORITOS / MIS SUCURSALES EN LA APP DEL CLIENTE
+En la pantalla principal del cliente (Explorar o donde corresponda) necesito un acceso visible a:
+- Mis favoritos
+- Mis sucursales / Soy miembro
+
+Ese módulo debe permitir ver:
+- sucursales marcadas con corazón
+- sucursales donde el usuario ya es miembro
+
+Idealmente la UI debe quedar clara, ordenada y mobile-first.
+Puede resolverse con:
+- una sola pantalla con tabs: “Favoritos” y “Soy miembro”
+o
+- una sola pantalla con dos bloques claros
+
+IMPORTANTE:
+Ya existe una pantalla de favoritos, pero hoy solo se llega desde el perfil de negocio al tocar el corazón.
+No quiero duplicar lógica.
+Quiero reutilizar lo que ya existe y solo mejorar el acceso y, si hace falta, extenderla para mostrar también sucursales donde soy miembro.
+
+2. BOTÓN DE PERFIL DEL CLIENTE
+Necesito agregar un botón visible para el perfil del cliente dentro de la app.
+
+Ese perfil debe mostrar y permitir editar:
+- foto
+- nombre
+- correo
+- teléfono
+- datos básicos del usuario
+- posiblemente ubicación o ciudad si ya existe en el sistema
+
+La idea es que el usuario tenga una pantalla “Mi perfil” o “Mi cuenta”.
+
+3. UNIFICAR LOS DATOS DEL CLIENTE EN TODA LA PLATAFORMA
+Este es el punto más importante a nivel arquitectura.
+
+Hoy el sistema ya maneja usuarios, clientes, membresías y unión a sucursales, pero necesito que todo quede bien sincronizado.
+
+Quiero que cuando el cliente:
+- cree su perfil
+- edite su nombre
+- edite su foto
+- edite su teléfono
+- actualice sus datos
+
+esos cambios se reflejen automáticamente en todos lados donde ese cliente aparece, por ejemplo:
+- en su perfil dentro de la app
+- en la lista de clientes del dashboard de la sucursal
+- en membresías
+- en reservas
+- en relaciones con sucursales
+- en favoritos si aplica mostrar datos del cliente
+
+IMPORTANTE:
+No quiero copiar datos del usuario en muchas tablas si no es necesario.
+La fuente principal de datos del cliente debe ser una sola entidad central (por ejemplo users o equivalente).
+Las relaciones con sucursales deben depender de ese usuario central.
+
+ARQUITECTURA DESEADA
+
+Quiero que revises la arquitectura actual y la adaptes sin romper nada para que quede así:
+
+A. ENTIDAD CENTRAL DEL CLIENTE
+Debe existir una entidad principal del usuario/cliente con datos como:
+- id
+- nombre
+- foto
+- correo
+- teléfono
+- otros datos personales básicos
+
+B. RELACIONES
+Las relaciones del usuario con las sucursales deben vivir separadas, por ejemplo:
+- favoritos
+- membresías
+- reservas
+- uniones a sucursal
+pero referenciando siempre al mismo usuario central
+
+C. DASHBOARD DE SUCURSAL
+La sucursal debe ver al cliente con los datos actualizados desde la entidad principal del usuario.
+Si el usuario cambia su nombre o foto, eso debe reflejarse en el dashboard.
+
+FLUJO DE TRABAJO OBLIGATORIO
+
+Quiero que trabajes así, paso por paso:
+
+1. Primero analiza la estructura actual del proyecto
+2. Identifica qué archivos existen ya para:
+   - pantalla Explorar
+   - pantalla Favoritos
+   - perfil del cliente si existe
+   - modelos de usuario/cliente
+   - relaciones con sucursales
+   - membresías
+   - dashboard de sucursal
+3. Después explícame:
+   - qué problema detectas
+   - qué solución propones
+   - qué archivos exactos vas a tocar
+   - por qué esos cambios no rompen lo actual
+4. Luego implementa cambios mínimos y seguros
+5. No hagas cambios masivos sin justificar
+6. Si detectas código ya existente reutilizable, úsalo
+7. Si necesitas crear nuevas pantallas, endpoints o componentes, hazlo de forma limpia y modular
+
+ORDEN DE IMPLEMENTACIÓN DESEADO
+
+Quiero que ejecutes esto en este orden:
+
+FASE 1 – NAVEGACIÓN Y UI
+- Agregar botón visible de Favoritos / Mis sucursales
+- Agregar botón visible de Mi perfil
+- Reutilizar pantalla actual de favoritos si existe
+- Mejorar la experiencia mobile-first
+
+FASE 2 – PERFIL DEL CLIENTE
+- Crear o completar pantalla Mi Perfil / Mi Cuenta
+- Mostrar datos del usuario actual
+- Permitir editar datos básicos
+- Guardar cambios en backend
+- Reflejar cambios en frontend sin romper otras vistas
+
+FASE 3 – SINCRONIZACIÓN DE DATOS
+- Revisar entidad principal del usuario
+- Revisar relaciones con sucursales
+- Asegurar que dashboard de sucursal muestre datos actualizados del usuario
+- Evitar duplicidad innecesaria de datos
+- Mantener compatibilidad con membresías, clientes y reservas
+
+FASE 4 – MIS SUCURSALES / SOY MIEMBRO
+- Extender favoritos o crear una vista unificada
+- Mostrar sucursales favoritas
+- Mostrar sucursales donde el usuario es miembro
+- Mantener UI simple, clara y escalable
+
+ESTILO DE RESPUESTA QUE QUIERO
+
+Respóndeme siempre:
+- claro
+- directo
+- técnico pero entendible
+- sin sobrecomplicar
+- pensando como arquitecto y senior
+- priorizando estabilidad y producción
+
+FORMATO DE ENTREGA QUE QUIERO
+
+Antes de escribir código, dime:
+
+1. Diagnóstico actual
+2. Riesgos de romper algo
+3. Estrategia segura
+4. Archivos que vas a modificar
+5. Orden de implementación
+
+Después sí escribe el código.
+
+MUY IMPORTANTE
+No empieces inventando archivos o nombres si antes puedes inspeccionar el proyecto.
+Primero revisa la base real del proyecto.
+Si encuentras nombres de archivos o modelos ya existentes, adáptate a ellos.
+No cambies nombres por gusto.
+No reemplaces módulos enteros si solo hace falta extenderlos.
+
+OBJETIVO FINAL
+Quiero dejar la app del cliente lista para:
+- mejor UX/UI
+- perfil del cliente funcional
+- favoritos y membresías accesibles desde la app
+- datos del cliente unificados
+- preparación para producción y clientes reales
+
+Empieza primero analizando el proyecto actual y proponiendo un plan de cambio mínimo y seguro.
+No hagas todavía refactors grandes sin validación.

@@ -14,6 +14,7 @@ import BranchPublicPage from "@/pages/branch-public";
 import BlockedPage from "@/pages/blocked";
 import ExplorePage from "@/pages/explore";
 import FavoritesPage from "@/pages/favorites";
+import ProfilePage from "@/pages/profile";
 
 function FullScreenLoader() {
   return (
@@ -39,6 +40,11 @@ function AuthenticatedRouter() {
   if (location === "/favorites") {
     if (!user) return <LoginPage />;
     return <FavoritesPage />;
+  }
+
+  if (location === "/profile") {
+    if (!user) return <LoginPage />;
+    return <ProfilePage />;
   }
 
   if (location.startsWith("/app/")) {

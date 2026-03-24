@@ -93,7 +93,7 @@ export interface IStorage {
     category?: string;
     q?: string;
   }): Promise<(Branch & { distance_km?: number })[]>;
-  updateUser(id: string, data: { name?: string; email?: string }): Promise<User | undefined>;
+  updateUser(id: string, data: { name?: string; lastName?: string; email?: string; phone?: string }): Promise<User | undefined>;
   updateUserBranch(id: string, branchId: string): Promise<User | undefined>;
   updateUserRole(id: string, role: string): Promise<User | undefined>;
   getMembership(userId: string, branchId: string): Promise<Membership | undefined>;
@@ -501,10 +501,13 @@ export class DatabaseStorage implements IStorage {
     return m;
   }
 
-  async updateUser(id: string, data: { name?: string; email?: string }): Promise<User | undefined> {
+  async updateUser(id: string, data: { name?: string; lastName?: string; email?: string; phone?: string }): Promise<User | undefined> {
     const setData: any = {};
     if (data.name !== undefined) setData.name = data.name;
+    if (data.lastName !== undefined) setData.lastName = data.lastName;
     if (data.email !== undefined) setData.email = data.email;
+    if (data.phone !== undefined) setData.phone = data.phone;
+    if (Object.keys(setData).length === 0) return this.getUser(id);
     const [user] = await db.update(users).set(setData).where(eq(users.id, id)).returning();
     return user;
   }

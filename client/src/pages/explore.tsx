@@ -18,6 +18,7 @@ import {
   Compass,
   X,
   Zap,
+  UserCircle,
 } from "lucide-react";
 import { BRANCH_CATEGORIES, type Branch } from "@shared/schema";
 import { useAuth } from "@/lib/auth";
@@ -324,19 +325,41 @@ export default function ExplorePage() {
                 Descubre negocios cerca de ti
               </p>
             </div>
-            {user && (
-              <button
-                className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1.5 rounded-lg hover:bg-muted"
-                onClick={async () => {
-                  await logout();
-                  navigate("/auth");
-                }}
-                data-testid="button-logout"
-              >
-                <LogOut className="h-3.5 w-3.5" />
-                Salir
-              </button>
-            )}
+            <div className="flex items-center gap-1">
+              {user && (
+                <>
+                  <button
+                    className="h-8 w-8 flex items-center justify-center rounded-full hover:bg-muted transition-colors relative"
+                    onClick={() => navigate("/favorites")}
+                    data-testid="button-nav-favorites"
+                    title="Favoritos y mis sucursales"
+                  >
+                    <Heart className="h-4 w-4 text-muted-foreground" />
+                  </button>
+                  <button
+                    className="h-8 w-8 flex items-center justify-center rounded-full hover:bg-muted transition-colors"
+                    onClick={() => navigate("/profile")}
+                    data-testid="button-nav-profile"
+                    title="Mi perfil"
+                  >
+                    <UserCircle className="h-4 w-4 text-muted-foreground" />
+                  </button>
+                </>
+              )}
+              {user && (
+                <button
+                  className="h-8 w-8 flex items-center justify-center rounded-full hover:bg-muted transition-colors text-muted-foreground"
+                  onClick={async () => {
+                    await logout();
+                    navigate("/auth");
+                  }}
+                  data-testid="button-logout"
+                  title="Cerrar sesión"
+                >
+                  <LogOut className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="flex gap-2">

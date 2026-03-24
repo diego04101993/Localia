@@ -178,6 +178,27 @@ export async function registerRoutes(
     });
   });
 
+  app.patch("/api/user/me", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ message: "No autenticado" });
+    const actor = req.user as any;
+    try {
+      const { name, lastName, phone } = req.body;
+      if (name !== undefined && (typeof name !== "string" || name.trim().length === 0)) {
+        return res.status(400).json({ message: "Nombre inválido" });
+      }
+      const updated = await storage.updateUser(actor.id, {
+        name: name?.trim(),
+        lastName: lastName?.trim() ?? undefined,
+        phone: phone?.trim() ?? undefined,
+      });
+      const { passwordHash, ...safeUser } = updated as any;
+      res.json(safeUser);
+    } catch (err: any) {
+      console.error("[PATCH /api/user/me]", err.stack || err);
+      res.status(500).json({ message: "Error al actualizar perfil" });
+    }
+  });
+
   // --- Super Admin: Branches ---
   app.get("/api/branches", requireRole("SUPER_ADMIN"), async (req, res) => {
     const includeDeleted = req.query.include_deleted === "true";
