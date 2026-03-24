@@ -1,0 +1,160 @@
+Quiero que trabajes como Arquitecto de Software, Product Manager y Senior Fullstack Developer sobre mi proyecto actual en Replit.
+
+REGLA MÁXIMA:
+NO ROMPER NADA DE LO QUE YA FUNCIONA.
+NO hagas refactors grandes.
+NO reemplaces módulos completos.
+NO cambies flujos existentes si no es necesario.
+Haz cambios pequeños, seguros, compatibles y progresivos.
+
+CONTEXTO ACTUAL
+
+Ya quedó funcionando correctamente esto:
+
+1. En la app del cliente, el perfil ya muestra la foto real del usuario.
+2. Si la foto cambia desde el dashboard de la sucursal, también se refleja en la app del cliente.
+3. La edición de nombre, apellido y teléfono ya funciona desde la app del cliente.
+4. Esos datos también se sincronizan bien con el dashboard de la sucursal.
+5. El fallback con iniciales ya estaba resuelto antes y no debe romperse.
+
+LO ÚNICO QUE FALTA
+
+Ahora necesito que desde la app del cliente, dentro de "Mi Perfil" / "Editar perfil", el usuario también pueda:
+
+- cambiar su foto de perfil
+- subir una nueva foto
+- reemplazar la existente
+- guardar el cambio
+- ver la nueva foto inmediatamente en la app
+- y que esa misma foto se refleje en todos lados:
+  - dashboard de sucursal
+  - otros dashboards donde aparezca ese cliente
+  - cualquier vista que use la foto del usuario
+
+OBJETIVO EXACTO
+
+Agregar la opción de editar la foto desde la app del cliente, reutilizando la lógica actual si ya existe, y manteniendo la foto unificada como fuente única de verdad.
+
+IMPORTANTE:
+NO quiero un sistema paralelo de foto.
+NO quiero duplicar endpoints si ya existe uno útil.
+NO quiero romper la edición actual del perfil.
+NO quiero romper la carga actual de la foto.
+
+QUÉ QUIERO QUE HAGAS
+
+Primero inspecciona el proyecto real y localiza:
+
+- la pantalla "Mi Perfil" del cliente
+- la pantalla o modal de "Editar perfil" del cliente
+- el componente actual donde se muestra la foto/avatar
+- la lógica actual de edición de nombre/teléfono
+- el endpoint actual que actualiza datos del cliente
+- la lógica/endpoints ya existentes para cambiar la foto desde el dashboard de sucursal
+- cualquier uploader o helper reutilizable para imágenes
+
+PROBLEMA A RESOLVER
+
+Ahorita la foto del cliente ya se ve en la app, pero la app todavía no permite modificarla.
+El dashboard de la sucursal sí puede hacerlo.
+Quiero extender esa capacidad a la app del cliente.
+
+FORMA DE TRABAJO OBLIGATORIA
+
+Antes de escribir código, quiero que hagas esto:
+
+1. Diagnóstico técnico breve
+2. Qué ya existe y qué se puede reutilizar
+3. Qué endpoint o flujo conviene reutilizar
+4. Qué archivos exactos vas a modificar
+5. Riesgos de romper algo y cómo los evitarás
+6. Plan por fases pequeñas
+
+DESPUÉS IMPLEMENTA EN ESTE ORDEN
+
+FASE 1 — BOTÓN / UI PARA CAMBIAR FOTO
+En la app del cliente, dentro de Mi Perfil o Editar Perfil, agregar una opción visible para:
+- Cambiar foto
+o
+- Editar foto
+
+La UI debe ser mobile-first y simple.
+Puede ser:
+- botón debajo de la foto
+- ícono de cámara sobre el avatar
+- o un botón dentro del formulario de edición
+
+IMPORTANTE:
+No cambies innecesariamente el diseño ya funcional.
+Solo agrega esta acción de forma limpia y consistente.
+
+FASE 2 — SELECCIÓN DE ARCHIVO / IMAGEN
+Permitir al usuario:
+- seleccionar una imagen desde su dispositivo
+- previsualizarla si es posible
+- cancelar si no quiere seguir
+
+Si ya existe una lógica reusable para subida de imágenes, úsala.
+No inventes otro sistema si el actual sirve.
+
+FASE 3 — SUBIDA Y GUARDADO
+Al guardar:
+- subir la nueva foto usando la lógica o endpoint existente si ya hay uno
+- o adaptar el endpoint actual de actualización de perfil si esa es mejor opción
+- actualizar el registro central del usuario/cliente
+- mantener una sola fuente de verdad de la foto
+
+MUY IMPORTANTE:
+La foto debe quedar guardada donde ya se está guardando actualmente cuando se cambia desde el dashboard de sucursal.
+No crear una ruta paralela si no es necesario.
+
+FASE 4 — REFRESH Y SINCRONIZACIÓN
+Después de guardar la foto:
+- actualizar la UI de Mi Perfil inmediatamente
+- seguir mostrando la nueva foto al volver a entrar
+- asegurar que esa misma foto se vea en el dashboard de la sucursal
+- mantener el fallback de iniciales si no hay foto o si falla algo
+
+RESTRICCIONES TÉCNICAS
+
+- No romper edición de nombre, apellido y teléfono
+- No romper el perfil del cliente ya funcional
+- No romper dashboard de sucursal
+- No romper login
+- No romper favoritos, membresías ni reservas
+- No cambiar estructura de tablas si no hace falta
+- No duplicar lógica de imágenes si ya existe
+- No inventar nombres de campos sin inspeccionar el proyecto real
+- Si el backend usa un campo como avatar_url, photo_url, profile_image, image_url, etc., respeta lo existente y unifícalo con el menor impacto posible
+
+COMPORTAMIENTO ESPERADO FINAL
+
+Quiero que después de esto:
+
+1. El cliente pueda entrar a Mi Perfil desde la app
+2. Pueda tocar “Cambiar foto”
+3. Elegir una imagen
+4. Guardarla
+5. Verla reflejada de inmediato en su perfil
+6. Y que esa misma foto aparezca también en el dashboard de la sucursal y en cualquier otro lugar donde se muestre ese cliente
+
+FORMATO DE RESPUESTA QUE QUIERO
+
+Antes del código, respóndeme así:
+
+1. Diagnóstico actual
+2. Reutilización posible
+3. Estrategia segura
+4. Archivos a modificar
+5. Implementación por fases
+
+Después sí escribe el código.
+
+OBJETIVO FINAL
+
+Solo quiero cerrar esta mejora puntual:
+habilitar cambio de foto desde la app del cliente y dejar la foto totalmente sincronizada en todo el sistema, sin romper nada de lo demás.
+
+Empieza inspeccionando el proyecto real.
+No hagas cambios grandes sin validación.
+Prioriza reutilizar lo que ya existe.

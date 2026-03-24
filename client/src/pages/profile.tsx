@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useLocation } from "wouter";
 import { useMutation } from "@tanstack/react-query";
 import {
@@ -13,6 +13,8 @@ import {
   LogOut,
   Heart,
   Building2,
+  Camera,
+  Loader2,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -31,6 +33,7 @@ export default function ProfilePage() {
   const [name, setName] = useState(user?.name || "");
   const [lastName, setLastName] = useState((user as any)?.lastName || "");
   const [phone, setPhone] = useState((user as any)?.phone || "");
+  const avatarFileRef = useRef<HTMLInputElement>(null);
 
   const updateMutation = useMutation({
     mutationFn: async () => {
@@ -52,6 +55,38 @@ export default function ProfilePage() {
     setLastName((user as any)?.lastName || "");
     setPhone((user as any)?.phone || "");
     setEditing(false);
+  };
+
+  const avatarUploadMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/user/me/avatar", {
+        method: "POST",
+        body: formData,
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.message || "Error al subir foto");
+      }
+      return res.json() as Promise<{ avatarUrl: string }>;
+    },
+    onSuccess: async () => {
+      await refetch();
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
+      toast({ description: "Foto actualizada" });
+    },
+    onError: (err: any) => {
+      toast({ description: err.message || "Error al subir foto", variant: "destructive" });
+    },
+  });
+
+  const handleAvatarChange = (e: { target: HTMLInputElement }) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    avatarUploadMutation.mutate(file);
+    e.target.value = "";
   };
 
   if (!user) {
@@ -109,19 +144,42 @@ export default function ProfilePage() {
       <main className="max-w-3xl mx-auto p-4 space-y-4">
         {/* Avatar + nombre */}
         <div className="flex flex-col items-center py-6 gap-3">
-          <div className="h-20 w-20 rounded-full border-2 border-primary/20 overflow-hidden shrink-0" data-testid="avatar-container">
-            {(user as any).avatarUrl ? (
-              <img
-                src={(user as any).avatarUrl}
-                alt="Foto de perfil"
-                className="w-full h-full object-cover"
-                data-testid="avatar-image"
-              />
-            ) : (
-              <div className="w-full h-full bg-primary/10 flex items-center justify-center text-2xl font-bold text-primary" data-testid="avatar-initials">
-                {initials}
-              </div>
-            )}
+          <div className="relative shrink-0" data-testid="avatar-wrapper">
+            <div className="h-20 w-20 rounded-full border-2 border-primary/20 overflow-hidden" data-testid="avatar-container">
+              {(user as any).avatarUrl ? (
+                <img
+                  src={(user as any).avatarUrl}
+                  alt="Foto de perfil"
+                  className="w-full h-full object-cover"
+                  data-testid="avatar-image"
+                />
+              ) : (
+                <div className="w-full h-full bg-primary/10 flex items-center justify-center text-2xl font-bold text-primary" data-testid="avatar-initials">
+                  {initials}
+                </div>
+              )}
+            </div>
+            <button
+              className="absolute bottom-0 right-0 h-7 w-7 rounded-full bg-primary text-primary-foreground flex items-center justify-center shadow-md border-2 border-background hover:bg-primary/90 transition-colors disabled:opacity-60"
+              onClick={() => avatarFileRef.current?.click()}
+              disabled={avatarUploadMutation.isPending}
+              data-testid="button-change-avatar"
+              title="Cambiar foto"
+              type="button"
+            >
+              {avatarUploadMutation.isPending
+                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                : <Camera className="h-3.5 w-3.5" />
+              }
+            </button>
+            <input
+              ref={avatarFileRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleAvatarChange}
+              data-testid="input-avatar-file"
+            />
           </div>
           {!editing && (
             <>

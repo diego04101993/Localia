@@ -199,6 +199,40 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/user/me/avatar", (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ message: "No autenticado" });
+    const actor = req.user as any;
+
+    upload.single("file")(req, res, async (err) => {
+      if (err) {
+        if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+          return res.status(400).json({ message: "El archivo excede el tamaño máximo de 10MB" });
+        }
+        return res.status(400).json({ message: err.message || "Error al subir archivo" });
+      }
+      if (!req.file) {
+        return res.status(400).json({ message: "No se proporcionó ningún archivo" });
+      }
+
+      try {
+        const existingUser = await storage.getUser(actor.id);
+        if (existingUser?.avatarUrl) {
+          const oldPath = path.join(process.cwd(), existingUser.avatarUrl);
+          if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+        }
+
+        const avatarUrl = `/uploads/${req.file.filename}`;
+        await storage.updateClient(actor.id, { avatarUrl });
+
+        console.log(`[AVATAR] Self-upload for user ${actor.id} (${actor.email})`);
+        res.json({ avatarUrl });
+      } catch (err: any) {
+        console.error(`[AVATAR] Self-upload error:`, err.stack || err);
+        res.status(500).json({ message: "Error al subir foto de perfil" });
+      }
+    });
+  });
+
   // --- Super Admin: Branches ---
   app.get("/api/branches", requireRole("SUPER_ADMIN"), async (req, res) => {
     const includeDeleted = req.query.include_deleted === "true";
