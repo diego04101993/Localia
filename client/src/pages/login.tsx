@@ -48,83 +48,78 @@ export default function LoginPage() {
   return (
     <div
       className="min-h-screen flex items-center justify-center p-5 relative overflow-hidden"
-      style={{ background: "linear-gradient(145deg, #1a0e3a 0%, #2d1b69 40%, #4a2db8 75%, #6C4CF1 100%)" }}
+      style={{ background: "linear-gradient(160deg, #f5f3ff 0%, #ede9fe 40%, #faf8ff 100%)" }}
     >
-      {/* Decorative glow orbs */}
+      {/* Subtle glow behind logo area */}
       <div
         className="absolute pointer-events-none"
         style={{
-          width: 400,
-          height: 400,
+          width: 360,
+          height: 360,
           borderRadius: "50%",
-          background: "radial-gradient(circle, rgba(108,76,241,0.35) 0%, transparent 70%)",
-          top: -80,
-          right: -80,
-          filter: "blur(40px)",
+          background: "radial-gradient(circle, rgba(108,76,241,0.12) 0%, transparent 70%)",
+          top: "2%",
+          left: "50%",
+          transform: "translateX(-50%)",
+          filter: "blur(20px)",
         }}
       />
+      {/* Subtle corner accents */}
       <div
         className="absolute pointer-events-none"
         style={{
-          width: 300,
-          height: 300,
+          width: 280,
+          height: 280,
           borderRadius: "50%",
-          background: "radial-gradient(circle, rgba(147,51,234,0.25) 0%, transparent 70%)",
-          bottom: -60,
-          left: -60,
-          filter: "blur(50px)",
-        }}
-      />
-      <div
-        className="absolute pointer-events-none"
-        style={{
-          width: 200,
-          height: 200,
-          borderRadius: "50%",
-          background: "radial-gradient(circle, rgba(196,181,253,0.15) 0%, transparent 70%)",
-          top: "45%",
-          left: "15%",
+          background: "radial-gradient(circle, rgba(167,139,250,0.1) 0%, transparent 70%)",
+          bottom: -40,
+          right: -40,
           filter: "blur(30px)",
         }}
       />
 
       {/* Content */}
-      <div className="w-full max-w-sm relative z-10 flex flex-col items-center gap-6">
+      <div className="w-full max-w-sm relative z-10 flex flex-col items-center gap-5">
 
-        {/* Branding */}
-        <div className="flex flex-col items-center gap-2 text-center">
-          <img
-            src={localia_logo}
-            alt="Localia"
-            className="object-contain drop-shadow-2xl"
-            style={{ width: 140, height: 140 }}
-            data-testid="text-login-title"
-          />
-          <h1
-            className="text-3xl font-bold tracking-tight"
-            style={{ color: "#ffffff", textShadow: "0 2px 16px rgba(108,76,241,0.5)" }}
+        {/* Logo — main focus */}
+        <div className="flex flex-col items-center gap-3">
+          <div
+            className="relative flex items-center justify-center"
+            style={{
+              filter: "drop-shadow(0 8px 24px rgba(108,76,241,0.3))",
+            }}
           >
-            Localia
-          </h1>
-          <p className="text-sm leading-snug max-w-xs" style={{ color: "rgba(220,210,255,0.8)" }}>
+            <img
+              src={localia_logo}
+              alt="Localia"
+              className="object-contain"
+              style={{ width: 156, height: 156 }}
+              data-testid="text-login-title"
+            />
+          </div>
+          {/* Tagline only — no duplicate brand name */}
+          <p
+            className="text-sm text-center leading-snug max-w-xs"
+            style={{ color: "#7c6ba0" }}
+          >
             Descubre, reserva y conecta con negocios cerca de ti
           </p>
         </div>
 
-        {/* Card */}
+        {/* Login Card */}
         <div
           className="w-full rounded-3xl p-7"
           style={{
-            background: "rgba(255,255,255,0.08)",
-            backdropFilter: "blur(24px)",
-            WebkitBackdropFilter: "blur(24px)",
-            border: "1px solid rgba(255,255,255,0.15)",
-            boxShadow: "0 24px 60px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.15)",
+            background: "rgba(255,255,255,0.85)",
+            backdropFilter: "blur(16px)",
+            WebkitBackdropFilter: "blur(16px)",
+            border: "1px solid rgba(196,181,253,0.3)",
+            boxShadow: "0 20px 60px rgba(108,76,241,0.12), 0 4px 16px rgba(0,0,0,0.06)",
           }}
         >
           <h2
             className="text-base font-semibold text-center mb-5"
-            style={{ color: "rgba(255,255,255,0.9)" }}
+            style={{ color: "#1e1b4b" }}
           >
             Iniciar sesión
           </h2>
@@ -142,7 +137,7 @@ export default function LoginPage() {
                       <div className="relative">
                         <Mail
                           className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 pointer-events-none"
-                          style={{ color: "rgba(196,181,253,0.7)" }}
+                          style={{ color: "#a78bfa" }}
                         />
                         <input
                           type="email"
@@ -150,25 +145,25 @@ export default function LoginPage() {
                           data-testid="input-email"
                           className="w-full h-12 pl-11 pr-4 rounded-2xl text-sm outline-none transition-all"
                           style={{
-                            background: "rgba(255,255,255,0.1)",
-                            border: "1px solid rgba(255,255,255,0.15)",
-                            color: "#ffffff",
+                            background: "#f8f6ff",
+                            border: "1.5px solid #e5e0f8",
+                            color: "#1e1b4b",
                           }}
                           onFocus={e => {
-                            e.target.style.background = "rgba(255,255,255,0.15)";
-                            e.target.style.border = "1px solid rgba(108,76,241,0.8)";
-                            e.target.style.boxShadow = "0 0 0 3px rgba(108,76,241,0.2)";
+                            e.target.style.border = "1.5px solid #6C4CF1";
+                            e.target.style.boxShadow = "0 0 0 3px rgba(108,76,241,0.1)";
+                            e.target.style.background = "#ffffff";
                           }}
                           onBlur={e => {
-                            e.target.style.background = "rgba(255,255,255,0.1)";
-                            e.target.style.border = "1px solid rgba(255,255,255,0.15)";
+                            e.target.style.border = "1.5px solid #e5e0f8";
                             e.target.style.boxShadow = "none";
+                            e.target.style.background = "#f8f6ff";
                           }}
                           {...field}
                         />
                       </div>
                     </FormControl>
-                    <FormMessage className="text-red-300" />
+                    <FormMessage />
                   </FormItem>
                 )}
               />
@@ -183,7 +178,7 @@ export default function LoginPage() {
                       <div className="relative">
                         <Lock
                           className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 pointer-events-none"
-                          style={{ color: "rgba(196,181,253,0.7)" }}
+                          style={{ color: "#a78bfa" }}
                         />
                         <input
                           type={showPassword ? "text" : "password"}
@@ -191,26 +186,26 @@ export default function LoginPage() {
                           data-testid="input-password"
                           className="w-full h-12 pl-11 pr-12 rounded-2xl text-sm outline-none transition-all"
                           style={{
-                            background: "rgba(255,255,255,0.1)",
-                            border: "1px solid rgba(255,255,255,0.15)",
-                            color: "#ffffff",
+                            background: "#f8f6ff",
+                            border: "1.5px solid #e5e0f8",
+                            color: "#1e1b4b",
                           }}
                           onFocus={e => {
-                            e.target.style.background = "rgba(255,255,255,0.15)";
-                            e.target.style.border = "1px solid rgba(108,76,241,0.8)";
-                            e.target.style.boxShadow = "0 0 0 3px rgba(108,76,241,0.2)";
+                            e.target.style.border = "1.5px solid #6C4CF1";
+                            e.target.style.boxShadow = "0 0 0 3px rgba(108,76,241,0.1)";
+                            e.target.style.background = "#ffffff";
                           }}
                           onBlur={e => {
-                            e.target.style.background = "rgba(255,255,255,0.1)";
-                            e.target.style.border = "1px solid rgba(255,255,255,0.15)";
+                            e.target.style.border = "1.5px solid #e5e0f8";
                             e.target.style.boxShadow = "none";
+                            e.target.style.background = "#f8f6ff";
                           }}
                           {...field}
                         />
                         <button
                           type="button"
-                          className="absolute right-3.5 top-1/2 -translate-y-1/2 transition-opacity hover:opacity-70"
-                          style={{ color: "rgba(196,181,253,0.7)" }}
+                          className="absolute right-3.5 top-1/2 -translate-y-1/2 transition-opacity hover:opacity-60"
+                          style={{ color: "#a78bfa" }}
                           onClick={() => setShowPassword(!showPassword)}
                           data-testid="button-toggle-password"
                         >
@@ -218,7 +213,7 @@ export default function LoginPage() {
                         </button>
                       </div>
                     </FormControl>
-                    <FormMessage className="text-red-300" />
+                    <FormMessage />
                   </FormItem>
                 )}
               />
@@ -231,17 +226,19 @@ export default function LoginPage() {
                 className="w-full h-12 rounded-2xl text-white text-sm font-semibold transition-all mt-1 disabled:opacity-60"
                 style={{
                   background: "linear-gradient(135deg, #6C4CF1 0%, #4B2ED6 100%)",
-                  boxShadow: "0 6px 24px rgba(108,76,241,0.5)",
+                  boxShadow: "0 6px 20px rgba(108,76,241,0.4)",
                 }}
                 onMouseEnter={e => {
                   if (!isSubmitting) {
-                    (e.currentTarget as HTMLButtonElement).style.transform = "translateY(-1px)";
-                    (e.currentTarget as HTMLButtonElement).style.boxShadow = "0 10px 32px rgba(108,76,241,0.6)";
+                    const btn = e.currentTarget as HTMLButtonElement;
+                    btn.style.transform = "translateY(-1px)";
+                    btn.style.boxShadow = "0 10px 28px rgba(108,76,241,0.5)";
                   }
                 }}
                 onMouseLeave={e => {
-                  (e.currentTarget as HTMLButtonElement).style.transform = "translateY(0)";
-                  (e.currentTarget as HTMLButtonElement).style.boxShadow = "0 6px 24px rgba(108,76,241,0.5)";
+                  const btn = e.currentTarget as HTMLButtonElement;
+                  btn.style.transform = "translateY(0)";
+                  btn.style.boxShadow = "0 6px 20px rgba(108,76,241,0.4)";
                 }}
               >
                 {isSubmitting ? (
@@ -257,7 +254,7 @@ export default function LoginPage() {
           </Form>
         </div>
 
-        <p className="text-center text-xs pb-2" style={{ color: "rgba(196,181,253,0.5)" }}>
+        <p className="text-center text-xs pb-2" style={{ color: "#c4b5fd" }}>
           Acceso exclusivo para administradores y usuarios registrados
         </p>
       </div>
