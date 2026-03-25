@@ -15,6 +15,7 @@ import {
   Building2,
   Camera,
   Loader2,
+  Calendar,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -278,6 +279,21 @@ export default function ProfilePage() {
                   <p className="text-sm font-medium">{(user as any).phone || "—"}</p>
                 </div>
               </div>
+              {(user as any).birthDate && (
+                <div className="py-3 flex items-center gap-3" data-testid="row-profile-birthdate">
+                  <Calendar className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <div className="min-w-0">
+                    <p className="text-[11px] text-muted-foreground">Fecha de nacimiento</p>
+                    <p className="text-sm font-medium">
+                      {new Date((user as any).birthDate + "T12:00:00").toLocaleDateString("es-MX", {
+                        day: "numeric",
+                        month: "long",
+                        year: "numeric",
+                      })}
+                    </p>
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
         )}

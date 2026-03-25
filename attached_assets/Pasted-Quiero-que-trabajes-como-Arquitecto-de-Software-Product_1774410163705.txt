@@ -1,0 +1,109 @@
+Quiero que trabajes como Arquitecto de Software, Product Manager y Senior Fullstack Developer sobre mi proyecto actual en Replit.
+
+REGLA MÁXIMA:
+NO ROMPER NADA DE LO QUE YA FUNCIONA.
+NO hagas refactors grandes.
+NO reemplaces módulos completos.
+NO cambies lógica estable si no es necesario.
+Haz cambios pequeños, seguros y compatibles con la arquitectura actual.
+
+CONTEXTO ACTUAL
+
+Ya existe el perfil del cliente en la app del cliente.
+Ya funciona:
+- mostrar nombre
+- mostrar correo
+- mostrar teléfono
+- mostrar foto
+- editar perfil
+- sincronizar datos entre app del cliente y dashboard de sucursal
+
+También ya existe en el dashboard de la sucursal el campo de fecha de cumpleaños / fecha de nacimiento del cliente.
+Ese dato ya se guarda en el sistema.
+
+PROBLEMA ACTUAL
+
+La fecha de cumpleaños ya existe en el dashboard de la sucursal, pero todavía NO se está mostrando en el perfil del cliente dentro de la app del cliente.
+
+OBJETIVO DE ESTA TAREA
+
+Quiero ligar ese campo para que también se vea en el perfil del cliente de la app del cliente.
+
+IMPORTANTE:
+- primero solo quiero mostrar la fecha de cumpleaños en el perfil del cliente
+- NO quiero todavía rehacer otras pantallas si no hace falta
+- NO quiero romper edición de perfil ya funcional
+- NO quiero romper sincronización actual de nombre, teléfono y foto
+
+LO QUE QUIERO QUE HAGAS
+
+Primero inspecciona el proyecto real y localiza:
+
+- la pantalla del perfil del cliente en la app
+- el endpoint que trae los datos del usuario/cliente actual
+- el schema/serializer del usuario o cliente
+- el modelo donde ya existe fecha de cumpleaños o fecha de nacimiento
+- la parte del dashboard de sucursal donde ese campo ya se usa
+
+PROBLEMA A VALIDAR
+
+Quiero que revises cuál de estas cosas está pasando:
+
+- el backend sí guarda birthday/date_of_birth pero no lo devuelve al frontend
+- el schema del usuario no incluye ese campo
+- el frontend del perfil no lo está leyendo
+- el nombre del campo es diferente entre dashboard y app
+- el endpoint de "mi perfil" no incluye el dato
+
+FORMA DE TRABAJO OBLIGATORIA
+
+Antes de escribir código, respóndeme con:
+
+1. Diagnóstico técnico breve
+2. Causa exacta
+3. Qué ya existe y qué se puede reutilizar
+4. Qué archivos exactos vas a modificar
+5. Por qué no rompe nada
+
+DESPUÉS IMPLEMENTA EN ESTE ORDEN
+
+FASE 1 — LECTURA DEL CAMPO
+- localizar el campo real de cumpleaños / fecha de nacimiento
+- asegurarte de que el endpoint del perfil del cliente lo devuelva
+- ajustar schema/serializer si hace falta
+- mantener compatibilidad con lo actual
+
+FASE 2 — MOSTRARLO EN LA APP DEL CLIENTE
+- agregar en la pantalla Mi Perfil una fila más para mostrar:
+  - Fecha de cumpleaños
+o
+  - Fecha de nacimiento
+- respetar el estilo visual actual
+- mantener diseño limpio y mobile-first
+
+FASE 3 — FORMATO
+- mostrar la fecha en formato amigable para el usuario
+  por ejemplo:
+  15/08/1990
+o
+  15 ago 1990
+- si no existe fecha, no romper la UI
+- mostrar vacío, guion o esconder la fila de forma elegante
+
+RESTRICCIONES
+
+- no romper login
+- no romper dashboard de sucursal
+- no romper edición actual del perfil
+- no romper foto de perfil
+- no romper favoritos ni membresías
+- no inventar nombres de campos sin inspeccionar el proyecto
+- reutilizar nombres y estructuras ya existentes
+
+OBJETIVO FINAL
+
+Quiero que la fecha de cumpleaños que ya existe en el sistema también aparezca correctamente en el perfil del cliente dentro de la app del cliente.
+
+Empieza inspeccionando el proyecto real.
+No hagas cambios grandes sin validación.
+Primero resuelve solo mostrar el dato.
