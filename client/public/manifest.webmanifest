@@ -1,0 +1,23 @@
+{
+  "name": "WebCool",
+  "short_name": "WebCool",
+  "description": "Descubre, reserva y conecta con negocios cerca de ti",
+  "start_url": "/explore",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#1E88E5",
+  "icons": [
+    {
+      "src": "/logo-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/logo-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -16,6 +16,10 @@ import {
   Camera,
   Loader2,
   Calendar,
+  Shield,
+  Eye,
+  EyeOff,
+  KeyRound,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -89,6 +93,55 @@ export default function ProfilePage() {
     avatarUploadMutation.mutate(file);
     e.target.value = "";
   };
+
+  // --- Security section state ---
+  const [showSecurity, setShowSecurity] = useState(false);
+  const [activeSecForm, setActiveSecForm] = useState<"none" | "email" | "password">("none");
+
+  // Change email state
+  const [secEmail, setSecEmail] = useState("");
+  const [secEmailPass, setSecEmailPass] = useState("");
+  const [showSecEmailPass, setShowSecEmailPass] = useState(false);
+
+  // Change password state
+  const [secCurrentPass, setSecCurrentPass] = useState("");
+  const [secNewPass, setSecNewPass] = useState("");
+  const [secNewPass2, setSecNewPass2] = useState("");
+  const [showSecCurrentPass, setShowSecCurrentPass] = useState(false);
+  const [showSecNewPass, setShowSecNewPass] = useState(false);
+
+  const changeEmailMutation = useMutation({
+    mutationFn: async () => {
+      return apiRequest("PATCH", "/api/user/me/email", { currentPassword: secEmailPass, newEmail: secEmail.trim() });
+    },
+    onSuccess: async () => {
+      await refetch();
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
+      setSecEmail("");
+      setSecEmailPass("");
+      setActiveSecForm("none");
+      toast({ description: "Correo actualizado correctamente" });
+    },
+    onError: (err: any) => {
+      toast({ description: err.message || "Error al cambiar correo", variant: "destructive" });
+    },
+  });
+
+  const changePasswordMutation = useMutation({
+    mutationFn: async () => {
+      return apiRequest("POST", "/api/user/me/change-password", { currentPassword: secCurrentPass, newPassword: secNewPass });
+    },
+    onSuccess: () => {
+      setSecCurrentPass("");
+      setSecNewPass("");
+      setSecNewPass2("");
+      setActiveSecForm("none");
+      toast({ description: "Contraseña actualizada correctamente" });
+    },
+    onError: (err: any) => {
+      toast({ description: err.message || "Error al cambiar contraseña", variant: "destructive" });
+    },
+  });
 
   if (!user) {
     return (
@@ -296,6 +349,176 @@ export default function ProfilePage() {
               )}
             </CardContent>
           </Card>
+        )}
+
+        {/* Seguridad */}
+        {!editing && (
+          <div className="space-y-2">
+            <p className="text-xs font-semibold text-muted-foreground px-1">Seguridad</p>
+            <Card className="border-border/50 shadow-sm">
+              <CardContent className="p-0">
+                {/* Toggle header */}
+                <button
+                  className="w-full flex items-center gap-3 px-4 py-3.5 hover:bg-muted/50 transition-colors text-left"
+                  onClick={() => {
+                    setShowSecurity(!showSecurity);
+                    if (showSecurity) setActiveSecForm("none");
+                  }}
+                  data-testid="button-security-section"
+                >
+                  <Shield className="h-4 w-4 text-primary shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium">Cuenta y acceso</p>
+                    <p className="text-[11px] text-muted-foreground">Cambia tu correo o contraseña</p>
+                  </div>
+                  {showSecurity ? <X className="h-3.5 w-3.5 text-muted-foreground" /> : <Pencil className="h-3.5 w-3.5 text-muted-foreground" />}
+                </button>
+
+                {showSecurity && (
+                  <div className="border-t border-border/50 px-4 pt-3 pb-4 space-y-3">
+                    {/* Selector de acción */}
+                    {activeSecForm === "none" && (
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setActiveSecForm("email")}
+                          className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl border border-border text-sm font-medium hover:bg-muted/50 transition-colors"
+                          data-testid="button-change-email-option"
+                        >
+                          <Mail className="h-3.5 w-3.5 text-primary" />
+                          Cambiar correo
+                        </button>
+                        <button
+                          onClick={() => setActiveSecForm("password")}
+                          className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl border border-border text-sm font-medium hover:bg-muted/50 transition-colors"
+                          data-testid="button-change-password-option"
+                        >
+                          <KeyRound className="h-3.5 w-3.5 text-primary" />
+                          Cambiar contraseña
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Cambiar correo */}
+                    {activeSecForm === "email" && (
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2 mb-1">
+                          <button onClick={() => setActiveSecForm("none")} className="text-muted-foreground hover:text-foreground">
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                          <p className="text-xs font-semibold text-muted-foreground">Cambiar correo</p>
+                        </div>
+                        <Input
+                          type="email"
+                          placeholder="Nuevo correo electrónico"
+                          value={secEmail}
+                          onChange={e => setSecEmail(e.target.value)}
+                          className="h-10 text-sm"
+                          data-testid="input-new-email"
+                        />
+                        <div className="relative">
+                          <Input
+                            type={showSecEmailPass ? "text" : "password"}
+                            placeholder="Contraseña actual"
+                            value={secEmailPass}
+                            onChange={e => setSecEmailPass(e.target.value)}
+                            className="h-10 text-sm pr-10"
+                            data-testid="input-email-verify-password"
+                          />
+                          <button
+                            type="button"
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                            onClick={() => setShowSecEmailPass(!showSecEmailPass)}
+                          >
+                            {showSecEmailPass ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                          </button>
+                        </div>
+                        <Button
+                          className="w-full h-10 text-sm"
+                          disabled={!secEmail || !secEmailPass || changeEmailMutation.isPending}
+                          onClick={() => changeEmailMutation.mutate()}
+                          data-testid="button-submit-change-email"
+                        >
+                          {changeEmailMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" /> : null}
+                          Guardar correo
+                        </Button>
+                      </div>
+                    )}
+
+                    {/* Cambiar contraseña */}
+                    {activeSecForm === "password" && (
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2 mb-1">
+                          <button onClick={() => setActiveSecForm("none")} className="text-muted-foreground hover:text-foreground">
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                          <p className="text-xs font-semibold text-muted-foreground">Cambiar contraseña</p>
+                        </div>
+                        <div className="relative">
+                          <Input
+                            type={showSecCurrentPass ? "text" : "password"}
+                            placeholder="Contraseña actual"
+                            value={secCurrentPass}
+                            onChange={e => setSecCurrentPass(e.target.value)}
+                            className="h-10 text-sm pr-10"
+                            data-testid="input-current-password"
+                          />
+                          <button
+                            type="button"
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                            onClick={() => setShowSecCurrentPass(!showSecCurrentPass)}
+                          >
+                            {showSecCurrentPass ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                          </button>
+                        </div>
+                        <div className="relative">
+                          <Input
+                            type={showSecNewPass ? "text" : "password"}
+                            placeholder="Nueva contraseña (mín. 6 caracteres)"
+                            value={secNewPass}
+                            onChange={e => setSecNewPass(e.target.value)}
+                            className="h-10 text-sm pr-10"
+                            data-testid="input-new-password"
+                          />
+                          <button
+                            type="button"
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                            onClick={() => setShowSecNewPass(!showSecNewPass)}
+                          >
+                            {showSecNewPass ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                          </button>
+                        </div>
+                        <Input
+                          type="password"
+                          placeholder="Confirmar nueva contraseña"
+                          value={secNewPass2}
+                          onChange={e => setSecNewPass2(e.target.value)}
+                          className="h-10 text-sm"
+                          data-testid="input-confirm-password"
+                        />
+                        {secNewPass2 && secNewPass !== secNewPass2 && (
+                          <p className="text-xs text-destructive px-1">Las contraseñas no coinciden</p>
+                        )}
+                        <Button
+                          className="w-full h-10 text-sm"
+                          disabled={
+                            !secCurrentPass ||
+                            secNewPass.length < 6 ||
+                            secNewPass !== secNewPass2 ||
+                            changePasswordMutation.isPending
+                          }
+                          onClick={() => changePasswordMutation.mutate()}
+                          data-testid="button-submit-change-password"
+                        >
+                          {changePasswordMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" /> : null}
+                          Guardar contraseña
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
         )}
 
         {/* Accesos rápidos */}

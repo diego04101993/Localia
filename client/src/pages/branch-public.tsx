@@ -11,6 +11,7 @@ import {
   Compass,
   ArrowLeft,
   LogOut,
+  UserMinus,
   ChevronLeft,
   ChevronRight,
   Play,
@@ -1201,6 +1202,27 @@ export default function BranchPublicPage() {
     },
   });
 
+  const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
+
+  const leaveMutation = useMutation({
+    mutationFn: async (branchSlug: string) => {
+      await apiRequest("POST", "/api/memberships/leave", { branchSlug });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/memberships"] });
+      toast({ title: "Has salido de esta sucursal" });
+      setLeaveDialogOpen(false);
+    },
+    onError: (err: any) => {
+      toast({
+        title: "Error",
+        description: "No se pudo salir de la sucursal",
+        variant: "destructive",
+      });
+      setLeaveDialogOpen(false);
+    },
+  });
+
   if (isLoading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
@@ -1365,12 +1387,48 @@ export default function BranchPublicPage() {
         )}
 
         {isMember && (
-          <div className="rounded-2xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20 px-4 py-3 flex items-center gap-3 shadow-sm">
-            <div className="h-2.5 w-2.5 rounded-full bg-emerald-500 shrink-0" />
-            <span className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">
-              Ya eres miembro de este negocio
-            </span>
-          </div>
+          <>
+            <div className="rounded-2xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20 px-4 py-3 flex items-center gap-3 shadow-sm">
+              <div className="h-2.5 w-2.5 rounded-full bg-emerald-500 shrink-0" />
+              <span className="flex-1 text-sm font-semibold text-emerald-700 dark:text-emerald-300">
+                Ya eres miembro de este negocio
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 shrink-0 rounded-xl gap-1.5"
+                onClick={() => setLeaveDialogOpen(true)}
+                data-testid="button-leave-branch"
+              >
+                <UserMinus className="h-3.5 w-3.5" />
+                Salir
+              </Button>
+            </div>
+
+            <AlertDialog open={leaveDialogOpen} onOpenChange={setLeaveDialogOpen}>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>¿Salir de esta sucursal?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    Dejarás de ser miembro de <strong>{branch?.name}</strong>. Perderás acceso a reservas y clases. Esta acción no puede deshacerse automáticamente.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel disabled={leaveMutation.isPending}>Cancelar</AlertDialogCancel>
+                  <AlertDialogAction
+                    className="bg-destructive hover:bg-destructive/90 text-white"
+                    disabled={leaveMutation.isPending}
+                    onClick={() => slug && leaveMutation.mutate(slug)}
+                    data-testid="button-confirm-leave"
+                  >
+                    {leaveMutation.isPending ? (
+                      <><Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />Saliendo...</>
+                    ) : "Sí, salir"}
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </>
         )}
 
         {user && isMember && slug && (

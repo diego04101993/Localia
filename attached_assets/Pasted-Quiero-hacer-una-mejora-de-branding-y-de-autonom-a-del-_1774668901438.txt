@@ -1,0 +1,184 @@
+Quiero hacer una mejora de branding y de autonomía del cliente en la app, pero SIN romper nada de lo que ya funciona. Piensa y trabaja como senior full-stack muy cuidadoso.
+
+PRIORIDAD MÁXIMA:
+- No romper login actual
+- No romper dashboards
+- No romper membresías existentes
+- No romper base de datos actual
+- No borrar datos existentes
+- No cambiar IDs ni relaciones actuales
+- No rehacer estructuras si no es estrictamente necesario
+- Hacer cambios mínimos, claros y compatibles con producción
+
+REGLAS DE TRABAJO:
+1. Antes de modificar, revisa el flujo actual y reutiliza lo existente.
+2. Si hace falta agregar columnas o endpoints, hazlo de forma mínima y compatible.
+3. No hagas refactors grandes.
+4. No cambies nombres de tablas existentes.
+5. No cambies rutas existentes que ya funcionen, salvo que agregues nuevas.
+6. Si algo ya existe en backend o frontend, extiéndelo en vez de duplicarlo.
+7. Al final explícame exactamente qué archivos cambiaste y por qué.
+8. Si una parte necesita migración, que sea segura para la base actual y sin pérdida de datos.
+
+OBJETIVO GENERAL:
+Mejorar branding y funciones del perfil del cliente/PWA.
+
+==================================================
+PARTE 1: BRANDING WEBCOOL
+==================================================
+
+Quiero cambiar la marca visual actual de “Localia” a “WebCool”.
+
+Cambios requeridos:
+1. En la pantalla de login, reemplazar:
+- logo actual de Localia
+- nombre “Localia”
+por mi branding de WebCool.
+
+2. Usar como logo principal el archivo que yo subiré/referenciaré, que es un círculo azul con una W blanca.
+3. Mantener el diseño actual limpio y moderno, pero adaptar colores para que combinen mejor con el logo WebCool.
+4. Cambiar título del navegador, nombre visible de la app, favicon e iconos PWA.
+5. Cuando la app web se guarde en celular, que aparezca con:
+- nombre corto: WebCool
+- nombre completo: WebCool
+- icono principal: mi logo WebCool
+
+Revisa y actualiza lo necesario en:
+- login screen
+- index.html
+- manifest.webmanifest o manifest.json
+- favicon
+- apple-touch-icon
+- iconos 192x192 y 512x512 si aplica
+
+IMPORTANTE:
+- No romper funcionalidad de login
+- No cambiar rutas
+- No tocar backend por branding si no es necesario
+
+==================================================
+PARTE 2: BOTÓN “DEJAR DE SER MIEMBRO” EN APP DEL CLIENTE
+==================================================
+
+Actualmente en la app del cliente:
+- un usuario puede unirse a una sucursal/negocio
+- luego aparece un mensaje como “Ya eres miembro de este negocio”
+
+Problema:
+No existe opción para dejar de ser miembro.
+
+Quiero agregar un botón visible y claro para:
+- dejar de ser miembro de esa sucursal
+- confirmar la acción con modal o confirmación
+- actualizar inmediatamente la UI
+
+Comportamiento esperado:
+1. Si el usuario deja de ser miembro:
+   - ya no debe aparecer como cliente activo de esa sucursal
+   - ya no debe contarse en el dashboard de esa sucursal
+   - ya no debe figurar como miembro en la vista correspondiente
+2. NO se deben borrar sus datos globales como usuario
+3. NO se debe borrar su cuenta
+4. NO se deben borrar sus datos personales del sistema global
+5. Solo debe romperse la relación de membresía entre usuario y sucursal, de forma segura
+6. Si existe historial relacionado, conservarlo si ya el sistema lo necesita, pero que el usuario ya no aparezca como miembro activo
+7. La solución debe ser compatible con el modelo actual de memberships/memberships status que ya existe en el sistema
+8. Si ya existe un campo como status, úsalo en vez de borrar físicamente
+9. Idealmente usar soft-change de estado en vez de delete físico si eso es más seguro con lo actual
+
+UI esperada:
+- En el perfil público/cliente de la sucursal, cuando ya sea miembro, además del mensaje actual agregar botón tipo:
+  “Dejar de ser miembro”
+- Estilo claro, no agresivo, pero visible
+- Confirmación previa tipo:
+  “¿Seguro que deseas salir de esta sucursal? Ya no aparecerás como miembro activo ni tendrás acceso a funciones de miembro.”
+- Tras confirmar:
+  - actualizar tarjeta/botón
+  - volver a mostrar opción “Unirme” si aplica
+
+IMPORTANTE:
+Esto se hace para que la sucursal ya no tenga acceso operativo a ese cliente dentro de su gestión normal.
+
+==================================================
+PARTE 3: EL CLIENTE DEBE PODER CAMBIAR SU CORREO/USUARIO Y SU CONTRASEÑA
+==================================================
+
+Problema actual:
+Solo la sucursal parece tener control sobre usuario/correo o contraseña del cliente, y eso no está bien.
+
+Quiero que en la app del cliente, dentro de “Mi Perfil” o una sección similar, exista opción para que el propio cliente pueda cambiar:
+
+1. su correo/usuario de acceso
+2. su contraseña
+
+Requisitos funcionales:
+1. Debe existir una sección clara tipo:
+   - Seguridad
+   - Credenciales
+   - Cuenta
+2. Permitir cambiar correo/usuario actual
+3. Permitir cambiar contraseña
+4. Para seguridad, pedir:
+   - contraseña actual antes de guardar cambios sensibles
+5. Para cambio de contraseña:
+   - campo contraseña actual
+   - nueva contraseña
+   - confirmar nueva contraseña
+6. Validaciones:
+   - contraseña actual obligatoria
+   - nueva contraseña con longitud mínima segura
+   - confirmar contraseña debe coincidir
+   - si cambia correo, validar formato y que no exista duplicado
+7. Si el correo actual se usa como login, el nuevo correo debe funcionar inmediatamente como login
+8. No romper sesiones ni autenticación existente
+9. No permitir que una sucursal cambie esto desde la app cliente sin control del usuario
+10. No romper usuarios ya creados en la base actual
+
+IMPORTANTE:
+- Reutilizar las tablas actuales de users si ya guardan email y passwordHash
+- No crear otra tabla de credenciales innecesaria
+- No mover el sistema de auth actual
+- Solo agregar endpoints seguros y UI para autoservicio del cliente
+
+==================================================
+PARTE 4: CUIDADO EXTREMO CON LA BASE DE DATOS
+==================================================
+
+Antes de cambiar algo:
+- Revisa el esquema actual
+- Revisa cómo están modeladas las memberships
+- Revisa cómo se identifica a clientes activos en dashboards
+- Revisa cómo se guarda email/password en users
+
+Reglas:
+1. No hacer cambios destructivos
+2. No borrar tablas
+3. No renombrar columnas existentes
+4. Si agregas algo, que sea mínimo
+5. Si no hace falta migración, mejor
+6. Si hace falta, que sea segura y reversible
+7. No resetear ni seedear datos en producción
+8. No asumir base vacía
+9. No romper compatibilidad con Neon/Postgres actual
+
+==================================================
+PARTE 5: ENTREGABLE FINAL
+==================================================
+
+Al terminar quiero que me entregues:
+
+1. lista exacta de archivos modificados
+2. endpoints nuevos o modificados
+3. si hubo cambios de DB, cuáles fueron
+4. cómo quedó el flujo de:
+   - unirme a sucursal
+   - dejar de ser miembro
+   - cambiar correo
+   - cambiar contraseña
+5. si tengo que reemplazar manualmente un logo o iconos, dime:
+   - ruta exacta
+   - nombre exacto del archivo
+   - tamaños recomendados
+
+IMPORTANTE FINAL:
+Haz los cambios en pasos pequeños, con el menor riesgo posible. No rehagas todo. Solo extiende lo actual con cambios compatibles y seguros.

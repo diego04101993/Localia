@@ -199,6 +199,58 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/user/me/change-password", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ message: "No autenticado" });
+    const actor = req.user as any;
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ message: "Se requiere contraseña actual y nueva" });
+    }
+    if (typeof newPassword !== "string" || newPassword.length < 6) {
+      return res.status(400).json({ message: "La nueva contraseña debe tener al menos 6 caracteres" });
+    }
+    try {
+      const user = await storage.getUser(actor.id);
+      if (!user?.passwordHash) return res.status(400).json({ message: "Error de autenticación" });
+      const valid = await bcrypt.compare(currentPassword, user.passwordHash);
+      if (!valid) return res.status(400).json({ message: "Contraseña actual incorrecta" });
+      const hash = await bcrypt.hash(newPassword, 10);
+      await storage.updateUserPassword(actor.id, hash);
+      res.json({ message: "Contraseña actualizada" });
+    } catch (err: any) {
+      console.error("[CHANGE-PASSWORD]", err.stack || err);
+      res.status(500).json({ message: "Error al cambiar contraseña" });
+    }
+  });
+
+  app.patch("/api/user/me/email", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ message: "No autenticado" });
+    const actor = req.user as any;
+    const { currentPassword, newEmail } = req.body;
+    if (!currentPassword || !newEmail) {
+      return res.status(400).json({ message: "Se requiere contraseña y nuevo correo" });
+    }
+    if (typeof newEmail !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newEmail)) {
+      return res.status(400).json({ message: "Correo inválido" });
+    }
+    try {
+      const user = await storage.getUser(actor.id);
+      if (!user?.passwordHash) return res.status(400).json({ message: "Error de autenticación" });
+      const valid = await bcrypt.compare(currentPassword, user.passwordHash);
+      if (!valid) return res.status(400).json({ message: "Contraseña incorrecta" });
+      const existing = await storage.getUserByEmail(newEmail.toLowerCase().trim());
+      if (existing && existing.id !== actor.id) {
+        return res.status(400).json({ message: "Ese correo ya está en uso" });
+      }
+      const updated = await storage.updateUser(actor.id, { email: newEmail.toLowerCase().trim() });
+      const { passwordHash, ...safeUser } = updated as any;
+      res.json(safeUser);
+    } catch (err: any) {
+      console.error("[CHANGE-EMAIL]", err.stack || err);
+      res.status(500).json({ message: "Error al cambiar correo" });
+    }
+  });
+
   app.post("/api/user/me/avatar", (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).json({ message: "No autenticado" });
     const actor = req.user as any;
@@ -2830,6 +2882,27 @@ export async function registerRoutes(
       source: "self_join",
     });
     res.status(201).json(membership);
+  });
+
+  app.post("/api/memberships/leave", requireAuth, async (req, res) => {
+    const user = req.user as any;
+    const { branchSlug } = req.body;
+    if (!branchSlug || typeof branchSlug !== "string") {
+      return res.status(400).json({ message: "branchSlug requerido" });
+    }
+    try {
+      const branch = await storage.getBranchBySlug(branchSlug);
+      if (!branch) return res.status(404).json({ message: "Sucursal no encontrada" });
+      const existing = await storage.getMembership(user.id, branch.id);
+      if (!existing || existing.status !== "active") {
+        return res.status(400).json({ message: "No eres miembro activo de esta sucursal" });
+      }
+      const updated = await storage.updateMembership(existing.id, { status: "left" });
+      return res.json(updated);
+    } catch (err: any) {
+      console.error("[LEAVE]", err.stack || err);
+      res.status(500).json({ message: "Error al salir de la sucursal" });
+    }
   });
 
   app.post("/api/memberships/favorite", requireAuth, async (req, res) => {
