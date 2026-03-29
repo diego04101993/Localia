@@ -1412,6 +1412,12 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Este plan está desactivado" });
       }
 
+      const membershipCheck = await storage.getMembershipById(membershipId);
+
+      if (!membershipCheck || membershipCheck.branchId !== actor.branchId) {
+        return res.status(404).json({ message: "Membresía no encontrada" });
+      }
+
       const classesRemaining = plan.classLimit ?? null;
       const classesTotal = plan.classLimit ?? null;
       const expiresAt = addCalendarMonths(new Date(), plan.cycleMonths || 1);
