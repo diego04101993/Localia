@@ -73,6 +73,20 @@ const upload = multer({
   },
 });
 
+const MAX_VIDEO_SIZE = 25 * 1024 * 1024; // 25 MB
+
+const uploadVideo = multer({
+  storage: uploadStorage,
+  limits: { fileSize: MAX_VIDEO_SIZE },
+  fileFilter: (_req, file, cb) => {
+    if (ALLOWED_VIDEO_TYPES.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error(`Tipo de archivo no permitido: ${file.mimetype}. Solo se aceptan videos mp4 o webm`));
+    }
+  },
+});
+
 function generateSecurePassword(length = 16): string {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%";
   let password = "";
@@ -2243,40 +2257,61 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/branch/videos", requireBranchAdmin, async (req, res) => {
+  app.post("/api/branch/videos", requireBranchAdmin, (req, res) => {
     const actor = req.user as any;
-    try {
-      const { title, url, thumbnailUrl } = req.body;
-      if (!url) {
-        return res.status(400).json({ message: "Se requiere la URL del video" });
+
+    uploadVideo.single("video")(req, res, async (err) => {
+      if (err) {
+        if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+          return res.status(400).json({ message: "El video no puede superar 25 MB" });
+        }
+        return res.status(400).json({ message: err.message || "Error al subir video" });
       }
 
-      const existing = await storage.getBranchVideos(actor.branchId);
-      if (existing.length >= 2) {
-        return res.status(400).json({ message: "Tu plan actual permite máximo 2 videos" });
+      try {
+        const { title, thumbnailUrl } = req.body as { title?: string; thumbnailUrl?: string };
+
+        // Acepta archivo subido O URL externa (compatibilidad hacia atrás)
+        let videoUrl: string | undefined;
+        if (req.file) {
+          videoUrl = `/uploads/${req.file.filename}`;
+        } else if (req.body.url) {
+          videoUrl = req.body.url;
+        }
+
+        if (!videoUrl) {
+          return res.status(400).json({ message: "Se requiere un archivo de video o una URL" });
+        }
+
+        const existing = await storage.getBranchVideos(actor.branchId);
+        if (existing.length >= 2) {
+          // Si ya se subió el archivo, borrarlo para no dejar basura
+          if (req.file) fs.unlinkSync(req.file.path);
+          return res.status(400).json({ message: "Tu plan actual permite máximo 2 videos" });
+        }
+
+        const video = await storage.addBranchVideo({
+          branchId: actor.branchId,
+          title: title || null,
+          url: videoUrl,
+          thumbnailUrl: thumbnailUrl || null,
+          displayOrder: existing.length,
+        });
+
+        await storage.createAuditLog({
+          actorUserId: actor.id,
+          action: "CREATE_VIDEO",
+          branchId: actor.branchId,
+          metadata: { videoId: video.id, title: title || "Sin título" },
+        });
+
+        console.log(`[VIDEOS] Added video by ${actor.email} → ${videoUrl}`);
+        res.status(201).json(video);
+      } catch (err: any) {
+        console.error(`[VIDEOS] Error creating:`, err.stack || err);
+        res.status(500).json({ message: "Error al agregar video" });
       }
-
-      const video = await storage.addBranchVideo({
-        branchId: actor.branchId,
-        title: title || null,
-        url,
-        thumbnailUrl: thumbnailUrl || null,
-        displayOrder: existing.length,
-      });
-
-      await storage.createAuditLog({
-        actorUserId: actor.id,
-        action: "CREATE_VIDEO",
-        branchId: actor.branchId,
-        metadata: { videoId: video.id, title: title || "Sin título" },
-      });
-
-      console.log(`[VIDEOS] Added video by ${actor.email}`);
-      res.status(201).json(video);
-    } catch (err: any) {
-      console.error(`[VIDEOS] Error creating:`, err.stack || err);
-      res.status(500).json({ message: "Error al agregar video" });
-    }
+    });
   });
 
   app.delete("/api/branch/videos/:id", requireBranchAdmin, async (req, res) => {
