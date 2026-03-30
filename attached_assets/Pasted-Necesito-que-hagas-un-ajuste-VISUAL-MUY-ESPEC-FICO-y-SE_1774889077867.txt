@@ -1,0 +1,43 @@
+Necesito que hagas un ajuste VISUAL MUY ESPECÍFICO y SEGURO en la app del cliente, SIN romper nada existente.
+
+OBJETIVO:
+Las imágenes de promociones/posts que sube una sucursal desde su dashboard ya se guardan bien, pero en la app del cliente se están viendo cortadas o mal ajustadas.
+Quiero que en la app del cliente esas imágenes se vean mucho mejor aunque el usuario suba imágenes verticales, horizontales o cuadradas.
+
+IMPORTANTE:
+- NO tocar lógica de backend
+- NO tocar rutas API
+- NO tocar base de datos
+- NO cambiar cómo se suben las imágenes
+- NO romper el dashboard de sucursal
+- SOLO ajustar el render visual de las imágenes en la app del cliente
+
+QUÉ QUIERO:
+1. Localiza el componente o vista de la app del cliente donde se renderiza el banner/post/promoción de la sucursal en el perfil público.
+2. Ajusta SOLO los estilos del contenedor y de la imagen para que:
+   - la imagen se vea completa y centrada lo mejor posible
+   - tenga un alto visual agradable y consistente
+   - no se deforme
+   - se adapte a imágenes verticales, horizontales o cuadradas
+3. Prefiero este comportamiento:
+   - contenedor con ancho completo
+   - alto fijo o responsivo razonable (ej. 220px a 320px según layout)
+   - imagen con object-fit: contain si quiero ver la imagen completa
+   - centrada con object-position: center
+   - fondo claro o neutro para que si sobra espacio no se vea feo
+   - bordes redondeados
+4. Si detectas que para banners/promociones se ve mejor otro enfoque, puedes usar una solución híbrida:
+   - object-fit: contain para promociones/post individuales
+   - mantener cover solo donde sea portada/header
+5. NO quiero que cambies el diseño general, solo mejorar la presentación de la imagen en la app del cliente.
+
+ENTREGA:
+- dime exactamente qué archivo estás modificando
+- dime qué componente estás tocando
+- muestra el código ANTES y DESPUÉS
+- explica en 3 a 5 líneas qué cambiaste
+- haz el cambio más pequeño posible
+
+REGLA CLAVE:
+Si el cambio puede afectar otras imágenes del sistema, NO lo hagas global.
+Hazlo solo en el componente de promociones/posts de la app del cliente.
