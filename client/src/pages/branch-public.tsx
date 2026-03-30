@@ -1351,6 +1351,16 @@ export default function BranchPublicPage() {
       </div>
 
       <div className="max-w-lg mx-auto px-3 pt-4 pb-8 space-y-5 relative z-20">
+
+        {branch.description && (
+          <p
+            className="text-sm leading-relaxed text-foreground/70 px-1"
+            data-testid="text-branch-description"
+          >
+            {branch.description}
+          </p>
+        )}
+
         {announcements && announcements.length > 0 && (
           <div
             className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 space-y-2"
@@ -1442,16 +1452,6 @@ export default function BranchPublicPage() {
 
         {user && isMember && slug && (
           <CustomerScheduleSection slug={slug} />
-        )}
-
-        {branch.description && (
-          <Card className="border-border/50 shadow-sm rounded-2xl">
-            <CardContent className="p-4">
-              <p className="text-sm leading-relaxed text-foreground/80" data-testid="text-branch-description">
-                {branch.description}
-              </p>
-            </CardContent>
-          </Card>
         )}
 
         <PublicLocationSection branch={branch} />

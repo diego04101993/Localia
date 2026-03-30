@@ -1,0 +1,138 @@
+Quiero que hagas DOS mejoras puntuales en el SaaS SIN romper nada de lo que ya funciona.
+
+CONTEXTO IMPORTANTE:
+- Proyecto SaaS multi-sucursal
+- Ya funcionan login, dashboard de sucursal, app del cliente, membresías, reservas, videos, fotos, perfil de negocio, etc.
+- NO quiero refactor grande
+- NO quiero romper rutas, auth, reservas, membresías ni paneles existentes
+- Quiero cambios pequeños, limpios y bien integrados
+
+OBJETIVO:
+Corregir 2 temas muy específicos:
+
+==================================================
+1) PANTALLA "SERVICIO NO ACTIVO" / BOTÓN "VOLVER AL INICIO"
+==================================================
+
+PROBLEMA ACTUAL:
+Si un usuario tiene abierto:
+- su perfil en la app del cliente
+- o el dashboard de su sucursal
+
+y mientras tanto esa sucursal es suspendida, bloqueada o eliminada, aparece la pantalla de “Servicio no activo”.
+
+Pero el botón “Volver al inicio” no funciona bien:
+- no redirige al login
+- se queda atrapado en esa pantalla
+- aunque refresque o cambie la URL, lo sigue mandando ahí
+
+COMPORTAMIENTO DESEADO:
+- El botón “Volver al inicio” debe limpiar correctamente el estado actual
+- Debe cerrar contexto de sucursal inválido o inactivo
+- Debe limpiar cache/estado persistido relacionado con esa sucursal si existe
+- Debe redirigir SIEMPRE a la pantalla de login/inicio público
+- Después de dar clic, el usuario NO debe quedarse atrapado en la pantalla de “Servicio no activo”
+- Si intenta navegar manualmente a rutas protegidas, debe seguir protegido correctamente
+- Pero el inicio/login público sí debe abrir normal
+
+IMPORTANTE:
+- Revisa si hay guards, middlewares frontend, auth context, route wrappers o lógica global que esté reinyectando la sucursal suspendida
+- Revisa si hay localStorage/sessionStorage/query cache/zustand/context/React Query que esté conservando branchId o estado inválido
+- Quiero una solución real, no solo un navigate superficial
+- Si existe una pantalla o componente de “Servicio no activo”, corrige ahí el botón y también la lógica de salida
+- Si hace falta, crea una función centralizada tipo:
+  - clearInvalidBranchSession()
+  - handleInactiveBranchRedirect()
+pero manténlo pequeño y limpio
+
+RESULTADO ESPERADO:
+- Clic en “Volver al inicio” => lleva al login (pantalla pública de inicio de sesión)
+- Sin loops
+- Sin quedarse atrapado
+- Sin romper auth normal de otros usuarios
+
+==================================================
+2) MEJORA UX/UI EN PERFIL DEL NEGOCIO (APP DEL CLIENTE)
+==================================================
+
+PROBLEMA ACTUAL:
+En la app del cliente, dentro del perfil del negocio:
+- la descripción del negocio aparece demasiado abajo
+- queda debajo del bloque del calendario / clases
+- y antes de ubicación
+Eso se siente raro y poco natural en UX
+
+QUIERO MEJORAR ESO con criterio UX/UI profesional.
+
+ANÁLISIS UX DESEADO:
+Evalúa la mejor ubicación de la descripción del negocio para que:
+- se entienda rápido de qué trata el negocio
+- se vea más premium
+- se sienta más ordenado
+- no empuje información importante demasiado abajo
+- mantenga buena jerarquía visual
+
+PROPUESTA UX QUE PREFIERO:
+Mover la descripción del negocio mucho más arriba, idealmente:
+- debajo del header principal del negocio
+- cerca de la foto/logo, nombre y categoría
+- antes del bloque de promociones / membresía / agenda
+o en la mejor variante que tú consideres más elegante y usable
+
+LO QUE QUIERO:
+- Reubica la descripción en una zona superior del perfil
+- Haz que se vea bien en móvil
+- Que tenga buena jerarquía visual
+- Que no compita demasiado con la promo principal
+- Que no rompa el layout actual
+- Que siga viéndose moderno, limpio y premium
+
+SUGERENCIA DE UX:
+Puedes dejar la estructura así, si encaja bien:
+1. Cover / imagen principal
+2. Logo / nombre / categoría
+3. Descripción corta del negocio
+4. Promo o estado de membresía
+5. Agenda / clases
+6. Ubicación / horarios
+
+Si consideras una variante mejor, aplícala, pero SIN rehacer toda la pantalla.
+
+DISEÑO:
+- Mantén el estilo visual actual
+- No cambies colores globales ni identidad visual
+- Solo mejora acomodo, espaciado, jerarquía y claridad
+- Si la descripción es larga, que se vea bien y no rompa el diseño
+- Si conviene, usa un contenedor/card ligera o texto secundario bien acomodado
+
+==================================================
+REGLAS IMPORTANTES
+==================================================
+
+1. NO rompas nada existente
+2. Cambios pequeños e incrementales
+3. No refactorices media app
+4. Mantén rutas, auth y guards funcionando
+5. No toques reservas, membresías, videos ni uploads salvo que sea estrictamente necesario
+6. Si hay que modificar más de un archivo, hazlo con cuidado
+7. Antes de cambiar, identifica exactamente:
+   - qué componente muestra “Servicio no activo”
+   - qué lógica de navegación o guard lo fuerza
+   - qué componente renderiza el perfil público del negocio
+
+==================================================
+ENTREGABLE
+==================================================
+
+Quiero que me entregues:
+
+1. Qué archivos modificaste
+2. Qué problema raíz encontraste en cada caso
+3. Qué cambio hiciste exactamente
+4. Código final listo
+5. Confirmación de que:
+   - el botón “Volver al inicio” ya manda al login correctamente
+   - la descripción del negocio ya quedó arriba con mejor UX/UI
+   - no se rompió nada más
+
+Si detectas varias opciones, elige la más segura y conservadora.
