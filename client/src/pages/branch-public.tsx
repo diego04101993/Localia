@@ -135,15 +135,18 @@ function PublicPosts({ posts }: { posts: BranchPost[] }) {
             <h3 className="font-semibold text-sm" data-testid={`text-public-post-title-${post.id}`}>{post.title}</h3>
             <p className="text-sm text-muted-foreground" data-testid={`text-public-post-content-${post.id}`}>{post.content}</p>
             {post.mediaUrl && (
-              <div className="rounded-xl overflow-hidden bg-muted/40 flex items-center justify-center" style={{ minHeight: "180px", maxHeight: "320px" }}>
+              <div
+                className="rounded-xl overflow-hidden bg-muted/40 flex items-center justify-center w-full"
+                style={{ aspectRatio: "4/5", maxHeight: "480px" }}
+              >
                 {post.mediaType === "video" ? (
-                  <video src={post.mediaUrl} controls className="w-full max-h-80 rounded-xl" data-testid={`video-public-post-${post.id}`} />
+                  <video src={post.mediaUrl} controls className="w-full h-full rounded-xl" style={{ objectFit: "contain" }} data-testid={`video-public-post-${post.id}`} />
                 ) : (
                   <img
                     src={post.mediaUrl}
                     alt={post.title}
                     className="w-full h-full rounded-xl"
-                    style={{ objectFit: "contain", objectPosition: "center", maxHeight: "320px" }}
+                    style={{ objectFit: "contain", objectPosition: "center" }}
                     data-testid={`img-public-post-${post.id}`}
                   />
                 )}
