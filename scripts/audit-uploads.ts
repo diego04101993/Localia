@@ -12,6 +12,8 @@
 import fs from "fs";
 import path from "path";
 import pg from "pg";
+import dotenv from "dotenv";
+dotenv.config();
 
 const UPLOADS_DIR = path.join(process.cwd(), "uploads");
 const DRY_RUN = !process.argv.includes("--delete");
@@ -74,6 +76,7 @@ function bytes(n: number): string {
 // ─── Main ───────────────────────────────────────────────────────────────────
 
 async function main() {
+  console.log("DATABASE_URL:", process.env.DATABASE_URL ? "OK" : "NO DEFINIDA");
   const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
   await client.connect();
 
@@ -196,6 +199,7 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("Error en auditoría:", err.message);
+  console.error("Error en auditoría:", err);
+  if (err?.stack) console.error(err.stack);
   process.exit(1);
 });
