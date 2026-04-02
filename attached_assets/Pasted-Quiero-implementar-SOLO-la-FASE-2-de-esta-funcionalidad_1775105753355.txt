@@ -1,0 +1,148 @@
+Quiero implementar SOLO la FASE 2 de esta funcionalidad, SIN romper nada de lo que ya funciona.
+
+OBJETIVO DE ESTA FASE:
+Agregar registro público SOLO para clientes desde el login web, más aceptación obligatoria de términos y aviso de privacidad para clientes nuevos y clientes ya creados por sucursal.
+
+IMPORTANTE:
+- NO romper login actual
+- NO romper dashboard de sucursal
+- NO romper membresías, reservas, clientes, videos, fotos ni flujos actuales
+- NO hacer refactor masivo
+- Hacer cambios pequeños, seguros e incrementales
+- Mantener compatibilidad con clientes existentes creados por sucursal
+- NO tocar sucursales, branch admins ni super admin salvo lo estrictamente necesario
+
+==================================================
+ALCANCE EXACTO DE ESTA FASE
+==================================================
+
+1. En el login actual, agregar opción visible:
+   "¿No tienes cuenta? Regístrate"
+   Esta opción es SOLO para clientes.
+
+2. Crear formulario de registro público SOLO para clientes con estos campos:
+   - nombre
+   - apellidos
+   - fecha de nacimiento
+   - sexo
+   - celular
+   - correo electrónico
+   - contraseña
+   - confirmar contraseña
+   - checkbox obligatorio para aceptar Términos y Aviso de Privacidad
+
+3. Si no aceptan términos, NO pueden registrarse.
+
+4. Si un cliente nuevo se registra:
+   - crear usuario con role CUSTOMER
+   - guardar sus datos de perfil
+   - guardar aceptación de términos
+   - permitirle entrar a la app del cliente
+
+5. Si ya existe un CUSTOMER creado por una sucursal con ese email:
+   - NO duplicar usuario
+   - permitir activar/completar su cuenta con contraseña
+   - guardar aceptación de términos
+   - mantener intactas sus relaciones actuales con sucursal/membresía
+
+6. Si el email ya existe y ya tiene cuenta activa:
+   - mostrar error claro: "Ya existe una cuenta con ese correo, inicia sesión"
+
+7. Clientes existentes creados por sucursal:
+   - si inician sesión por primera vez y no han aceptado términos
+   - deben ver una pantalla obligatoria para aceptar
+   - si no aceptan, no pueden entrar
+
+8. Crear páginas públicas:
+   - /terminos
+   - /privacidad
+
+9. Crear guard SOLO para CUSTOMER:
+   - si acceptedTerms = false
+   - bloquear acceso a la app cliente
+   - mostrar pantalla de aceptación obligatoria
+   - BRANCH_ADMIN y SUPER_ADMIN NO deben verse afectados
+
+==================================================
+REGLAS IMPORTANTES
+==================================================
+
+- El registro público es SOLO para role CUSTOMER
+- NO permitir crear sucursales desde ahí
+- NO permitir crear branch_admin ni super_admin
+- NO duplicar clientes por email
+- Reutilizar modelo actual de users si ya existe
+- Mantener la lógica actual donde un cliente puede estar relacionado con una o varias sucursales sin perder su identidad única
+- Si hay que agregar columnas, hacerlo con migración pequeña y segura
+- Elegir la opción más conservadora y compatible
+
+==================================================
+IMPLEMENTACIÓN TÉCNICA
+==================================================
+
+Analiza primero la estructura actual y luego implementa solo lo necesario.
+
+Si hace falta, agregar campos en users:
+- accepted_terms boolean default false
+- accepted_terms_at
+- terms_version
+
+Backend:
+- endpoint de registro público para customers
+- endpoint para aceptar términos
+- validación segura con zod
+- validación de email duplicado
+- lógica de activación si el customer ya existía sin acceso completo
+
+Frontend:
+- modificar login actual para mostrar toggle o link de registro
+- crear formulario de registro de cliente
+- crear pantalla de aceptación obligatoria
+- crear páginas /terminos y /privacidad
+- mensajes UX claros, limpios y premium
+
+==================================================
+CONTENIDO LEGAL
+==================================================
+
+Genera texto base profesional y claro en español para México para:
+1. Términos y Condiciones
+2. Aviso de Privacidad
+
+Debe decir claramente que:
+- la app usa datos para operar registro, perfil, membresías, reservas, relación con sucursales y comunicación relacionada con el servicio
+- algunas sucursales podrán ver los datos del cliente cuando ese cliente sea miembro o interactúe con esa sucursal dentro de la plataforma
+- no se venden datos personales a terceros para fines ajenos al servicio
+- si no aceptan, no pueden usar la app
+- a futuro la app podrá tener funciones de promociones, fidelización, comunicación y nuevas herramientas dentro del ecosistema
+
+Quiero texto claro, profesional y usable, no exageradamente legal.
+
+==================================================
+VALIDACIONES Y PRUEBAS
+==================================================
+
+Quiero que verifiques explícitamente:
+1. BRANCH_ADMIN y SUPER_ADMIN siguen entrando normal
+2. CUSTOMER nuevo se puede registrar
+3. CUSTOMER creado por sucursal puede activar su cuenta sin duplicarse
+4. El checkbox de términos es obligatorio
+5. /terminos y /privacidad son públicas
+6. El guard de términos solo aplica a CUSTOMER
+7. No se rompe el dashboard de sucursal ni la pestaña de clientes
+8. No se rompe la lógica de membresías/reservas
+
+==================================================
+ENTREGABLE
+==================================================
+
+Quiero que me entregues:
+1. Qué archivos vas a tocar
+2. Qué columnas nuevas agregaste
+3. Qué rutas backend agregaste
+4. Qué pantallas frontend agregaste o modificaste
+5. Qué pruebas manuales debo hacer
+6. Código final
+7. Confirmación de que no se rompió nada existente
+
+Haz esta fase completa, pero SIN meterte todavía a una fase 3 mayor ni refactorizar media app.
