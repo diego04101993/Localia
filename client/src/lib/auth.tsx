@@ -6,6 +6,7 @@ import type { User } from "@shared/schema";
 type AuthUser = Omit<User, "passwordHash"> & {
   branch?: { id: string; name: string; slug: string; status: string } | null;
   acceptedTerms?: boolean;
+  emailVerified?: boolean;
 };
 
 interface AuthContextType {

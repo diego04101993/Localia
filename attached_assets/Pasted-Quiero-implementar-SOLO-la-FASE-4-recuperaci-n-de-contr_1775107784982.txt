@@ -1,0 +1,242 @@
+Quiero implementar SOLO la FASE 4: recuperación de contraseña y verificación por correo,
+SIN romper nada de lo que ya funciona.
+
+CONTEXTO:
+Ya existe:
+- login funcional
+- registro público de clientes
+- activación de clientes creados por sucursal
+- aceptación de términos obligatoria
+- roles: CUSTOMER, BRANCH_ADMIN, SUPER_ADMIN
+- dashboards funcionando (no tocar)
+- memberships, reservas y relaciones funcionando (no tocar)
+
+IMPORTANTE:
+- NO romper login actual
+- NO romper registro
+- NO romper activación de clientes
+- NO hacer refactor grande
+- hacer cambios pequeños, seguros y compatibles
+
+==================================================
+OBJETIVO DE ESTA FASE
+==================================================
+
+Agregar dos cosas clave:
+
+1) RECUPERACIÓN DE CONTRASEÑA (Forgot Password)
+2) VERIFICACIÓN DE EMAIL (Email Verified)
+
+Esto es CRÍTICO para producción.
+
+==================================================
+PARTE 1 — RECUPERAR CONTRASEÑA
+==================================================
+
+FLUJO:
+
+1. En login agregar botón:
+   "¿Olvidaste tu contraseña?"
+
+2. Al hacer clic:
+   pantalla donde usuario ingresa su email
+
+3. Backend:
+   - validar si el email existe
+   - SI existe → generar token seguro (random + expiración 15-30 min)
+   - guardar token en DB (o tabla password_reset_tokens)
+
+4. Enviar email con link:
+   ejemplo:
+   https://tuapp.com/reset-password?token=XYZ
+
+5. Pantalla reset:
+   - validar token
+   - pedir:
+     nueva contraseña
+     confirmar contraseña
+
+6. Backend:
+   - validar token válido y no expirado
+   - actualizar contraseña
+   - invalidar token
+   - permitir login normal
+
+REGLAS:
+- No revelar si el email existe o no (seguridad)
+- Mensaje genérico tipo:
+  "Si el correo existe, te enviamos instrucciones"
+- Token de un solo uso
+- Token expira automáticamente
+- Contraseñas deben validarse (mínimo 6-8 caracteres)
+
+==================================================
+PARTE 2 — VERIFICACIÓN DE EMAIL
+==================================================
+
+OBJETIVO:
+Evitar cuentas falsas y mejorar seguridad
+
+CUÁNDO APLICAR:
+- Solo CUSTOMER (por ahora)
+- No bloquear completamente si aún no está verificado (modo flexible inicial)
+
+FLUJO:
+
+1. Al registrarse:
+   - generar verification_token
+   - enviar email:
+     "Verifica tu cuenta"
+
+2. Link:
+   /verify-email?token=XYZ
+
+3. Backend:
+   - validar token
+   - marcar emailVerified = true
+
+4. Frontend:
+   - mostrar aviso si no está verificado:
+     "Verifica tu correo para mayor seguridad"
+
+5. Opcional:
+   botón "reenviar correo"
+
+==================================================
+BASE DE DATOS
+==================================================
+
+SI es necesario, agregar:
+
+En users:
+- emailVerified (boolean)
+- emailVerifiedAt (timestamp)
+
+Tabla nueva (si no existe):
+password_reset_tokens:
+- id
+- userId
+- token
+- expiresAt
+- used (boolean)
+
+==================================================
+EMAIL SERVICE (IMPORTANTE)
+==================================================
+
+Implementar envío de correo SIMPLE pero funcional.
+
+Puedes usar:
+- nodemailer
+- o servicio tipo Resend / SendGrid (preferible si es fácil)
+
+Requisitos:
+- plantillas simples
+- no sobrecomplicar diseño
+- links claros y funcionales
+
+==================================================
+UX/UI
+==================================================
+
+Quiero algo limpio y claro:
+
+LOGIN:
+- botón “¿Olvidaste tu contraseña?”
+
+RECUPERACIÓN:
+- pantalla simple email
+
+RESET:
+- nueva contraseña + confirmar
+
+VERIFICACIÓN:
+- mensaje claro
+- botón reenviar
+
+TODO debe mantener diseño actual
+
+==================================================
+SEGURIDAD
+==================================================
+
+IMPORTANTE validar:
+
+- Tokens seguros (no predecibles)
+- Tokens expiran
+- Tokens no reutilizables
+- No filtrar si email existe
+- No permitir reset sin token válido
+- No afectar otros roles
+
+==================================================
+PRUEBAS QUE QUIERO
+==================================================
+
+ESCENARIO A:
+Usuario olvida contraseña
+- solicita reset
+- recibe correo
+- cambia contraseña
+- login correcto
+
+ESCENARIO B:
+Email no registrado
+- mensaje genérico (no revelar info)
+
+ESCENARIO C:
+Token expirado
+- no permite reset
+
+ESCENARIO D:
+Token ya usado
+- no permite reutilizar
+
+ESCENARIO E:
+Usuario nuevo
+- recibe correo verificación
+- verifica correctamente
+
+ESCENARIO F:
+Usuario no verificado
+- puede entrar (modo flexible)
+- ve aviso
+
+ESCENARIO G:
+Nada se rompe:
+- login sigue funcionando
+- dashboards intactos
+- memberships intactos
+
+==================================================
+ENTREGABLE
+==================================================
+
+Quiero que me entregues:
+
+1. Qué implementaste exactamente
+2. Archivos modificados
+3. Nuevas rutas backend
+4. Estructura de tokens
+5. Cómo envías emails
+6. Qué pruebas hiciste
+7. Confirmación de que:
+   - no rompiste login
+   - no rompiste registro
+   - no rompiste activación
+   - no rompiste dashboards
+   - todo es seguro
+
+==================================================
+FORMA DE TRABAJO
+==================================================
+
+1. analiza impacto
+2. propone solución simple
+3. implementa mínimo cambio seguro
+4. valida pruebas
+5. explica breve
+
+NO hacer overengineering
+NO refactor masivo
+Elegir la solución más simple y robusta

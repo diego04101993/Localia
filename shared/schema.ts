@@ -51,6 +51,10 @@ export const users = pgTable("users", {
   acceptedTerms: boolean("accepted_terms").notNull().default(false),
   acceptedTermsAt: text("accepted_terms_at"),
   termsVersion: text("terms_version"),
+  emailVerified: boolean("email_verified").notNull().default(false),
+  emailVerifiedAt: text("email_verified_at"),
+  emailVerificationToken: text("email_verification_token"),
+  emailVerificationTokenExpiresAt: text("email_verification_token_expires_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -535,6 +539,18 @@ export const insertBranchReviewSchema = createInsertSchema(branchReviews).omit({
 
 export type BranchReview = typeof branchReviews.$inferSelect;
 export type InsertBranchReview = z.infer<typeof insertBranchReviewSchema>;
+
+// ─── Password Reset Tokens ───────────────────────────────────────────────────
+export const passwordResetTokens = pgTable("password_reset_tokens", {
+  id: text("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  token: text("token").notNull().unique(),
+  expiresAt: text("expires_at").notNull(),
+  used: boolean("used").notNull().default(false),
+  createdAt: text("created_at").notNull().default(sql`to_char(NOW(), 'YYYY-MM-DD"T"HH24:MI:SS"Z"')`),
+});
+
+export type PasswordResetToken = typeof passwordResetTokens.$inferSelect;
 
 export const BRANCH_CATEGORIES = [
   { value: "box", label: "Box / CrossFit" },

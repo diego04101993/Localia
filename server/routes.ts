@@ -7,6 +7,7 @@ import path from "path";
 import fs from "fs";
 import multer from "multer";
 import { storage } from "./storage";
+import { sendPasswordResetEmail, sendEmailVerificationEmail } from "./email";
 import { setupAuth, requireAuth, requireRole, isImpersonating, getOriginalUserId } from "./auth";
 import { seedDatabase } from "./seed";
 import {
@@ -242,6 +243,13 @@ export async function registerRoutes(
       });
 
       const freshUser = await storage.getUser(newUser.id);
+      // Send verification email (async, don't block response)
+      const verifyToken = crypto.randomBytes(32).toString("hex");
+      const verifyExpires = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+      storage.setEmailVerificationToken(newUser.id, verifyToken, verifyExpires).then(() =>
+        sendEmailVerificationEmail(newUser.email, verifyToken)
+      ).catch(e => console.error("[REGISTER] email verify send failed:", e));
+
       req.logIn(freshUser!, (err) => {
         if (err) return next(err);
         const { passwordHash: _ph, ...safeUser } = freshUser as any;
@@ -269,6 +277,94 @@ export async function registerRoutes(
     if (!updated) return res.status(500).json({ message: "Error al guardar aceptación" });
     const { passwordHash: _ph, ...safeUser } = updated as any;
     return res.json({ message: "Términos aceptados", user: safeUser });
+  });
+
+  // ─── Recuperación de contraseña ────────────────────────────────────────────
+  app.post("/api/auth/forgot-password", async (req, res, next) => {
+    const { email } = req.body;
+    if (!email || typeof email !== "string") {
+      return res.status(400).json({ message: "Correo requerido" });
+    }
+    // Always respond the same way for security (don't reveal if email exists)
+    const GENERIC_OK = { message: "Si el correo está registrado, te enviamos instrucciones en breve." };
+    try {
+      const user = await storage.getUserByEmail(email.toLowerCase().trim());
+      if (!user) return res.json(GENERIC_OK);
+      // Invalidate any existing tokens for this user
+      await storage.invalidateUserPasswordResetTokens(user.id);
+      const token = crypto.randomBytes(32).toString("hex");
+      const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString(); // 30 min
+      await storage.createPasswordResetToken(user.id, token, expiresAt);
+      await sendPasswordResetEmail(user.email, token);
+      return res.json(GENERIC_OK);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.post("/api/auth/reset-password", async (req, res, next) => {
+    const { token, newPassword, confirmPassword } = req.body;
+    if (!token || !newPassword || !confirmPassword) {
+      return res.status(400).json({ message: "Datos incompletos" });
+    }
+    if (newPassword !== confirmPassword) {
+      return res.status(400).json({ message: "Las contraseñas no coinciden" });
+    }
+    if (newPassword.length < 8) {
+      return res.status(400).json({ message: "La contraseña debe tener al menos 8 caracteres" });
+    }
+    try {
+      const record = await storage.getPasswordResetToken(token);
+      if (!record) return res.status(400).json({ code: "INVALID_TOKEN", message: "Token inválido o no existe" });
+      if (record.used) return res.status(400).json({ code: "TOKEN_USED", message: "Este enlace ya fue utilizado. Solicita uno nuevo." });
+      if (new Date(record.expiresAt) < new Date()) {
+        return res.status(400).json({ code: "TOKEN_EXPIRED", message: "Este enlace expiró. Solicita uno nuevo." });
+      }
+      const hash = await bcrypt.hash(newPassword, 10);
+      await storage.updateUserPassword(record.userId, hash);
+      await storage.markPasswordResetTokenUsed(record.id);
+      return res.json({ message: "Contraseña actualizada correctamente. Ya puedes iniciar sesión." });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ─── Verificación de email ──────────────────────────────────────────────────
+  app.get("/api/auth/verify-email", async (req, res, next) => {
+    const { token } = req.query as { token?: string };
+    if (!token) return res.status(400).json({ code: "NO_TOKEN", message: "Token requerido" });
+    try {
+      const user = await storage.getUserByEmailVerificationToken(token);
+      if (!user) return res.status(400).json({ code: "INVALID_TOKEN", message: "Token inválido o ya fue usado" });
+      if (user.emailVerified) return res.json({ message: "Ya estaba verificado" });
+      const expires = user.emailVerificationTokenExpiresAt;
+      if (expires && new Date(expires) < new Date()) {
+        return res.status(400).json({ code: "TOKEN_EXPIRED", message: "El enlace expiró. Solicita uno nuevo." });
+      }
+      const updated = await storage.setEmailVerified(user.id);
+      // Refresh session if same user
+      if (req.isAuthenticated() && (req.user as any).id === user.id) {
+        (req.user as any).emailVerified = true;
+      }
+      return res.json({ message: "Correo verificado correctamente", userId: user.id });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.post("/api/auth/resend-verification", requireAuth, async (req, res, next) => {
+    const user = req.user as any;
+    if (user.role !== "CUSTOMER") return res.status(403).json({ message: "Solo para clientes" });
+    if (user.emailVerified) return res.json({ message: "Tu correo ya está verificado" });
+    try {
+      const token = crypto.randomBytes(32).toString("hex");
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24h
+      await storage.setEmailVerificationToken(user.id, token, expiresAt);
+      await sendEmailVerificationEmail(user.email, token);
+      return res.json({ message: "Correo de verificación enviado" });
+    } catch (err) {
+      next(err);
+    }
   });
 
   app.get("/api/auth/me", async (req, res) => {

@@ -182,6 +182,17 @@ function LoginView({ onRegister, initialEmail = "" }: { onRegister: () => void; 
         </form>
       </Form>
 
+      <div className="mt-3 text-center">
+        <Link
+          href="/forgot-password"
+          className="text-xs hover:opacity-70 transition-opacity"
+          style={{ color: "#90a4ae" }}
+          data-testid="link-forgot-password"
+        >
+          ¿Olvidaste tu contraseña?
+        </Link>
+      </div>
+
       <div className="mt-4 pt-4 border-t text-center" style={{ borderColor: "rgba(30,136,229,0.12)" }}>
         <p className="text-xs mb-2" style={{ color: "#78909c" }}>¿Eres cliente y no tienes cuenta?</p>
         <button

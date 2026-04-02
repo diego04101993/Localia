@@ -44,6 +44,8 @@ import {
   type InsertBranchAnnouncement,
   branchReviews,
   type BranchReview,
+  passwordResetTokens,
+  type PasswordResetToken,
 } from "@shared/schema";
 
 const BRANCH_TIMEZONE = "America/Mexico_City";
@@ -96,6 +98,13 @@ export interface IStorage {
   updateUser(id: string, data: { name?: string; lastName?: string; email?: string; phone?: string }): Promise<User | undefined>;
   acceptTerms(id: string, version: string): Promise<User | undefined>;
   activateCustomerAccount(id: string, data: { passwordHash: string; name?: string; lastName?: string; phone?: string; birthDate?: string; gender?: string; termsVersion: string }): Promise<User | undefined>;
+  createPasswordResetToken(userId: string, token: string, expiresAt: string): Promise<PasswordResetToken>;
+  getPasswordResetToken(token: string): Promise<PasswordResetToken | undefined>;
+  markPasswordResetTokenUsed(id: string): Promise<void>;
+  invalidateUserPasswordResetTokens(userId: string): Promise<void>;
+  setEmailVerified(userId: string): Promise<User | undefined>;
+  setEmailVerificationToken(userId: string, token: string, expiresAt: string): Promise<User | undefined>;
+  getUserByEmailVerificationToken(token: string): Promise<User | undefined>;
   updateUserBranch(id: string, branchId: string): Promise<User | undefined>;
   updateUserRole(id: string, role: string): Promise<User | undefined>;
   getMembership(userId: string, branchId: string): Promise<Membership | undefined>;
@@ -536,6 +545,49 @@ export class DatabaseStorage implements IStorage {
     if (data.birthDate !== undefined) setData.birthDate = data.birthDate;
     if (data.gender !== undefined) setData.gender = data.gender;
     const [user] = await db.update(users).set(setData).where(eq(users.id, id)).returning();
+    return user;
+  }
+
+  // ─── Password Reset ───────────────────────────────────────────────────────
+  async createPasswordResetToken(userId: string, token: string, expiresAt: string): Promise<PasswordResetToken> {
+    const [row] = await db.insert(passwordResetTokens).values({ userId, token, expiresAt }).returning();
+    return row;
+  }
+
+  async getPasswordResetToken(token: string): Promise<PasswordResetToken | undefined> {
+    const [row] = await db.select().from(passwordResetTokens).where(eq(passwordResetTokens.token, token));
+    return row;
+  }
+
+  async markPasswordResetTokenUsed(id: string): Promise<void> {
+    await db.update(passwordResetTokens).set({ used: true }).where(eq(passwordResetTokens.id, id));
+  }
+
+  async invalidateUserPasswordResetTokens(userId: string): Promise<void> {
+    await db.update(passwordResetTokens).set({ used: true }).where(eq(passwordResetTokens.userId, userId));
+  }
+
+  // ─── Email Verification ───────────────────────────────────────────────────
+  async setEmailVerified(userId: string): Promise<User | undefined> {
+    const [user] = await db
+      .update(users)
+      .set({ emailVerified: true, emailVerifiedAt: new Date().toISOString(), emailVerificationToken: null, emailVerificationTokenExpiresAt: null })
+      .where(eq(users.id, userId))
+      .returning();
+    return user;
+  }
+
+  async setEmailVerificationToken(userId: string, token: string, expiresAt: string): Promise<User | undefined> {
+    const [user] = await db
+      .update(users)
+      .set({ emailVerificationToken: token, emailVerificationTokenExpiresAt: expiresAt })
+      .where(eq(users.id, userId))
+      .returning();
+    return user;
+  }
+
+  async getUserByEmailVerificationToken(token: string): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(eq(users.emailVerificationToken, token));
     return user;
   }
 

@@ -47,3 +47,4 @@ The platform is built with a modern web stack:
 ## External Dependencies
 - **PostgreSQL**: Relational database for all application data.
 - **Multer**: Used for handling file uploads (e.g., client avatars, branch photos, media for posts) on the backend.
+- **Resend**: Transactional email service used for password reset and email verification. Requires `RESEND_API_KEY` secret. Falls back to console logging in development if not configured. Optional: `EMAIL_FROM` (default: `WebCool <noreply@webcool.mx>`), `APP_URL` (auto-detected from `REPLIT_DEV_DOMAIN`).

@@ -17,6 +17,9 @@ import FavoritesPage from "@/pages/favorites";
 import ProfilePage from "@/pages/profile";
 import AcceptTermsPage from "@/pages/accept-terms";
 import LegalPage from "@/pages/legal";
+import ForgotPasswordPage from "@/pages/forgot-password";
+import ResetPasswordPage from "@/pages/reset-password";
+import VerifyEmailPage from "@/pages/verify-email";
 
 function FullScreenLoader() {
   return (
@@ -37,6 +40,18 @@ function AuthenticatedRouter() {
 
   if (location === "/terminos" || location === "/privacidad") {
     return <LegalPage />;
+  }
+
+  if (location === "/forgot-password") {
+    return <ForgotPasswordPage />;
+  }
+
+  if (location.startsWith("/reset-password")) {
+    return <ResetPasswordPage />;
+  }
+
+  if (location.startsWith("/verify-email")) {
+    return <VerifyEmailPage />;
   }
 
   if (location === "/explore") {
