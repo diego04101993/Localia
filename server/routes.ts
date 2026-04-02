@@ -11,6 +11,7 @@ import { setupAuth, requireAuth, requireRole, isImpersonating, getOriginalUserId
 import { seedDatabase } from "./seed";
 import {
   loginSchema,
+  publicCustomerRegisterSchema,
   createBranchSchema,
   joinBranchSchema,
   favoriteBranchSchema,
@@ -167,6 +168,100 @@ export async function registerRoutes(
       if (err) return res.status(500).json({ message: "Error al cerrar sesión" });
       res.json({ message: "Sesión cerrada" });
     });
+  });
+
+  // ─── Registro público de clientes ────────────────────────────────────────
+  app.post("/api/auth/register", async (req, res, next) => {
+    const result = publicCustomerRegisterSchema.safeParse(req.body);
+    if (!result.success) {
+      return res.status(400).json({ message: "Datos inválidos", errors: result.error.flatten() });
+    }
+    const { name, lastName, email, password, phone, birthDate, gender } = result.data;
+    const TERMS_VERSION = "1.0";
+
+    try {
+      const existing = await storage.getUserByEmail(email);
+
+      if (existing) {
+        if (existing.role !== "CUSTOMER") {
+          return res.status(409).json({
+            code: "WRONG_ROLE",
+            message: "Este correo pertenece a una cuenta de administrador. Inicia sesión normalmente.",
+          });
+        }
+        if ((existing as any).acceptedTerms) {
+          return res.status(409).json({
+            code: "ALREADY_EXISTS",
+            message: "Ya existe una cuenta con este correo. Inicia sesión.",
+          });
+        }
+        // Cliente existente (creado por sucursal) sin cuenta activa — activar
+        const hash = await bcrypt.hash(password, 10);
+        const updated = await storage.activateCustomerAccount(existing.id, {
+          passwordHash: hash,
+          name,
+          lastName,
+          phone: phone || undefined,
+          birthDate: birthDate || undefined,
+          gender: gender || undefined,
+          termsVersion: TERMS_VERSION,
+        });
+        req.logIn(updated!, (err) => {
+          if (err) return next(err);
+          const { passwordHash: _ph, ...safeUser } = updated as any;
+          return res.json({ message: "Cuenta activada correctamente", user: safeUser });
+        });
+        return;
+      }
+
+      // Usuario nuevo
+      const hash = await bcrypt.hash(password, 10);
+      const newUser = await storage.createUser({
+        email,
+        passwordHash: hash,
+        role: "CUSTOMER",
+        name,
+        acceptedTerms: true,
+        acceptedTermsAt: new Date().toISOString(),
+        termsVersion: TERMS_VERSION,
+      } as any);
+
+      // Guardar campos adicionales
+      await storage.updateClient(newUser.id, {
+        lastName: lastName || null,
+        phone: phone || null,
+        birthDate: birthDate || null,
+        gender: (gender as any) || null,
+      });
+
+      const freshUser = await storage.getUser(newUser.id);
+      req.logIn(freshUser!, (err) => {
+        if (err) return next(err);
+        const { passwordHash: _ph, ...safeUser } = freshUser as any;
+        return res.status(201).json({ message: "Cuenta creada correctamente", user: safeUser });
+      });
+    } catch (err: any) {
+      if (err?.code === "23505") {
+        return res.status(409).json({
+          code: "ALREADY_EXISTS",
+          message: "Ya existe una cuenta con este correo.",
+        });
+      }
+      next(err);
+    }
+  });
+
+  // ─── Aceptación de términos para clientes existentes ─────────────────────
+  app.post("/api/auth/accept-terms", requireAuth, async (req, res) => {
+    const user = req.user as any;
+    if (user.role !== "CUSTOMER") {
+      return res.status(403).json({ message: "Solo disponible para clientes" });
+    }
+    const TERMS_VERSION = "1.0";
+    const updated = await storage.acceptTerms(user.id, TERMS_VERSION);
+    if (!updated) return res.status(500).json({ message: "Error al guardar aceptación" });
+    const { passwordHash: _ph, ...safeUser } = updated as any;
+    return res.json({ message: "Términos aceptados", user: safeUser });
   });
 
   app.get("/api/auth/me", async (req, res) => {

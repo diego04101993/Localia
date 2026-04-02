@@ -1,0 +1,249 @@
+Quiero agregar una nueva funcionalidad al SaaS SIN romper nada de lo que ya funciona.
+
+IMPORTANTE:
+- No romper login actual
+- No romper dashboard de sucursal
+- No romper membresías, reservas, app cliente, perfiles ni relaciones existentes
+- Hacer cambios pequeños, seguros e incrementales
+- Mantener compatibilidad con los clientes ya creados por sucursales
+- Pensar como SaaS real, escalable y limpio
+
+==================================================
+OBJETIVO GENERAL
+==================================================
+
+Agregar registro público SOLO para CLIENTES desde la pantalla de inicio de sesión web.
+
+NO es para sucursales.
+NO es para branch admins.
+NO es para super admin.
+
+Solo clientes finales.
+
+Cuando un cliente se registre desde la web, debe poder crear su cuenta con:
+- nombre
+- apellidos
+- fecha de nacimiento
+- sexo
+- celular
+- correo electrónico
+- contraseña
+
+Después de registrarse:
+- podrá iniciar sesión en la app web del cliente
+- su perfil quedará guardado en la tabla de users o donde corresponda en la arquitectura actual
+- su rol debe ser CUSTOMER
+- esa información debe servir como perfil global del cliente
+
+==================================================
+REGLAS DE NEGOCIO IMPORTANTES
+==================================================
+
+1. El registro público es SOLO para clientes
+2. Las sucursales NO se registran desde ahí
+3. Si un cliente ya fue creado antes por una sucursal y luego quiere entrar por su cuenta:
+   - debe poder completar/activar su acceso sin duplicar usuarios
+   - revisar si ya existe por email
+4. Si un cliente entra a una sucursal y se vuelve miembro, sus datos deben seguir apareciendo en el dashboard de esa sucursal, como ya funciona hoy
+5. Si ese mismo cliente luego se vuelve miembro de otra sucursal, sus datos también deben poder reutilizarse sin duplicar identidad
+6. Debe mantenerse la lógica actual donde distintas sucursales pueden ver a sus propios clientes-miembros, pero el perfil base del cliente es el mismo usuario
+7. NO crear duplicados innecesarios de usuario por cada sucursal
+8. Mantener integridad de datos y compatibilidad con el modelo actual
+
+==================================================
+NUEVA FUNCIÓN 1: REGISTRO DE CLIENTES DESDE LOGIN
+==================================================
+
+En la pantalla de inicio de sesión actual:
+- agregar opción visible tipo:
+  "¿No tienes cuenta? Regístrate"
+- esta opción debe llevar a una pantalla o modal de registro SOLO para clientes
+
+Campos del formulario:
+- nombre
+- apellidos
+- fecha de nacimiento
+- sexo
+- celular
+- correo electrónico
+- contraseña
+- confirmar contraseña
+- checkbox obligatorio para aceptar Términos y Aviso de Privacidad
+
+Validaciones:
+- email válido
+- contraseña segura
+- confirmar contraseña coincide
+- no permitir registro sin aceptar términos
+- no permitir correos duplicados
+- si el email ya existe y pertenece a un CUSTOMER creado por sucursal sin password, ofrecer flujo seguro para activación o completar cuenta
+- si el email ya existe y ya tiene acceso, mostrar mensaje claro para iniciar sesión
+- mensajes UX limpios y profesionales
+
+Resultado al registrar:
+- crear usuario CUSTOMER
+- guardar toda su información de perfil
+- marcar aceptación de términos/privacidad
+- guardar fecha de aceptación
+- iniciar sesión automáticamente o redirigir al login con mensaje de éxito (elige la opción más segura y limpia)
+- permitir acceso a la app del cliente
+
+==================================================
+NUEVA FUNCIÓN 2: TÉRMINOS Y AVISO DE PRIVACIDAD OBLIGATORIOS
+==================================================
+
+Necesito un sistema de aceptación obligatoria de términos y aviso de privacidad.
+
+Regla:
+- si no aceptan, NO pueden usar la app
+
+Aplica a dos casos:
+
+CASO A:
+Clientes nuevos que se registran desde la web
+- deben aceptar durante el registro
+- sin aceptación no se crea la cuenta
+
+CASO B:
+Clientes que ya fueron creados por una sucursal
+- cuando inicien sesión por primera vez
+- si aún no han aceptado términos
+- antes de entrar a la app deben ver pantalla obligatoria de aceptación
+- si no aceptan, no entran
+
+Necesito que implementes:
+- campo booleano tipo acceptedTerms o similar
+- campo acceptedTermsAt o similar
+- si conviene, también guardar version de términos aceptada
+- middleware / guard / lógica de frontend para bloquear acceso hasta aceptar
+- pantalla limpia y clara para mostrar términos y botón "Acepto"
+
+==================================================
+CONTENIDO LEGAL QUE QUIERO
+==================================================
+
+Crea un texto base profesional, sencillo y usable en México para:
+1. Términos y Condiciones de uso de la app
+2. Aviso de Privacidad corto y claro
+
+IMPORTANTE:
+- No necesito un documento ultra jurídico imposible de leer
+- Lo quiero claro, profesional y suficiente para operación inicial del SaaS
+- Debe dejar claro que:
+  - los datos se usan para operar la app
+  - registro y administración de perfil
+  - membresías, reservas, relación con sucursales
+  - comunicación relacionada con el servicio
+  - mejora de experiencia dentro de la plataforma
+  - no aceptar implica no poder usar la app
+- Debe dejar claro que la información del cliente puede ser visible para las sucursales de las que sea miembro o con las que interactúe dentro de la app
+- Debe dejar claro que la app no venderá datos personales para fines externos no relacionados con el servicio
+- Debe dejar claro que a futuro la plataforma podrá incorporar nuevas funciones relacionadas con reservas, promociones, fidelización y comunicación dentro del ecosistema de la app
+- Mantener tono profesional, claro y confiable
+
+Quiero que ese texto quede listo para mostrarse:
+- en registro
+- en pantalla de aceptación obligatoria
+- y si conviene, en una ruta pública tipo /terminos y /privacidad
+
+==================================================
+UX/UI DESEADA
+==================================================
+
+El flujo debe verse premium, simple y claro.
+
+En login:
+- mantener diseño actual
+- agregar link o botón secundario para registro de clientes
+- no confundir con acceso de sucursales/admins
+- dejar claro que esa opción es solo para usuarios/clientes
+
+En registro:
+- UX limpia
+- mobile friendly
+- mensajes claros
+- checkbox obligatorio
+- links a términos y privacidad
+- feedback correcto si el correo ya existe
+
+En aceptación obligatoria:
+- pantalla clara, elegante y seria
+- mostrar resumen o scroll del texto
+- botón "Acepto"
+- si no acepta, no dejar pasar
+- no romper navegación ni auth actual
+
+==================================================
+COMPATIBILIDAD CON LO EXISTENTE
+==================================================
+
+MUY IMPORTANTE:
+- Revisa estructura actual de users, roles y relaciones con memberships/clientes
+- Aprovecha el modelo existente
+- NO dupliques modelos si no hace falta
+- Si hoy un cliente creado por sucursal ya vive en users con role CUSTOMER, reutiliza eso
+- Si hace falta agregar columnas, haz migración pequeña y segura
+- No tocar lógica de sucursales ni reservas salvo lo estrictamente necesario
+- No romper login actual de branch admins ni super admin
+- No romper el dashboard de clientes de sucursal
+- No romper la lógica donde una misma persona puede relacionarse con varias sucursales
+
+==================================================
+IMPLEMENTACIÓN TÉCNICA ESPERADA
+==================================================
+
+Analiza primero:
+1. cómo está hoy el login
+2. cómo se crean users CUSTOMER desde sucursal
+3. cómo se almacenan perfiles de cliente
+4. cómo se relacionan users con memberships o branch_clients
+5. qué campos ya existen y cuáles faltan
+
+Luego implementa la solución más pequeña y segura.
+
+Si hacen falta columnas nuevas, probablemente algo como:
+- passwordHash (si no existe para ciertos customers)
+- acceptedTerms
+- acceptedTermsAt
+- termsVersion
+- phone ya existente o reutilizable
+- birthDate ya existente o reutilizable
+- gender ya existente o reutilizable
+
+Si el cliente creado por sucursal no tiene contraseña:
+- crear flujo para activación o completar cuenta de forma segura
+- priorizar no duplicar email/usuario
+
+==================================================
+ENTREGABLES
+==================================================
+
+Quiero que me entregues:
+
+1. Qué archivos vas a modificar
+2. Qué problema raíz ves en la arquitectura actual para soportar esto
+3. Qué columnas o migraciones hacen falta
+4. Qué rutas/backend agregarás
+5. Qué pantallas/frontend agregarás o modificarás
+6. Código final
+7. Texto final de términos y aviso de privacidad
+8. Confirmación de que:
+   - no se rompió el login actual
+   - no se rompió dashboard de sucursal
+   - no se rompió membresías/reservas
+   - clientes existentes siguen funcionando
+   - clientes nuevos pueden registrarse
+   - clientes existentes deben aceptar términos antes de entrar si aún no lo hicieron
+
+==================================================
+FORMA DE TRABAJO
+==================================================
+
+Hazlo en este orden:
+1. Analiza impacto
+2. Propón solución
+3. Identifica archivos exactos
+4. Implementa de forma incremental
+5. Explica breve qué hiciste
+6. No hagas refactor masivo
+7. Si hay una decisión sensible, elige la opción más conservadora y segura

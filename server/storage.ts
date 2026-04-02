@@ -94,6 +94,8 @@ export interface IStorage {
     q?: string;
   }): Promise<(Branch & { distance_km?: number })[]>;
   updateUser(id: string, data: { name?: string; lastName?: string; email?: string; phone?: string }): Promise<User | undefined>;
+  acceptTerms(id: string, version: string): Promise<User | undefined>;
+  activateCustomerAccount(id: string, data: { passwordHash: string; name?: string; lastName?: string; phone?: string; birthDate?: string; gender?: string; termsVersion: string }): Promise<User | undefined>;
   updateUserBranch(id: string, branchId: string): Promise<User | undefined>;
   updateUserRole(id: string, role: string): Promise<User | undefined>;
   getMembership(userId: string, branchId: string): Promise<Membership | undefined>;
@@ -508,6 +510,31 @@ export class DatabaseStorage implements IStorage {
     if (data.email !== undefined) setData.email = data.email;
     if (data.phone !== undefined) setData.phone = data.phone;
     if (Object.keys(setData).length === 0) return this.getUser(id);
+    const [user] = await db.update(users).set(setData).where(eq(users.id, id)).returning();
+    return user;
+  }
+
+  async acceptTerms(id: string, version: string): Promise<User | undefined> {
+    const [user] = await db.update(users).set({
+      acceptedTerms: true,
+      acceptedTermsAt: new Date().toISOString(),
+      termsVersion: version,
+    }).where(eq(users.id, id)).returning();
+    return user;
+  }
+
+  async activateCustomerAccount(id: string, data: { passwordHash: string; name?: string; lastName?: string; phone?: string; birthDate?: string; gender?: string; termsVersion: string }): Promise<User | undefined> {
+    const setData: any = {
+      passwordHash: data.passwordHash,
+      acceptedTerms: true,
+      acceptedTermsAt: new Date().toISOString(),
+      termsVersion: data.termsVersion,
+    };
+    if (data.name) setData.name = data.name;
+    if (data.lastName !== undefined) setData.lastName = data.lastName;
+    if (data.phone !== undefined) setData.phone = data.phone;
+    if (data.birthDate !== undefined) setData.birthDate = data.birthDate;
+    if (data.gender !== undefined) setData.gender = data.gender;
     const [user] = await db.update(users).set(setData).where(eq(users.id, id)).returning();
     return user;
   }

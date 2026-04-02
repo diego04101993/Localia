@@ -3,7 +3,10 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest, getQueryFn } from "./queryClient";
 import type { User } from "@shared/schema";
 
-type AuthUser = Omit<User, "passwordHash"> & { branch?: { id: string; name: string; slug: string; status: string } | null };
+type AuthUser = Omit<User, "passwordHash"> & {
+  branch?: { id: string; name: string; slug: string; status: string } | null;
+  acceptedTerms?: boolean;
+};
 
 interface AuthContextType {
   user: AuthUser | null;

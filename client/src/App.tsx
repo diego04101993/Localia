@@ -15,6 +15,8 @@ import BlockedPage from "@/pages/blocked";
 import ExplorePage from "@/pages/explore";
 import FavoritesPage from "@/pages/favorites";
 import ProfilePage from "@/pages/profile";
+import AcceptTermsPage from "@/pages/accept-terms";
+import LegalPage from "@/pages/legal";
 
 function FullScreenLoader() {
   return (
@@ -32,6 +34,10 @@ function AuthenticatedRouter() {
   const [location] = useLocation();
 
   if (isLoading) return <FullScreenLoader />;
+
+  if (location === "/terminos" || location === "/privacidad") {
+    return <LegalPage />;
+  }
 
   if (location === "/explore") {
     return <ExplorePage />;
@@ -84,6 +90,9 @@ function AuthenticatedRouter() {
   }
 
   if (user.role === "CUSTOMER") {
+    if (!user.acceptedTerms) {
+      return <AcceptTermsPage />;
+    }
     if (user.branch && user.branch.status !== "active") {
       return <BlockedPage />;
     }

@@ -48,6 +48,9 @@ export const users = pgTable("users", {
   parqAccepted: boolean("parq_accepted").notNull().default(false),
   parqAcceptedDate: text("parq_accepted_date"),
   avatarUrl: text("avatar_url"),
+  acceptedTerms: boolean("accepted_terms").notNull().default(false),
+  acceptedTermsAt: text("accepted_terms_at"),
+  termsVersion: text("terms_version"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -193,6 +196,23 @@ export const registerSchema = z.object({
   email: z.string().email("Correo electrónico inválido"),
   password: z.string().min(6, "La contraseña debe tener al menos 6 caracteres"),
   name: z.string().min(1, "El nombre es obligatorio"),
+});
+
+export const publicCustomerRegisterSchema = z.object({
+  name: z.string().min(1, "El nombre es obligatorio"),
+  lastName: z.string().min(1, "Los apellidos son obligatorios"),
+  email: z.string().email("Correo electrónico inválido"),
+  password: z.string().min(8, "Mínimo 8 caracteres"),
+  confirmPassword: z.string(),
+  phone: z.string().optional(),
+  birthDate: z.string().optional(),
+  gender: z.enum(["M", "F", "NE"]).optional(),
+  acceptedTerms: z.literal(true, {
+    errorMap: () => ({ message: "Debes aceptar los términos y aviso de privacidad" }),
+  }),
+}).refine((d) => d.password === d.confirmPassword, {
+  message: "Las contraseñas no coinciden",
+  path: ["confirmPassword"],
 });
 
 export const createBranchSchema = z.object({
