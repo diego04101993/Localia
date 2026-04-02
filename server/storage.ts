@@ -1,4 +1,4 @@
-import { eq, and, sql, ilike, or, ne, isNull, count, desc, asc, gte } from "drizzle-orm";
+import { eq, and, sql, ilike, or, ne, isNull, count, desc, asc, gte, inArray } from "drizzle-orm";
 import { db } from "./db";
 import {
   users,
@@ -190,6 +190,8 @@ export interface IStorage {
   getBranchReviewsSummary(branchId: string): Promise<{ averageRating: number; totalReviews: number }>;
   getUserReview(branchId: string, userId: string): Promise<BranchReview | null>;
   createOrUpdateReview(branchId: string, userId: string, rating: number, comment?: string | null): Promise<BranchReview>;
+  getBranchRatings(branchIds: string[]): Promise<Record<string, { averageRating: number; totalReviews: number }>>;
+  getBranchRanking(): Promise<{ id: string; name: string; slug: string; category: string | null; city: string | null; address: string | null; coverImageUrl: string | null; profileImageUrl: string | null; averageRating: number; totalReviews: number }[]>;
   getBranchAnnouncements(branchId: string): Promise<BranchAnnouncement[]>;
   createAnnouncement(data: InsertBranchAnnouncement): Promise<BranchAnnouncement>;
   deleteAnnouncement(id: string): Promise<void>;
@@ -426,13 +428,15 @@ export class DatabaseStorage implements IStorage {
         )
         .orderBy(branches.createdAt);
 
-      return [
+      const combined = [
         ...withinRadius.map((r) => ({
           ...r,
           distance_km: r.distance_km ? Math.round(r.distance_km * 10) / 10 : undefined,
         })),
         ...withoutCoords.map((b) => ({ ...b, distance_km: undefined })),
-      ] as (Branch & { distance_km?: number; profileImageUrl?: string | null })[];
+      ] as (Branch & { distance_km?: number; profileImageUrl?: string | null; averageRating?: number; totalReviews?: number })[];
+      const ratingMap = await this.getBranchRatings(combined.map(b => b.id));
+      return combined.map(b => ({ ...b, ...(ratingMap[b.id] || { averageRating: 0, totalReviews: 0 }) }));
     }
 
     const profileImgSubquery = sql<string | null>`(SELECT url FROM branch_photos WHERE branch_id = branches.id AND type = 'profile' LIMIT 1)`;
@@ -464,7 +468,9 @@ export class DatabaseStorage implements IStorage {
       .where(and(...conditions))
       .orderBy(branches.createdAt);
 
-    return results.map((b) => ({ ...b, distance_km: undefined })) as (Branch & { distance_km?: number; profileImageUrl?: string | null })[];
+    const resultsWithDistance = results.map((b) => ({ ...b, distance_km: undefined })) as (Branch & { distance_km?: number; profileImageUrl?: string | null; averageRating?: number; totalReviews?: number })[];
+    const ratingMap = await this.getBranchRatings(resultsWithDistance.map(b => b.id));
+    return resultsWithDistance.map(b => ({ ...b, ...(ratingMap[b.id] || { averageRating: 0, totalReviews: 0 }) }));
   }
 
   async getMembership(userId: string, branchId: string): Promise<Membership | undefined> {
@@ -1879,6 +1885,53 @@ export class DatabaseStorage implements IStorage {
       .values({ branchId, userId, rating, comment: comment || null })
       .returning();
     return inserted[0];
+  }
+
+  async getBranchRatings(branchIds: string[]): Promise<Record<string, { averageRating: number; totalReviews: number }>> {
+    if (!branchIds.length) return {};
+    const rows = await db
+      .select({
+        branchId: branchReviews.branchId,
+        avgRating: sql<number>`ROUND(AVG(${branchReviews.rating})::numeric, 1)`,
+        total: sql<number>`COUNT(*)`,
+      })
+      .from(branchReviews)
+      .where(inArray(branchReviews.branchId, branchIds))
+      .groupBy(branchReviews.branchId);
+    const map: Record<string, { averageRating: number; totalReviews: number }> = {};
+    for (const row of rows) {
+      map[row.branchId] = { averageRating: Number(row.avgRating) || 0, totalReviews: Number(row.total) || 0 };
+    }
+    return map;
+  }
+
+  async getBranchRanking(): Promise<{ id: string; name: string; slug: string; category: string | null; city: string | null; address: string | null; coverImageUrl: string | null; profileImageUrl: string | null; averageRating: number; totalReviews: number }[]> {
+    const profileImgSubquery = sql<string | null>`(SELECT url FROM branch_photos WHERE branch_id = branches.id AND type = 'profile' LIMIT 1)`;
+    const rows = await db
+      .select({
+        id: branches.id,
+        name: branches.name,
+        slug: branches.slug,
+        category: branches.category,
+        city: branches.city,
+        address: branches.address,
+        coverImageUrl: branches.coverImageUrl,
+        profileImageUrl: profileImgSubquery.as("profile_image_url"),
+        avgRating: sql<number>`ROUND(COALESCE(AVG(${branchReviews.rating}), 0)::numeric, 1)`,
+        totalReviews: sql<number>`COUNT(${branchReviews.id})`,
+      })
+      .from(branches)
+      .leftJoin(branchReviews, eq(branchReviews.branchId, branches.id))
+      .where(and(eq(branches.status, "active"), isNull(branches.deletedAt)))
+      .groupBy(branches.id)
+      .having(sql`COUNT(${branchReviews.id}) > 0`)
+      .orderBy(desc(sql`ROUND(COALESCE(AVG(${branchReviews.rating}), 0)::numeric, 1)`), desc(sql`COUNT(${branchReviews.id})`))
+      .limit(50);
+    return rows.map(r => ({
+      ...r,
+      averageRating: Number(r.avgRating) || 0,
+      totalReviews: Number(r.totalReviews) || 0,
+    }));
   }
 
   async createPromotion(data: InsertPromotion): Promise<Promotion> {

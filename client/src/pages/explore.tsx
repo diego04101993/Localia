@@ -31,8 +31,20 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 
-type BranchWithDistance = Branch & { distance_km?: number; profileImageUrl?: string | null };
+type BranchWithDistance = Branch & { distance_km?: number; profileImageUrl?: string | null; averageRating?: number; totalReviews?: number };
 type MembershipInfo = { branchId: string; isFavorite: boolean; status: string };
+
+function StarBadge({ rating, total, size = "sm" }: { rating: number; total: number; size?: "xs" | "sm" }) {
+  if (!rating || !total) return null;
+  const isXs = size === "xs";
+  return (
+    <div className={`flex items-center gap-0.5 ${isXs ? "text-[10px]" : "text-xs"} font-semibold text-amber-600 dark:text-amber-400`} data-testid="badge-star-rating">
+      <Star className={`${isXs ? "h-2.5 w-2.5" : "h-3 w-3"} fill-amber-400 text-amber-400`} />
+      <span>{rating.toFixed(1)}</span>
+      <span className="text-muted-foreground font-normal">({total})</span>
+    </div>
+  );
+}
 
 const categoryIcons: Record<string, any> = {
   box: Dumbbell,
@@ -143,9 +155,14 @@ function BranchExploreCard({
           >
             {branch.name}
           </h3>
-          <span className="text-[11px] text-muted-foreground font-medium">
-            {getCategoryLabel(branch.category || "otro")}
-          </span>
+          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+            <span className="text-[11px] text-muted-foreground font-medium">
+              {getCategoryLabel(branch.category || "otro")}
+            </span>
+            {!!branch.averageRating && !!branch.totalReviews && (
+              <StarBadge rating={branch.averageRating} total={branch.totalReviews} />
+            )}
+          </div>
         </div>
 
         {(branch.city || branch.address) && (
@@ -215,6 +232,55 @@ function CategoryFilter({
           </button>
         );
       })}
+    </div>
+  );
+}
+
+type RankingItem = { id: string; name: string; slug: string; category: string | null; city: string | null; address: string | null; coverImageUrl: string | null; profileImageUrl: string | null; averageRating: number; totalReviews: number };
+
+function RankingSection({ onOpen }: { onOpen: (slug: string) => void }) {
+  const { data: ranking, isLoading } = useQuery<RankingItem[]>({
+    queryKey: ["/api/branches/ranking"],
+  });
+
+  if (isLoading) return null;
+  if (!ranking || ranking.length === 0) return null;
+
+  return (
+    <div className="mb-4" data-testid="section-ranking">
+      <div className="flex items-center gap-2 mb-2">
+        <Star className="h-4 w-4 fill-amber-400 text-amber-400" />
+        <span className="font-bold text-sm text-foreground">Top calificados</span>
+      </div>
+      <div className="flex gap-3 overflow-x-auto pb-1 -mx-1 px-1 snap-x snap-mandatory scrollbar-none">
+        {ranking.slice(0, 8).map((b) => {
+          const img = b.profileImageUrl || b.coverImageUrl;
+          return (
+            <button
+              key={b.id}
+              onClick={() => onOpen(b.slug)}
+              className="flex-shrink-0 snap-start w-36 rounded-2xl overflow-hidden border border-border/60 bg-card shadow-sm hover:shadow-md transition-shadow text-left"
+              data-testid={`card-ranking-${b.slug}`}
+            >
+              <div className="h-20 relative overflow-hidden bg-muted">
+                {img ? (
+                  <img src={img} alt={b.name} className="w-full h-full object-cover" />
+                ) : (
+                  <BranchInitialAvatar name={b.name} category={b.category} />
+                )}
+                <div className="absolute top-1.5 left-1.5 flex items-center gap-0.5 bg-black/60 backdrop-blur-sm text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">
+                  <Star className="h-2.5 w-2.5 fill-amber-400 text-amber-400" />
+                  {b.averageRating.toFixed(1)}
+                </div>
+              </div>
+              <div className="p-2">
+                <p className="font-semibold text-[11px] leading-tight truncate">{b.name}</p>
+                <p className="text-[10px] text-muted-foreground mt-0.5">{b.totalReviews} {b.totalReviews === 1 ? "reseña" : "reseñas"}</p>
+              </div>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -422,6 +488,8 @@ export default function ExplorePage() {
           </div>
           <span className="text-white opacity-60 text-xl leading-none">›</span>
         </button>
+
+        <RankingSection onOpen={(slug) => navigate(`/app/${slug}`)} />
 
         {userLat && (
           <div className="flex items-center gap-2 mb-3">

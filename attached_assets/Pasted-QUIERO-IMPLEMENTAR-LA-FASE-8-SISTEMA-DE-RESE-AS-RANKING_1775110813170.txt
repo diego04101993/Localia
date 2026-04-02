@@ -1,0 +1,266 @@
+QUIERO IMPLEMENTAR LA FASE 8: SISTEMA DE RESEÑAS + RANKING DE SUCURSALES
+SIN ROMPER NADA DE LO QUE YA FUNCIONA.
+
+ESTE CAMBIO DEBE SER:
+- INCREMENTAL
+- SEGURO
+- SIN REFACTORIZAR TODO
+- COMPATIBLE CON TODO LO EXISTENTE
+
+==================================================
+CONTEXTO ACTUAL (NO TOCAR)
+==================================================
+
+YA EXISTE Y FUNCIONA:
+- login / registro
+- activación de clientes
+- aceptación de términos
+- dashboard de sucursal
+- perfiles de sucursal
+- promociones
+- memberships
+- reservas
+
+NO ROMPER:
+- reservas
+- memberships
+- dashboards
+- login
+- relaciones existentes
+
+==================================================
+OBJETIVO REAL DE ESTA FASE
+==================================================
+
+QUIERO CONSTRUIR LA BASE DE:
+
+1) SISTEMA DE RESEÑAS (reviews)
+2) CALIFICACIÓN PROMEDIO POR SUCURSAL
+3) VISUALIZACIÓN EN PERFIL
+4) RANKING BÁSICO DE SUCURSALES
+5) BASE LISTA PARA FUTURA MONETIZACIÓN
+
+ESTO ES CLAVE PARA:
+- generar confianza
+- aumentar conversiones
+- preparar “sucursales destacadas” (NO implementar aún)
+
+==================================================
+PARTE 1 — BASE DE DATOS (CRÍTICO)
+==================================================
+
+CREAR TABLA NUEVA: branch_reviews
+
+CAMPOS:
+
+- id
+- branchId (FK)
+- userId (FK)
+- rating (integer 1–5)
+- comment (text)
+- createdAt
+- updatedAt
+
+REGLA CRÍTICA:
+UN USUARIO SOLO PUEDE TENER 1 REVIEW POR SUCURSAL
+
+IMPLEMENTAR:
+UNIQUE (userId, branchId)
+
+SI YA EXISTE:
+→ actualizar en vez de duplicar
+
+==================================================
+PARTE 2 — BACKEND (MINIMO PERO BIEN HECHO)
+==================================================
+
+ENDPOINTS:
+
+1) CREAR / ACTUALIZAR REVIEW
+POST /api/reviews/branch/:branchId
+
+LÓGICA:
+- si NO existe review → crear
+- si YA existe → actualizar (rating + comment)
+
+VALIDACIONES:
+- usuario debe ser CUSTOMER
+- rating obligatorio (1–5)
+- evitar duplicados
+
+--------------------------------------------------
+
+2) OBTENER REVIEWS DE SUCURSAL
+GET /api/reviews/branch/:branchId
+
+DEVOLVER:
+- lista reviews
+- ordenadas por más recientes
+
+--------------------------------------------------
+
+3) RESUMEN DE RATING
+IMPORTANTE: NO hacer queries pesadas innecesarias
+
+OPCIÓN SEGURA:
+- calcular promedio dinámico
+o
+- si ya hay lógica en branch → agregar ahí
+
+DEVOLVER:
+- averageRating
+- totalReviews
+
+--------------------------------------------------
+
+4) RANKING BÁSICO
+GET /api/branches/ranking
+
+LÓGICA SIMPLE (NO OVERENGINEERING):
+
+ORDER BY:
+- averageRating DESC
+- totalReviews DESC
+
+SOLO:
+- sucursales activas
+- sucursales visibles
+
+==================================================
+PARTE 3 — FRONTEND (APP CLIENTE)
+==================================================
+
+EN PERFIL DE SUCURSAL:
+
+MOSTRAR:
+
+⭐ promedio (ej: 4.7)
+(120 reseñas)
+
+LISTA:
+- estrellas
+- comentario
+- fecha
+
+--------------------------------------------------
+
+FORMULARIO:
+
+SI USUARIO LOGUEADO:
+- seleccionar estrellas (1–5)
+- escribir comentario
+- botón guardar
+
+SI YA EXISTE REVIEW:
+→ mostrar datos y permitir editar
+
+==================================================
+PARTE 4 — EXPLORE / LISTADO
+==================================================
+
+EN CARDS DE SUCURSALES:
+
+MOSTRAR:
+
+⭐ 4.8
+(89)
+
+NO cargar comentarios completos
+SOLO resumen
+
+==================================================
+PARTE 5 — UX/UI (MUY IMPORTANTE)
+==================================================
+
+QUIERO:
+
+- estrellas claras (visuales)
+- diseño limpio
+- no saturar pantalla
+- UX tipo apps grandes (Uber / Google)
+
+NO cambiar diseño global
+SOLO integrar
+
+==================================================
+PARTE 6 — REGLAS DE NEGOCIO
+==================================================
+
+1) SOLO CUSTOMER puede reseñar
+2) 1 review por usuario por sucursal
+3) permitir edición
+4) rating obligatorio
+5) comentario opcional pero recomendado
+6) NO romper perfiles
+7) NO romper relaciones existentes
+
+==================================================
+PARTE 7 — SEGURIDAD Y PERFORMANCE
+==================================================
+
+- evitar duplicados
+- validar rating
+- no hacer queries pesadas innecesarias
+- no recalcular todo en cada request si no es necesario
+- mantener simple
+
+==================================================
+PARTE 8 — PRUEBAS (OBLIGATORIO)
+==================================================
+
+ESCENARIO A:
+Cliente crea review
+→ se guarda
+
+ESCENARIO B:
+Cliente vuelve a reseñar misma sucursal
+→ se actualiza (NO duplica)
+
+ESCENARIO C:
+Perfil muestra promedio correcto
+
+ESCENARIO D:
+Se muestran comentarios
+
+ESCENARIO E:
+Explore muestra rating
+
+ESCENARIO F:
+Ranking ordena correctamente
+
+ESCENARIO G:
+Nada se rompe:
+- login OK
+- reservas OK
+- memberships OK
+- promociones OK
+- perfiles OK
+
+==================================================
+PARTE 9 — ENTREGABLE
+==================================================
+
+QUIERO QUE ME DES:
+
+1) qué implementaste
+2) qué tablas creaste
+3) qué endpoints agregaste
+4) qué archivos tocaste
+5) cómo evitaste duplicados
+6) pruebas realizadas
+7) confirmación de que NO rompiste nada
+
+==================================================
+FORMA DE TRABAJO
+==================================================
+
+1) analiza impacto
+2) implementa cambio mínimo
+3) prueba
+4) explica breve
+
+NO hacer refactor masivo
+NO romper nada existente
+NO sobrecomplicar
+
+Elegir siempre la opción MÁS SIMPLE Y SEGURA

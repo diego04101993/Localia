@@ -3077,6 +3077,15 @@ export async function registerRoutes(
   });
 
   // --- Marketplace: Nearby / Search ---
+  app.get("/api/branches/ranking", async (_req, res) => {
+    try {
+      const ranking = await storage.getBranchRanking();
+      res.json(ranking);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   app.get("/api/branches/nearby", async (req, res) => {
     const lat = req.query.lat ? parseFloat(req.query.lat as string) : undefined;
     const lng = req.query.lng ? parseFloat(req.query.lng as string) : undefined;
