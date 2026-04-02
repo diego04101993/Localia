@@ -1,0 +1,195 @@
+Quiero implementar SOLO la FASE 3 de esta funcionalidad, SIN romper nada de lo que ya funciona.
+
+CONTEXTO:
+Ya existe o se está implementando la fase anterior:
+- registro público SOLO para clientes
+- login actual funcionando
+- aceptación obligatoria de términos
+- roles existentes: CUSTOMER, BRANCH_ADMIN, SUPER_ADMIN
+- dashboard de sucursal funcionando
+- membresías, reservas y relaciones con sucursales funcionando
+
+OBJETIVO DE ESTA FASE:
+Dejar completamente sólido, seguro y profesional el flujo de ACTIVACIÓN DE CUENTA para clientes que ya fueron creados por una sucursal previamente.
+
+MUY IMPORTANTE:
+- NO romper login actual
+- NO romper registro nuevo de clientes
+- NO romper dashboard de sucursal
+- NO romper memberships, branch clients, reservas ni relaciones existentes
+- NO hacer refactor masivo
+- Hacer cambios pequeños, seguros y compatibles
+- Mantener identidad única del cliente por email
+- No duplicar usuarios
+
+==================================================
+PROBLEMA A RESOLVER
+==================================================
+
+Hoy una sucursal puede crear un cliente desde su dashboard.
+Después, ese mismo cliente puede querer entrar por su cuenta a la app web del cliente.
+
+Necesito que exista un flujo robusto para que ese cliente:
+- active su cuenta
+- cree su contraseña
+- acepte términos y aviso de privacidad
+- conserve intactos sus datos y relaciones ya existentes
+- NO se cree duplicado
+- NO rompa memberships ni visibilidad en dashboards
+
+==================================================
+OBJETIVO FUNCIONAL EXACTO
+==================================================
+
+Si un cliente ya existe en la base de datos como CUSTOMER, creado por sucursal, pero todavía no ha activado su acceso completo:
+
+1. Debe poder activar su cuenta usando su correo
+2. Debe definir su contraseña
+3. Debe aceptar términos y aviso de privacidad
+4. Debe conservar:
+   - su mismo user id
+   - sus memberships actuales
+   - sus relaciones con sucursales
+   - su historial existente
+5. NO debe generarse un segundo usuario con el mismo email
+6. Al terminar, debe poder iniciar sesión normal en la app cliente
+
+==================================================
+FLUJO DESEADO
+==================================================
+
+Quiero que definas e implementes el flujo más seguro y limpio entre estas opciones, eligiendo la más conservadora:
+
+OPCIÓN PREFERIDA:
+- Si en registro público se captura un email que ya existe como CUSTOMER creado por sucursal pero sin cuenta activada
+- en lugar de crear duplicado:
+  - el sistema detecta ese caso
+  - permite completar activación
+  - pide contraseña + confirmación
+  - pide aceptar términos
+  - actualiza ese mismo usuario
+  - luego entra normal
+
+Además, si conviene UX/UI, puedes agregar:
+- mensaje tipo:
+  "Ya existe un perfil con este correo. Completa tu acceso para entrar."
+pero sin complicar la experiencia
+
+==================================================
+REGLAS DE NEGOCIO
+==================================================
+
+1. SOLO aplica a CUSTOMER
+2. NO aplica a BRANCH_ADMIN
+3. NO aplica a SUPER_ADMIN
+4. El email debe seguir siendo único
+5. NO duplicar usuarios
+6. Mantener todas las relaciones actuales de memberships y sucursales
+7. Si el usuario ya está completamente activo, no permitir re-activación; solo pedir login
+8. Si el cliente existe pero fue creado por sucursal, el sistema debe tratarlo como perfil preexistente reutilizable
+9. La activación debe ser segura y clara
+
+==================================================
+MEJORAS UX/UI DE ESTA FASE
+==================================================
+
+Quiero que el flujo quede premium y claro:
+
+- Si el correo ya existe pero es activable:
+  mostrar mensaje claro y amable
+- Si el correo ya existe y ya tiene cuenta:
+  mostrar mensaje claro para iniciar sesión
+- Si el cliente activa su cuenta:
+  feedback de éxito profesional
+- Mantener coherencia visual con el login/registro actual
+- No hacer un flujo confuso ni con demasiados pasos
+
+Si conviene, puedes:
+- reutilizar la misma pantalla de registro
+- o crear un paso de “Completar acceso”
+- pero elige la opción más simple y segura
+
+==================================================
+SEGURIDAD Y CONSISTENCIA
+==================================================
+
+Quiero que revises y asegures:
+
+1. Que el flujo no permita tomar cuentas ajenas de forma insegura
+2. Que no se activen usuarios de roles distintos a CUSTOMER
+3. Que el email duplicado se maneje correctamente
+4. Que las validaciones sean consistentes
+5. Que no se rompa el guard de términos
+6. Que no se rompa el login normal
+7. Que no se creen inconsistencias entre users y memberships
+
+Si detectas que hace falta un campo auxiliar para distinguir:
+- customer creado por sucursal
+- customer ya activado
+puedes agregarlo SOLO si es realmente necesario y con cambio mínimo
+
+==================================================
+PRUEBAS QUE QUIERO QUE HAGAS
+==================================================
+
+Quiero que valides explícitamente estos escenarios:
+
+ESCENARIO A:
+Cliente nuevo, email no existente
+- se registra
+- acepta términos
+- entra normal
+
+ESCENARIO B:
+Cliente ya creado por sucursal, mismo email, sin acceso activado
+- intenta registrarse
+- el sistema NO duplica
+- completa activación
+- define contraseña
+- acepta términos
+- entra normal
+- conserva memberships y relaciones previas
+
+ESCENARIO C:
+Cliente ya existente y ya activado
+- intenta registrarse otra vez
+- sistema muestra mensaje de “ya existe cuenta, inicia sesión”
+
+ESCENARIO D:
+Branch admin y super admin
+- siguen entrando sin afectación
+
+ESCENARIO E:
+Cliente activado
+- aparece correctamente en dashboards de sucursales donde corresponda
+
+==================================================
+ENTREGABLE
+==================================================
+
+Quiero que me entregues:
+
+1. Qué problema raíz encontraste en el flujo actual
+2. Qué archivos modificaste
+3. Qué decisión tomaste para el flujo de activación
+4. Qué validaciones agregaste
+5. Qué pruebas manuales hiciste
+6. Código final
+7. Confirmación de que:
+   - no se rompió login actual
+   - no se rompió dashboard de sucursal
+   - no se rompieron memberships/reservas
+   - no se generan duplicados
+   - clientes creados por sucursal pueden activar su cuenta correctamente
+
+==================================================
+FORMA DE TRABAJO
+==================================================
+
+Trabaja así:
+1. analiza impacto
+2. propón solución
+3. implementa mínimo cambio seguro
+4. explica breve
+5. no hagas refactor masivo
+6. elige la opción más conservadora y compatible

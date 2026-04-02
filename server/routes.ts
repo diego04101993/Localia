@@ -195,7 +195,14 @@ export async function registerRoutes(
             message: "Ya existe una cuenta con este correo. Inicia sesión.",
           });
         }
-        // Cliente existente (creado por sucursal) sin cuenta activa — activar
+        // Cliente existente con contraseña (creado por sucursal) — no sobreescribir
+        if ((existing as any).passwordHash) {
+          return res.status(409).json({
+            code: "HAS_CREDENTIALS",
+            message: "Ya tienes un perfil en WebCool. Inicia sesión con tu contraseña y acepta los términos para continuar.",
+          });
+        }
+        // Cliente existente SIN contraseña — activar (caso especial: alta sin credenciales)
         const hash = await bcrypt.hash(password, 10);
         const updated = await storage.activateCustomerAccount(existing.id, {
           passwordHash: hash,

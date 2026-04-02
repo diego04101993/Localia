@@ -3,7 +3,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useLocation, Link } from "wouter";
 import { z } from "zod";
-import { Eye, EyeOff, Loader2, Mail, Lock, User, Phone, Calendar, ChevronDown } from "lucide-react";
+import { Eye, EyeOff, Loader2, Mail, Lock, User, Phone, Calendar, ChevronDown, Info } from "lucide-react";
 import { loginSchema, type LoginData } from "@shared/schema";
 import { useAuth } from "@/lib/auth";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -52,7 +52,7 @@ function onBlurStyle(e: React.FocusEvent<HTMLInputElement | HTMLSelectElement>) 
 }
 
 // ─── Login view ──────────────────────────────────────────────────────────────
-function LoginView({ onRegister }: { onRegister: () => void }) {
+function LoginView({ onRegister, initialEmail = "" }: { onRegister: () => void; initialEmail?: string }) {
   const { login } = useAuth();
   const { toast } = useToast();
   const [showPassword, setShowPassword] = useState(false);
@@ -60,7 +60,7 @@ function LoginView({ onRegister }: { onRegister: () => void }) {
 
   const form = useForm<LoginData>({
     resolver: zodResolver(loginSchema),
-    defaultValues: { email: "", password: "" },
+    defaultValues: { email: initialEmail, password: "" },
   });
 
   async function onSubmit(data: LoginData) {
@@ -199,11 +199,12 @@ function LoginView({ onRegister }: { onRegister: () => void }) {
 }
 
 // ─── Register view ───────────────────────────────────────────────────────────
-function RegisterView({ onBack }: { onBack: () => void }) {
+function RegisterView({ onBack, onGoLogin }: { onBack: () => void; onGoLogin: (email: string) => void }) {
   const { toast } = useToast();
   const [showPass, setShowPass] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [hasCredentialsEmail, setHasCredentialsEmail] = useState<string | null>(null);
 
   const form = useForm<RegisterFormData>({
     resolver: zodResolver(registerFormSchema),
@@ -221,6 +222,7 @@ function RegisterView({ onBack }: { onBack: () => void }) {
   });
 
   async function onSubmit(data: RegisterFormData) {
+    setHasCredentialsEmail(null);
     setIsSubmitting(true);
     try {
       const payload = {
@@ -238,16 +240,24 @@ function RegisterView({ onBack }: { onBack: () => void }) {
       await queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
       toast({ title: "¡Bienvenido!", description: "Tu cuenta fue creada. Ya puedes explorar." });
     } catch (err: any) {
+      let code = "";
       let description = "Error al crear la cuenta. Intenta de nuevo.";
       if (err?.message) {
         try {
-          const parsed = JSON.parse(err.message);
+          // apiRequest throws errors as "STATUS: {json}" e.g. "409: {"code":"HAS_CREDENTIALS",...}"
+          const jsonPart = err.message.replace(/^\d+:\s*/, "");
+          const parsed = JSON.parse(jsonPart);
+          code = parsed.code || "";
           description = parsed.message || description;
         } catch {
-          if (err.message.includes("409")) {
+          if (err.message.startsWith("409")) {
             description = "Ya existe una cuenta con ese correo. Inicia sesión.";
           }
         }
+      }
+      if (code === "HAS_CREDENTIALS") {
+        setHasCredentialsEmail(data.email);
+        return;
       }
       toast({ title: "Error", description, variant: "destructive" });
     } finally {
@@ -271,6 +281,30 @@ function RegisterView({ onBack }: { onBack: () => void }) {
           Crear cuenta
         </h2>
       </div>
+
+      {hasCredentialsEmail && (
+        <div
+          className="mb-4 p-4 rounded-2xl flex flex-col gap-2"
+          style={{ background: "#e3f2fd", border: "1.5px solid #90caf9" }}
+          data-testid="callout-has-credentials"
+        >
+          <div className="flex items-start gap-2">
+            <Info className="h-4 w-4 shrink-0 mt-0.5" style={{ color: "#1565C0" }} />
+            <p className="text-xs leading-relaxed" style={{ color: "#0d47a1" }}>
+              Ya tienes un perfil en WebCool con ese correo. Inicia sesión con tu contraseña y acepta los términos para continuar.
+            </p>
+          </div>
+          <button
+            type="button"
+            className="self-start text-xs font-semibold underline underline-offset-2 hover:opacity-70 transition-opacity"
+            style={{ color: "#1565C0" }}
+            onClick={() => onGoLogin(hasCredentialsEmail)}
+            data-testid="button-go-login-from-credentials"
+          >
+            Ir a iniciar sesión →
+          </button>
+        </div>
+      )}
 
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-2.5">
@@ -566,6 +600,12 @@ function RegisterView({ onBack }: { onBack: () => void }) {
 // ─── Main page ───────────────────────────────────────────────────────────────
 export default function LoginPage() {
   const [view, setView] = useState<"login" | "register">("login");
+  const [prefilledEmail, setPrefilledEmail] = useState("");
+
+  function handleGoLogin(email: string) {
+    setPrefilledEmail(email);
+    setView("login");
+  }
 
   return (
     <div
@@ -636,8 +676,8 @@ export default function LoginPage() {
           }}
         >
           {view === "login"
-            ? <LoginView onRegister={() => setView("register")} />
-            : <RegisterView onBack={() => setView("login")} />
+            ? <LoginView onRegister={() => { setPrefilledEmail(""); setView("register"); }} initialEmail={prefilledEmail} />
+            : <RegisterView onBack={() => setView("login")} onGoLogin={handleGoLogin} />
           }
         </div>
 
