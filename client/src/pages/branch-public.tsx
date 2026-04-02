@@ -22,6 +22,8 @@ import {
   AlertTriangle,
   XCircle,
   Navigation,
+  Tag,
+  CalendarClock,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -1175,6 +1177,11 @@ export default function BranchPublicPage() {
     enabled: !!slug,
   });
 
+  const { data: branchPromotions } = useQuery<any[]>({
+    queryKey: [`/api/public/branch/${slug}/promotions`],
+    enabled: !!slug,
+  });
+
   const { data: myMemberships } = useQuery<MembershipInfo[]>({
     queryKey: ["/api/memberships"],
     queryFn: getQueryFn({ on401: "returnNull" }),
@@ -1457,6 +1464,49 @@ export default function BranchPublicPage() {
         <PublicLocationSection branch={branch} />
 
         {content && <PublicPosts posts={content.posts} />}
+
+        {branchPromotions && branchPromotions.length > 0 && (
+          <div data-testid="section-branch-promotions">
+            <div className="flex items-center gap-2 px-1 mb-3">
+              <div className="h-4 w-1 rounded-full bg-primary" />
+              <h3 className="font-bold text-sm tracking-tight">Promociones</h3>
+            </div>
+            <div className="space-y-3">
+              {branchPromotions.map((promo: any) => {
+                const today = new Date().toISOString().split("T")[0];
+                const isExpired = promo.endDate && promo.endDate < today;
+                if (isExpired) return null;
+                return (
+                  <Card key={promo.id} className="border-border/50 shadow-sm rounded-2xl overflow-hidden" data-testid={`card-branch-promo-${promo.id}`}>
+                    {promo.imageUrl && (
+                      <div className="aspect-video overflow-hidden">
+                        <img src={promo.imageUrl} alt={promo.title} className="w-full h-full object-cover" />
+                      </div>
+                    )}
+                    <CardContent className={`p-4 ${!promo.imageUrl ? "flex items-start gap-3" : ""}`}>
+                      {!promo.imageUrl && (
+                        <div className="h-10 w-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: "linear-gradient(135deg, #e3f2fd, #bbdefb)" }}>
+                          <Tag className="h-5 w-5" style={{ color: "#1E88E5" }} />
+                        </div>
+                      )}
+                      <div>
+                        <p className="font-semibold text-sm" data-testid={`text-branch-promo-title-${promo.id}`}>{promo.title}</p>
+                        {promo.description && <p className="text-sm text-muted-foreground mt-1">{promo.description}</p>}
+                        {promo.endDate && (
+                          <div className="flex items-center gap-1 mt-2 text-xs text-muted-foreground">
+                            <CalendarClock className="h-3 w-3" />
+                            Válida hasta {promo.endDate}
+                          </div>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {content && <PublicProducts products={content.products} />}
         {content && <PhotoGallery photos={content.photos} />}
         {content && <PublicVideos videos={content.videos} />}

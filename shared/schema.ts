@@ -552,6 +552,25 @@ export const passwordResetTokens = pgTable("password_reset_tokens", {
 
 export type PasswordResetToken = typeof passwordResetTokens.$inferSelect;
 
+export const promotions = pgTable("promotions", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 }).notNull().references(() => branches.id),
+  title: text("title").notNull(),
+  description: text("description"),
+  imageUrl: text("image_url"),
+  startDate: text("start_date"),
+  endDate: text("end_date"),
+  isActive: boolean("is_active").notNull().default(true),
+  isGlobal: boolean("is_global").notNull().default(false),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertPromotionSchema = createInsertSchema(promotions).omit({ id: true, createdAt: true });
+export type InsertPromotion = z.infer<typeof insertPromotionSchema>;
+export type Promotion = typeof promotions.$inferSelect;
+
 export const BRANCH_CATEGORIES = [
   { value: "box", label: "Box / CrossFit" },
   { value: "gym", label: "Gimnasio" },

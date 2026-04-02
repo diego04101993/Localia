@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import {
   Building2,
@@ -33,6 +33,11 @@ import {
   Save,
   Cake,
   Gift,
+  Tag,
+  Plus,
+  Globe,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -71,6 +76,7 @@ const DASHBOARD_TABS = [
   { value: "reservas", label: "Reservas", icon: Calendar },
   { value: "contenido", label: "Contenido", icon: FileText },
   { value: "perfil", label: "Perfil Público", icon: Building2 },
+  { value: "promociones", label: "Promociones", icon: Tag },
   { value: "tv", label: "TV Mode", icon: Monitor },
 ] as const;
 
@@ -1193,6 +1199,261 @@ function ResumenTab({ branchStats, branchStatus, branchSlug, branchId, branchNam
 }
 
 
+function PromocionesTab() {
+  const { toast } = useToast();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const [showForm, setShowForm] = useState(false);
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+  const [isGlobal, setIsGlobal] = useState(false);
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+
+  const { data: promos = [], isLoading } = useQuery<any[]>({ queryKey: ["/api/branch/promotions"] });
+
+  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.match(/^image\/(jpeg|png|webp)$/)) {
+      toast({ title: "Solo JPG, PNG o WebP", variant: "destructive" }); return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast({ title: "Máximo 5MB", variant: "destructive" }); return;
+    }
+    setImageFile(file);
+    const reader = new FileReader();
+    reader.onload = (ev) => setImagePreview(ev.target?.result as string);
+    reader.readAsDataURL(file);
+  }
+
+  function resetForm() {
+    setTitle(""); setDescription(""); setStartDate(""); setEndDate("");
+    setIsGlobal(false); setImageFile(null); setImagePreview(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    setShowForm(false);
+  }
+
+  async function handleSubmit() {
+    if (!title.trim()) { toast({ title: "El título es requerido", variant: "destructive" }); return; }
+    setSubmitting(true);
+    try {
+      const fd = new FormData();
+      fd.append("title", title.trim());
+      if (description.trim()) fd.append("description", description.trim());
+      if (startDate) fd.append("startDate", startDate);
+      if (endDate) fd.append("endDate", endDate);
+      fd.append("isGlobal", String(isGlobal));
+      if (imageFile) fd.append("image", imageFile);
+      const res = await fetch("/api/promotions", { method: "POST", body: fd, credentials: "include" });
+      if (!res.ok) { const d = await res.json(); throw new Error(d.message || "Error"); }
+      toast({ title: "Promoción creada" });
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/promotions"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/promotions/global"] });
+      resetForm();
+    } catch (err: any) {
+      toast({ title: err.message, variant: "destructive" });
+    } finally { setSubmitting(false); }
+  }
+
+  async function handleToggle(id: string, field: "isActive" | "isGlobal", current: boolean) {
+    try {
+      await apiRequest("PATCH", `/api/promotions/${id}`, { [field]: !current });
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/promotions"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/promotions/global"] });
+    } catch {
+      toast({ title: "Error al actualizar", variant: "destructive" });
+    }
+  }
+
+  async function handleDelete(id: string) {
+    try {
+      await apiRequest("DELETE", `/api/promotions/${id}`);
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/promotions"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/promotions/global"] });
+      toast({ title: "Promoción eliminada" });
+    } catch {
+      toast({ title: "Error al eliminar", variant: "destructive" });
+    } finally { setDeleteId(null); }
+  }
+
+  const today = new Date().toISOString().split("T")[0];
+
+  return (
+    <div className="space-y-4 p-4 max-w-3xl mx-auto">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-bold">Promociones</h2>
+          <p className="text-sm text-muted-foreground">Crea ofertas visibles en tu perfil y en la app global</p>
+        </div>
+        <Button onClick={() => setShowForm(!showForm)} data-testid="button-add-promotion">
+          <Plus className="h-4 w-4 mr-2" /> Nueva promoción
+        </Button>
+      </div>
+
+      {showForm && (
+        <Card className="border-2 border-primary/20">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Nueva promoción</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div>
+              <Label htmlFor="promo-title">Título *</Label>
+              <Input id="promo-title" value={title} onChange={e => setTitle(e.target.value)} placeholder="Ej: 20% de descuento en membresía mensual" data-testid="input-promo-title" />
+            </div>
+            <div>
+              <Label htmlFor="promo-desc">Descripción</Label>
+              <Textarea id="promo-desc" value={description} onChange={e => setDescription(e.target.value)} placeholder="Detalles de la promoción..." rows={3} data-testid="input-promo-description" />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label htmlFor="promo-start">Fecha de inicio</Label>
+                <Input id="promo-start" type="date" value={startDate} min={today} onChange={e => setStartDate(e.target.value)} data-testid="input-promo-start-date" />
+              </div>
+              <div>
+                <Label htmlFor="promo-end">Fecha de fin</Label>
+                <Input id="promo-end" type="date" value={endDate} min={startDate || today} onChange={e => setEndDate(e.target.value)} data-testid="input-promo-end-date" />
+              </div>
+            </div>
+            <div>
+              <Label>Imagen (opcional)</Label>
+              <div
+                className="mt-1 border-2 border-dashed border-muted-foreground/30 rounded-lg p-4 text-center cursor-pointer hover:border-primary/50 transition-colors"
+                onClick={() => fileInputRef.current?.click()}
+                data-testid="dropzone-promo-image"
+              >
+                {imagePreview ? (
+                  <img src={imagePreview} alt="preview" className="mx-auto max-h-32 rounded object-cover" />
+                ) : (
+                  <div className="text-muted-foreground text-sm">
+                    <ImagePlus className="h-8 w-8 mx-auto mb-1 opacity-40" />
+                    Haz clic para subir imagen
+                  </div>
+                )}
+              </div>
+              <input ref={fileInputRef} type="file" accept="image/jpeg,image/png,image/webp" className="hidden" onChange={handleFileChange} data-testid="input-promo-image-file" />
+            </div>
+            <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg">
+              <Globe className="h-5 w-5 text-blue-500 flex-shrink-0" />
+              <div className="flex-1">
+                <p className="text-sm font-medium">Mostrar en app global</p>
+                <p className="text-xs text-muted-foreground">Visible para todos los clientes en la sección "Promociones"</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsGlobal(!isGlobal)}
+                className={`relative w-11 h-6 rounded-full transition-colors ${isGlobal ? "bg-blue-500" : "bg-muted-foreground/30"}`}
+                data-testid="toggle-promo-global"
+              >
+                <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${isGlobal ? "translate-x-5" : ""}`} />
+              </button>
+            </div>
+            <div className="flex gap-2 pt-2">
+              <Button onClick={handleSubmit} disabled={submitting} className="flex-1" data-testid="button-submit-promo">
+                {submitting ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Save className="h-4 w-4 mr-2" />}
+                Guardar promoción
+              </Button>
+              <Button variant="outline" onClick={resetForm} disabled={submitting} data-testid="button-cancel-promo">
+                Cancelar
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {isLoading ? (
+        <div className="space-y-3">
+          {[1, 2, 3].map(i => <Skeleton key={i} className="h-28 w-full rounded-xl" />)}
+        </div>
+      ) : promos.length === 0 ? (
+        <Card className="border-dashed">
+          <CardContent className="py-12 text-center">
+            <Tag className="h-10 w-10 mx-auto mb-3 text-muted-foreground opacity-40" />
+            <p className="font-medium text-muted-foreground">Sin promociones</p>
+            <p className="text-sm text-muted-foreground mt-1">Crea tu primera promoción para atraer más clientes</p>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="space-y-3">
+          {promos.map((promo: any) => {
+            const isExpired = promo.endDate && promo.endDate < today;
+            return (
+              <Card key={promo.id} className={`overflow-hidden ${!promo.isActive || isExpired ? "opacity-60" : ""}`} data-testid={`card-promo-${promo.id}`}>
+                <div className="flex">
+                  {promo.imageUrl && (
+                    <img src={promo.imageUrl} alt={promo.title} className="w-28 h-full object-cover flex-shrink-0" style={{ minHeight: 96 }} />
+                  )}
+                  <CardContent className="flex-1 p-4">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex-1 min-w-0">
+                        <p className="font-semibold truncate" data-testid={`text-promo-title-${promo.id}`}>{promo.title}</p>
+                        {promo.description && <p className="text-sm text-muted-foreground mt-0.5 line-clamp-2">{promo.description}</p>}
+                        <div className="flex flex-wrap gap-1.5 mt-2">
+                          {promo.endDate && (
+                            <Badge variant={isExpired ? "destructive" : "outline"} className="text-xs">
+                              {isExpired ? "Vencida" : `Hasta ${promo.endDate}`}
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex flex-col gap-1.5 flex-shrink-0">
+                        <button
+                          title={promo.isActive ? "Desactivar" : "Activar"}
+                          onClick={() => handleToggle(promo.id, "isActive", promo.isActive)}
+                          className={`flex items-center gap-1 text-xs px-2 py-1 rounded-md transition-colors ${promo.isActive ? "bg-green-100 text-green-700 dark:bg-green-900/30" : "bg-muted text-muted-foreground"}`}
+                          data-testid={`toggle-active-${promo.id}`}
+                        >
+                          {promo.isActive ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
+                          {promo.isActive ? "Activa" : "Inactiva"}
+                        </button>
+                        <button
+                          title={promo.isGlobal ? "Quitar de app global" : "Mostrar en app global"}
+                          onClick={() => handleToggle(promo.id, "isGlobal", promo.isGlobal)}
+                          className={`flex items-center gap-1 text-xs px-2 py-1 rounded-md transition-colors ${promo.isGlobal ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30" : "bg-muted text-muted-foreground"}`}
+                          data-testid={`toggle-global-${promo.id}`}
+                        >
+                          <Globe className="h-3 w-3" />
+                          {promo.isGlobal ? "Global" : "Solo perfil"}
+                        </button>
+                        <button
+                          onClick={() => setDeleteId(promo.id)}
+                          className="flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-red-100 text-red-700 dark:bg-red-900/30 transition-colors"
+                          data-testid={`button-delete-promo-${promo.id}`}
+                        >
+                          <Trash2 className="h-3 w-3" /> Eliminar
+                        </button>
+                      </div>
+                    </div>
+                  </CardContent>
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+
+      <AlertDialog open={!!deleteId} onOpenChange={open => !open && setDeleteId(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Eliminar promoción?</AlertDialogTitle>
+            <AlertDialogDescription>Esta acción no se puede deshacer.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={() => deleteId && handleDelete(deleteId)} className="bg-red-600 hover:bg-red-700">
+              Eliminar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
+
 export default function DashboardPage() {
   const { user, logout, refetch } = useAuth();
   const { theme, toggleTheme } = useTheme();
@@ -1355,6 +1616,10 @@ export default function DashboardPage() {
 
           <TabsContent value="perfil" className="mt-4">
             <PerfilPublicoTab />
+          </TabsContent>
+
+          <TabsContent value="promociones" className="mt-4">
+            <PromocionesTab />
           </TabsContent>
 
           <TabsContent value="tv" className="mt-4">

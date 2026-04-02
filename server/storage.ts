@@ -46,6 +46,9 @@ import {
   type BranchReview,
   passwordResetTokens,
   type PasswordResetToken,
+  promotions,
+  type Promotion,
+  type InsertPromotion,
 } from "@shared/schema";
 
 const BRANCH_TIMEZONE = "America/Mexico_City";
@@ -191,6 +194,12 @@ export interface IStorage {
   createAnnouncement(data: InsertBranchAnnouncement): Promise<BranchAnnouncement>;
   deleteAnnouncement(id: string): Promise<void>;
   deactivateAllAnnouncements(branchId: string): Promise<void>;
+  createPromotion(data: InsertPromotion): Promise<Promotion>;
+  getBranchPromotions(branchId: string): Promise<Promotion[]>;
+  getGlobalPromotions(): Promise<(Promotion & { branchName: string; branchSlug: string })[]>;
+  getBranchActivePromotions(branchId: string): Promise<Promotion[]>;
+  deletePromotion(id: string, branchId: string): Promise<void>;
+  updatePromotion(id: string, branchId: string, data: Partial<InsertPromotion>): Promise<Promotion | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -1869,6 +1878,78 @@ export class DatabaseStorage implements IStorage {
       .values({ branchId, userId, rating, comment: comment || null })
       .returning();
     return inserted[0];
+  }
+
+  async createPromotion(data: InsertPromotion): Promise<Promotion> {
+    const [promo] = await db.insert(promotions).values(data).returning();
+    return promo;
+  }
+
+  async getBranchPromotions(branchId: string): Promise<Promotion[]> {
+    return db
+      .select()
+      .from(promotions)
+      .where(eq(promotions.branchId, branchId))
+      .orderBy(desc(promotions.createdAt));
+  }
+
+  async getGlobalPromotions(): Promise<(Promotion & { branchName: string; branchSlug: string })[]> {
+    const today = getMxLocalDate();
+    const rows = await db
+      .select({
+        id: promotions.id,
+        branchId: promotions.branchId,
+        title: promotions.title,
+        description: promotions.description,
+        imageUrl: promotions.imageUrl,
+        startDate: promotions.startDate,
+        endDate: promotions.endDate,
+        isActive: promotions.isActive,
+        isGlobal: promotions.isGlobal,
+        createdAt: promotions.createdAt,
+        branchName: branches.name,
+        branchSlug: branches.slug,
+      })
+      .from(promotions)
+      .innerJoin(branches, eq(promotions.branchId, branches.id))
+      .where(
+        and(
+          eq(promotions.isActive, true),
+          eq(promotions.isGlobal, true),
+          eq(branches.status, "active"),
+          or(isNull(promotions.endDate), gte(promotions.endDate, today))
+        )
+      )
+      .orderBy(desc(promotions.createdAt));
+    return rows;
+  }
+
+  async getBranchActivePromotions(branchId: string): Promise<Promotion[]> {
+    const today = getMxLocalDate();
+    return db
+      .select()
+      .from(promotions)
+      .where(
+        and(
+          eq(promotions.branchId, branchId),
+          eq(promotions.isActive, true),
+          or(isNull(promotions.endDate), gte(promotions.endDate, today))
+        )
+      )
+      .orderBy(desc(promotions.createdAt));
+  }
+
+  async deletePromotion(id: string, branchId: string): Promise<void> {
+    await db.delete(promotions).where(and(eq(promotions.id, id), eq(promotions.branchId, branchId)));
+  }
+
+  async updatePromotion(id: string, branchId: string, data: Partial<InsertPromotion>): Promise<Promotion | undefined> {
+    const [updated] = await db
+      .update(promotions)
+      .set(data)
+      .where(and(eq(promotions.id, id), eq(promotions.branchId, branchId)))
+      .returning();
+    return updated;
   }
 }
 

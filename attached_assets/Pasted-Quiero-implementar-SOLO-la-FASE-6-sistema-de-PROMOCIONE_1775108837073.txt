@@ -1,0 +1,211 @@
+Quiero implementar SOLO la FASE 6: sistema de PROMOCIONES GLOBALES visibles en la app del cliente,
+SIN romper nada de lo existente.
+
+CONTEXTO:
+Ya existe:
+- login funcional
+- registro de clientes
+- activación de cuentas
+- aceptación de términos
+- dashboards de sucursal funcionando
+- memberships y reservas funcionando
+- perfiles de sucursal funcionando
+
+IMPORTANTE:
+- NO romper dashboards
+- NO romper reservas
+- NO romper memberships
+- NO refactor masivo
+- cambios pequeños y seguros
+
+==================================================
+OBJETIVO DE ESTA FASE
+==================================================
+
+Crear un sistema donde:
+
+1. Las sucursales puedan CREAR promociones
+2. Esas promociones puedan aparecer en:
+   - su perfil (ya existente)
+   - UNA SECCIÓN GLOBAL dentro de la app del cliente
+
+3. El usuario cliente pueda:
+   - ver promociones de TODAS las sucursales
+   - dar clic en una promoción
+   - ir al perfil de la sucursal
+   - agendar cita o contactar (whatsapp después)
+
+Esto es tipo:
+"Ofertas cerca de ti"
+
+==================================================
+PARTE 1 — BASE DE DATOS
+==================================================
+
+Crear tabla nueva: promotions
+
+Campos sugeridos:
+- id
+- branchId
+- title
+- description
+- imageUrl
+- startDate
+- endDate
+- isActive (boolean)
+- isGlobal (boolean)  ← IMPORTANTE
+- createdAt
+
+REGLAS:
+- isGlobal = true → aparece en app global
+- isGlobal = false → solo en perfil del negocio
+
+==================================================
+PARTE 2 — BACKEND
+==================================================
+
+Endpoints:
+
+1. Crear promoción (solo sucursal)
+POST /api/promotions
+
+2. Obtener promociones de sucursal
+GET /api/promotions/branch/:branchId
+
+3. Obtener promociones globales
+GET /api/promotions/global
+
+Reglas:
+- solo traer promociones activas
+- validar fechas (startDate / endDate)
+- ordenar por más recientes
+
+==================================================
+PARTE 3 — DASHBOARD SUCURSAL
+==================================================
+
+En panel de sucursal:
+
+Agregar sección:
+"Promociones"
+
+Funcionalidades:
+- crear promoción
+- subir imagen
+- título
+- descripción
+- fechas
+- toggle:
+  [ ] Mostrar en toda la app (global)
+
+Opcional:
+- editar
+- eliminar
+
+==================================================
+PARTE 4 — APP CLIENTE
+==================================================
+
+Agregar NUEVA SECCIÓN:
+
+Ejemplo nombre:
+- "Promociones"
+- "Ofertas"
+- "Descubre"
+
+UBICACIÓN:
+- botón visible en home
+- o tab abajo (recomendado)
+
+Pantalla:
+
+Lista tipo cards:
+- imagen
+- título
+- nombre de sucursal
+- breve descripción
+
+Al hacer clic:
+→ redirige a perfil de sucursal
+→ (opcional después: abrir promoción destacada)
+
+==================================================
+PARTE 5 — UX/UI
+==================================================
+
+Quiero diseño atractivo tipo:
+
+- cards modernas
+- scroll vertical
+- imágenes grandes
+- estilo marketplace
+
+IMPORTANTE:
+- no romper diseño actual
+- mantener consistencia
+
+==================================================
+PARTE 6 — REGLAS IMPORTANTES
+==================================================
+
+1. Solo sucursales crean promociones
+2. Clientes solo visualizan
+3. No duplicar datos
+4. Promociones vencidas no se muestran
+5. Promociones globales visibles para todos
+6. Promociones no globales solo en perfil
+
+==================================================
+PARTE 7 — PRUEBAS
+==================================================
+
+ESCENARIO A:
+Sucursal crea promoción global
+→ aparece en sección global
+
+ESCENARIO B:
+Sucursal crea promoción NO global
+→ solo aparece en su perfil
+
+ESCENARIO C:
+Cliente entra a promociones
+→ ve lista
+
+ESCENARIO D:
+Cliente da clic
+→ entra a perfil del negocio
+
+ESCENARIO E:
+Promoción vencida
+→ no aparece
+
+ESCENARIO F:
+Nada se rompe:
+- login OK
+- dashboards OK
+- reservas OK
+
+==================================================
+ENTREGABLE
+==================================================
+
+Quiero:
+
+1. tablas creadas
+2. endpoints
+3. cambios en dashboard
+4. cambios en app cliente
+5. flujo completo funcionando
+6. confirmación de que no rompiste nada
+
+==================================================
+FORMA DE TRABAJO
+==================================================
+
+1. analiza impacto
+2. implementa mínimo cambio
+3. valida
+4. explica breve
+
+NO hacer overengineering
+NO romper nada existente

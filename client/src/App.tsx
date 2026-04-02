@@ -20,6 +20,7 @@ import LegalPage from "@/pages/legal";
 import ForgotPasswordPage from "@/pages/forgot-password";
 import ResetPasswordPage from "@/pages/reset-password";
 import VerifyEmailPage from "@/pages/verify-email";
+import PromotionsPage from "@/pages/promotions";
 
 function FullScreenLoader() {
   return (
@@ -56,6 +57,10 @@ function AuthenticatedRouter() {
 
   if (location === "/explore") {
     return <ExplorePage />;
+  }
+
+  if (location === "/promotions") {
+    return <PromotionsPage />;
   }
 
   if (location === "/favorites") {

@@ -19,6 +19,7 @@ import {
   X,
   Zap,
   UserCircle,
+  Tag,
 } from "lucide-react";
 import { BRANCH_CATEGORIES, type Branch } from "@shared/schema";
 import { useAuth } from "@/lib/auth";
@@ -406,6 +407,22 @@ export default function ExplorePage() {
       </header>
 
       <main className="max-w-3xl mx-auto px-3 py-3">
+        <button
+          onClick={() => navigate("/promotions")}
+          className="w-full mb-3 flex items-center gap-3 p-3 rounded-2xl text-left transition-all hover:shadow-md active:scale-[0.99]"
+          style={{ background: "linear-gradient(135deg, #1E88E5, #1565C0)", color: "white" }}
+          data-testid="button-go-promotions"
+        >
+          <div className="h-9 w-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: "rgba(255,255,255,0.2)" }}>
+            <Tag className="h-5 w-5" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="font-bold text-sm">Promociones activas</p>
+            <p className="text-xs opacity-80">Descuentos y ofertas de todos los negocios</p>
+          </div>
+          <span className="text-white opacity-60 text-xl leading-none">›</span>
+        </button>
+
         {userLat && (
           <div className="flex items-center gap-2 mb-3">
             <div className="flex items-center gap-1.5 bg-primary/10 text-primary text-xs font-semibold px-3 py-1.5 rounded-full">

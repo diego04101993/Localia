@@ -3188,6 +3188,108 @@ export async function registerRoutes(
     console.error("Seed error:", e);
   }
 
+  // ── PROMOTIONS ──────────────────────────────────────────────────────────────
+
+  // Public: global promotions (all customers, no auth required)
+  app.get("/api/promotions/global", async (_req, res) => {
+    try {
+      const promos = await storage.getGlobalPromotions();
+      res.json(promos);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // Public: active promotions for a specific branch
+  app.get("/api/public/branch/:slug/promotions", async (req, res) => {
+    try {
+      const branch = await storage.getBranchBySlug(req.params.slug);
+      if (!branch) return res.status(404).json({ message: "Sucursal no encontrada" });
+      const promos = await storage.getBranchActivePromotions(branch.id);
+      res.json(promos);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // Admin: get all promotions for own branch
+  app.get("/api/branch/promotions", requireAuth, requireRole("BRANCH_ADMIN"), async (req, res) => {
+    try {
+      const user = req.user as any;
+      const branchId = user.branchId;
+      if (!branchId) return res.status(400).json({ message: "Sin sucursal" });
+      const promos = await storage.getBranchPromotions(branchId);
+      res.json(promos);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // Admin: create promotion (with optional image)
+  app.post("/api/promotions", requireAuth, requireRole("BRANCH_ADMIN"), upload.single("image"), async (req, res) => {
+    try {
+      const user = req.user as any;
+      const branchId = user.branchId;
+      if (!branchId) return res.status(400).json({ message: "Sin sucursal" });
+      const { title, description, startDate, endDate, isGlobal } = req.body;
+      if (!title || !title.trim()) return res.status(400).json({ message: "El título es requerido" });
+      let imageUrl: string | undefined;
+      if (req.file) {
+        imageUrl = `/uploads/${req.file.filename}`;
+      }
+      const promo = await storage.createPromotion({
+        branchId,
+        title: title.trim(),
+        description: description?.trim() || null,
+        imageUrl: imageUrl || null,
+        startDate: startDate || null,
+        endDate: endDate || null,
+        isActive: true,
+        isGlobal: isGlobal === "true" || isGlobal === true,
+      });
+      res.status(201).json(promo);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // Admin: update promotion (toggle active, global, edit fields)
+  app.patch("/api/promotions/:id", requireAuth, requireRole("BRANCH_ADMIN"), async (req, res) => {
+    try {
+      const user = req.user as any;
+      const branchId = user.branchId;
+      if (!branchId) return res.status(400).json({ message: "Sin sucursal" });
+      const { isActive, isGlobal, title, description, startDate, endDate } = req.body;
+      const updateData: Record<string, any> = {};
+      if (isActive !== undefined) updateData.isActive = isActive;
+      if (isGlobal !== undefined) updateData.isGlobal = isGlobal;
+      if (title !== undefined) updateData.title = title;
+      if (description !== undefined) updateData.description = description;
+      if (startDate !== undefined) updateData.startDate = startDate;
+      if (endDate !== undefined) updateData.endDate = endDate;
+      const updated = await storage.updatePromotion(req.params.id, branchId, updateData);
+      if (!updated) return res.status(404).json({ message: "Promoción no encontrada" });
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // Admin: delete promotion
+  app.delete("/api/promotions/:id", requireAuth, requireRole("BRANCH_ADMIN"), async (req, res) => {
+    try {
+      const user = req.user as any;
+      const branchId = user.branchId;
+      if (!branchId) return res.status(400).json({ message: "Sin sucursal" });
+      await storage.deletePromotion(req.params.id, branchId);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ── END PROMOTIONS ────────────────────────────────────────────────────────────
+
   // Background job: every 60 seconds, auto-mark attended for confirmed bookings
   // whose class start time has passed, for all active branches.
   // This is the same logic as the manual "Asistió" button — no separate deduction logic.
