@@ -2608,7 +2608,20 @@ export async function registerRoutes(
   app.patch("/api/branch/profile", requireBranchAdmin, async (req, res) => {
     const actor = req.user as any;
     try {
-      const { description, address, city, googleMapsUrl, operatingHours, locations, category, subcategory, latitude, longitude } = req.body;
+      const { description, address, city, googleMapsUrl, operatingHours, locations, category, subcategory, latitude, longitude, whatsappNumber } = req.body;
+      // Normalize whatsappNumber: keep only digits, validate length
+      let normalizedWhatsapp: string | null | undefined = undefined;
+      if (whatsappNumber !== undefined) {
+        if (!whatsappNumber) {
+          normalizedWhatsapp = null;
+        } else {
+          const digits = String(whatsappNumber).replace(/\D/g, "");
+          if (digits.length < 7 || digits.length > 15) {
+            return res.status(400).json({ message: "Número de WhatsApp inválido (7-15 dígitos)" });
+          }
+          normalizedWhatsapp = digits;
+        }
+      }
       const updated = await storage.updateBranchProfile(actor.branchId, {
         ...(description !== undefined && { description }),
         ...(address !== undefined && { address }),
@@ -2620,6 +2633,7 @@ export async function registerRoutes(
         ...(subcategory !== undefined && { subcategory }),
         ...(latitude !== undefined && { latitude: latitude ? parseFloat(latitude) : null }),
         ...(longitude !== undefined && { longitude: longitude ? parseFloat(longitude) : null }),
+        ...(normalizedWhatsapp !== undefined && { whatsappNumber: normalizedWhatsapp }),
       });
       await storage.createAuditLog({
         actorUserId: actor.id,
@@ -3187,6 +3201,18 @@ export async function registerRoutes(
   } catch (e) {
     console.error("Seed error:", e);
   }
+
+  // Branch info endpoint (includes whatsappNumber)
+  app.get("/api/branch/info", requireAuth, requireRole("BRANCH_ADMIN"), async (req, res) => {
+    try {
+      const user = req.user as any;
+      const branch = await storage.getBranch(user.branchId);
+      if (!branch) return res.status(404).json({ message: "Sucursal no encontrada" });
+      res.json({ whatsappNumber: (branch as any).whatsappNumber || null });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
 
   // ── PROMOTIONS ──────────────────────────────────────────────────────────────
 

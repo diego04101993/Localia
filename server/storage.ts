@@ -184,7 +184,7 @@ export interface IStorage {
   softDeleteMembership(membershipId: string): Promise<any>;
   getUpcomingBookingsForUser(branchId: string, userId: string, fromDate: string, limit?: number): Promise<any[]>;
   updateBranchWhatsappTemplates(branchId: string, templates: Record<string, string>): Promise<any>;
-  updateBranchProfile(branchId: string, data: { description?: string | null; address?: string | null; city?: string | null; googleMapsUrl?: string | null; operatingHours?: any; category?: string | null; subcategory?: string | null; latitude?: number | null; longitude?: number | null }): Promise<any>;
+  updateBranchProfile(branchId: string, data: { description?: string | null; address?: string | null; city?: string | null; googleMapsUrl?: string | null; operatingHours?: any; category?: string | null; subcategory?: string | null; latitude?: number | null; longitude?: number | null; whatsappNumber?: string | null }): Promise<any>;
   getUpcomingBirthdays(branchId: string, daysAhead?: number): Promise<any[]>;
   getBranchReviews(branchId: string): Promise<any[]>;
   getBranchReviewsSummary(branchId: string): Promise<{ averageRating: number; totalReviews: number }>;
@@ -196,7 +196,7 @@ export interface IStorage {
   deactivateAllAnnouncements(branchId: string): Promise<void>;
   createPromotion(data: InsertPromotion): Promise<Promotion>;
   getBranchPromotions(branchId: string): Promise<Promotion[]>;
-  getGlobalPromotions(): Promise<(Promotion & { branchName: string; branchSlug: string })[]>;
+  getGlobalPromotions(): Promise<(Promotion & { branchName: string; branchSlug: string; branchWhatsapp: string | null })[]>;
   getBranchActivePromotions(branchId: string): Promise<Promotion[]>;
   deletePromotion(id: string, branchId: string): Promise<void>;
   updatePromotion(id: string, branchId: string, data: Partial<InsertPromotion>): Promise<Promotion | undefined>;
@@ -1771,7 +1771,7 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(branchAnnouncements.branchId, branchId), eq(branchAnnouncements.isActive, true)));
   }
 
-  async updateBranchProfile(branchId: string, data: { description?: string | null; address?: string | null; city?: string | null; googleMapsUrl?: string | null; operatingHours?: any; locations?: any; category?: string | null; subcategory?: string | null; latitude?: number | null; longitude?: number | null }): Promise<any> {
+  async updateBranchProfile(branchId: string, data: { description?: string | null; address?: string | null; city?: string | null; googleMapsUrl?: string | null; operatingHours?: any; locations?: any; category?: string | null; subcategory?: string | null; latitude?: number | null; longitude?: number | null; whatsappNumber?: string | null }): Promise<any> {
     const setData: any = {};
     if (data.description !== undefined) setData.description = data.description;
     if (data.address !== undefined) setData.address = data.address;
@@ -1783,6 +1783,7 @@ export class DatabaseStorage implements IStorage {
     if (data.subcategory !== undefined) setData.subcategory = data.subcategory;
     if (data.latitude !== undefined) setData.latitude = data.latitude;
     if (data.longitude !== undefined) setData.longitude = data.longitude;
+    if (data.whatsappNumber !== undefined) setData.whatsappNumber = data.whatsappNumber;
 
     if (Object.keys(setData).length === 0) return null;
 
@@ -1909,6 +1910,7 @@ export class DatabaseStorage implements IStorage {
         createdAt: promotions.createdAt,
         branchName: branches.name,
         branchSlug: branches.slug,
+        branchWhatsapp: branches.whatsappNumber,
       })
       .from(promotions)
       .innerJoin(branches, eq(promotions.branchId, branches.id))

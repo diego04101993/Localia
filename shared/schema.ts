@@ -75,6 +75,7 @@ export const branches = pgTable("branches", {
   description: text("description"),
   cancelCutoffMinutes: integer("cancel_cutoff_minutes").notNull().default(120),
   whatsappTemplates: jsonb("whatsapp_templates"),
+  whatsappNumber: text("whatsapp_number"),
   googleMapsUrl: text("google_maps_url"),
   operatingHours: jsonb("operating_hours"),
   locations: jsonb("locations").$type<Array<{ name: string; address: string; googleMapsUrl: string }>>(),

@@ -1194,7 +1194,94 @@ function ResumenTab({ branchStats, branchStatus, branchSlug, branchId, branchNam
           </CardContent>
         </Card>
       </div>
+
+      <WhatsAppConfigCard />
     </div>
+  );
+}
+
+function WhatsAppConfigCard() {
+  const { toast } = useToast();
+  const [editing, setEditing] = useState(false);
+  const [inputValue, setInputValue] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const { data: branchInfo, isLoading } = useQuery<{ whatsappNumber: string | null }>({
+    queryKey: ["/api/branch/info"],
+  });
+
+  function handleEdit() {
+    setInputValue(branchInfo?.whatsappNumber || "");
+    setEditing(true);
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await apiRequest("PATCH", "/api/branch/profile", { whatsappNumber: inputValue.trim() || null });
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/info"] });
+      toast({ title: "WhatsApp actualizado" });
+      setEditing(false);
+    } catch (err: any) {
+      toast({ title: err.message || "Error al guardar", variant: "destructive" });
+    } finally { setSaving(false); }
+  }
+
+  const currentNumber = branchInfo?.whatsappNumber;
+  const displayNumber = currentNumber
+    ? currentNumber.startsWith("52") ? `+${currentNumber}` : `+52${currentNumber}`
+    : null;
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center gap-2">
+          <MessageCircle className="h-4 w-4 text-green-600" />
+          WhatsApp de contacto
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="p-4 pt-0">
+        {isLoading ? (
+          <div className="h-8 bg-muted rounded animate-pulse" />
+        ) : editing ? (
+          <div className="flex gap-2 items-center">
+            <Input
+              value={inputValue}
+              onChange={e => setInputValue(e.target.value)}
+              placeholder="Ej: 5512345678 o 525512345678"
+              className="text-sm"
+              data-testid="input-whatsapp-number"
+            />
+            <Button size="sm" onClick={handleSave} disabled={saving} data-testid="button-save-whatsapp">
+              {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setEditing(false)} disabled={saving}>
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between">
+            <div>
+              {currentNumber ? (
+                <p className="text-sm font-medium text-green-700 dark:text-green-400" data-testid="text-whatsapp-configured">
+                  {displayNumber}
+                </p>
+              ) : (
+                <p className="text-sm text-muted-foreground" data-testid="text-whatsapp-not-configured">
+                  Sin número configurado
+                </p>
+              )}
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {currentNumber ? "Los clientes pueden contactarte por WhatsApp" : "Configura tu número para que los clientes te contacten"}
+              </p>
+            </div>
+            <Button variant="outline" size="sm" onClick={handleEdit} data-testid="button-edit-whatsapp">
+              {currentNumber ? "Editar" : "Agregar"}
+            </Button>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

@@ -1,0 +1,183 @@
+Quiero implementar SOLO la FASE 7: contacto por WhatsApp desde promociones y perfil de sucursal,
+SIN romper nada de lo que ya funciona.
+
+CONTEXTO:
+Ya existe:
+- login y registro funcionando
+- app cliente funcionando
+- dashboard de sucursal funcionando
+- promociones globales o en proceso de implementarse
+- memberships y reservas funcionando
+- perfiles de sucursal funcionando
+
+IMPORTANTE:
+- NO romper reservas
+- NO romper memberships
+- NO romper login
+- NO romper dashboard de sucursal
+- NO hacer refactor masivo
+- Hacer cambios pequeños, seguros e incrementales
+
+==================================================
+OBJETIVO DE ESTA FASE
+==================================================
+
+Agregar botón de contacto por WhatsApp para que:
+1. El cliente pueda contactar a una sucursal desde su perfil
+2. El cliente pueda contactar a una sucursal desde una promoción
+3. El botón abra WhatsApp con mensaje prellenado
+4. No usar API de pago de WhatsApp Business
+5. Solo usar enlace wa.me o api.whatsapp.com simple
+
+==================================================
+REGLAS DE NEGOCIO
+==================================================
+
+1. Cada sucursal puede tener un número de WhatsApp configurado
+2. Si la sucursal no tiene número, NO mostrar botón
+3. El botón debe estar visible:
+   - en perfil de sucursal
+   - en la vista de promoción si aplica
+4. El mensaje prellenado debe ser claro y útil
+5. El usuario solo abre el chat, no se guarda conversación dentro de la app
+6. No romper nada del flujo actual de promociones, reservas o perfiles
+
+==================================================
+BASE DE DATOS / MODELO
+==================================================
+
+Primero analiza si la sucursal ya tiene campo reutilizable para teléfono o whatsapp.
+Si ya existe, reutilízalo.
+Si no existe, agrega solo lo mínimo necesario.
+
+Opciones:
+- whatsappNumber en branches
+o reutilizar phone si ya existe y es adecuado
+
+Elige la opción más conservadora y compatible.
+
+==================================================
+BACKEND
+==================================================
+
+Si hace falta:
+- permitir guardar/editar el WhatsApp de la sucursal desde el dashboard
+- validar formato básico del número
+- exponerlo en los endpoints del perfil público o promociones si no se expone aún
+
+NO crear lógica compleja innecesaria.
+NO usar APIs externas de pago.
+
+==================================================
+DASHBOARD DE SUCURSAL
+==================================================
+
+Agregar campo para configurar WhatsApp del negocio:
+- visible en perfil/configuración de la sucursal
+- editable
+- con validación clara
+- guardar limpio (idealmente solo dígitos o formato estandarizado)
+
+==================================================
+APP CLIENTE / FRONTEND
+==================================================
+
+1. En el perfil de sucursal:
+   agregar botón:
+   "Enviar WhatsApp"
+   o
+   "Contactar por WhatsApp"
+
+2. En promociones:
+   si una promoción pertenece a una sucursal con WhatsApp, mostrar botón o CTA similar
+
+3. Al hacer clic:
+   abrir link tipo:
+   https://wa.me/521XXXXXXXXXX?text=...
+   o formato correcto según convenga
+
+4. Mensaje prellenado:
+   - desde perfil:
+     "Hola, vi tu perfil en WebCool y quiero más información."
+   - desde promoción:
+     "Hola, vi su promoción en WebCool y quiero más información."
+
+Si se puede, personaliza con nombre de sucursal o promoción, pero sin complicar demasiado.
+
+==================================================
+UX/UI
+==================================================
+
+Quiero diseño limpio y útil:
+- botón visible
+- bien integrado al diseño actual
+- no invasivo
+- mobile friendly
+- consistente con el resto de la app
+
+No cambies identidad visual global.
+Solo agrega la funcionalidad con buena UX.
+
+==================================================
+SEGURIDAD / VALIDACIÓN
+==================================================
+
+- No mostrar botón si no hay número válido
+- No romper perfiles si el número está vacío
+- Validar correctamente el formato antes de construir el link
+- No usar APIs externas de costo
+- No guardar mensajes ni chats en la app
+
+==================================================
+PRUEBAS QUE QUIERO
+==================================================
+
+ESCENARIO A:
+Sucursal con WhatsApp configurado
+→ aparece botón en perfil
+
+ESCENARIO B:
+Sucursal sin WhatsApp
+→ no aparece botón
+
+ESCENARIO C:
+Promoción de sucursal con WhatsApp
+→ aparece CTA de contacto
+
+ESCENARIO D:
+Al hacer clic
+→ abre WhatsApp con mensaje correcto
+
+ESCENARIO E:
+Nada se rompe:
+- login OK
+- promociones OK
+- perfiles OK
+- reservas OK
+- dashboard OK
+
+==================================================
+ENTREGABLE
+==================================================
+
+Quiero:
+1. archivos modificados
+2. si agregaste columna o reutilizaste una existente
+3. cómo generaste el enlace de WhatsApp
+4. dónde aparece el botón
+5. pruebas realizadas
+6. confirmación de que no rompiste nada
+
+==================================================
+FORMA DE TRABAJO
+==================================================
+
+1. analiza impacto
+2. elige el cambio mínimo
+3. implementa seguro
+4. prueba
+5. explica breve
+
+NO hacer overengineering
+NO romper nada existente
+Elegir la opción más simple y robusta
