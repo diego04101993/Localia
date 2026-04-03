@@ -145,7 +145,7 @@ export default function FavoritesPage() {
   });
 
   const favorites = memberships?.filter((m) => m.isFavorite) || [];
-  const joined = memberships?.filter((m) => !m.isFavorite && m.status === "active") || [];
+  const joined = memberships?.filter((m) => m.status === "active") || [];
 
   if (!user) {
     return (

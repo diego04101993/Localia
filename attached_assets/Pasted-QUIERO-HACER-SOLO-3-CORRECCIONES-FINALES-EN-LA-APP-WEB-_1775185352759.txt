@@ -1,0 +1,217 @@
+QUIERO HACER SOLO 3 CORRECCIONES FINALES EN LA APP WEB DEL CLIENTE Y EN EL DASHBOARD DE SUCURSAL, SIN ROMPER NADA DE LO QUE YA FUNCIONA.
+
+IMPORTANTE:
+- NO romper login
+- NO romper registro
+- NO romper logout
+- NO romper reservas
+- NO romper memberships
+- NO romper promociones globales
+- NO romper favoritos
+- NO romper la lógica de unión a sucursales
+- NO hacer refactor masivo
+- hacer cambios pequeños, seguros y compatibles
+
+YA QUEDÓ BIEN:
+- promociones globales
+- entrar desde promoción al perfil de sucursal
+- favoritos ya se guardan
+- pantalla de “Mis Sucursales” ya tiene sección de favoritas y sección de unidas
+- cliente nuevo ya no sale unido a todas por error
+- logout y otros cambios previos ya fueron trabajados
+
+PERO TODAVÍA QUEDAN ESTOS 3 PROBLEMAS:
+
+==================================================
+1) SI UNA SUCURSAL ES FAVORITA Y TAMBIÉN SOY MIEMBRO, DEBE APARECER EN LAS DOS SECCIONES
+==================================================
+
+PROBLEMA ACTUAL:
+En “Mis Sucursales”:
+- si una sucursal está marcada como favorita Y además soy miembro/unido de esa sucursal
+- solo aparece en Favoritas
+- NO aparece también en “Sucursales donde soy miembro”
+
+Eso está mal.
+
+REGLA CORRECTA:
+Los conceptos “favorita” y “unido/miembro” son independientes.
+
+QUIERO ESTE COMPORTAMIENTO EXACTO:
+
+CASO A:
+Si una sucursal es favorita y además soy miembro
+→ debe aparecer en FAVORITAS
+→ y también debe aparecer en SUCURSALES DONDE SOY MIEMBRO
+
+CASO B:
+Si una sucursal solo es favorita pero no soy miembro
+→ solo aparece en FAVORITAS
+
+CASO C:
+Si una sucursal no es favorita pero sí soy miembro
+→ solo aparece en SUCURSALES DONDE SOY MIEMBRO
+
+CASO D:
+Si no es favorita ni soy miembro
+→ no aparece en ninguna sección
+
+IMPORTANTE:
+- revisar la consulta, filtro o mapeo del frontend/backend que hoy está excluyendo indebidamente una sucursal de la sección de miembro cuando ya está en favoritos
+- NO mezclar ambos conceptos
+- NO usar una sola lista mal filtrada
+- cada sección debe calcularse por su propia condición
+
+RESULTADO:
+La misma sucursal puede aparecer en ambas secciones si cumple ambas condiciones.
+
+==================================================
+2) AGREGAR BOTÓN DE WHATSAPP EN PERFIL PÚBLICO DE SUCURSAL
+==================================================
+
+PROBLEMA ACTUAL:
+Desde promociones globales ya puedo entrar al perfil de la sucursal, eso está perfecto.
+Pero todavía NO aparece un botón de WhatsApp en el perfil público de la sucursal para que el cliente le mande mensaje y pregunte por:
+- la promoción
+- horarios
+- servicios
+- información general
+
+QUIERO:
+- agregar botón visible de WhatsApp en el perfil público de la sucursal
+- si la sucursal tiene número configurado, mostrar botón
+- si no tiene número, no mostrarlo
+- usar link simple tipo wa.me o api.whatsapp.com
+- NO usar API de pago
+
+MENSAJE PRELLENADO:
+Quiero algo limpio, por ejemplo:
+- si viene desde perfil:
+  "Hola, vi tu perfil en WebCool y quiero más información."
+- si viene desde promoción y se puede detectar contexto sin complicar demasiado:
+  "Hola, vi su promoción en WebCool y quiero más información."
+Si eso complica demasiado, usa mensaje general seguro.
+
+REVISAR:
+- si ya existe campo de teléfono/whatsapp en sucursal, reutilizarlo
+- si no existe, agregar solo lo mínimo necesario
+- integrarlo al diseño actual del perfil de sucursal con buena UX
+
+RESULTADO:
+En el perfil público de la sucursal debe verse el botón de WhatsApp cuando exista número válido.
+
+==================================================
+3) QUITAR DEL DASHBOARD DE SUCURSAL LA OPCIÓN DE “GENERAR NUEVA CONTRASEÑA”
+==================================================
+
+PROBLEMA ACTUAL:
+En dashboard de sucursal > pestaña clientes > detalle del cliente
+sigue apareciendo la sección:
+- “Acceso del cliente”
+- “Generar nueva contraseña”
+
+ESO YA NO DEBE EXISTIR.
+
+REGLA CORRECTA:
+La sucursal ya NO controla:
+- contraseña del cliente
+- reinicio de acceso
+- generación de nueva contraseña
+
+Eso ahora lo maneja el propio cliente desde el login general con recuperación de contraseña.
+
+QUIERO:
+- quitar del dashboard de sucursal toda la parte de:
+  - generar nueva contraseña
+  - resetear acceso
+  - cualquier acción parecida relacionada al password del cliente
+- si todavía se muestra la sección “Acceso del cliente” solo para enseñar email o URL y eso ya no aporta valor, evaluar quitarla también o dejar solo lo estrictamente útil
+- NO romper el resto del modal o detalle del cliente
+- solo eliminar esa funcionalidad vieja del modelo anterior
+
+RESULTADO:
+La sucursal ya no debe poder cambiar, resetear ni regenerar contraseña de clientes.
+
+==================================================
+REGLAS GENERALES
+==================================================
+
+1. NO romper nada existente
+2. Hacer cambio mínimo y seguro
+3. Revisar si el problema 1 está en backend, frontend o ambos
+4. El botón de WhatsApp debe aparecer solo si hay número válido
+5. Eliminar solo la lógica vieja de contraseña de cliente desde sucursal
+6. NO hacer refactor masivo
+
+==================================================
+PRUEBAS OBLIGATORIAS
+==================================================
+
+QUIERO QUE VALIDES ESTOS CASOS:
+
+CASO 1:
+Sucursal favorita + soy miembro
+→ aparece en FAVORITAS
+→ y también en SUCURSALES DONDE SOY MIEMBRO
+
+CASO 2:
+Sucursal solo favorita
+→ aparece solo en FAVORITAS
+
+CASO 3:
+Sucursal solo miembro
+→ aparece solo en SUCURSALES DONDE SOY MIEMBRO
+
+CASO 4:
+Perfil público de sucursal con WhatsApp configurado
+→ aparece botón
+→ abre WhatsApp con mensaje correcto
+
+CASO 5:
+Sucursal sin WhatsApp
+→ no aparece botón
+
+CASO 6:
+Dashboard de sucursal
+→ ya NO aparece “Generar nueva contraseña”
+→ no hay acción de reset de password para cliente
+
+CASO 7:
+Nada se rompe:
+- login OK
+- registro OK
+- promociones globales OK
+- perfil de sucursal OK
+- favoritos OK
+- memberships OK
+- reservas OK
+- dashboard sucursal OK
+
+==================================================
+ENTREGABLE
+==================================================
+
+QUIERO QUE ME DES:
+
+1. problema raíz encontrado en cada uno de los 3 puntos
+2. archivos exactos modificados
+3. qué lógica corregiste
+4. si tocaste endpoints, queries o componentes
+5. qué pruebas hiciste
+6. confirmación de que no rompiste nada
+7. código final listo
+
+==================================================
+FORMA DE TRABAJO
+==================================================
+
+Trabaja así:
+1. analiza impacto
+2. identifica bug raíz
+3. aplica cambio mínimo seguro
+4. prueba manualmente
+5. explica breve
+
+NO hacer overengineering
+NO hacer refactor masivo
+Elegir siempre la opción más conservadora y segura
