@@ -12,6 +12,7 @@ import {
   Scale,
   User,
   ExternalLink,
+  Users,
 } from "lucide-react";
 import { BRANCH_CATEGORIES } from "@shared/schema";
 import { useAuth } from "@/lib/auth";
@@ -54,6 +55,75 @@ function getCategoryLabel(value: string) {
   return BRANCH_CATEGORIES.find((c) => c.value === value)?.label || value;
 }
 
+function BranchCard({
+  m,
+  showUnfav,
+  onUnfav,
+}: {
+  m: MembershipWithBranch;
+  showUnfav?: boolean;
+  onUnfav?: () => void;
+}) {
+  const [, navigate] = useLocation();
+  const Icon = categoryIcons[m.branch.category || "otro"] || Compass;
+  return (
+    <Card className="hover-elevate" data-testid={`card-branch-${m.branch.slug}`}>
+      <CardContent className="p-3 flex items-center gap-3">
+        <div className="w-14 h-14 rounded-md bg-primary/10 flex items-center justify-center shrink-0 overflow-hidden">
+          {m.branch.coverImageUrl ? (
+            <img
+              src={m.branch.coverImageUrl}
+              alt={m.branch.name}
+              className="w-full h-full object-cover"
+            />
+          ) : (
+            <Icon className="h-6 w-6 text-primary/40" />
+          )}
+        </div>
+        <div className="flex-1 min-w-0">
+          <h3 className="font-semibold truncate">{m.branch.name}</h3>
+          <div className="flex items-center gap-2 flex-wrap">
+            <Badge variant="secondary" className="text-xs">
+              {getCategoryLabel(m.branch.category || "otro")}
+            </Badge>
+            {m.branch.city && (
+              <span className="text-xs text-muted-foreground flex items-center gap-1">
+                <MapPin className="h-3 w-3" />
+                {m.branch.city}
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center gap-1 shrink-0">
+          {showUnfav && onUnfav && (
+            <Button
+              size="icon"
+              variant="ghost"
+              onClick={(e) => {
+                e.stopPropagation();
+                onUnfav();
+              }}
+              data-testid={`button-unfav-${m.branch.slug}`}
+              title="Quitar de favoritos"
+            >
+              <Heart className="h-4 w-4 fill-red-500 text-red-500" />
+            </Button>
+          )}
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={() => navigate(`/app/${m.branch.slug}`)}
+            data-testid={`button-goto-${m.branch.slug}`}
+            title="Ver sucursal"
+          >
+            <ExternalLink className="h-4 w-4" />
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function FavoritesPage() {
   const { user } = useAuth();
   const [, navigate] = useLocation();
@@ -75,7 +145,7 @@ export default function FavoritesPage() {
   });
 
   const favorites = memberships?.filter((m) => m.isFavorite) || [];
-  const others = memberships?.filter((m) => !m.isFavorite && m.status === "active") || [];
+  const joined = memberships?.filter((m) => !m.isFavorite && m.status === "active") || [];
 
   if (!user) {
     return (
@@ -85,7 +155,7 @@ export default function FavoritesPage() {
             <Heart className="h-12 w-12 text-muted-foreground/30 mx-auto mb-4" />
             <h2 className="text-lg font-semibold mb-2">Inicia sesión</h2>
             <p className="text-sm text-muted-foreground mb-4">
-              Necesitas iniciar sesión para ver tus favoritos.
+              Necesitas iniciar sesión para ver tus sucursales.
             </p>
             <Button onClick={() => navigate("/")} data-testid="button-go-login">
               Ir a login
@@ -109,7 +179,7 @@ export default function FavoritesPage() {
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <h1 className="font-bold text-lg" data-testid="text-favorites-title">
-            Mis Favoritos
+            Mis Sucursales
           </h1>
         </div>
       </header>
@@ -131,133 +201,80 @@ export default function FavoritesPage() {
           </div>
         ) : (
           <>
-            {favorites.length > 0 && (
-              <section>
-                <h2 className="text-sm font-semibold text-muted-foreground mb-3 flex items-center gap-2">
-                  <Heart className="h-4 w-4 fill-red-500 text-red-500" />
-                  Favoritos ({favorites.length})
-                </h2>
+            {/* Sección: Favoritas */}
+            <section data-testid="section-favorites">
+              <h2 className="text-sm font-semibold text-muted-foreground mb-3 flex items-center gap-2">
+                <Heart className="h-4 w-4 fill-red-500 text-red-500" />
+                Sucursales favoritas
+                {favorites.length > 0 && (
+                  <span className="text-xs">({favorites.length})</span>
+                )}
+              </h2>
+              {favorites.length > 0 ? (
                 <div className="space-y-3">
-                  {favorites.map((m) => {
-                    const Icon = categoryIcons[m.branch.category || "otro"] || Compass;
-                    return (
-                      <Card
-                        key={m.id}
-                        className="hover-elevate cursor-pointer"
-                        data-testid={`card-fav-${m.branch.slug}`}
-                      >
-                        <CardContent className="p-3 flex items-center gap-3">
-                          <div className="w-14 h-14 rounded-md bg-primary/10 flex items-center justify-center shrink-0 overflow-hidden">
-                            {m.branch.coverImageUrl ? (
-                              <img
-                                src={m.branch.coverImageUrl}
-                                alt={m.branch.name}
-                                className="w-full h-full object-cover"
-                              />
-                            ) : (
-                              <Icon className="h-6 w-6 text-primary/40" />
-                            )}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <h3 className="font-semibold truncate">{m.branch.name}</h3>
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <Badge variant="secondary" className="text-xs">
-                                {getCategoryLabel(m.branch.category || "otro")}
-                              </Badge>
-                              {m.branch.city && (
-                                <span className="text-xs text-muted-foreground flex items-center gap-1">
-                                  <MapPin className="h-3 w-3" />
-                                  {m.branch.city}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-1 shrink-0">
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                unfavMutation.mutate(m.branchId);
-                              }}
-                              data-testid={`button-unfav-${m.branch.slug}`}
-                            >
-                              <Heart className="h-4 w-4 fill-red-500 text-red-500" />
-                            </Button>
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              onClick={() => navigate(`/app/${m.branch.slug}`)}
-                              data-testid={`button-goto-${m.branch.slug}`}
-                            >
-                              <ExternalLink className="h-4 w-4" />
-                            </Button>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    );
-                  })}
+                  {favorites.map((m) => (
+                    <BranchCard
+                      key={m.id}
+                      m={m}
+                      showUnfav
+                      onUnfav={() => unfavMutation.mutate(m.branchId)}
+                    />
+                  ))}
                 </div>
-              </section>
-            )}
+              ) : (
+                <Card>
+                  <CardContent className="p-6 text-center">
+                    <Heart className="h-8 w-8 text-muted-foreground/30 mx-auto mb-2" />
+                    <p className="text-sm text-muted-foreground" data-testid="text-no-favorites">
+                      No tienes sucursales favoritas todavía
+                    </p>
+                    <Button
+                      variant="link"
+                      size="sm"
+                      onClick={() => navigate("/explore")}
+                      className="mt-1"
+                    >
+                      Explorar sucursales
+                    </Button>
+                  </CardContent>
+                </Card>
+              )}
+            </section>
 
-            {others.length > 0 && (
-              <section>
-                <h2 className="text-sm font-semibold text-muted-foreground mb-3">
-                  Otras membresías ({others.length})
-                </h2>
+            {/* Sección: Unido */}
+            <section data-testid="section-joined">
+              <h2 className="text-sm font-semibold text-muted-foreground mb-3 flex items-center gap-2">
+                <Users className="h-4 w-4" />
+                Sucursales donde soy miembro
+                {joined.length > 0 && (
+                  <span className="text-xs">({joined.length})</span>
+                )}
+              </h2>
+              {joined.length > 0 ? (
                 <div className="space-y-3">
-                  {others.map((m) => {
-                    const Icon = categoryIcons[m.branch.category || "otro"] || Compass;
-                    return (
-                      <Card key={m.id} data-testid={`card-member-${m.branch.slug}`}>
-                        <CardContent className="p-3 flex items-center gap-3">
-                          <div className="w-14 h-14 rounded-md bg-muted flex items-center justify-center shrink-0 overflow-hidden">
-                            {m.branch.coverImageUrl ? (
-                              <img
-                                src={m.branch.coverImageUrl}
-                                alt={m.branch.name}
-                                className="w-full h-full object-cover"
-                              />
-                            ) : (
-                              <Icon className="h-6 w-6 text-muted-foreground/40" />
-                            )}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <h3 className="font-semibold truncate">{m.branch.name}</h3>
-                            <span className="text-xs text-muted-foreground">
-                              {getCategoryLabel(m.branch.category || "otro")}
-                            </span>
-                          </div>
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            onClick={() => navigate(`/app/${m.branch.slug}`)}
-                          >
-                            <ExternalLink className="h-4 w-4" />
-                          </Button>
-                        </CardContent>
-                      </Card>
-                    );
-                  })}
+                  {joined.map((m) => (
+                    <BranchCard key={m.id} m={m} />
+                  ))}
                 </div>
-              </section>
-            )}
-
-            {favorites.length === 0 && others.length === 0 && (
-              <Card>
-                <CardContent className="p-12 text-center">
-                  <Heart className="h-12 w-12 text-muted-foreground/30 mx-auto mb-4" />
-                  <h3 className="font-semibold text-lg mb-1">Sin favoritos</h3>
-                  <p className="text-sm text-muted-foreground mb-4">
-                    Explora negocios y marca tus favoritos para encontrarlos rápido.
-                  </p>
-                  <Button onClick={() => navigate("/explore")} data-testid="button-go-explore">
-                    Explorar negocios
-                  </Button>
-                </CardContent>
-              </Card>
-            )}
+              ) : (
+                <Card>
+                  <CardContent className="p-6 text-center">
+                    <Users className="h-8 w-8 text-muted-foreground/30 mx-auto mb-2" />
+                    <p className="text-sm text-muted-foreground" data-testid="text-no-joined">
+                      No estás unido a ninguna sucursal todavía
+                    </p>
+                    <Button
+                      variant="link"
+                      size="sm"
+                      onClick={() => navigate("/explore")}
+                      className="mt-1"
+                    >
+                      Explorar sucursales
+                    </Button>
+                  </CardContent>
+                </Card>
+              )}
+            </section>
           </>
         )}
       </main>

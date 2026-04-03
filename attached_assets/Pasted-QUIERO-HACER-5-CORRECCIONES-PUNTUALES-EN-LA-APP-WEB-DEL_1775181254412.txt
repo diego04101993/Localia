@@ -1,0 +1,249 @@
+QUIERO HACER 5 CORRECCIONES PUNTUALES EN LA APP WEB DEL CLIENTE Y EN EL DASHBOARD DE SUCURSAL, SIN ROMPER NADA DE LO QUE YA FUNCIONA.
+
+IMPORTANTE:
+- NO romper login
+- NO romper registro
+- NO romper dashboards
+- NO romper memberships
+- NO romper reservas
+- NO romper promociones globales
+- NO romper favoritos
+- NO romper unión a sucursales
+- NO hacer refactor masivo
+- hacer cambios pequeños, seguros y compatibles
+
+YA QUEDARON BIEN:
+- promociones globales
+- entrar desde promoción al perfil de sucursal
+- registro/login cliente
+- dashboard de sucursal
+- cliente nuevo apareciendo en pestaña clientes de sucursal
+
+QUIERO ARREGLAR SOLO ESTAS 5 COSAS:
+
+==================================================
+1) AGREGAR BOTÓN DE WHATSAPP EN PERFIL DE SUCURSAL / PROMOCIÓN
+==================================================
+
+PROBLEMA:
+Ya puedo entrar desde promociones al perfil de la sucursal, pero no veo botón para mandar WhatsApp a la sucursal y preguntar horarios, promos o información. Solo se puede agendar.
+
+QUIERO:
+- agregar botón visible de WhatsApp en el perfil público de la sucursal
+- si aplica, también en la vista de promoción o cerca del CTA principal
+- usar link simple tipo wa.me o api.whatsapp.com
+- NO usar API de pago
+- si la sucursal no tiene número, no mostrar botón
+- mensaje prellenado claro, por ejemplo:
+  "Hola, vi su perfil en WebCool y quiero más información"
+  o
+  "Hola, vi su promoción en WebCool y quiero más información"
+
+REVISAR:
+- si ya existe campo de teléfono/whatsapp en la sucursal, reutilizarlo
+- si no existe, agregar lo mínimo necesario
+- no romper perfil ni promociones actuales
+
+==================================================
+2) LOGOUT DEL CLIENTE DEBE MANDAR AL LOGIN
+==================================================
+
+PROBLEMA:
+En la app web del cliente, si doy clic en la flecha de cerrar sesión, no me manda al login.
+Solo desaparece la opción de salir, pero me deja en la misma pantalla.
+Si le doy atrás manual, entonces sí veo el login.
+
+QUIERO:
+- corregir el logout para que haga cierre de sesión real
+- limpiar estado local, sesión, cache y cualquier auth state necesario
+- redirigir SIEMPRE al login/inicio público
+- no dejar al usuario atrapado en la pantalla actual
+- no requerir refrescar manualmente
+- revisar si hace falta navigate, replace, limpieza de auth context, localStorage/sessionStorage o invalidación de query cache
+
+RESULTADO:
+Cerrar sesión = salir realmente y regresar al login.
+
+==================================================
+3) CLIENTE NUEVO NO DEBE SALIR UNIDO NI FAVORITO EN TODAS LAS SUCURSALES
+==================================================
+
+PROBLEMA:
+Cuando registré una cuenta nueva de cliente y entré por primera vez:
+- me salían todas las sucursales como si ya estuviera unido a ellas
+- también como favoritas
+
+ESO ESTÁ MAL.
+
+LO QUE SÍ ESTÁ BIEN:
+- que al registrarme yo aparezca con mis datos en el dashboard de sucursal, pestaña clientes
+- eso está bien porque la sucursal ve nombre, celular, etc.
+
+PERO:
+- NO quiero que automáticamente quede unido a todas las sucursales
+- NO quiero que automáticamente todas sean favoritas
+
+QUIERO:
+- revisar la lógica actual
+- separar correctamente estos conceptos:
+
+A) cliente existente en sistema
+B) cliente unido / miembro de una sucursal
+C) sucursal favorita
+
+REGLAS CORRECTAS:
+- al registrarse un cliente nuevo:
+  - se crea su perfil global
+  - puede aparecer en ciertos listados administrativos si así ya está pensado
+  - PERO NO debe quedar automáticamente como favorito de todas las sucursales
+  - PERO NO debe quedar automáticamente unido a todas las sucursales
+- favoritos solo cuando el usuario lo elige
+- unido / miembro solo cuando realmente se une, reserva, compra plan, o por la regla exacta ya definida en sistema
+- revisar la consulta o lógica que hoy marca isFavorite / joined de forma global incorrecta
+
+QUIERO QUE IDENTIFIQUES EL BUG RAÍZ y lo corrijas sin romper lo demás.
+
+==================================================
+4) QUITAR A SUCURSAL OPCIÓN DE REINICIAR / CAMBIAR CONTRASEÑA DE CLIENTE
+==================================================
+
+PROBLEMA:
+En dashboard de sucursal > pestaña clientes > detalle del cliente, todavía aparece opción para:
+- generar nueva contraseña
+- restaurar acceso del cliente
+
+ESO YA NO LO QUIERO.
+
+Porque ahora ya implementamos el flujo correcto desde login:
+- recuperación de contraseña
+- acceso del cliente por su cuenta
+
+QUIERO:
+- quitar del dashboard de sucursal cualquier botón o acción para resetear contraseña de cliente
+- quitar cualquier texto que exponga app URL / password reset desde la sucursal si ya no aplica
+- la sucursal ya NO debe controlar contraseña ni acceso del cliente
+- el cliente debe gestionar su acceso solo desde el login general
+
+IMPORTANTE:
+- no romper el resto del modal o detalle del cliente
+- solo quitar esa parte de acceso / reset password si ya no corresponde al nuevo modelo
+
+==================================================
+5) EN FAVORITOS MOSTRAR TAMBIÉN SUCURSALES A LAS QUE ESTOY UNIDO
+==================================================
+
+PROBLEMA:
+En la app del cliente, el corazón abre "Mis Favoritos".
+Ahí solo se ven favoritos.
+
+QUIERO MEJORAR ESA VISTA:
+- que en esa misma pantalla o sección aparezcan DOS BLOQUES / TABS / SECCIONES:
+  1. Sucursales favoritas
+  2. Sucursales a las que estoy unido
+
+SI NO HAY DATOS:
+- mostrar estados vacíos claros, por ejemplo:
+  - "No tienes sucursales favoritas todavía"
+  - "No estás unido a ninguna sucursal todavía"
+
+SI SÍ HAY DATOS:
+- mostrar cards o lista clara de ambas
+- permitir entrar a la sucursal desde ahí
+- si ya no estoy unido a una sucursal, que deje de aparecer ahí
+- favoritos y unidos deben ser conceptos separados
+
+UX/UI:
+- mantener diseño actual
+- limpio
+- claro
+- premium
+- mobile friendly
+
+==================================================
+REGLAS GENERALES DE IMPLEMENTACIÓN
+==================================================
+
+1. NO romper nada existente
+2. Hacer cambio mínimo y seguro
+3. Si hay lógica mezclada entre favoritos y unidos, separarla bien
+4. Si logout no limpia estado, corregirlo de raíz
+5. Si dashboard de sucursal aún muestra acciones viejas de acceso, eliminarlas del frontend y backend si corresponde
+6. Si WhatsApp necesita dato de sucursal, reutilizar campo existente primero
+7. NO hacer refactor masivo
+
+==================================================
+PRUEBAS OBLIGATORIAS
+==================================================
+
+QUIERO QUE VALIDES ESTOS CASOS:
+
+CASO 1:
+Perfil público de sucursal con WhatsApp configurado
+→ aparece botón WhatsApp
+→ abre chat con mensaje prellenado
+
+CASO 2:
+Sucursal sin WhatsApp
+→ no aparece botón
+
+CASO 3:
+Logout cliente
+→ limpia sesión
+→ manda al login
+→ no deja pantalla colgada
+
+CASO 4:
+Cliente nuevo recién registrado
+→ NO aparece unido a todas las sucursales
+→ NO aparecen todas como favoritas
+→ sí conserva su perfil global
+
+CASO 5:
+Dashboard de sucursal
+→ sigue viendo clientes
+→ ya NO puede resetear contraseña del cliente
+
+CASO 6:
+Pantalla de favoritos
+→ muestra favoritos reales
+→ muestra también sucursales unidas reales
+→ estados vacíos correctos si no hay datos
+
+CASO 7:
+Nada se rompe:
+- login OK
+- registro OK
+- promociones OK
+- perfil de sucursal OK
+- reservas OK
+- memberships OK
+- dashboard sucursal OK
+
+==================================================
+ENTREGABLE
+==================================================
+
+QUIERO QUE ME DES:
+
+1. problema raíz encontrado en cada uno de los 5 puntos
+2. archivos exactos modificados
+3. qué lógica corregiste
+4. qué endpoints o queries tocaste
+5. qué pruebas hiciste
+6. confirmación de que no rompiste nada
+7. código final listo
+
+==================================================
+FORMA DE TRABAJO
+==================================================
+
+Trabaja así:
+1. analiza impacto
+2. identifica bug raíz
+3. aplica cambio mínimo seguro
+4. prueba manualmente
+5. explica breve
+
+NO hacer overengineering
+NO hacer refactor masivo
+Elegir siempre la opción más conservadora y segura

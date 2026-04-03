@@ -418,7 +418,7 @@ export default function ExplorePage() {
                   className="h-8 w-8 flex items-center justify-center rounded-full hover:bg-muted transition-colors text-muted-foreground"
                   onClick={async () => {
                     await logout();
-                    navigate("/auth");
+                    window.location.href = "/";
                   }}
                   data-testid="button-logout"
                   title="Cerrar sesión"

@@ -1457,6 +1457,7 @@ export async function registerRoutes(
   });
 
   app.post("/api/branch/clients/:id/reset-password", requireBranchAdmin, async (req, res) => {
+    return res.status(403).json({ message: "Esta función ya no está disponible. El cliente debe gestionar su contraseña desde el inicio de sesión." });
     const actor = req.user as any;
     const clientId = req.params.id as string;
     try {
@@ -3140,7 +3141,7 @@ export async function registerRoutes(
       userId: user.id,
       branchId: branch.id,
       status: "active",
-      isFavorite: true,
+      isFavorite: false,
       source: "self_join",
     });
     res.status(201).json(membership);

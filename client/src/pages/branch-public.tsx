@@ -1320,7 +1320,7 @@ export default function BranchPublicPage() {
               </button>
               <button
                 className="h-9 w-9 flex items-center justify-center rounded-full bg-black/35 backdrop-blur-md text-white hover:bg-black/55 transition-colors border border-white/10"
-                onClick={async () => { await logout(); navigate("/auth"); }}
+                onClick={async () => { await logout(); window.location.href = "/"; }}
                 data-testid="button-logout"
               >
                 <LogOut className="h-4 w-4" />
@@ -1471,11 +1471,10 @@ export default function BranchPublicPage() {
 
         {branch.whatsappNumber && (
           <div className="px-1">
-            <button
-              onClick={() => window.open(
-                `https://wa.me/${normalizeWANumber(branch.whatsappNumber)}?text=${encodeURIComponent("Hola, vi tu perfil en WebCool y quiero más información.")}`,
-                "_blank"
-              )}
+            <a
+              href={`https://wa.me/${normalizeWANumber(branch.whatsappNumber)}?text=${encodeURIComponent("Hola, vi tu perfil en WebCool y quiero más información.")}`}
+              target="_blank"
+              rel="noopener noreferrer"
               className="w-full flex items-center justify-center gap-2 bg-green-500 hover:bg-green-600 active:bg-green-700 text-white font-semibold text-sm py-3 px-4 rounded-2xl shadow-sm transition-colors"
               data-testid="button-branch-whatsapp-contact"
             >
@@ -1484,7 +1483,7 @@ export default function BranchPublicPage() {
                 <path d="M12 0C5.373 0 0 5.373 0 12c0 2.124.558 4.122 1.534 5.857L0 24l6.334-1.512A11.944 11.944 0 0012 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 22c-1.848 0-3.576-.484-5.073-1.333l-.363-.215-3.762.898.916-3.65-.235-.375A9.96 9.96 0 012 12C2 6.477 6.477 2 12 2s10 4.477 10 10-4.477 10-10 10z"/>
               </svg>
               Contactar por WhatsApp
-            </button>
+            </a>
           </div>
         )}
 
