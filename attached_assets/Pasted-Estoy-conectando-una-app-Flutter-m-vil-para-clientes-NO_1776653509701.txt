@@ -1,0 +1,58 @@
+Estoy conectando una app Flutter móvil para clientes, NO un dashboard admin.
+
+Aclaración importante:
+- El dashboard de sucursal y el super admin se quedan solo en web.
+- La sucursal edita su contenido desde el dashboard web.
+- La app móvil y la app web de clientes solo deben MOSTRAR correctamente ese contenido público.
+
+Necesito que me confirmes cómo leer exactamente desde backend todo lo que una sucursal publica para clientes.
+
+Respóndeme con información EXACTA de estos endpoints públicos y su estructura real:
+
+1. GET /api/branches/nearby
+2. GET /api/public/branch/:slug
+3. GET /api/public/branch/:slug/content
+4. GET /api/public/branch/:slug/promotions
+5. GET /api/public/branch/:slug/reviews
+6. GET /api/public/branch/:slug/schedule?date=YYYY-MM-DD
+
+Para cada endpoint quiero:
+
+- response JSON exacto
+- nombres exactos de todos los campos
+- tipo de cada campo
+- cuáles pueden venir null
+- cuáles pueden venir vacíos
+- si las URLs de imagen/video vienen completas o relativas
+- cómo distinguir profile image, cover image, facility images, posts, videos, products y services
+- cómo identificar promociones activas
+- cómo identificar horarios/operatingHours
+- cómo identificar ubicación, Google Maps URL y WhatsApp
+- cómo identificar rating promedio y total de reseñas
+- cómo identificar instructor, capacity, spotsTaken y disponibilidad en agenda
+
+Además, hazme una tabla o lista de mapeo así:
+
+CAMPO EN DASHBOARD WEB -> CAMPO QUE RECIBE LA APP MÓVIL
+
+Ejemplo del formato que necesito:
+- Nombre del negocio -> name
+- Descripción -> description
+- Foto de perfil -> profileImageUrl
+- Portada -> coverImageUrl
+- Dirección -> address
+- Link Google Maps -> googleMapsUrl
+- WhatsApp -> whatsappNumber
+- Horarios -> operatingHours
+- Instalaciones -> photos[type=facility]
+- Videos -> videos[]
+- Promociones -> promotions[]
+- Productos -> products[type=product]
+- Servicios -> products[type=service]
+
+Si algún dato no sale en esos endpoints públicos, escribe exactamente:
+NO SALE EN ENDPOINT PUBLICO
+
+Si algún contenido depende de otra ruta, dame la ruta exacta y un ejemplo real del response.
+
+No me des explicación general. Necesito payloads, campos y mapeo exacto para conectarlo bien en Flutter.
