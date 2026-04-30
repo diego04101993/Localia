@@ -1,7 +1,8 @@
+import dotenv from "dotenv";
 import express, { type Request, Response, NextFunction } from "express";
-import { registerRoutes } from "./routes";
-import { serveStatic } from "./static";
 import { createServer } from "http";
+
+dotenv.config();
 
 const app = express();
 const httpServer = createServer(app);
@@ -60,7 +61,10 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  const { registerRoutes } = await import("./routes");
+  const { createNotificationCleanupJob } = await import("./notifications");
   await registerRoutes(httpServer, app);
+  createNotificationCleanupJob();
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
@@ -79,6 +83,7 @@ app.use((req, res, next) => {
   // setting up all the other routes so the catch-all route
   // doesn't interfere with the other routes
   if (process.env.NODE_ENV === "production") {
+    const { serveStatic } = await import("./static");
     serveStatic(app);
   } else {
     const { setupVite } = await import("./vite");

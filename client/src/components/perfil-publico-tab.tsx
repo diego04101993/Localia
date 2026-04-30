@@ -44,7 +44,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
-import { BRANCH_CATEGORIES } from "@shared/schema";
+import {
+  BRANCH_CATEGORIES,
+  BRANCH_SUBCATEGORY_PLACEHOLDERS,
+  BRANCH_SEARCH_KEYWORDS_PLACEHOLDER,
+} from "@shared/schema";
 import type { Branch, BranchPhoto, BranchProduct, BranchReview } from "@shared/schema";
 
 async function uploadFile(file: File): Promise<string> {
@@ -85,6 +89,10 @@ function getDefaultHours(): OperatingHours {
   return hours;
 }
 
+function getSubcategoryPlaceholder(category: string) {
+  return BRANCH_SUBCATEGORY_PLACEHOLDERS[category] || BRANCH_SUBCATEGORY_PLACEHOLDERS.default;
+}
+
 function BasicProfileSection() {
   const { toast } = useToast();
   const { user, refetch } = useAuth();
@@ -92,12 +100,19 @@ function BasicProfileSection() {
 
   const [description, setDescription] = useState(branch?.description || "");
   const [category, setCategory] = useState(branch?.category || "box");
+  const [subcategory, setSubcategory] = useState(branch?.subcategory || "");
+  const [searchKeywords, setSearchKeywords] = useState(branch?.searchKeywords || "");
   const [saving, setSaving] = useState(false);
 
   const handleSave = async () => {
     setSaving(true);
     try {
-      await apiRequest("PATCH", "/api/branch/profile", { description, category });
+      await apiRequest("PATCH", "/api/branch/profile", {
+        description,
+        category,
+        subcategory: subcategory.trim() || null,
+        searchKeywords: searchKeywords.trim() || null,
+      });
       await refetch();
       queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
       toast({ title: "Perfil actualizado" });
@@ -143,6 +158,30 @@ function BasicProfileSection() {
           />
           <p className="text-xs text-muted-foreground mt-1">
             Esta descripción se mostrará en tu perfil público.
+          </p>
+        </div>
+        <div>
+          <Label>Subcategoria o especialidad</Label>
+          <Input
+            value={subcategory}
+            onChange={(e) => setSubcategory(e.target.value)}
+            placeholder={getSubcategoryPlaceholder(category)}
+            data-testid="input-subcategory"
+          />
+          <p className="text-xs text-muted-foreground mt-1">
+            Opcional. Muestra el tipo principal de servicio que ofreces.
+          </p>
+        </div>
+        <div>
+          <Label>Palabras clave de busqueda</Label>
+          <Input
+            value={searchKeywords}
+            onChange={(e) => setSearchKeywords(e.target.value)}
+            placeholder={BRANCH_SEARCH_KEYWORDS_PLACEHOLDER}
+            data-testid="input-search-keywords"
+          />
+          <p className="text-xs text-muted-foreground mt-1">
+            Opcional. Separa las palabras con comas para mejorar la busqueda.
           </p>
         </div>
         <Button onClick={handleSave} disabled={saving} data-testid="button-save-profile">

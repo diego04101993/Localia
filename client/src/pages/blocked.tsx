@@ -7,9 +7,10 @@ import { useAuth } from "@/lib/auth";
 import { queryClient } from "@/lib/queryClient";
 
 export default function BlockedPage() {
-  const { logout } = useAuth();
+  const { user, logout } = useAuth();
   const [, navigate] = useLocation();
   const [leaving, setLeaving] = useState(false);
+  const isCustomerBlocked = !!(user && user.role === "CUSTOMER" && user.isBlocked);
 
   const handleGoHome = async () => {
     setLeaving(true);
@@ -33,11 +34,12 @@ export default function BlockedPage() {
             className="text-xl font-bold"
             data-testid="text-blocked-title"
           >
-            Servicio no activo
+            {isCustomerBlocked ? "Cuenta bloqueada" : "Servicio no activo"}
           </h1>
           <p className="text-sm text-muted-foreground">
-            Esta sucursal ha sido suspendida o bloqueada. Si crees que esto es
-            un error, contacta al administrador.
+            {isCustomerBlocked
+              ? (user?.blockedReason || "Tu cuenta ha sido bloqueada. Contacta a soporte.")
+              : "Esta sucursal ha sido suspendida o bloqueada. Si crees que esto es un error, contacta al administrador."}
           </p>
           <Button
             variant="outline"

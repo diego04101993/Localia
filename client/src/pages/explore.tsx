@@ -72,6 +72,11 @@ function getCategoryLabel(value: string) {
   return BRANCH_CATEGORIES.find((c) => c.value === value)?.label || value;
 }
 
+function formatBranchCategory(category?: string | null, subcategory?: string | null) {
+  const categoryLabel = getCategoryLabel(category || "otro");
+  return subcategory ? `${categoryLabel} · ${subcategory}` : categoryLabel;
+}
+
 function BranchInitialAvatar({ name, category }: { name: string; category?: string | null }) {
   const initial = name?.charAt(0)?.toUpperCase() || "?";
   const gradient = categoryGradients[category || "otro"] || categoryGradients.otro;
@@ -157,7 +162,7 @@ function BranchExploreCard({
           </h3>
           <div className="flex items-center gap-2 mt-0.5 flex-wrap">
             <span className="text-[11px] text-muted-foreground font-medium">
-              {getCategoryLabel(branch.category || "otro")}
+              {formatBranchCategory(branch.category, branch.subcategory)}
             </span>
             {!!branch.averageRating && !!branch.totalReviews && (
               <StarBadge rating={branch.averageRating} total={branch.totalReviews} />
@@ -434,7 +439,7 @@ export default function ExplorePage() {
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
               <Input
                 type="search"
-                placeholder="Buscar negocios..."
+                placeholder="Buscar negocios, especialidades..."
                 className="pl-9 pr-9 h-9 bg-muted/60 border-transparent focus:bg-background focus:border-border"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}

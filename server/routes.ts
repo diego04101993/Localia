@@ -7,8 +7,17 @@ import path from "path";
 import fs from "fs";
 import multer from "multer";
 import { storage } from "./storage";
+import {
+  deleteAllNotifications,
+  deleteNotification,
+  deleteReadNotifications,
+  dispatchNotificationFromSystemEvent,
+  getNotificationSummary,
+  markNotificationRead,
+} from "./notifications";
+import { dispatchPushFromSystemEvent } from "./push";
 import { sendPasswordResetEmail, sendEmailVerificationEmail } from "./email";
-import { setupAuth, requireAuth, requireRole, isImpersonating, getOriginalUserId } from "./auth";
+import { setupAuth, requireAuth, requireRole, isImpersonating, getOriginalUserId, CUSTOMER_BLOCKED_MESSAGE } from "./auth";
 import { seedDatabase } from "./seed";
 import {
   loginSchema,
@@ -18,6 +27,13 @@ import {
   favoriteBranchSchema,
   createClientSchema,
   updateClientSchema,
+  updateBranchClientCrmSchema,
+  createCustomerReportSchema,
+  updateBranchCustomerBlockSchema,
+  updateCustomerGlobalBlockSchema,
+  updateCustomerReportStatusSchema,
+  registerPushTokenSchema,
+  unregisterPushTokenSchema,
   createPlanSchema,
   assignPlanSchema,
   createClassScheduleSchema,
@@ -99,6 +115,75 @@ function generateSecurePassword(length = 16): string {
   return password;
 }
 
+function normalizeOptionalText(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeSearchKeywords(value: unknown): string | null | undefined {
+  const normalized = normalizeOptionalText(value);
+  if (normalized === undefined || normalized === null) return normalized;
+
+  const keywords = normalized
+    .split(/[,;\n]+/)
+    .map((keyword) => keyword.trim())
+    .filter(Boolean);
+
+  const uniqueKeywords = Array.from(new Set(keywords));
+  return uniqueKeywords.length > 0 ? uniqueKeywords.join(", ") : null;
+}
+
+function normalizeTags(value: unknown): string | null | undefined {
+  return normalizeSearchKeywords(value);
+}
+
+function normalizeModerationText(value: unknown): string | null {
+  const normalized = normalizeOptionalText(value);
+  return normalized === undefined ? null : normalized;
+}
+
+function getStringParam(value: string | string[] | undefined): string {
+  if (Array.isArray(value)) {
+    return value[0] ?? "";
+  }
+  return value ?? "";
+}
+
+async function createSystemEventSafe(data: {
+  eventType: string;
+  branchId?: string | null;
+  userId?: string | null;
+  payload?: any;
+  status?: string;
+}) {
+  try {
+    const event = await storage.createSystemEvent(data);
+    await dispatchNotificationFromSystemEvent({
+      eventType: event.eventType,
+      branchId: event.branchId,
+      userId: event.userId,
+      payload: event.payload,
+    });
+    void dispatchPushFromSystemEvent({
+      eventType: event.eventType,
+      branchId: event.branchId,
+      userId: event.userId,
+      payload: event.payload,
+    });
+  } catch (err: any) {
+    console.error(`[SYSTEM_EVENTS] Failed to create ${data.eventType}:`, err?.stack || err);
+  }
+}
+
+async function getActiveBranchBlockMessage(userId: string, branchId: string): Promise<string | null> {
+  const block = await storage.getActiveBranchCustomerBlock(branchId, userId);
+  if (!block) return null;
+  return "No puedes interactuar con esta sucursal.";
+}
+
 const createBranchWithAdminSchema = z.object({
   name: z.string().min(1, "El nombre es obligatorio"),
   slug: z.string().min(1, "El slug es obligatorio").regex(/^[a-z0-9-]+$/, "Solo letras minúsculas, números y guiones"),
@@ -107,6 +192,8 @@ const createBranchWithAdminSchema = z.object({
   adminPassword: z.string().min(6).optional(),
   adminName: z.string().optional(),
   category: z.string().optional(),
+  subcategory: z.string().optional(),
+  searchKeywords: z.string().optional(),
 });
 
 export async function registerRoutes(
@@ -184,6 +271,9 @@ export async function registerRoutes(
       const existing = await storage.getUserByEmail(email);
 
       if (existing) {
+        if ((existing as any).isBlocked) {
+          return res.status(403).json({ message: CUSTOMER_BLOCKED_MESSAGE });
+        }
         if (existing.role !== "CUSTOMER") {
           return res.status(409).json({
             code: "WRONG_ROLE",
@@ -213,6 +303,14 @@ export async function registerRoutes(
           birthDate: birthDate || undefined,
           gender: gender || undefined,
           termsVersion: TERMS_VERSION,
+        });
+        await createSystemEventSafe({
+          eventType: "customer_registered",
+          userId: existing.id,
+          payload: {
+            source: "public_register",
+            activatedExisting: true,
+          },
         });
         req.logIn(updated!, (err) => {
           if (err) return next(err);
@@ -249,6 +347,15 @@ export async function registerRoutes(
       storage.setEmailVerificationToken(newUser.id, verifyToken, verifyExpires).then(() =>
         sendEmailVerificationEmail(newUser.email, verifyToken)
       ).catch(e => console.error("[REGISTER] email verify send failed:", e));
+
+      await createSystemEventSafe({
+        eventType: "customer_registered",
+        userId: newUser.id,
+        payload: {
+          source: "public_register",
+          activatedExisting: false,
+        },
+      });
 
       req.logIn(freshUser!, (err) => {
         if (err) return next(err);
@@ -390,9 +497,201 @@ export async function registerRoutes(
     });
   });
 
+  app.post("/api/push/register-token", requireAuth, async (req, res) => {
+    const actor = req.user as any;
+    if (actor.role !== "CUSTOMER") {
+      return res.status(403).json({ message: "Acceso denegado" });
+    }
+
+    const result = registerPushTokenSchema.safeParse({
+      token: req.body.token,
+      platform: req.body.platform,
+      deviceName: normalizeOptionalText(req.body.deviceName),
+    });
+
+    if (!result.success) {
+      return res.status(400).json({ message: "Datos invÃ¡lidos", errors: result.error.flatten() });
+    }
+
+    try {
+      const pushToken = await storage.upsertPushToken({
+        userId: actor.id,
+        token: result.data.token,
+        platform: result.data.platform,
+        deviceName: result.data.deviceName ?? null,
+      });
+
+      res.json({
+        success: true,
+        tokenId: pushToken.id,
+        isActive: pushToken.isActive,
+        platform: pushToken.platform,
+      });
+    } catch (err: any) {
+      console.error("[PUSH_REGISTER_TOKEN]", err.stack || err);
+      res.status(500).json({ message: "Error al registrar push token" });
+    }
+  });
+
+  app.post("/api/push/unregister-token", requireAuth, async (req, res) => {
+    const actor = req.user as any;
+    if (actor.role !== "CUSTOMER") {
+      return res.status(403).json({ message: "Acceso denegado" });
+    }
+
+    const result = unregisterPushTokenSchema.safeParse({
+      token: req.body.token,
+    });
+
+    if (!result.success) {
+      return res.status(400).json({ message: "Datos invÃ¡lidos", errors: result.error.flatten() });
+    }
+
+    try {
+      const deactivated = await storage.deactivatePushToken(actor.id, result.data.token);
+      res.json({ success: true, deactivated });
+    } catch (err: any) {
+      console.error("[PUSH_UNREGISTER_TOKEN]", err.stack || err);
+      res.status(500).json({ message: "Error al desactivar push token" });
+    }
+  });
+
+  app.get("/api/notifications", requireAuth, async (req, res) => {
+    const actor = req.user as any;
+    const rawLimit = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : 20;
+    const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 100) : 20;
+    const rawPage = typeof req.query.page === "string" ? parseInt(req.query.page, 10) : 1;
+    const page = Number.isFinite(rawPage) ? Math.max(rawPage, 1) : 1;
+    const status = req.query.status === "read" || req.query.status === "unread" ? req.query.status : "all";
+
+    try {
+      const notifications = await storage.getNotificationsForActor({
+        id: actor.id,
+        role: actor.role,
+        branchId: actor.branchId ?? null,
+      }, { limit, page, status });
+      res.json(notifications);
+    } catch (err: any) {
+      console.error("[NOTIFICATIONS_LIST]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener notificaciones" });
+    }
+  });
+
+  app.get("/api/notifications/summary", requireAuth, async (req, res) => {
+    const actor = req.user as any;
+
+    try {
+      const summary = await getNotificationSummary({
+        id: actor.id,
+        role: actor.role,
+        branchId: actor.branchId ?? null,
+      });
+      res.json(summary);
+    } catch (err: any) {
+      console.error("[NOTIFICATIONS_SUMMARY]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener resumen de notificaciones" });
+    }
+  });
+
+  app.patch("/api/notifications/:id/read", requireAuth, async (req, res) => {
+    const actor = req.user as any;
+    const notificationId = getStringParam(req.params.id);
+
+    try {
+      const notification = await markNotificationRead(notificationId, {
+        id: actor.id,
+        role: actor.role,
+        branchId: actor.branchId ?? null,
+      });
+
+      if (!notification) {
+        return res.status(404).json({ message: "Notificación no encontrada" });
+      }
+
+      res.json(notification);
+    } catch (err: any) {
+      console.error("[NOTIFICATIONS_READ]", err.stack || err);
+      res.status(500).json({ message: "Error al marcar notificación" });
+    }
+  });
+
+  app.patch("/api/notifications/read-all", requireAuth, async (req, res) => {
+    const actor = req.user as any;
+
+    try {
+      const affected = await storage.markAllNotificationsRead({
+        id: actor.id,
+        role: actor.role,
+        branchId: actor.branchId ?? null,
+      });
+
+      res.json({ success: true, affected });
+    } catch (err: any) {
+      console.error("[NOTIFICATIONS_READ_ALL]", err.stack || err);
+      res.status(500).json({ message: "Error al marcar notificaciones" });
+    }
+  });
+
+  app.delete("/api/notifications/read", requireAuth, async (req, res) => {
+    const actor = req.user as any;
+
+    try {
+      const deleted = await deleteReadNotifications({
+        id: actor.id,
+        role: actor.role,
+        branchId: actor.branchId ?? null,
+      });
+      res.json({ success: true, deleted });
+    } catch (err: any) {
+      console.error("[NOTIFICATIONS_DELETE_READ]", err.stack || err);
+      res.status(500).json({ message: "Error al eliminar notificaciones leídas" });
+    }
+  });
+
+  app.delete("/api/notifications/all", requireAuth, async (req, res) => {
+    const actor = req.user as any;
+
+    try {
+      const deleted = await deleteAllNotifications({
+        id: actor.id,
+        role: actor.role,
+        branchId: actor.branchId ?? null,
+      });
+      res.json({ success: true, deleted });
+    } catch (err: any) {
+      console.error("[NOTIFICATIONS_DELETE_ALL]", err.stack || err);
+      res.status(500).json({ message: "Error al eliminar notificaciones" });
+    }
+  });
+
+  app.delete("/api/notifications/:id", requireAuth, async (req, res) => {
+    const actor = req.user as any;
+    const notificationId = getStringParam(req.params.id);
+
+    try {
+      const deleted = await deleteNotification(notificationId, {
+        id: actor.id,
+        role: actor.role,
+        branchId: actor.branchId ?? null,
+      });
+
+      if (!deleted) {
+        return res.status(404).json({ message: "Notificación no encontrada" });
+      }
+
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("[NOTIFICATIONS_DELETE_ONE]", err.stack || err);
+      res.status(500).json({ message: "Error al eliminar notificación" });
+    }
+  });
+
   app.patch("/api/user/me", async (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).json({ message: "No autenticado" });
     const actor = req.user as any;
+    if (actor.role === "CUSTOMER" && actor.isBlocked) {
+      return res.status(403).json({ message: CUSTOMER_BLOCKED_MESSAGE });
+    }
     try {
       const { name, lastName, phone } = req.body;
       if (name !== undefined && (typeof name !== "string" || name.trim().length === 0)) {
@@ -414,6 +713,9 @@ export async function registerRoutes(
   app.post("/api/user/me/change-password", async (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).json({ message: "No autenticado" });
     const actor = req.user as any;
+    if (actor.role === "CUSTOMER" && actor.isBlocked) {
+      return res.status(403).json({ message: CUSTOMER_BLOCKED_MESSAGE });
+    }
     const { currentPassword, newPassword } = req.body;
     if (!currentPassword || !newPassword) {
       return res.status(400).json({ message: "Se requiere contraseña actual y nueva" });
@@ -438,6 +740,9 @@ export async function registerRoutes(
   app.patch("/api/user/me/email", async (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).json({ message: "No autenticado" });
     const actor = req.user as any;
+    if (actor.role === "CUSTOMER" && actor.isBlocked) {
+      return res.status(403).json({ message: CUSTOMER_BLOCKED_MESSAGE });
+    }
     const { currentPassword, newEmail } = req.body;
     if (!currentPassword || !newEmail) {
       return res.status(400).json({ message: "Se requiere contraseña y nuevo correo" });
@@ -466,6 +771,9 @@ export async function registerRoutes(
   app.post("/api/user/me/avatar", (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).json({ message: "No autenticado" });
     const actor = req.user as any;
+    if (actor.role === "CUSTOMER" && actor.isBlocked) {
+      return res.status(403).json({ message: CUSTOMER_BLOCKED_MESSAGE });
+    }
 
     upload.single("file")(req, res, async (err) => {
       if (err) {
@@ -520,6 +828,8 @@ export async function registerRoutes(
       slug: result.data.slug,
       status: "active",
       category: result.data.category || "box",
+      subcategory: normalizeOptionalText(result.data.subcategory),
+      searchKeywords: normalizeSearchKeywords(result.data.searchKeywords),
     });
 
     const actor = req.user as any;
@@ -1029,6 +1339,176 @@ export async function registerRoutes(
     res.json(logs);
   });
 
+  app.get("/api/superadmin/system-events", requireRole("SUPER_ADMIN"), async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 100;
+      const events = await storage.getSystemEvents(limit);
+      res.json(events);
+    } catch (err: any) {
+      console.error("[SUPERADMIN_SYSTEM_EVENTS]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener eventos del sistema" });
+    }
+  });
+
+  app.get("/api/superadmin/app-customers/overview", requireRole("SUPER_ADMIN"), async (_req, res) => {
+    try {
+      const overview = await storage.getCustomerAppOverview();
+      res.json(overview);
+    } catch (err: any) {
+      console.error("[SUPERADMIN_CUSTOMERS_OVERVIEW]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener resumen de clientes app" });
+    }
+  });
+
+  app.get("/api/superadmin/app-customers", requireRole("SUPER_ADMIN"), async (req, res) => {
+    try {
+      const q = typeof req.query.q === "string" ? req.query.q : undefined;
+      const customers = await storage.getCustomerAppUsers(q);
+      res.json(customers);
+    } catch (err: any) {
+      console.error("[SUPERADMIN_CUSTOMERS]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener clientes app" });
+    }
+  });
+
+  app.get("/api/superadmin/app-customers/:id", requireRole("SUPER_ADMIN"), async (req, res) => {
+    const customerId = getStringParam(req.params.id);
+    try {
+      const detail = await storage.getCustomerAppUserDetail(customerId);
+      if (!detail) {
+        return res.status(404).json({ message: "Cliente app no encontrado" });
+      }
+      res.json(detail);
+    } catch (err: any) {
+      console.error("[SUPERADMIN_CUSTOMER_DETAIL]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener detalle del cliente app" });
+    }
+  });
+
+  app.patch("/api/superadmin/app-customers/:id/block", requireRole("SUPER_ADMIN"), async (req, res) => {
+    const actor = req.user as any;
+    const customerId = getStringParam(req.params.id);
+    const result = updateCustomerGlobalBlockSchema.safeParse({
+      isBlocked: req.body.isBlocked,
+      reason: normalizeModerationText(req.body.reason),
+      hideReviews: !!req.body.hideReviews,
+    });
+
+    if (!result.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: result.error.flatten() });
+    }
+
+    try {
+      const updated = await storage.updateCustomerGlobalBlock(customerId, {
+        isBlocked: result.data.isBlocked,
+        blockedReason: result.data.reason ?? null,
+        blockedBy: actor.id,
+      });
+
+      if (!updated) {
+        return res.status(404).json({ message: "Cliente app no encontrado" });
+      }
+
+      if (result.data.isBlocked && result.data.hideReviews) {
+        await storage.hideCustomerReviews(customerId, true, result.data.reason ?? "Cuenta bloqueada");
+      }
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: result.data.isBlocked ? "BLOCK_CUSTOMER_GLOBAL" : "UNBLOCK_CUSTOMER_GLOBAL",
+        metadata: { customerId, hideReviews: !!result.data.hideReviews },
+      });
+
+      if (result.data.isBlocked) {
+        await createSystemEventSafe({
+          eventType: "customer_blocked_global",
+          userId: updated.id,
+          payload: {
+            reason: result.data.reason ?? null,
+            hideReviews: !!result.data.hideReviews,
+            blockedByUserId: actor.id,
+          },
+        });
+      }
+
+      const { passwordHash, ...safeUser } = updated as any;
+      res.json(safeUser);
+    } catch (err: any) {
+      console.error("[SUPERADMIN_CUSTOMER_BLOCK]", err.stack || err);
+      res.status(500).json({ message: "Error al actualizar bloqueo global" });
+    }
+  });
+
+  app.post("/api/superadmin/app-customers/:id/hide-reviews", requireRole("SUPER_ADMIN"), async (req, res) => {
+    const actor = req.user as any;
+    const customerId = getStringParam(req.params.id);
+    const hidden = req.body.hidden !== false;
+    const reason = normalizeModerationText(req.body.reason) || "Moderado por Super Admin";
+
+    try {
+      const affected = await storage.hideCustomerReviews(customerId, hidden, reason);
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: hidden ? "HIDE_CUSTOMER_REVIEWS" : "UNHIDE_CUSTOMER_REVIEWS",
+        metadata: { customerId, affected },
+      });
+      res.json({ affected, hidden });
+    } catch (err: any) {
+      console.error("[SUPERADMIN_HIDE_REVIEWS]", err.stack || err);
+      res.status(500).json({ message: "Error al actualizar visibilidad de reseñas" });
+    }
+  });
+
+  app.patch("/api/superadmin/customer-reports/:id/status", requireRole("SUPER_ADMIN"), async (req, res) => {
+    const actor = req.user as any;
+    const reportId = getStringParam(req.params.id);
+    const result = updateCustomerReportStatusSchema.safeParse({ status: req.body.status });
+
+    if (!result.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: result.error.flatten() });
+    }
+
+    try {
+      const updated = await storage.updateCustomerReportStatus(reportId, result.data.status, actor.id);
+      if (!updated) {
+        return res.status(404).json({ message: "Reporte no encontrado" });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "REVIEW_CUSTOMER_REPORT",
+        metadata: { reportId, status: result.data.status },
+      });
+
+      res.json(updated);
+    } catch (err: any) {
+      console.error("[SUPERADMIN_REPORT_STATUS]", err.stack || err);
+      res.status(500).json({ message: "Error al actualizar reporte" });
+    }
+  });
+
+  app.delete("/api/superadmin/app-customers/:id", requireRole("SUPER_ADMIN"), async (req, res) => {
+    const actor = req.user as any;
+    const customerId = getStringParam(req.params.id);
+    try {
+      const result = await storage.deleteCustomerAppUserSafely(customerId);
+      if (!result.deleted) {
+        return res.status(409).json({ message: result.reason || "No es seguro eliminar este usuario" });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "DELETE_CUSTOMER_SAFE",
+        metadata: { customerId },
+      });
+
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("[SUPERADMIN_DELETE_CUSTOMER]", err.stack || err);
+      res.status(500).json({ message: "Error al eliminar cliente app" });
+    }
+  });
+
   // --- Branch Admin: Client Management ---
   function requireBranchAdmin(req: any, res: any, next: any) {
     if (!req.isAuthenticated()) return res.status(401).json({ message: "No autenticado" });
@@ -1099,6 +1579,189 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error(`[CLIENT_PROFILE] Error:`, err.stack || err);
       res.status(500).json({ message: "Error al obtener perfil del cliente" });
+    }
+  });
+
+  app.patch("/api/branch/client/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const clientId = req.params.id as string;
+
+    const result = updateBranchClientCrmSchema.safeParse({
+      clientStatus: req.body.clientStatus === "auto" ? null : req.body.clientStatus,
+      tags: req.body.tags,
+    });
+
+    if (!result.success) {
+      return res.status(400).json({ message: "Datos inválidos", errors: result.error.flatten() });
+    }
+
+    try {
+      const membership = await storage.getMembership(clientId, actor.branchId);
+      if (!membership) {
+        return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+      }
+
+      const updated = await storage.updateBranchClientCrm(actor.branchId, clientId, {
+        ...(result.data.clientStatus !== undefined && { clientStatus: result.data.clientStatus }),
+        ...(result.data.tags !== undefined && { tags: normalizeTags(result.data.tags) }),
+      });
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "UPDATE_CLIENT_CRM",
+        branchId: actor.branchId,
+        metadata: { clientId, fields: Object.keys(result.data) },
+      });
+
+      res.json(updated);
+    } catch (err: any) {
+      console.error(`[CLIENT_CRM] Error:`, err.stack || err);
+      res.status(500).json({ message: "Error al actualizar CRM del cliente" });
+    }
+  });
+
+  app.post("/api/branch/client/:id/report", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const clientId = req.params.id as string;
+    const result = createCustomerReportSchema.safeParse({
+      reason: req.body.reason,
+      note: normalizeModerationText(req.body.note),
+      blockLocally: !!req.body.blockLocally,
+    });
+
+    if (!result.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: result.error.flatten() });
+    }
+
+    try {
+      const membership = await storage.getMembership(clientId, actor.branchId);
+      if (!membership) {
+        return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+      }
+
+      const report = await storage.createCustomerReport({
+        branchId: actor.branchId,
+        userId: clientId,
+        reportedByUserId: actor.id,
+        reason: result.data.reason,
+        note: result.data.note ?? null,
+      });
+
+      let localBlock = null;
+      if (result.data.blockLocally) {
+        localBlock = await storage.setBranchCustomerBlock(actor.branchId, clientId, {
+          blockedByUserId: actor.id,
+          reason: result.data.reason,
+          note: result.data.note ?? null,
+        });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "REPORT_CUSTOMER",
+        branchId: actor.branchId,
+        metadata: { clientId, reportId: report.id, blockLocally: !!localBlock },
+      });
+
+      await createSystemEventSafe({
+        eventType: "customer_reported",
+        branchId: actor.branchId,
+        userId: clientId,
+        payload: {
+          reportId: report.id,
+          reason: result.data.reason,
+          blockLocally: !!localBlock,
+          reportedByUserId: actor.id,
+        },
+      });
+
+      if (localBlock) {
+        await createSystemEventSafe({
+          eventType: "customer_blocked_local",
+          branchId: actor.branchId,
+          userId: clientId,
+          payload: {
+            reportId: report.id,
+            reason: result.data.reason,
+            note: result.data.note ?? null,
+            blockedByUserId: actor.id,
+          },
+        });
+      }
+
+      res.status(201).json({ report, localBlock });
+    } catch (err: any) {
+      console.error("[BRANCH_REPORT_CUSTOMER]", err.stack || err);
+      res.status(500).json({ message: "Error al reportar cliente" });
+    }
+  });
+
+  app.post("/api/branch/client/:id/local-block", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const clientId = req.params.id as string;
+    const result = updateBranchCustomerBlockSchema.safeParse({
+      reason: normalizeModerationText(req.body.reason),
+      note: normalizeModerationText(req.body.note),
+    });
+
+    if (!result.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: result.error.flatten() });
+    }
+
+    try {
+      const membership = await storage.getMembership(clientId, actor.branchId);
+      if (!membership) {
+        return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+      }
+
+      const block = await storage.setBranchCustomerBlock(actor.branchId, clientId, {
+        blockedByUserId: actor.id,
+        reason: result.data.reason ?? null,
+        note: result.data.note ?? null,
+      });
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "BLOCK_CUSTOMER_LOCAL",
+        branchId: actor.branchId,
+        metadata: { clientId, blockId: block.id },
+      });
+
+      await createSystemEventSafe({
+        eventType: "customer_blocked_local",
+        branchId: actor.branchId,
+        userId: clientId,
+        payload: {
+          blockId: block.id,
+          reason: result.data.reason ?? null,
+          note: result.data.note ?? null,
+          blockedByUserId: actor.id,
+        },
+      });
+
+      res.status(201).json(block);
+    } catch (err: any) {
+      console.error("[BRANCH_BLOCK_CUSTOMER]", err.stack || err);
+      res.status(500).json({ message: "Error al bloquear cliente en la sucursal" });
+    }
+  });
+
+  app.delete("/api/branch/client/:id/local-block", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const clientId = req.params.id as string;
+
+    try {
+      const affected = await storage.unblockBranchCustomer(actor.branchId, clientId);
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "UNBLOCK_CUSTOMER_LOCAL",
+        branchId: actor.branchId,
+        metadata: { clientId, affected },
+      });
+      res.json({ success: true, affected });
+    } catch (err: any) {
+      console.error("[BRANCH_UNBLOCK_CUSTOMER]", err.stack || err);
+      res.status(500).json({ message: "Error al desbloquear cliente en la sucursal" });
     }
   });
 
@@ -1466,6 +2129,7 @@ export async function registerRoutes(
 
       const client = await storage.getUser(clientId);
       if (!client) return res.status(404).json({ message: "Usuario no encontrado" });
+      const clientEmail = client!.email;
 
       const newPassword = generateSecurePassword(12);
       const hash = await bcrypt.hash(newPassword, 10);
@@ -1475,11 +2139,11 @@ export async function registerRoutes(
         actorUserId: actor.id,
         action: "RESET_CLIENT_PASSWORD",
         branchId: actor.branchId,
-        metadata: { clientId, clientEmail: client.email },
+        metadata: { clientId, clientEmail },
       });
 
-      console.log(`[RESET_CLIENT_PASSWORD] Reset password for ${client.email} by ${actor.email}`);
-      res.json({ email: client.email, password: newPassword });
+      console.log(`[RESET_CLIENT_PASSWORD] Reset password for ${clientEmail} by ${actor.email}`);
+      res.json({ email: clientEmail, password: newPassword });
     } catch (err: any) {
       console.error(`[RESET_CLIENT_PASSWORD] Error:`, err.stack || err);
       res.status(500).json({ message: "Error al resetear contraseña" });
@@ -1995,6 +2659,18 @@ export async function registerRoutes(
         metadata: { bookingId: booking.id, classId: data.classScheduleId, userId: data.userId, date: data.bookingDate },
       });
 
+      await createSystemEventSafe({
+        eventType: "booking_created",
+        branchId: actor.branchId,
+        userId: data.userId,
+        payload: {
+          bookingId: booking.id,
+          classScheduleId: data.classScheduleId,
+          bookingDate: data.bookingDate,
+          source: "dashboard",
+        },
+      });
+
       console.log(`[BOOKINGS] Created booking for user ${data.userId} in class ${schedule.name} on ${data.bookingDate} by ${actor.email}`);
       res.status(201).json(booking);
     } catch (err: any) {
@@ -2085,6 +2761,21 @@ export async function registerRoutes(
         branchId: actor.branchId,
         metadata: { bookingId, oldStatus: existing.status, newStatus: status, lateCancellation },
       });
+
+      if (status === "cancelled" && existing.status !== "cancelled") {
+        await createSystemEventSafe({
+          eventType: "booking_cancelled",
+          branchId: actor.branchId,
+          userId: existing.userId,
+          payload: {
+            bookingId,
+            classScheduleId: existing.classScheduleId,
+            bookingDate: existing.bookingDate,
+            source: "dashboard",
+            lateCancellation,
+          },
+        });
+      }
 
       console.log(`[BOOKINGS] Updated booking ${bookingId} status to ${status}${lateCancellation ? " (late cancel)" : ""} by ${actor.email}`);
       res.json({ ...updated, lateCancellation, classesRemaining });
@@ -2609,9 +3300,11 @@ export async function registerRoutes(
   app.patch("/api/branch/profile", requireBranchAdmin, async (req, res) => {
     const actor = req.user as any;
     try {
-      const { description, address, city, googleMapsUrl, operatingHours, locations, category, subcategory, latitude, longitude, whatsappNumber } = req.body;
+      const { description, address, city, googleMapsUrl, operatingHours, locations, category, subcategory, searchKeywords, latitude, longitude, whatsappNumber } = req.body;
       // Normalize whatsappNumber: keep only digits, validate length
       let normalizedWhatsapp: string | null | undefined = undefined;
+      const normalizedSubcategory = normalizeOptionalText(subcategory);
+      const normalizedSearchKeywords = normalizeSearchKeywords(searchKeywords);
       if (whatsappNumber !== undefined) {
         if (!whatsappNumber) {
           normalizedWhatsapp = null;
@@ -2631,7 +3324,8 @@ export async function registerRoutes(
         ...(operatingHours !== undefined && { operatingHours }),
         ...(locations !== undefined && { locations }),
         ...(category !== undefined && { category }),
-        ...(subcategory !== undefined && { subcategory }),
+        ...(subcategory !== undefined && { subcategory: normalizedSubcategory }),
+        ...(searchKeywords !== undefined && { searchKeywords: normalizedSearchKeywords }),
         ...(latitude !== undefined && { latitude: latitude ? parseFloat(latitude) : null }),
         ...(longitude !== undefined && { longitude: longitude ? parseFloat(longitude) : null }),
         ...(normalizedWhatsapp !== undefined && { whatsappNumber: normalizedWhatsapp }),
@@ -2682,13 +3376,32 @@ export async function registerRoutes(
     if (!req.isAuthenticated()) return res.status(401).json({ message: "No autenticado" });
     try {
       const actor = req.user as any;
+      if (actor.role === "CUSTOMER" && actor.isBlocked) {
+        return res.status(403).json({ message: CUSTOMER_BLOCKED_MESSAGE });
+      }
       const branch = await storage.getBranchBySlug(req.params.slug);
       if (!branch) return res.status(404).json({ message: "Sucursal no encontrada" });
+      const localBlockMessage = await getActiveBranchBlockMessage(actor.id, branch.id);
+      if (localBlockMessage) {
+        return res.status(403).json({ message: localBlockMessage });
+      }
+      const existingReview = await storage.getUserReview(branch.id, actor.id);
       const { rating, comment } = req.body;
       if (!rating || rating < 1 || rating > 5) {
         return res.status(400).json({ message: "Calificación inválida (1-5)" });
       }
       const review = await storage.createOrUpdateReview(branch.id, actor.id, Number(rating), comment || null);
+      if (!existingReview) {
+        await createSystemEventSafe({
+          eventType: "review_created",
+          branchId: branch.id,
+          userId: actor.id,
+          payload: {
+            reviewId: review.id,
+            rating: Number(rating),
+          },
+        });
+      }
       res.json({ review });
     } catch (err: any) {
       console.error(`[POST-REVIEW] Error:`, err.stack || err);
@@ -2978,6 +3691,10 @@ export async function registerRoutes(
       if (!branch || branch.deletedAt || branch.status !== "active") {
         return res.status(404).json({ message: "Sucursal no encontrada" });
       }
+      const localBlockMessage = await getActiveBranchBlockMessage(user.id, branch.id);
+      if (localBlockMessage) {
+        return res.status(403).json({ message: localBlockMessage });
+      }
 
       const mem = await storage.getMembershipByUserAndBranch(user.id, branch.id);
       if (!mem || mem.status !== "active") {
@@ -3017,6 +3734,18 @@ export async function registerRoutes(
         userId: user.id,
         bookingDate,
         source: "app",
+      });
+
+      await createSystemEventSafe({
+        eventType: "booking_created",
+        branchId: branch.id,
+        userId: user.id,
+        payload: {
+          bookingId: booking.id,
+          classScheduleId,
+          bookingDate,
+          source: "app",
+        },
       });
 
       res.status(201).json(booking);
@@ -3066,6 +3795,19 @@ export async function registerRoutes(
           await storage.decrementClassesRemaining(mem.id);
         }
       }
+
+      await createSystemEventSafe({
+        eventType: "booking_cancelled",
+        branchId: branch.id,
+        userId: user.id,
+        payload: {
+          bookingId,
+          classScheduleId: booking.classScheduleId,
+          bookingDate: booking.bookingDate,
+          source: "app",
+          lateCancellation,
+        },
+      });
 
       res.json({ success: true, lateCancellation });
     } catch (err: any) {
@@ -3124,6 +3866,10 @@ export async function registerRoutes(
     if (branch.status !== "active") {
       return res.status(403).json({ message: "Sucursal no activa" });
     }
+    const localBlockMessage = await getActiveBranchBlockMessage(user.id, branch.id);
+    if (localBlockMessage) {
+      return res.status(403).json({ message: localBlockMessage });
+    }
 
     const existing = await storage.getMembership(user.id, branch.id);
     if (existing) {
@@ -3178,6 +3924,10 @@ export async function registerRoutes(
     const branch = await storage.getBranch(result.data.branchId);
     if (!branch || branch.deletedAt || branch.status !== "active") {
       return res.status(403).json({ message: "Sucursal no disponible" });
+    }
+    const localBlockMessage = await getActiveBranchBlockMessage(user.id, branch.id);
+    if (localBlockMessage) {
+      return res.status(403).json({ message: localBlockMessage });
     }
 
     const existing = await storage.getMembership(user.id, branch.id);
@@ -3283,6 +4033,16 @@ export async function registerRoutes(
         isActive: true,
         isGlobal: isGlobal === "true" || isGlobal === true,
       });
+      await createSystemEventSafe({
+        eventType: "promotion_created",
+        branchId,
+        userId: user.id,
+        payload: {
+          promotionId: promo.id,
+          title: promo.title,
+          isGlobal: promo.isGlobal,
+        },
+      });
       res.status(201).json(promo);
     } catch (err: any) {
       res.status(500).json({ message: err.message });
@@ -3294,6 +4054,7 @@ export async function registerRoutes(
     try {
       const user = req.user as any;
       const branchId = user.branchId;
+      const promotionId = getStringParam(req.params.id);
       if (!branchId) return res.status(400).json({ message: "Sin sucursal" });
       const { isActive, isGlobal, title, description, startDate, endDate } = req.body;
       const updateData: Record<string, any> = {};
@@ -3303,7 +4064,7 @@ export async function registerRoutes(
       if (description !== undefined) updateData.description = description;
       if (startDate !== undefined) updateData.startDate = startDate;
       if (endDate !== undefined) updateData.endDate = endDate;
-      const updated = await storage.updatePromotion(req.params.id, branchId, updateData);
+      const updated = await storage.updatePromotion(promotionId, branchId, updateData);
       if (!updated) return res.status(404).json({ message: "Promoción no encontrada" });
       res.json(updated);
     } catch (err: any) {
@@ -3316,8 +4077,9 @@ export async function registerRoutes(
     try {
       const user = req.user as any;
       const branchId = user.branchId;
+      const promotionId = getStringParam(req.params.id);
       if (!branchId) return res.status(400).json({ message: "Sin sucursal" });
-      await storage.deletePromotion(req.params.id, branchId);
+      await storage.deletePromotion(promotionId, branchId);
       res.json({ ok: true });
     } catch (err: any) {
       res.status(500).json({ message: err.message });

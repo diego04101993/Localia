@@ -55,6 +55,16 @@ function AuthenticatedRouter() {
     return <VerifyEmailPage />;
   }
 
+  const isBlockedCustomer = !!(user && user.role === "CUSTOMER" && user.isBlocked);
+
+  if (location === "/blocked") {
+    return <BlockedPage />;
+  }
+
+  if (isBlockedCustomer) {
+    return <BlockedPage />;
+  }
+
   if (location === "/explore") {
     return <ExplorePage />;
   }
@@ -80,10 +90,6 @@ function AuthenticatedRouter() {
         <Route component={NotFound} />
       </Switch>
     );
-  }
-
-  if (location === "/blocked") {
-    return <BlockedPage />;
   }
 
   if (!user) {

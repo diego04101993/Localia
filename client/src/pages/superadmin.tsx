@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -28,13 +28,23 @@ import {
   UserCheck,
   Send,
 } from "lucide-react";
-import { createBranchSchema, type CreateBranchData, type Branch, BRANCH_CATEGORIES, type AuditLog } from "@shared/schema";
+import {
+  createBranchFormSchema,
+  type CreateBranchFormData,
+  type Branch,
+  BRANCH_CATEGORIES,
+  BRANCH_SUBCATEGORY_PLACEHOLDERS,
+  BRANCH_SEARCH_KEYWORDS_PLACEHOLDER,
+  type AuditLog,
+} from "@shared/schema";
 import { useAuth } from "@/lib/auth";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useTheme } from "@/components/theme-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent } from "@/components/ui/card";
+import NotificationsPanel from "@/components/notifications-panel";
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
@@ -74,6 +84,138 @@ import { useLocation } from "wouter";
 
 type BranchMetric = { branchId: string; customerCount: number; activeMemberships: number };
 type AdminInfo = { id: string; email: string; name: string; createdAt?: string } | null;
+type CustomerAppOverview = {
+  total: number;
+  active: number;
+  blocked: number;
+  recent: number;
+  pendingReports: number;
+};
+type CustomerAppUser = {
+  id: string;
+  name: string;
+  lastName: string | null;
+  email: string;
+  phone: string | null;
+  createdAt: string;
+  isBlocked: boolean;
+  blockedAt: string | null;
+  blockedReason: string | null;
+  branchCount: number;
+  reviewCount: number;
+  lastActivity: string | null;
+};
+type CustomerAppDetail = {
+  user: {
+    id: string;
+    name: string;
+    lastName: string | null;
+    email: string;
+    phone: string | null;
+    createdAt: string;
+    isBlocked: boolean;
+    blockedAt: string | null;
+    blockedReason: string | null;
+  };
+  stats: {
+    branchCount: number;
+    reviewCount: number;
+    lastActivity: string | null;
+  };
+  memberships: Array<{
+    id: string;
+    branchId: string;
+    status: string;
+    joinedAt: string;
+    lastSeenAt: string | null;
+    clientStatus: string;
+    isFavorite: boolean;
+    branchName: string;
+    branchSlug: string;
+  }>;
+  reviews: Array<{
+    id: string;
+    branchId: string;
+    rating: number;
+    comment: string | null;
+    adminReply: string | null;
+    isHidden: boolean;
+    hiddenReason: string | null;
+    createdAt: string;
+    branchName: string;
+    branchSlug: string;
+  }>;
+  reports: Array<{
+    id: string;
+    branchId: string;
+    branchName: string | null;
+    branchSlug: string | null;
+    reason: string;
+    note: string | null;
+    status: string;
+    createdAt: string;
+    reviewedAt: string | null;
+    reporterName?: string | null;
+    reviewerName?: string | null;
+  }>;
+  localBlocks: Array<{
+    id: string;
+    branchId: string;
+    branchName: string;
+    branchSlug: string;
+    reason: string | null;
+    note: string | null;
+    createdAt: string;
+    unblockedAt: string | null;
+  }>;
+};
+type SystemEventRow = {
+  id: string;
+  eventType: string;
+  branchId: string | null;
+  userId: string | null;
+  payload: Record<string, any> | null;
+  status: string;
+  createdAt: string;
+  processedAt: string | null;
+  branchName?: string | null;
+  userEmail?: string | null;
+  userName?: string | null;
+};
+
+const CUSTOMER_REPORT_LABELS: Record<string, string> = {
+  comentario_ofensivo: "Comentario ofensivo",
+  mal_comportamiento: "Mal comportamiento",
+  no_respeto_reglas: "No respeto reglas",
+  spam: "Spam",
+  otro: "Otro",
+};
+
+const CUSTOMER_REPORT_STATUS_LABELS: Record<string, string> = {
+  pending: "Pendiente",
+  reviewed: "Revisado",
+  dismissed: "Descartado",
+  escalated: "Escalado",
+};
+
+const SYSTEM_EVENT_LABELS: Record<string, string> = {
+  customer_registered: "Cliente registrado",
+  booking_created: "Reserva creada",
+  booking_cancelled: "Reserva cancelada",
+  promotion_created: "Promocion creada",
+  review_created: "Reseña creada",
+  customer_reported: "Cliente reportado",
+  customer_blocked_global: "Bloqueo global",
+  customer_blocked_local: "Bloqueo local",
+};
+
+function getCategoryLabel(category?: string | null) {
+  return BRANCH_CATEGORIES.find((item) => item.value === category)?.label || category || "Sin categoria";
+}
+
+function getSubcategoryPlaceholder(category: string) {
+  return BRANCH_SUBCATEGORY_PLACEHOLDERS[category] || BRANCH_SUBCATEGORY_PLACEHOLDERS.default;
+}
 
 function extractErrorMessage(err: any, fallback: string): string {
   try {
@@ -112,6 +254,57 @@ function invalidateBranches() {
   queryClient.invalidateQueries({ predicate: (q) => (q.queryKey[0] as string).startsWith("/api/branches") });
   queryClient.invalidateQueries({ queryKey: ["/api/superadmin/branches/metrics"] });
   queryClient.invalidateQueries({ predicate: (q) => (q.queryKey[0] as string).startsWith("/api/superadmin/audit") });
+}
+
+function invalidateAppCustomers() {
+  queryClient.invalidateQueries({ queryKey: ["/api/superadmin/app-customers/overview"] });
+  queryClient.invalidateQueries({
+    predicate: (q) => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/superadmin/app-customers"),
+  });
+  queryClient.invalidateQueries({ queryKey: ["/api/superadmin/system-events"] });
+}
+
+function customerFullName(customer: { name: string; lastName?: string | null }) {
+  return customer.lastName ? `${customer.name} ${customer.lastName}` : customer.name;
+}
+
+function formatShortDate(date?: string | null) {
+  if (!date) return "—";
+  return new Date(date).toLocaleDateString("es-MX", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function formatShortDateTime(date?: string | null) {
+  if (!date) return "—";
+  return new Date(date).toLocaleString("es-MX", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function customerReportReasonLabel(reason: string) {
+  return CUSTOMER_REPORT_LABELS[reason] || reason;
+}
+
+function customerReportStatusLabel(status: string) {
+  return CUSTOMER_REPORT_STATUS_LABELS[status] || status;
+}
+
+function customerReportStatusBadge(status: string) {
+  if (status === "reviewed") return "border-sky-200 bg-sky-50 text-sky-700";
+  if (status === "dismissed") return "border-slate-200 bg-slate-100 text-slate-700";
+  if (status === "escalated") return "border-amber-300 bg-amber-50 text-amber-800";
+  return "border-orange-200 bg-orange-50 text-orange-700";
+}
+
+function systemEventLabel(eventType: string) {
+  return SYSTEM_EVENT_LABELS[eventType] || eventType;
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -880,17 +1073,25 @@ function CreateBranchDialog() {
   } | null>(null);
   const { toast } = useToast();
 
-  const form = useForm<CreateBranchData>({
-    resolver: zodResolver(createBranchSchema),
-    defaultValues: { name: "", slug: "" },
+  const form = useForm<CreateBranchFormData>({
+    resolver: zodResolver(createBranchFormSchema),
+    defaultValues: {
+      name: "",
+      slug: "",
+      category: "box",
+      subcategory: "",
+      searchKeywords: "",
+    },
   });
 
   const mutation = useMutation({
-    mutationFn: async (data: CreateBranchData) => {
+    mutationFn: async (data: CreateBranchFormData) => {
       const body: any = {
         name: data.name,
         slug: data.slug,
         category,
+        subcategory: data.subcategory?.trim() || undefined,
+        searchKeywords: data.searchKeywords?.trim() || undefined,
         createAdmin,
       };
       if (createAdmin) {
@@ -913,11 +1114,18 @@ function CreateBranchDialog() {
       } else {
         toast({ title: "Sucursal creada" });
       }
-      form.reset();
+      form.reset({
+        name: "",
+        slug: "",
+        category: "box",
+        subcategory: "",
+        searchKeywords: "",
+      });
       setAdminEmail("");
       setAdminPassword("");
       setAdminName("");
       setCreateAdmin(false);
+      setCategory("box");
       setOpen(false);
     },
     onError: (err: any) => {
@@ -1002,6 +1210,46 @@ function CreateBranchDialog() {
                   </SelectContent>
                 </Select>
               </div>
+              <FormField
+                control={form.control}
+                name="subcategory"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Subcategoria o especialidad</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder={getSubcategoryPlaceholder(category)}
+                        data-testid="input-branch-subcategory"
+                        {...field}
+                        value={field.value || ""}
+                      />
+                    </FormControl>
+                    <p className="text-xs text-muted-foreground">
+                      Opcional. Ayuda a identificar mejor el tipo de servicio del negocio.
+                    </p>
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="searchKeywords"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Palabras clave de busqueda</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder={BRANCH_SEARCH_KEYWORDS_PLACEHOLDER}
+                        data-testid="input-branch-search-keywords"
+                        {...field}
+                        value={field.value || ""}
+                      />
+                    </FormControl>
+                    <p className="text-xs text-muted-foreground">
+                      Opcional. Separa las palabras con comas para mejorar la busqueda.
+                    </p>
+                  </FormItem>
+                )}
+              />
 
               <div className="border rounded-md p-3 space-y-3">
                 <div className="flex items-center justify-between gap-2">
@@ -1180,6 +1428,497 @@ function AuditLogPanel() {
   );
 }
 
+function SystemEventsPanel() {
+  const { data: events, isLoading } = useQuery<SystemEventRow[]>({
+    queryKey: ["/api/superadmin/system-events"],
+    queryFn: async () => {
+      const resp = await fetch("/api/superadmin/system-events?limit=30", { credentials: "include" });
+      if (!resp.ok) {
+        throw new Error(await resp.text());
+      }
+      return resp.json();
+    },
+  });
+
+  if (isLoading) {
+    return (
+      <div className="space-y-3">
+        {[1, 2, 3].map((i) => (
+          <div key={i} className="flex gap-3 items-start">
+            <Skeleton className="w-8 h-8 rounded-md" />
+            <div className="space-y-1 flex-1"><Skeleton className="h-4 w-44" /><Skeleton className="h-3 w-32" /></div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (!events || events.length === 0) {
+    return (
+      <div className="text-center py-12">
+        <History className="h-10 w-10 text-muted-foreground/30 mx-auto mb-3" />
+        <p className="text-sm text-muted-foreground">No hay eventos del sistema todavia</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2 max-h-[420px] overflow-y-auto">
+      {events.map((event) => (
+        <div key={event.id} className="flex gap-3 items-start p-2 rounded-md hover-elevate" data-testid={`system-event-${event.id}`}>
+          <div className="flex items-center justify-center w-8 h-8 rounded-md bg-muted shrink-0">
+            <History className="h-4 w-4 text-muted-foreground" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <Badge variant="secondary" className="text-xs">{systemEventLabel(event.eventType)}</Badge>
+              <Badge variant={event.status === "processed" ? "default" : "outline"} className="text-xs">
+                {event.status}
+              </Badge>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              {(event.branchName || "Global")} &middot; {(event.userEmail || event.userName || "Sin usuario")}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {formatShortDateTime(event.createdAt)}
+            </p>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AppCustomerDetailDialog({
+  userId,
+  open,
+  onOpenChange,
+}: {
+  userId: string | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { toast } = useToast();
+  const [blockReason, setBlockReason] = useState("");
+  const [hideReviewsOnBlock, setHideReviewsOnBlock] = useState(true);
+
+  const { data: detail, isLoading } = useQuery<CustomerAppDetail>({
+    queryKey: ["/api/superadmin/app-customers", userId, "detail"],
+    enabled: open && !!userId,
+    queryFn: async () => {
+      const resp = await fetch(`/api/superadmin/app-customers/${userId}`, { credentials: "include" });
+      if (!resp.ok) {
+        throw new Error(await resp.text());
+      }
+      return resp.json();
+    },
+  });
+
+  useEffect(() => {
+    if (detail?.user) {
+      setBlockReason(detail.user.blockedReason || "");
+    }
+    if (!open) {
+      setHideReviewsOnBlock(true);
+    }
+  }, [detail, open]);
+
+  const reportStatusMutation = useMutation({
+    mutationFn: async ({ reportId, status }: { reportId: string; status: string }) => {
+      const resp = await apiRequest("PATCH", `/api/superadmin/customer-reports/${reportId}/status`, { status });
+      return resp.json();
+    },
+    onSuccess: () => {
+      invalidateAppCustomers();
+      toast({ title: "Reporte actualizado" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo actualizar el reporte"), variant: "destructive" });
+    },
+  });
+
+  const blockMutation = useMutation({
+    mutationFn: async () => {
+      if (!detail) return null;
+      const resp = await apiRequest("PATCH", `/api/superadmin/app-customers/${detail.user.id}/block`, {
+        isBlocked: !detail.user.isBlocked,
+        reason: blockReason || null,
+        hideReviews: hideReviewsOnBlock,
+      });
+      return resp.json();
+    },
+    onSuccess: (_data) => {
+      invalidateAppCustomers();
+      toast({ title: detail?.user.isBlocked ? "Usuario desbloqueado" : "Usuario bloqueado" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo actualizar el bloqueo"), variant: "destructive" });
+    },
+  });
+
+  const hideReviewsMutation = useMutation({
+    mutationFn: async (hidden: boolean) => {
+      if (!detail) return null;
+      const resp = await apiRequest("POST", `/api/superadmin/app-customers/${detail.user.id}/hide-reviews`, {
+        hidden,
+        reason: blockReason || null,
+      });
+      return resp.json();
+    },
+    onSuccess: (_data, hidden) => {
+      invalidateAppCustomers();
+      toast({ title: hidden ? "Reseñas ocultadas" : "Reseñas restauradas" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo actualizar la visibilidad"), variant: "destructive" });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async () => {
+      if (!detail) return null;
+      await apiRequest("DELETE", `/api/superadmin/app-customers/${detail.user.id}`);
+    },
+    onSuccess: () => {
+      invalidateAppCustomers();
+      toast({ title: "Usuario eliminado" });
+      onOpenChange(false);
+    },
+    onError: (err: any) => {
+      toast({ title: "No se puede eliminar", description: extractErrorMessage(err, "Solo se eliminan usuarios de prueba seguros"), variant: "destructive" });
+    },
+  });
+
+  const hasHiddenReviews = detail?.reviews.some((review) => review.isHidden) ?? false;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Cliente App</DialogTitle>
+          <DialogDescription>Moderación, membresías, reseñas y reportes del usuario final.</DialogDescription>
+        </DialogHeader>
+
+        {isLoading || !detail ? (
+          <div className="space-y-3">
+            <Skeleton className="h-8 w-48" />
+            <Skeleton className="h-24 w-full" />
+            <Skeleton className="h-32 w-full" />
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div className="flex items-start justify-between gap-3 flex-wrap">
+              <div>
+                <h3 className="text-lg font-semibold">{customerFullName(detail.user)}</h3>
+                <p className="text-sm text-muted-foreground">{detail.user.email}</p>
+                <div className="flex items-center gap-2 mt-1 flex-wrap text-xs text-muted-foreground">
+                  <span>{detail.user.phone || "Sin teléfono"}</span>
+                  <span>Alta {formatShortDate(detail.user.createdAt)}</span>
+                  <span>Última actividad {formatShortDateTime(detail.stats.lastActivity)}</span>
+                </div>
+              </div>
+              <Badge variant={detail.user.isBlocked ? "destructive" : "default"}>
+                {detail.user.isBlocked ? "Bloqueado" : "Activo"}
+              </Badge>
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <Card><CardContent className="p-3"><p className="text-2xl font-bold">{detail.stats.branchCount}</p><p className="text-xs text-muted-foreground">Sucursales</p></CardContent></Card>
+              <Card><CardContent className="p-3"><p className="text-2xl font-bold">{detail.stats.reviewCount}</p><p className="text-xs text-muted-foreground">Reseñas</p></CardContent></Card>
+              <Card><CardContent className="p-3"><p className="text-2xl font-bold">{detail.reports.length}</p><p className="text-xs text-muted-foreground">Reportes</p></CardContent></Card>
+              <Card><CardContent className="p-3"><p className="text-2xl font-bold">{detail.localBlocks.filter((block) => !block.unblockedAt).length}</p><p className="text-xs text-muted-foreground">Bloqueos locales</p></CardContent></Card>
+            </div>
+
+            <div className="rounded-lg border p-4 space-y-3">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div>
+                  <h4 className="font-medium">Control global</h4>
+                  <p className="text-xs text-muted-foreground">Bloquea la cuenta en toda la app sin afectar admins ni contratos móviles.</p>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Button
+                    variant={detail.user.isBlocked ? "outline" : "destructive"}
+                    onClick={() => blockMutation.mutate()}
+                    disabled={blockMutation.isPending}
+                    data-testid="button-toggle-global-block"
+                  >
+                    {blockMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+                    {detail.user.isBlocked ? "Desbloquear usuario" : "Bloquear usuario"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => hideReviewsMutation.mutate(!hasHiddenReviews)}
+                    disabled={hideReviewsMutation.isPending || detail.reviews.length === 0}
+                    data-testid="button-toggle-hide-reviews"
+                  >
+                    {hideReviewsMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+                    {hasHiddenReviews ? "Restaurar reseñas" : "Ocultar reseñas"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="text-destructive"
+                    onClick={() => deleteMutation.mutate()}
+                    disabled={deleteMutation.isPending}
+                    data-testid="button-delete-safe-customer"
+                  >
+                    {deleteMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+                    Eliminar usuario de prueba
+                  </Button>
+                </div>
+              </div>
+              <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-center">
+                <Textarea
+                  value={blockReason}
+                  onChange={(e) => setBlockReason(e.target.value)}
+                  placeholder="Motivo visible para soporte y moderación"
+                  className="min-h-[84px]"
+                  data-testid="textarea-global-block-reason"
+                />
+                <div className="flex items-center gap-2">
+                  <Switch checked={hideReviewsOnBlock} onCheckedChange={setHideReviewsOnBlock} data-testid="switch-hide-reviews-on-block" />
+                  <Label className="text-xs text-muted-foreground">Ocultar reseñas al bloquear</Label>
+                </div>
+              </div>
+              {detail.user.blockedReason && (
+                <p className="text-xs text-muted-foreground">
+                  Motivo actual: {detail.user.blockedReason}
+                </p>
+              )}
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <Card>
+                <CardContent className="p-4 space-y-3">
+                  <h4 className="font-medium">Sucursales donde participa</h4>
+                  {detail.memberships.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">Sin membresías registradas.</p>
+                  ) : (
+                    detail.memberships.map((membership) => (
+                      <div key={membership.id} className="rounded-md border p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <p className="font-medium text-sm">{membership.branchName}</p>
+                            <p className="text-xs text-muted-foreground">/{membership.branchSlug}</p>
+                          </div>
+                          <Badge variant={membership.status === "active" ? "default" : "secondary"}>
+                            {membership.status}
+                          </Badge>
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-2">
+                          Alta {formatShortDate(membership.joinedAt)} · Cliente {membership.clientStatus}
+                        </p>
+                      </div>
+                    ))
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardContent className="p-4 space-y-3">
+                  <h4 className="font-medium">Bloqueos por sucursal</h4>
+                  {detail.localBlocks.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">Sin bloqueos locales.</p>
+                  ) : (
+                    detail.localBlocks.map((block) => (
+                      <div key={block.id} className="rounded-md border p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="font-medium text-sm">{block.branchName}</p>
+                          <Badge variant={block.unblockedAt ? "secondary" : "destructive"}>
+                            {block.unblockedAt ? "Levantado" : "Activo"}
+                          </Badge>
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-2">
+                          {block.reason ? customerReportReasonLabel(block.reason) : "Sin motivo"} · {formatShortDateTime(block.createdAt)}
+                        </p>
+                        {block.note && <p className="text-sm mt-1">{block.note}</p>}
+                      </div>
+                    ))
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+
+            <Card>
+              <CardContent className="p-4 space-y-3">
+                <h4 className="font-medium">Reseñas</h4>
+                {detail.reviews.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">Sin reseñas registradas.</p>
+                ) : (
+                  detail.reviews.map((review) => (
+                    <div key={review.id} className="rounded-md border p-3 space-y-1">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <Badge variant="secondary">{review.branchName}</Badge>
+                          <Badge variant="outline">{review.rating}/5</Badge>
+                          {review.isHidden && <Badge variant="destructive">Oculta</Badge>}
+                        </div>
+                        <span className="text-xs text-muted-foreground">{formatShortDateTime(review.createdAt)}</span>
+                      </div>
+                      {review.comment && <p className="text-sm">{review.comment}</p>}
+                      {review.hiddenReason && <p className="text-xs text-muted-foreground">Motivo: {review.hiddenReason}</p>}
+                    </div>
+                  ))
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent className="p-4 space-y-3">
+                <h4 className="font-medium">Reportes recibidos</h4>
+                {detail.reports.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">Sin reportes.</p>
+                ) : (
+                  detail.reports.map((report) => (
+                    <div key={report.id} className="rounded-md border p-3 space-y-2">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <Badge variant="outline" className={customerReportStatusBadge(report.status)}>
+                            {customerReportStatusLabel(report.status)}
+                          </Badge>
+                          <Badge variant="secondary">{customerReportReasonLabel(report.reason)}</Badge>
+                          {report.branchName && <Badge variant="outline">{report.branchName}</Badge>}
+                        </div>
+                        <span className="text-xs text-muted-foreground">{formatShortDateTime(report.createdAt)}</span>
+                      </div>
+                      {report.note && <p className="text-sm">{report.note}</p>}
+                      <div className="flex items-center justify-between gap-3 flex-wrap">
+                        <p className="text-xs text-muted-foreground">
+                          {report.reporterName ? `Reportado por ${report.reporterName}` : "Reportado por sucursal"}
+                          {report.reviewedAt && report.reviewerName ? ` · Revisado por ${report.reviewerName}` : ""}
+                        </p>
+                        <Select
+                          value={report.status}
+                          onValueChange={(status) => reportStatusMutation.mutate({ reportId: report.id, status })}
+                        >
+                          <SelectTrigger className="w-[170px] h-8 text-xs">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="pending">Pendiente</SelectItem>
+                            <SelectItem value="reviewed">Revisado</SelectItem>
+                            <SelectItem value="dismissed">Descartado</SelectItem>
+                            <SelectItem value="escalated">Escalado</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function AppCustomersPanel() {
+  const [search, setSearch] = useState("");
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
+
+  const { data: overview } = useQuery<CustomerAppOverview>({
+    queryKey: ["/api/superadmin/app-customers/overview"],
+  });
+
+  const { data: customers, isLoading } = useQuery<CustomerAppUser[]>({
+    queryKey: ["/api/superadmin/app-customers", search],
+    queryFn: async () => {
+      const query = search.trim() ? `?q=${encodeURIComponent(search.trim())}` : "";
+      const resp = await fetch(`/api/superadmin/app-customers${query}`, { credentials: "include" });
+      if (!resp.ok) {
+        throw new Error(await resp.text());
+      }
+      return resp.json();
+    },
+  });
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <Card><CardContent className="p-4"><p className="text-2xl font-bold">{overview?.total ?? 0}</p><p className="text-xs text-muted-foreground">Total usuarios</p></CardContent></Card>
+        <Card><CardContent className="p-4"><p className="text-2xl font-bold">{overview?.active ?? 0}</p><p className="text-xs text-muted-foreground">Activos</p></CardContent></Card>
+        <Card><CardContent className="p-4"><p className="text-2xl font-bold">{overview?.blocked ?? 0}</p><p className="text-xs text-muted-foreground">Bloqueados</p></CardContent></Card>
+        <Card><CardContent className="p-4"><p className="text-2xl font-bold">{overview?.pendingReports ?? 0}</p><p className="text-xs text-muted-foreground">Reportes pendientes</p></CardContent></Card>
+      </div>
+
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <h2 className="text-lg font-semibold">Clientes App</h2>
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            type="search"
+            placeholder="Buscar por nombre, email o teléfono"
+            className="pl-9 w-72"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            data-testid="input-search-app-customers"
+          />
+        </div>
+      </div>
+
+      {isLoading ? (
+        <div className="space-y-3">
+          {[1, 2, 3].map((i) => (
+            <Card key={i}><CardContent className="p-4"><Skeleton className="h-5 w-48 mb-2" /><Skeleton className="h-4 w-64" /></CardContent></Card>
+          ))}
+        </div>
+      ) : customers && customers.length > 0 ? (
+        <div className="space-y-3">
+          {customers.map((customer) => (
+            <Card
+              key={customer.id}
+              className="cursor-pointer hover-elevate"
+              onClick={() => { setSelectedCustomerId(customer.id); setDetailOpen(true); }}
+              data-testid={`card-app-customer-${customer.id}`}
+            >
+              <CardContent className="p-4">
+                <div className="flex items-start justify-between gap-3 flex-wrap">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="font-semibold truncate">{customerFullName(customer)}</h3>
+                      <Badge variant={customer.isBlocked ? "destructive" : "default"}>
+                        {customer.isBlocked ? "Bloqueado" : "Activo"}
+                      </Badge>
+                    </div>
+                    <p className="text-sm text-muted-foreground truncate">{customer.email}</p>
+                    <div className="flex items-center gap-3 mt-2 text-xs text-muted-foreground flex-wrap">
+                      <span>{customer.phone || "Sin teléfono"}</span>
+                      <span>Alta {formatShortDate(customer.createdAt)}</span>
+                      <span>{customer.branchCount} sucursales</span>
+                      <span>{customer.reviewCount} reseñas</span>
+                      <span>Última actividad {formatShortDateTime(customer.lastActivity)}</span>
+                    </div>
+                    {customer.blockedReason && (
+                      <p className="text-xs text-muted-foreground mt-2">Motivo de bloqueo: {customer.blockedReason}</p>
+                    )}
+                  </div>
+                  <Button variant="outline" size="sm">Ver detalle</Button>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      ) : (
+        <Card>
+          <CardContent className="p-12 text-center">
+            <Users className="h-12 w-12 text-muted-foreground/30 mx-auto mb-4" />
+            <h3 className="font-semibold text-lg mb-1">Sin resultados</h3>
+            <p className="text-sm text-muted-foreground">No se encontraron usuarios app con esa búsqueda.</p>
+          </CardContent>
+        </Card>
+      )}
+
+      <AppCustomerDetailDialog
+        userId={selectedCustomerId}
+        open={detailOpen}
+        onOpenChange={setDetailOpen}
+      />
+    </div>
+  );
+}
+
 function BranchCard({
   branch,
   metrics,
@@ -1218,6 +1957,10 @@ function BranchCard({
               </h3>
               <p className="text-sm text-muted-foreground" data-testid={`text-branch-slug-${branch.id}`}>
                 /{branch.slug}
+              </p>
+              <p className="text-xs text-muted-foreground" data-testid={`text-branch-category-${branch.id}`}>
+                {getCategoryLabel(branch.category)}
+                {branch.subcategory ? ` · ${branch.subcategory}` : ""}
               </p>
               <p className="text-xs text-muted-foreground" data-testid={`text-admin-email-${branch.id}`}>
                 {adminData ? (
@@ -1371,7 +2114,9 @@ export default function SuperAdminPage() {
     return (
       b.name.toLowerCase().includes(q) ||
       b.slug.toLowerCase().includes(q) ||
-      (b.city && b.city.toLowerCase().includes(q))
+      (b.city && b.city.toLowerCase().includes(q)) ||
+      (b.subcategory && b.subcategory.toLowerCase().includes(q)) ||
+      (b.searchKeywords && b.searchKeywords.toLowerCase().includes(q))
     );
   });
 
@@ -1455,9 +2200,17 @@ export default function SuperAdminPage() {
           </Card>
         </div>
 
+        <NotificationsPanel
+          title="Notificaciones internas"
+          limit={5}
+          emptyMessage="Sin notificaciones nuevas para Super Admin."
+          testIdPrefix="superadmin-notifications"
+        />
+
         <Tabs defaultValue="branches" className="w-full">
           <TabsList data-testid="tabs-superadmin">
             <TabsTrigger value="branches" data-testid="tab-branches">Sucursales</TabsTrigger>
+            <TabsTrigger value="app-customers" data-testid="tab-app-customers">Clientes App</TabsTrigger>
             <TabsTrigger value="activity" data-testid="tab-activity">Actividad</TabsTrigger>
           </TabsList>
 
@@ -1533,11 +2286,21 @@ export default function SuperAdminPage() {
             )}
           </TabsContent>
 
-          <TabsContent value="activity" className="mt-4">
+          <TabsContent value="app-customers" className="mt-4">
+            <AppCustomersPanel />
+          </TabsContent>
+
+          <TabsContent value="activity" className="mt-4 space-y-4">
             <Card>
               <CardContent className="p-4">
                 <h2 className="font-semibold text-lg mb-4" data-testid="text-activity-title">Actividad reciente</h2>
                 <AuditLogPanel />
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="p-4">
+                <h2 className="font-semibold text-lg mb-4">Eventos del sistema</h2>
+                <SystemEventsPanel />
               </CardContent>
             </Card>
           </TabsContent>

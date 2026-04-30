@@ -68,6 +68,7 @@ import ReservasTab from "@/components/reservas-tab";
 import ContenidoTab from "@/components/contenido-tab";
 import TvModeTab from "@/components/tv-mode-tab";
 import PerfilPublicoTab from "@/components/perfil-publico-tab";
+import NotificationsPanel from "@/components/notifications-panel";
 
 const DASHBOARD_TABS = [
   { value: "resumen", label: "Resumen", icon: LayoutDashboard },
@@ -1141,6 +1142,13 @@ function ResumenTab({ branchStats, branchStatus, branchSlug, branchId, branchNam
           </CardContent>
         </Card>
       </div>
+
+      <NotificationsPanel
+        title="Notificaciones de la sucursal"
+        limit={5}
+        emptyMessage="Sin notificaciones recientes para tu sucursal."
+        testIdPrefix="branch-notifications"
+      />
 
       <TodayBirthdaysSection alerts={alerts} branchName={branchName} whatsappTemplates={whatsappTemplates || {}} onViewClient={onViewClient} />
 

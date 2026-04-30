@@ -229,10 +229,10 @@ export default function FavoritesPage() {
                       No tienes sucursales favoritas todavía
                     </p>
                     <Button
-                      variant="link"
+                      variant="ghost"
                       size="sm"
                       onClick={() => navigate("/explore")}
-                      className="mt-1"
+                      className="mt-1 underline-offset-4 hover:underline"
                     >
                       Explorar sucursales
                     </Button>
@@ -264,10 +264,10 @@ export default function FavoritesPage() {
                       No estás unido a ninguna sucursal todavía
                     </p>
                     <Button
-                      variant="link"
+                      variant="ghost"
                       size="sm"
                       onClick={() => navigate("/explore")}
-                      className="mt-1"
+                      className="mt-1 underline-offset-4 hover:underline"
                     >
                       Explorar sucursales
                     </Button>

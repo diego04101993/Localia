@@ -8,6 +8,11 @@ import { storage } from "./storage";
 import { pool } from "./db";
 
 const PgSession = connectPgSimple(session);
+export const CUSTOMER_BLOCKED_MESSAGE = "Tu cuenta ha sido bloqueada. Contacta a soporte.";
+
+function isBlockedCustomer(user: any): boolean {
+  return user?.role === "CUSTOMER" && !!user?.isBlocked;
+}
 
 export function setupAuth(app: Express) {
   const sessionStore = new PgSession({
@@ -43,6 +48,9 @@ export function setupAuth(app: Express) {
           if (!user) return done(null, false, { message: "Credenciales incorrectas" });
           const valid = await bcrypt.compare(password, user.passwordHash);
           if (!valid) return done(null, false, { message: "Credenciales incorrectas" });
+          if (isBlockedCustomer(user)) {
+            return done(null, false, { message: CUSTOMER_BLOCKED_MESSAGE });
+          }
           return done(null, user);
         } catch (err) {
           return done(err);
@@ -69,6 +77,10 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
   if (!req.isAuthenticated()) {
     return res.status(401).json({ message: "No autenticado" });
   }
+  const user = req.user as any;
+  if (isBlockedCustomer(user)) {
+    return res.status(403).json({ message: CUSTOMER_BLOCKED_MESSAGE });
+  }
   next();
 }
 
@@ -78,6 +90,9 @@ export function requireRole(...roles: string[]) {
       return res.status(401).json({ message: "No autenticado" });
     }
     const user = req.user as any;
+    if (isBlockedCustomer(user)) {
+      return res.status(403).json({ message: CUSTOMER_BLOCKED_MESSAGE });
+    }
     const sess = req.session as any;
     const impersonating = !!(sess.impersonating && sess.originalUserId);
 

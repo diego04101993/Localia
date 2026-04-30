@@ -1,13 +1,19 @@
-import { eq, and, sql, ilike, or, ne, isNull, count, desc, asc, gte, inArray } from "drizzle-orm";
+import { eq, and, sql, or, ne, isNull, count, desc, asc, gte, inArray } from "drizzle-orm";
 import { db } from "./db";
 import {
   users,
   branches,
   memberships,
+  branchClientCrm,
+  branchCustomerBlocks,
   membershipPlans,
   auditLogs,
+  systemEvents,
+  pushTokens,
+  notifications,
   clientNotes,
   attendances,
+  customerReports,
   classSchedules,
   classBookings,
   branchPhotos,
@@ -21,10 +27,16 @@ import {
   type Membership,
   type InsertMembership,
   type AuditLog,
+  type SystemEvent,
+  type PushToken,
+  type Notification,
   type ClientNote,
   type InsertClientNote,
   type Attendance,
   type InsertAttendance,
+  type BranchClientCrm,
+  type BranchCustomerBlock,
+  type CustomerReport,
   type MembershipPlan,
   type InsertMembershipPlan,
   type ClassSchedule,
@@ -52,6 +64,8 @@ import {
 } from "@shared/schema";
 
 const BRANCH_TIMEZONE = "America/Mexico_City";
+const CRM_ACTIVITY_WINDOW_DAYS = 30;
+const CRM_ACTIVITY_WINDOW_MS = CRM_ACTIVITY_WINDOW_DAYS * 24 * 60 * 60 * 1000;
 
 function getMxLocalDate(): string {
   return new Date().toLocaleDateString("en-CA", { timeZone: BRANCH_TIMEZONE });
@@ -63,6 +77,104 @@ function getMxLocalDateAndTime(): { today: string; currentTime: string } {
   const timeStr = now.toLocaleTimeString("en-GB", { timeZone: BRANCH_TIMEZONE, hour12: false });
   const currentTime = timeStr.substring(0, 5);
   return { today, currentTime };
+}
+
+function normalizeSearchText(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function normalizedSearchSql(column: any) {
+  return sql`regexp_replace(
+    translate(lower(coalesce(${column}, '')), U&'\00E1\00E9\00ED\00F3\00FA\00FC\00F1', 'aeiouun'),
+    '[^a-z0-9]+',
+    ' ',
+    'g'
+  )`;
+
+  return sql`regexp_replace(
+    translate(lower(coalesce(${column}, '')), 'áéíóúüñÁÉÍÓÚÜÑ', 'aeiouunAEIOUUN'),
+    '[^a-z0-9]+',
+    ' ',
+    'g'
+  )`;
+}
+
+function normalizedSearchSqlSafe(column: any) {
+  return sql`regexp_replace(
+    translate(lower(coalesce(${column}, '')), 'áéíóúüñ', 'aeiouun'),
+    '[^a-z0-9]+',
+    ' ',
+    'g'
+  )`;
+}
+
+function toDate(value: Date | string | null | undefined): Date | null {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function getLatestDate(...values: Array<Date | string | null | undefined>): Date | null {
+  let latest: Date | null = null;
+  for (const value of values) {
+    const date = toDate(value);
+    if (!date) continue;
+    if (!latest || date.getTime() > latest.getTime()) {
+      latest = date;
+    }
+  }
+  return latest;
+}
+
+function resolveCrmClientStatus(
+  manualStatus: string | null | undefined,
+  lastVisit: Date | string | null | undefined,
+  joinedAt: Date | string | null | undefined,
+): string {
+  if (manualStatus) return manualStatus;
+
+  const visitDate = toDate(lastVisit);
+  if (visitDate && Date.now() - visitDate.getTime() <= CRM_ACTIVITY_WINDOW_MS) {
+    return "activo";
+  }
+
+  const joinedDate = toDate(joinedAt);
+  if (!visitDate && joinedDate && Date.now() - joinedDate.getTime() <= CRM_ACTIVITY_WINDOW_MS) {
+    return "nuevo";
+  }
+
+  return "inactivo";
+}
+
+function buildNotificationVisibilityCondition(actor: { id: string; role: string; branchId?: string | null }) {
+  const conditions = [eq(notifications.recipientUserId, actor.id)];
+
+  if (actor.role === "SUPER_ADMIN") {
+    conditions.push(and(
+      eq(notifications.roleTarget, "SUPER_ADMIN"),
+      isNull(notifications.recipientUserId),
+    )!);
+  } else if (actor.role === "BRANCH_ADMIN" && actor.branchId) {
+    conditions.push(and(
+      eq(notifications.roleTarget, "BRANCH_ADMIN"),
+      eq(notifications.branchId, actor.branchId),
+      isNull(notifications.recipientUserId),
+    )!);
+  } else if (actor.role === "CUSTOMER") {
+    conditions.push(and(
+      eq(notifications.roleTarget, "CUSTOMER"),
+      isNull(notifications.recipientUserId),
+      isNull(notifications.branchId),
+    )!);
+  }
+
+  return conditions.length === 1 ? conditions[0] : or(...conditions)!;
 }
 
 export interface BranchMetrics {
@@ -89,6 +201,7 @@ export interface IStorage {
   updateBranchStatus(id: string, status: string): Promise<Branch | undefined>;
   softDeleteBranch(id: string): Promise<Branch | undefined>;
   getBranchAdmins(branchId: string): Promise<User[]>;
+  getUsersByRole(role: string): Promise<User[]>;
   getBranchMetrics(): Promise<BranchMetrics[]>;
   getBranchStats(branchId: string): Promise<BranchStats>;
   searchBranchesNearby(params: {
@@ -117,8 +230,31 @@ export interface IStorage {
   updateMembership(id: string, data: Partial<InsertMembership>): Promise<Membership | undefined>;
   createAuditLog(data: { actorUserId: string; action: string; branchId?: string; metadata?: any }): Promise<AuditLog>;
   getAuditLogs(limit?: number): Promise<(AuditLog & { actorEmail?: string | null })[]>;
-  getBranchClients(branchId: string): Promise<any[]>;
+  createSystemEvent(data: { eventType: string; branchId?: string | null; userId?: string | null; payload?: any; status?: string }): Promise<SystemEvent>;
+  getSystemEvents(limit?: number): Promise<(SystemEvent & { branchName?: string | null; userEmail?: string | null; userName?: string | null })[]>;
+  upsertPushToken(data: { userId: string; token: string; platform: string; deviceName?: string | null }): Promise<PushToken>;
+  deactivatePushToken(userId: string, token: string): Promise<boolean>;
+  getActivePushTokensByUser(userId: string): Promise<PushToken[]>;
+  getActivePushTokensByUsers(userIds: string[]): Promise<PushToken[]>;
+  getActivePushTokensByBranch(branchId: string): Promise<PushToken[]>;
+  createNotification(data: { recipientUserId?: string | null; branchId?: string | null; roleTarget?: string | null; type: string; title: string; message: string; data?: any; isRead?: boolean; readAt?: Date | null }): Promise<Notification>;
+  getNotificationsForActor(actor: { id: string; role: string; branchId?: string | null }, options?: { limit?: number; page?: number; status?: "all" | "read" | "unread" }): Promise<Notification[]>;
+  getNotificationSummary(actor: { id: string; role: string; branchId?: string | null }): Promise<{ totalCount: number; unreadCount: number; readCount: number }>;
+  markNotificationRead(notificationId: string, actor: { id: string; role: string; branchId?: string | null }): Promise<Notification | undefined>;
+  markAllNotificationsRead(actor: { id: string; role: string; branchId?: string | null }): Promise<number>;
+  deleteNotification(notificationId: string, actor: { id: string; role: string; branchId?: string | null }): Promise<boolean>;
+  deleteReadNotifications(actor: { id: string; role: string; branchId?: string | null }): Promise<number>;
+  deleteAllNotifications(actor: { id: string; role: string; branchId?: string | null }): Promise<number>;
+  cleanupOldNotifications(maxAgeDays?: number): Promise<number>;
+  getBranchClients(branchId: string, includeLeft?: boolean): Promise<any[]>;
   getClientProfile(userId: string, branchId: string): Promise<any>;
+  updateBranchClientCrm(branchId: string, userId: string, data: { clientStatus?: string | null; tags?: string | null; lastVisit?: Date | null }): Promise<any>;
+  getActiveBranchCustomerBlock(branchId: string, userId: string): Promise<BranchCustomerBlock | null>;
+  setBranchCustomerBlock(branchId: string, userId: string, data: { blockedByUserId: string; reason?: string | null; note?: string | null }): Promise<BranchCustomerBlock>;
+  unblockBranchCustomer(branchId: string, userId: string): Promise<number>;
+  createCustomerReport(data: { branchId: string; userId: string; reportedByUserId: string; reason: string; note?: string | null }): Promise<CustomerReport>;
+  getCustomerReports(params?: { branchId?: string; userId?: string; status?: string }): Promise<any[]>;
+  updateCustomerReportStatus(reportId: string, status: string, reviewedByUserId: string): Promise<any>;
   createClientNote(data: InsertClientNote): Promise<ClientNote>;
   getClientNotes(userId: string, branchId: string): Promise<(ClientNote & { createdByName?: string })[]>;
   createAttendance(data: InsertAttendance): Promise<Attendance>;
@@ -184,14 +320,20 @@ export interface IStorage {
   softDeleteMembership(membershipId: string): Promise<any>;
   getUpcomingBookingsForUser(branchId: string, userId: string, fromDate: string, limit?: number): Promise<any[]>;
   updateBranchWhatsappTemplates(branchId: string, templates: Record<string, string>): Promise<any>;
-  updateBranchProfile(branchId: string, data: { description?: string | null; address?: string | null; city?: string | null; googleMapsUrl?: string | null; operatingHours?: any; category?: string | null; subcategory?: string | null; latitude?: number | null; longitude?: number | null; whatsappNumber?: string | null }): Promise<any>;
+  updateBranchProfile(branchId: string, data: { description?: string | null; address?: string | null; city?: string | null; googleMapsUrl?: string | null; operatingHours?: any; category?: string | null; subcategory?: string | null; searchKeywords?: string | null; latitude?: number | null; longitude?: number | null; whatsappNumber?: string | null }): Promise<any>;
   getUpcomingBirthdays(branchId: string, daysAhead?: number): Promise<any[]>;
   getBranchReviews(branchId: string): Promise<any[]>;
   getBranchReviewsSummary(branchId: string): Promise<{ averageRating: number; totalReviews: number }>;
   getUserReview(branchId: string, userId: string): Promise<BranchReview | null>;
   createOrUpdateReview(branchId: string, userId: string, rating: number, comment?: string | null): Promise<BranchReview>;
+  getCustomerAppOverview(): Promise<{ total: number; active: number; blocked: number; recent: number; pendingReports: number }>;
+  getCustomerAppUsers(search?: string): Promise<any[]>;
+  getCustomerAppUserDetail(userId: string): Promise<any>;
+  updateCustomerGlobalBlock(userId: string, data: { isBlocked: boolean; blockedReason?: string | null; blockedBy?: string | null }): Promise<User | undefined>;
+  hideCustomerReviews(userId: string, hidden: boolean, reason?: string | null): Promise<number>;
+  deleteCustomerAppUserSafely(userId: string): Promise<{ deleted: boolean; reason?: string }>;
   getBranchRatings(branchIds: string[]): Promise<Record<string, { averageRating: number; totalReviews: number }>>;
-  getBranchRanking(): Promise<{ id: string; name: string; slug: string; category: string | null; city: string | null; address: string | null; coverImageUrl: string | null; profileImageUrl: string | null; averageRating: number; totalReviews: number }[]>;
+  getBranchRanking(): Promise<{ id: string; name: string; slug: string; category: string | null; subcategory: string | null; city: string | null; address: string | null; coverImageUrl: string | null; profileImageUrl: string | null; averageRating: number; totalReviews: number }[]>;
   getBranchAnnouncements(branchId: string): Promise<BranchAnnouncement[]>;
   createAnnouncement(data: InsertBranchAnnouncement): Promise<BranchAnnouncement>;
   deleteAnnouncement(id: string): Promise<void>;
@@ -294,6 +436,13 @@ export class DatabaseStorage implements IStorage {
       );
   }
 
+  async getUsersByRole(role: string): Promise<User[]> {
+    return db
+      .select()
+      .from(users)
+      .where(eq(users.role, role as any));
+  }
+
   async getBranchMetrics(): Promise<BranchMetrics[]> {
     const results = await db
       .select({
@@ -338,6 +487,7 @@ export class DatabaseStorage implements IStorage {
     q?: string;
   }): Promise<(Branch & { distance_km?: number })[]> {
     const { lat, lng, radiusKm = 50, category, q } = params;
+    const normalizedQuery = q ? normalizeSearchText(q) : "";
 
     const conditions: any[] = [
       eq(branches.status, "active"),
@@ -348,12 +498,17 @@ export class DatabaseStorage implements IStorage {
       conditions.push(eq(branches.category, category));
     }
 
-    if (q) {
+    if (normalizedQuery) {
+      const likeQuery = `%${normalizedQuery}%`;
       conditions.push(
         or(
-          ilike(branches.name, `%${q}%`),
-          ilike(branches.city, `%${q}%`),
-          ilike(branches.description, `%${q}%`)
+          sql`${normalizedSearchSqlSafe(branches.name)} LIKE ${likeQuery}`,
+          sql`${normalizedSearchSqlSafe(branches.category)} LIKE ${likeQuery}`,
+          sql`${normalizedSearchSqlSafe(branches.city)} LIKE ${likeQuery}`,
+          sql`${normalizedSearchSqlSafe(branches.address)} LIKE ${likeQuery}`,
+          sql`${normalizedSearchSqlSafe(branches.description)} LIKE ${likeQuery}`,
+          sql`${normalizedSearchSqlSafe(branches.subcategory)} LIKE ${likeQuery}`,
+          sql`${normalizedSearchSqlSafe(branches.searchKeywords)} LIKE ${likeQuery}`
         )
       );
     }
@@ -377,6 +532,7 @@ export class DatabaseStorage implements IStorage {
           status: branches.status,
           category: branches.category,
           subcategory: branches.subcategory,
+          searchKeywords: branches.searchKeywords,
           latitude: branches.latitude,
           longitude: branches.longitude,
           city: branches.city,
@@ -404,6 +560,7 @@ export class DatabaseStorage implements IStorage {
           status: branches.status,
           category: branches.category,
           subcategory: branches.subcategory,
+          searchKeywords: branches.searchKeywords,
           latitude: branches.latitude,
           longitude: branches.longitude,
           city: branches.city,
@@ -449,6 +606,7 @@ export class DatabaseStorage implements IStorage {
         status: branches.status,
         category: branches.category,
         subcategory: branches.subcategory,
+        searchKeywords: branches.searchKeywords,
         latitude: branches.latitude,
         longitude: branches.longitude,
         city: branches.city,
@@ -644,6 +802,448 @@ export class DatabaseStorage implements IStorage {
     return results;
   }
 
+  async createSystemEvent(data: {
+    eventType: string;
+    branchId?: string | null;
+    userId?: string | null;
+    payload?: any;
+    status?: string;
+  }): Promise<SystemEvent> {
+    const [event] = await db
+      .insert(systemEvents)
+      .values({
+        eventType: data.eventType,
+        branchId: data.branchId ?? null,
+        userId: data.userId ?? null,
+        payload: data.payload ?? null,
+        status: data.status ?? "pending",
+      })
+      .returning();
+    return event;
+  }
+
+  async getSystemEvents(limit = 100): Promise<(SystemEvent & { branchName?: string | null; userEmail?: string | null; userName?: string | null })[]> {
+    const results = await db
+      .select({
+        id: systemEvents.id,
+        eventType: systemEvents.eventType,
+        branchId: systemEvents.branchId,
+        userId: systemEvents.userId,
+        payload: systemEvents.payload,
+        status: systemEvents.status,
+        createdAt: systemEvents.createdAt,
+        processedAt: systemEvents.processedAt,
+        branchName: branches.name,
+        userEmail: users.email,
+        userName: users.name,
+      })
+      .from(systemEvents)
+      .leftJoin(branches, eq(systemEvents.branchId, branches.id))
+      .leftJoin(users, eq(systemEvents.userId, users.id))
+      .orderBy(desc(systemEvents.createdAt))
+      .limit(limit);
+
+    return results as any;
+  }
+
+  async upsertPushToken(data: {
+    userId: string;
+    token: string;
+    platform: string;
+    deviceName?: string | null;
+  }): Promise<PushToken> {
+    const now = new Date();
+    const [pushToken] = await db
+      .insert(pushTokens)
+      .values({
+        userId: data.userId,
+        token: data.token,
+        platform: data.platform,
+        deviceName: data.deviceName ?? null,
+        isActive: true,
+        updatedAt: now,
+        lastUsedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: pushTokens.token,
+        set: {
+          userId: data.userId,
+          platform: data.platform,
+          deviceName: data.deviceName ?? null,
+          isActive: true,
+          updatedAt: now,
+          lastUsedAt: now,
+        },
+      })
+      .returning();
+
+    return pushToken;
+  }
+
+  async deactivatePushToken(userId: string, token: string): Promise<boolean> {
+    const now = new Date();
+    const rows = await db
+      .update(pushTokens)
+      .set({
+        isActive: false,
+        updatedAt: now,
+      })
+      .where(and(eq(pushTokens.userId, userId), eq(pushTokens.token, token)))
+      .returning({ id: pushTokens.id });
+
+    return rows.length > 0;
+  }
+
+  async getActivePushTokensByUser(userId: string): Promise<PushToken[]> {
+    return db
+      .select()
+      .from(pushTokens)
+      .where(and(eq(pushTokens.userId, userId), eq(pushTokens.isActive, true)))
+      .orderBy(desc(pushTokens.updatedAt));
+  }
+
+  async getActivePushTokensByUsers(userIds: string[]): Promise<PushToken[]> {
+    if (userIds.length === 0) return [];
+
+    return db
+      .select()
+      .from(pushTokens)
+      .where(and(inArray(pushTokens.userId, userIds), eq(pushTokens.isActive, true)))
+      .orderBy(desc(pushTokens.updatedAt));
+  }
+
+  async getActivePushTokensByBranch(branchId: string): Promise<PushToken[]> {
+    const activeMembers = await db
+      .select({
+        userId: memberships.userId,
+      })
+      .from(memberships)
+      .where(and(eq(memberships.branchId, branchId), eq(memberships.status, "active")));
+
+    const userIds = Array.from(new Set(activeMembers.map((member) => member.userId)));
+    return this.getActivePushTokensByUsers(userIds);
+  }
+
+  async createNotification(data: {
+    recipientUserId?: string | null;
+    branchId?: string | null;
+    roleTarget?: string | null;
+    type: string;
+    title: string;
+    message: string;
+    data?: any;
+    isRead?: boolean;
+    readAt?: Date | null;
+  }): Promise<Notification> {
+    const [notification] = await db
+      .insert(notifications)
+      .values({
+        recipientUserId: data.recipientUserId ?? null,
+        branchId: data.branchId ?? null,
+        roleTarget: (data.roleTarget as any) ?? null,
+        type: data.type,
+        title: data.title,
+        message: data.message,
+        data: data.data ?? null,
+        isRead: data.isRead ?? false,
+        readAt: data.readAt ?? null,
+      })
+      .returning();
+
+    return notification;
+  }
+
+  async getNotificationsForActor(
+    actor: { id: string; role: string; branchId?: string | null },
+    options?: { limit?: number; page?: number; status?: "all" | "read" | "unread" },
+  ): Promise<Notification[]> {
+    const visibility = buildNotificationVisibilityCondition(actor);
+    const limit = Math.min(Math.max(options?.limit ?? 50, 1), 100);
+    const page = Math.max(options?.page ?? 1, 1);
+    const status = options?.status ?? "all";
+    const conditions = [visibility];
+
+    if (status === "read") {
+      conditions.push(eq(notifications.isRead, true));
+    } else if (status === "unread") {
+      conditions.push(eq(notifications.isRead, false));
+    }
+
+    return db
+      .select()
+      .from(notifications)
+      .where(and(...conditions))
+      .orderBy(desc(notifications.createdAt))
+      .limit(limit)
+      .offset((page - 1) * limit);
+  }
+
+  async getNotificationSummary(actor: { id: string; role: string; branchId?: string | null }): Promise<{ totalCount: number; unreadCount: number; readCount: number }> {
+    const visibility = buildNotificationVisibilityCondition(actor);
+    const [summary] = await db
+      .select({
+        totalCount: count(notifications.id),
+        unreadCount: sql<number>`COUNT(*) FILTER (WHERE ${notifications.isRead} = false)`,
+        readCount: sql<number>`COUNT(*) FILTER (WHERE ${notifications.isRead} = true)`,
+      })
+      .from(notifications)
+      .where(visibility);
+
+    return {
+      totalCount: Number(summary?.totalCount) || 0,
+      unreadCount: Number(summary?.unreadCount) || 0,
+      readCount: Number(summary?.readCount) || 0,
+    };
+  }
+
+  async markNotificationRead(notificationId: string, actor: { id: string; role: string; branchId?: string | null }): Promise<Notification | undefined> {
+    const visibility = buildNotificationVisibilityCondition(actor);
+    const now = new Date();
+    const [notification] = await db
+      .update(notifications)
+      .set({
+        isRead: true,
+        readAt: now,
+      })
+      .where(and(eq(notifications.id, notificationId), visibility))
+      .returning();
+
+    return notification;
+  }
+
+  async markAllNotificationsRead(actor: { id: string; role: string; branchId?: string | null }): Promise<number> {
+    const visibility = buildNotificationVisibilityCondition(actor);
+    const now = new Date();
+    const rows = await db
+      .update(notifications)
+      .set({
+        isRead: true,
+        readAt: now,
+      })
+      .where(and(eq(notifications.isRead, false), visibility))
+      .returning({ id: notifications.id });
+
+    return rows.length;
+  }
+
+  async deleteNotification(notificationId: string, actor: { id: string; role: string; branchId?: string | null }): Promise<boolean> {
+    const visibility = buildNotificationVisibilityCondition(actor);
+    const rows = await db
+      .delete(notifications)
+      .where(and(eq(notifications.id, notificationId), visibility))
+      .returning({ id: notifications.id });
+
+    return rows.length > 0;
+  }
+
+  async deleteReadNotifications(actor: { id: string; role: string; branchId?: string | null }): Promise<number> {
+    const visibility = buildNotificationVisibilityCondition(actor);
+    const rows = await db
+      .delete(notifications)
+      .where(and(eq(notifications.isRead, true), visibility))
+      .returning({ id: notifications.id });
+
+    return rows.length;
+  }
+
+  async deleteAllNotifications(actor: { id: string; role: string; branchId?: string | null }): Promise<number> {
+    const visibility = buildNotificationVisibilityCondition(actor);
+    const rows = await db
+      .delete(notifications)
+      .where(visibility)
+      .returning({ id: notifications.id });
+
+    return rows.length;
+  }
+
+  async cleanupOldNotifications(maxAgeDays = 30): Promise<number> {
+    const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000);
+    const rows = await db
+      .delete(notifications)
+      .where(sql`${notifications.createdAt} < ${cutoff}`)
+      .returning({ id: notifications.id });
+
+    return rows.length;
+  }
+
+  async upsertBranchClientCrm(branchId: string, userId: string, data: { clientStatus?: string | null; tags?: string | null; lastVisit?: Date | null }): Promise<BranchClientCrm> {
+    const now = new Date();
+    const setData: Record<string, any> = {
+      updatedAt: now,
+    };
+
+    if (data.clientStatus !== undefined) setData.clientStatus = data.clientStatus;
+    if (data.tags !== undefined) setData.tags = data.tags;
+    if (data.lastVisit !== undefined) setData.lastVisit = data.lastVisit;
+
+    const [row] = await db
+      .insert(branchClientCrm)
+      .values({
+        branchId,
+        userId,
+        clientStatus: data.clientStatus ?? null,
+        tags: data.tags ?? null,
+        lastVisit: data.lastVisit ?? null,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [branchClientCrm.branchId, branchClientCrm.userId],
+        set: setData,
+      })
+      .returning();
+
+    return row;
+  }
+
+  async touchBranchClientLastVisit(branchId: string, userId: string, lastVisit: Date = new Date()): Promise<void> {
+    await this.upsertBranchClientCrm(branchId, userId, { lastVisit });
+  }
+
+  async getActiveBranchCustomerBlock(branchId: string, userId: string): Promise<BranchCustomerBlock | null> {
+    const [block] = await db
+      .select()
+      .from(branchCustomerBlocks)
+      .where(and(
+        eq(branchCustomerBlocks.branchId, branchId),
+        eq(branchCustomerBlocks.userId, userId),
+        isNull(branchCustomerBlocks.unblockedAt),
+      ))
+      .orderBy(desc(branchCustomerBlocks.createdAt))
+      .limit(1);
+
+    return block || null;
+  }
+
+  async setBranchCustomerBlock(
+    branchId: string,
+    userId: string,
+    data: { blockedByUserId: string; reason?: string | null; note?: string | null },
+  ): Promise<BranchCustomerBlock> {
+    const existing = await this.getActiveBranchCustomerBlock(branchId, userId);
+    if (existing) {
+      const [updated] = await db
+        .update(branchCustomerBlocks)
+        .set({
+          blockedByUserId: data.blockedByUserId,
+          reason: data.reason ?? null,
+          note: data.note ?? null,
+        })
+        .where(eq(branchCustomerBlocks.id, existing.id))
+        .returning();
+      return updated;
+    }
+
+    const [created] = await db
+      .insert(branchCustomerBlocks)
+      .values({
+        branchId,
+        userId,
+        blockedByUserId: data.blockedByUserId,
+        reason: data.reason ?? null,
+        note: data.note ?? null,
+      })
+      .returning();
+    return created;
+  }
+
+  async unblockBranchCustomer(branchId: string, userId: string): Promise<number> {
+    const result = await db
+      .update(branchCustomerBlocks)
+      .set({ unblockedAt: new Date() })
+      .where(and(
+        eq(branchCustomerBlocks.branchId, branchId),
+        eq(branchCustomerBlocks.userId, userId),
+        isNull(branchCustomerBlocks.unblockedAt),
+      ));
+
+    return Number((result as any).rowCount || 0);
+  }
+
+  async createCustomerReport(data: {
+    branchId: string;
+    userId: string;
+    reportedByUserId: string;
+    reason: string;
+    note?: string | null;
+  }): Promise<CustomerReport> {
+    const [report] = await db
+      .insert(customerReports)
+      .values({
+        branchId: data.branchId,
+        userId: data.userId,
+        reportedByUserId: data.reportedByUserId,
+        reason: data.reason,
+        note: data.note ?? null,
+      })
+      .returning();
+    return report;
+  }
+
+  async getCustomerReports(params?: { branchId?: string; userId?: string; status?: string }): Promise<any[]> {
+    const conditions: any[] = [];
+    if (params?.branchId) conditions.push(eq(customerReports.branchId, params.branchId));
+    if (params?.userId) conditions.push(eq(customerReports.userId, params.userId));
+    if (params?.status) conditions.push(eq(customerReports.status, params.status as any));
+
+    const branchReporterAlias = sql<string>`(
+      SELECT u.name
+      FROM users u
+      WHERE u.id = ${customerReports.reportedByUserId}
+      LIMIT 1
+    )`;
+    const reviewActorAlias = sql<string>`(
+      SELECT u.name
+      FROM users u
+      WHERE u.id = ${customerReports.reviewedByUserId}
+      LIMIT 1
+    )`;
+
+    const query = db
+      .select({
+        id: customerReports.id,
+        branchId: customerReports.branchId,
+        userId: customerReports.userId,
+        reportedByUserId: customerReports.reportedByUserId,
+        reason: customerReports.reason,
+        note: customerReports.note,
+        status: customerReports.status,
+        createdAt: customerReports.createdAt,
+        reviewedAt: customerReports.reviewedAt,
+        reviewedByUserId: customerReports.reviewedByUserId,
+        branchName: branches.name,
+        branchSlug: branches.slug,
+        customerName: users.name,
+        customerLastName: users.lastName,
+        customerEmail: users.email,
+        reporterName: branchReporterAlias.as("reporter_name"),
+        reviewerName: reviewActorAlias.as("reviewer_name"),
+      })
+      .from(customerReports)
+      .innerJoin(branches, eq(customerReports.branchId, branches.id))
+      .innerJoin(users, eq(customerReports.userId, users.id));
+
+    const rows = conditions.length > 0
+      ? await query.where(and(...conditions)).orderBy(desc(customerReports.createdAt))
+      : await query.orderBy(desc(customerReports.createdAt));
+
+    return rows;
+  }
+
+  async updateCustomerReportStatus(reportId: string, status: string, reviewedByUserId: string): Promise<any> {
+    const reviewedAt = status === "pending" ? null : new Date();
+    const reviewedBy = status === "pending" ? null : reviewedByUserId;
+    const [updated] = await db
+      .update(customerReports)
+      .set({
+        status: status as any,
+        reviewedAt,
+        reviewedByUserId: reviewedBy,
+      })
+      .where(eq(customerReports.id, reportId))
+      .returning();
+    return updated;
+  }
+
   async getBranchClients(branchId: string, includeLeft: boolean = false): Promise<any[]> {
     const conditions = [eq(memberships.branchId, branchId)];
     if (!includeLeft) {
@@ -686,25 +1286,87 @@ export class DatabaseStorage implements IStorage {
       .where(and(...conditions))
       .orderBy(desc(memberships.joinedAt));
 
-    const clientIds = results.map(r => r.userId);
-    let lastAttendanceMap: Record<string, Date> = {};
-    if (clientIds.length > 0) {
-      const attResults = await db
-        .select({
-          userId: attendances.userId,
-          lastCheckin: sql<string>`MAX(${attendances.checkedInAt})`.as("last_checkin"),
-        })
-        .from(attendances)
-        .where(and(
-          eq(attendances.branchId, branchId),
-          sql`${attendances.userId} = ANY(${sql`ARRAY[${sql.join(clientIds.map(id => sql`${id}`), sql`,`)}]`})`
-        ))
-        .groupBy(attendances.userId);
+    const clientIds = results.map((r) => r.userId);
+    const lastAttendanceMap: Record<string, Date> = {};
+    const latestBookingMap: Record<string, Date> = {};
+    const crmMap: Record<string, BranchClientCrm> = {};
+    const localBlockMap: Record<string, BranchCustomerBlock> = {};
+    const reportCountMap: Record<string, number> = {};
 
-      for (const a of attResults) {
-        if (a.lastCheckin) {
-          lastAttendanceMap[a.userId] = new Date(a.lastCheckin);
+    if (clientIds.length > 0) {
+      const [attResults, bookingResults, crmResults, blockResults, reportResults] = await Promise.all([
+        db
+          .select({
+            userId: attendances.userId,
+            lastCheckin: sql<string>`MAX(${attendances.checkedInAt})`.as("last_checkin"),
+          })
+          .from(attendances)
+          .where(and(
+            eq(attendances.branchId, branchId),
+            inArray(attendances.userId, clientIds),
+          ))
+          .groupBy(attendances.userId),
+        db
+          .select({
+            userId: classBookings.userId,
+            lastBookingAt: sql<string>`MAX(${classBookings.createdAt})`.as("last_booking_at"),
+          })
+          .from(classBookings)
+          .where(and(
+            eq(classBookings.branchId, branchId),
+            inArray(classBookings.userId, clientIds),
+          ))
+          .groupBy(classBookings.userId),
+        db
+          .select()
+          .from(branchClientCrm)
+          .where(and(
+            eq(branchClientCrm.branchId, branchId),
+            inArray(branchClientCrm.userId, clientIds),
+          )),
+        db
+          .select()
+          .from(branchCustomerBlocks)
+          .where(and(
+            eq(branchCustomerBlocks.branchId, branchId),
+            inArray(branchCustomerBlocks.userId, clientIds),
+            isNull(branchCustomerBlocks.unblockedAt),
+          )),
+        db
+          .select({
+            userId: customerReports.userId,
+            total: sql<number>`COUNT(*)`.as("total"),
+          })
+          .from(customerReports)
+          .where(and(
+            eq(customerReports.branchId, branchId),
+            inArray(customerReports.userId, clientIds),
+          ))
+          .groupBy(customerReports.userId),
+      ]);
+
+      for (const attendance of attResults) {
+        if (attendance.lastCheckin) {
+          lastAttendanceMap[attendance.userId] = new Date(attendance.lastCheckin);
         }
+      }
+
+      for (const booking of bookingResults) {
+        if (booking.lastBookingAt) {
+          latestBookingMap[booking.userId] = new Date(booking.lastBookingAt);
+        }
+      }
+
+      for (const crm of crmResults) {
+        crmMap[crm.userId] = crm;
+      }
+
+      for (const block of blockResults) {
+        localBlockMap[block.userId] = block;
+      }
+
+      for (const report of reportResults) {
+        reportCountMap[report.userId] = Number(report.total) || 0;
       }
     }
 
@@ -716,11 +1378,27 @@ export class DatabaseStorage implements IStorage {
       } else if (r.planNameSnapshot) {
         planStatus = "deleted";
       }
+      const crm = crmMap[r.userId];
+      const lastAttendance = lastAttendanceMap[r.userId] || null;
+      const lastVisit = getLatestDate(
+        crm?.lastVisit,
+        lastAttendance,
+        latestBookingMap[r.userId],
+      );
+      const localBlock = localBlockMap[r.userId] || null;
       return {
         ...r,
         planName: r.planName || r.planNameSnapshot || null,
         planStatus,
-        lastAttendance: lastAttendanceMap[r.userId] || null,
+        lastAttendance,
+        crmClientStatus: resolveCrmClientStatus(crm?.clientStatus, lastVisit, r.joinedAt),
+        crmManualStatus: crm?.clientStatus || null,
+        lastVisit,
+        tags: crm?.tags || null,
+        isLocallyBlocked: !!localBlock,
+        localBlockedAt: localBlock?.createdAt || null,
+        localBlockReason: localBlock?.reason || null,
+        reportCount: reportCountMap[r.userId] || 0,
       };
     });
   }
@@ -744,11 +1422,25 @@ export class DatabaseStorage implements IStorage {
 
     const notes = await this.getClientNotes(userId, branchId);
     const recentAttendances = await this.getClientAttendances(userId, branchId, 10);
+    const [crmEntry] = await db
+      .select()
+      .from(branchClientCrm)
+      .where(and(eq(branchClientCrm.branchId, branchId), eq(branchClientCrm.userId, userId)))
+      .limit(1);
+    const localBlock = await this.getActiveBranchCustomerBlock(branchId, userId);
+    const reports = await this.getCustomerReports({ branchId, userId });
 
     const [attendanceCount] = await db
       .select({ count: sql<number>`COUNT(*)`.as("count") })
       .from(attendances)
       .where(and(eq(attendances.userId, userId), eq(attendances.branchId, branchId)));
+
+    const [latestBookingActivity] = await db
+      .select({
+        lastBookingAt: sql<string>`MAX(${classBookings.createdAt})`.as("last_booking_at"),
+      })
+      .from(classBookings)
+      .where(and(eq(classBookings.userId, userId), eq(classBookings.branchId, branchId)));
 
     const today = getMxLocalDate();
     const nextBookingResults = await db
@@ -781,6 +1473,12 @@ export class DatabaseStorage implements IStorage {
       planStatus = "deleted";
     }
 
+    const lastVisit = getLatestDate(
+      crmEntry?.lastVisit,
+      recentAttendances[0]?.checkedInAt,
+      latestBookingActivity?.lastBookingAt,
+    );
+
     return {
       user: {
         id: user.id,
@@ -801,6 +1499,23 @@ export class DatabaseStorage implements IStorage {
         createdAt: user.createdAt,
       },
       membership,
+      crm: {
+        clientStatus: resolveCrmClientStatus(crmEntry?.clientStatus, lastVisit, membership.joinedAt),
+        manualStatus: crmEntry?.clientStatus || null,
+        lastVisit,
+        tags: crmEntry?.tags || null,
+      },
+      moderation: {
+        localBlock: localBlock
+          ? {
+              id: localBlock.id,
+              reason: localBlock.reason,
+              note: localBlock.note,
+              createdAt: localBlock.createdAt,
+            }
+          : null,
+        reports,
+      },
       planStatus,
       planNameSnapshot: membership.planNameSnapshot,
       plan,
@@ -840,6 +1555,7 @@ export class DatabaseStorage implements IStorage {
 
   async createAttendance(data: InsertAttendance): Promise<Attendance> {
     const [att] = await db.insert(attendances).values(data).returning();
+    await this.touchBranchClientLastVisit(data.branchId, data.userId);
     return att;
   }
 
@@ -1187,6 +1903,7 @@ export class DatabaseStorage implements IStorage {
 
   async createBooking(data: InsertClassBooking): Promise<ClassBooking> {
     const [booking] = await db.insert(classBookings).values(data).returning();
+    await this.touchBranchClientLastVisit(data.branchId, data.userId);
     return booking;
   }
 
@@ -1710,6 +2427,19 @@ export class DatabaseStorage implements IStorage {
     return updated;
   }
 
+  async updateBranchClientCrm(branchId: string, userId: string, data: { clientStatus?: string | null; tags?: string | null; lastVisit?: Date | null }): Promise<any> {
+    const membership = await this.getMembership(userId, branchId);
+    const crmEntry = await this.upsertBranchClientCrm(branchId, userId, data);
+    const lastVisit = getLatestDate(crmEntry.lastVisit);
+
+    return {
+      clientStatus: crmEntry.clientStatus,
+      crmClientStatus: resolveCrmClientStatus(crmEntry.clientStatus, lastVisit, membership?.joinedAt || null),
+      lastVisit,
+      tags: crmEntry.tags,
+    };
+  }
+
   async softDeleteMembership(membershipId: string): Promise<any> {
     const [updated] = await db
       .update(memberships)
@@ -1777,7 +2507,7 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(branchAnnouncements.branchId, branchId), eq(branchAnnouncements.isActive, true)));
   }
 
-  async updateBranchProfile(branchId: string, data: { description?: string | null; address?: string | null; city?: string | null; googleMapsUrl?: string | null; operatingHours?: any; locations?: any; category?: string | null; subcategory?: string | null; latitude?: number | null; longitude?: number | null; whatsappNumber?: string | null }): Promise<any> {
+  async updateBranchProfile(branchId: string, data: { description?: string | null; address?: string | null; city?: string | null; googleMapsUrl?: string | null; operatingHours?: any; locations?: any; category?: string | null; subcategory?: string | null; searchKeywords?: string | null; latitude?: number | null; longitude?: number | null; whatsappNumber?: string | null }): Promise<any> {
     const setData: any = {};
     if (data.description !== undefined) setData.description = data.description;
     if (data.address !== undefined) setData.address = data.address;
@@ -1787,6 +2517,7 @@ export class DatabaseStorage implements IStorage {
     if (data.locations !== undefined) setData.locations = data.locations;
     if (data.category !== undefined) setData.category = data.category;
     if (data.subcategory !== undefined) setData.subcategory = data.subcategory;
+    if (data.searchKeywords !== undefined) setData.searchKeywords = data.searchKeywords;
     if (data.latitude !== undefined) setData.latitude = data.latitude;
     if (data.longitude !== undefined) setData.longitude = data.longitude;
     if (data.whatsappNumber !== undefined) setData.whatsappNumber = data.whatsappNumber;
@@ -1835,13 +2566,18 @@ export class DatabaseStorage implements IStorage {
         rating: branchReviews.rating,
         comment: branchReviews.comment,
         adminReply: branchReviews.adminReply,
+        isHidden: branchReviews.isHidden,
+        hiddenReason: branchReviews.hiddenReason,
         createdAt: branchReviews.createdAt,
         userName: users.name,
         userLastName: users.lastName,
       })
       .from(branchReviews)
       .innerJoin(users, eq(branchReviews.userId, users.id))
-      .where(eq(branchReviews.branchId, branchId))
+      .where(and(
+        eq(branchReviews.branchId, branchId),
+        eq(branchReviews.isHidden, false),
+      ))
       .orderBy(desc(branchReviews.createdAt))
       .limit(20);
     return results;
@@ -1854,7 +2590,10 @@ export class DatabaseStorage implements IStorage {
         total: sql<number>`COUNT(*)`,
       })
       .from(branchReviews)
-      .where(eq(branchReviews.branchId, branchId));
+      .where(and(
+        eq(branchReviews.branchId, branchId),
+        eq(branchReviews.isHidden, false),
+      ));
     return {
       averageRating: Number(result[0]?.avgRating || 0),
       totalReviews: Number(result[0]?.total || 0),
@@ -1887,6 +2626,264 @@ export class DatabaseStorage implements IStorage {
     return inserted[0];
   }
 
+  async getCustomerAppOverview(): Promise<{ total: number; active: number; blocked: number; recent: number; pendingReports: number }> {
+    const [userStats] = await db
+      .select({
+        total: sql<number>`COUNT(*)`,
+        blocked: sql<number>`COUNT(*) FILTER (WHERE ${users.isBlocked} = true)`,
+        active: sql<number>`COUNT(*) FILTER (WHERE ${users.isBlocked} = false)`,
+        recent: sql<number>`COUNT(*) FILTER (WHERE ${users.createdAt} >= NOW() - INTERVAL '30 days')`,
+      })
+      .from(users)
+      .where(eq(users.role, "CUSTOMER"));
+
+    const [reportStats] = await db
+      .select({
+        pending: sql<number>`COUNT(*) FILTER (WHERE ${customerReports.status} = 'pending')`,
+      })
+      .from(customerReports);
+
+    return {
+      total: Number(userStats?.total) || 0,
+      active: Number(userStats?.active) || 0,
+      blocked: Number(userStats?.blocked) || 0,
+      recent: Number(userStats?.recent) || 0,
+      pendingReports: Number(reportStats?.pending) || 0,
+    };
+  }
+
+  async getCustomerAppUsers(search?: string): Promise<any[]> {
+    const conditions: any[] = [eq(users.role, "CUSTOMER")];
+    const normalizedQuery = search ? normalizeSearchText(search) : "";
+
+    if (normalizedQuery) {
+      const likeQuery = `%${normalizedQuery}%`;
+      const fullName = sql<string>`concat_ws(' ', ${users.name}, coalesce(${users.lastName}, ''))`;
+      conditions.push(
+        or(
+          sql`${normalizedSearchSqlSafe(fullName)} LIKE ${likeQuery}`,
+          sql`${normalizedSearchSqlSafe(users.email)} LIKE ${likeQuery}`,
+          sql`${normalizedSearchSqlSafe(users.phone)} LIKE ${likeQuery}`,
+        ),
+      );
+    }
+
+    const rows = await db
+      .select({
+        id: users.id,
+        name: users.name,
+        lastName: users.lastName,
+        email: users.email,
+        phone: users.phone,
+        createdAt: users.createdAt,
+        isBlocked: users.isBlocked,
+        blockedAt: users.blockedAt,
+        blockedReason: users.blockedReason,
+        blockedBy: users.blockedBy,
+        branchCount: sql<number>`(
+          SELECT COUNT(DISTINCT m.branch_id)
+          FROM memberships m
+          WHERE m.user_id = ${users.id}
+            AND m.status = 'active'
+        )`,
+        reviewCount: sql<number>`(
+          SELECT COUNT(*)
+          FROM branch_reviews r
+          WHERE r.user_id = ${users.id}
+        )`,
+        lastActivity: sql<Date | null>`NULLIF(GREATEST(
+          COALESCE(${users.createdAt}, to_timestamp(0)),
+          COALESCE((SELECT MAX(m.last_seen_at) FROM memberships m WHERE m.user_id = ${users.id}), to_timestamp(0)),
+          COALESCE((SELECT MAX(cb.created_at) FROM class_bookings cb WHERE cb.user_id = ${users.id}), to_timestamp(0)),
+          COALESCE((SELECT MAX(bc.last_visit) FROM branch_client_crm bc WHERE bc.user_id = ${users.id}), to_timestamp(0)),
+          COALESCE((SELECT MAX(rv.created_at) FROM branch_reviews rv WHERE rv.user_id = ${users.id}), to_timestamp(0))
+        ), to_timestamp(0))`,
+      })
+      .from(users)
+      .where(and(...conditions))
+      .orderBy(desc(users.createdAt));
+
+    return rows.map((row) => ({
+      ...row,
+      branchCount: Number(row.branchCount) || 0,
+      reviewCount: Number(row.reviewCount) || 0,
+    }));
+  }
+
+  async getCustomerAppUserDetail(userId: string): Promise<any> {
+    const [user] = await db
+      .select()
+      .from(users)
+      .where(and(eq(users.id, userId), eq(users.role, "CUSTOMER")))
+      .limit(1);
+
+    if (!user) return null;
+
+    const [membershipCountRows, reviewCountRows] = await Promise.all([
+      db
+        .select({
+          total: sql<number>`COUNT(DISTINCT ${memberships.branchId})`,
+        })
+        .from(memberships)
+        .where(and(eq(memberships.userId, userId), eq(memberships.status, "active"))),
+      db
+        .select({
+          total: sql<number>`COUNT(*)`,
+        })
+        .from(branchReviews)
+        .where(eq(branchReviews.userId, userId)),
+    ]);
+
+    const membershipsRows = await db
+      .select({
+        id: memberships.id,
+        branchId: memberships.branchId,
+        status: memberships.status,
+        joinedAt: memberships.joinedAt,
+        lastSeenAt: memberships.lastSeenAt,
+        clientStatus: memberships.clientStatus,
+        isFavorite: memberships.isFavorite,
+        branchName: branches.name,
+        branchSlug: branches.slug,
+      })
+      .from(memberships)
+      .innerJoin(branches, eq(memberships.branchId, branches.id))
+      .where(eq(memberships.userId, userId))
+      .orderBy(desc(memberships.joinedAt));
+
+    const reviewRows = await db
+      .select({
+        id: branchReviews.id,
+        branchId: branchReviews.branchId,
+        rating: branchReviews.rating,
+        comment: branchReviews.comment,
+        adminReply: branchReviews.adminReply,
+        isHidden: branchReviews.isHidden,
+        hiddenReason: branchReviews.hiddenReason,
+        createdAt: branchReviews.createdAt,
+        branchName: branches.name,
+        branchSlug: branches.slug,
+      })
+      .from(branchReviews)
+      .innerJoin(branches, eq(branchReviews.branchId, branches.id))
+      .where(eq(branchReviews.userId, userId))
+      .orderBy(desc(branchReviews.createdAt));
+
+    const reports = await this.getCustomerReports({ userId });
+    const localBlocks = await db
+      .select({
+        id: branchCustomerBlocks.id,
+        branchId: branchCustomerBlocks.branchId,
+        reason: branchCustomerBlocks.reason,
+        note: branchCustomerBlocks.note,
+        createdAt: branchCustomerBlocks.createdAt,
+        unblockedAt: branchCustomerBlocks.unblockedAt,
+        branchName: branches.name,
+        branchSlug: branches.slug,
+      })
+      .from(branchCustomerBlocks)
+      .innerJoin(branches, eq(branchCustomerBlocks.branchId, branches.id))
+      .where(eq(branchCustomerBlocks.userId, userId))
+      .orderBy(desc(branchCustomerBlocks.createdAt));
+
+    const [lastActivityRow] = await db
+      .select({
+        lastActivity: sql<Date | null>`NULLIF(GREATEST(
+          COALESCE(${users.createdAt}, to_timestamp(0)),
+          COALESCE((SELECT MAX(m.last_seen_at) FROM memberships m WHERE m.user_id = ${userId}), to_timestamp(0)),
+          COALESCE((SELECT MAX(cb.created_at) FROM class_bookings cb WHERE cb.user_id = ${userId}), to_timestamp(0)),
+          COALESCE((SELECT MAX(bc.last_visit) FROM branch_client_crm bc WHERE bc.user_id = ${userId}), to_timestamp(0)),
+          COALESCE((SELECT MAX(rv.created_at) FROM branch_reviews rv WHERE rv.user_id = ${userId}), to_timestamp(0))
+        ), to_timestamp(0))`,
+      })
+      .from(users)
+      .where(eq(users.id, userId));
+
+    return {
+      user,
+      stats: {
+        branchCount: Number(membershipCountRows[0]?.total) || 0,
+        reviewCount: Number(reviewCountRows[0]?.total) || 0,
+        lastActivity: lastActivityRow?.lastActivity || null,
+      },
+      memberships: membershipsRows,
+      reviews: reviewRows,
+      reports,
+      localBlocks,
+    };
+  }
+
+  async updateCustomerGlobalBlock(
+    userId: string,
+    data: { isBlocked: boolean; blockedReason?: string | null; blockedBy?: string | null },
+  ): Promise<User | undefined> {
+    const [updated] = await db
+      .update(users)
+      .set({
+        isBlocked: data.isBlocked,
+        blockedAt: data.isBlocked ? new Date() : null,
+        blockedReason: data.isBlocked ? (data.blockedReason ?? null) : null,
+        blockedBy: data.isBlocked ? (data.blockedBy ?? null) : null,
+      })
+      .where(and(eq(users.id, userId), eq(users.role, "CUSTOMER")))
+      .returning();
+
+    return updated;
+  }
+
+  async hideCustomerReviews(userId: string, hidden: boolean, reason?: string | null): Promise<number> {
+    const result = await db
+      .update(branchReviews)
+      .set({
+        isHidden: hidden,
+        hiddenReason: hidden ? (reason ?? "Moderado por Super Admin") : null,
+      })
+      .where(eq(branchReviews.userId, userId));
+    return Number((result as any).rowCount || 0);
+  }
+
+  async deleteCustomerAppUserSafely(userId: string): Promise<{ deleted: boolean; reason?: string }> {
+    const [user] = await db
+      .select()
+      .from(users)
+      .where(and(eq(users.id, userId), eq(users.role, "CUSTOMER")))
+      .limit(1);
+
+    if (!user) {
+      return { deleted: false, reason: "Usuario no encontrado" };
+    }
+
+    const [bookingCount, attendanceCount, activeMembershipCount] = await Promise.all([
+      db.select({ total: sql<number>`COUNT(*)` }).from(classBookings).where(eq(classBookings.userId, userId)),
+      db.select({ total: sql<number>`COUNT(*)` }).from(attendances).where(eq(attendances.userId, userId)),
+      db.select({ total: sql<number>`COUNT(*)` }).from(memberships).where(and(eq(memberships.userId, userId), eq(memberships.status, "active"))),
+    ]);
+
+    if (Number(bookingCount[0]?.total) > 0) {
+      return { deleted: false, reason: "El usuario tiene reservas registradas" };
+    }
+    if (Number(attendanceCount[0]?.total) > 0) {
+      return { deleted: false, reason: "El usuario tiene asistencias registradas" };
+    }
+    if (Number(activeMembershipCount[0]?.total) > 0) {
+      return { deleted: false, reason: "El usuario tiene membresias activas" };
+    }
+
+    await db.delete(systemEvents).where(eq(systemEvents.userId, userId));
+    await db.delete(notifications).where(eq(notifications.recipientUserId, userId));
+    await db.delete(pushTokens).where(eq(pushTokens.userId, userId));
+    await db.delete(branchReviews).where(eq(branchReviews.userId, userId));
+    await db.delete(customerReports).where(eq(customerReports.userId, userId));
+    await db.delete(branchCustomerBlocks).where(eq(branchCustomerBlocks.userId, userId));
+    await db.delete(branchClientCrm).where(eq(branchClientCrm.userId, userId));
+    await db.delete(clientNotes).where(eq(clientNotes.userId, userId));
+    await db.delete(memberships).where(eq(memberships.userId, userId));
+    await db.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, userId));
+    await db.delete(users).where(eq(users.id, userId));
+
+    return { deleted: true };
+  }
+
   async getBranchRatings(branchIds: string[]): Promise<Record<string, { averageRating: number; totalReviews: number }>> {
     if (!branchIds.length) return {};
     const rows = await db
@@ -1896,7 +2893,10 @@ export class DatabaseStorage implements IStorage {
         total: sql<number>`COUNT(*)`,
       })
       .from(branchReviews)
-      .where(inArray(branchReviews.branchId, branchIds))
+      .where(and(
+        inArray(branchReviews.branchId, branchIds),
+        eq(branchReviews.isHidden, false),
+      ))
       .groupBy(branchReviews.branchId);
     const map: Record<string, { averageRating: number; totalReviews: number }> = {};
     for (const row of rows) {
@@ -1905,7 +2905,7 @@ export class DatabaseStorage implements IStorage {
     return map;
   }
 
-  async getBranchRanking(): Promise<{ id: string; name: string; slug: string; category: string | null; city: string | null; address: string | null; coverImageUrl: string | null; profileImageUrl: string | null; averageRating: number; totalReviews: number }[]> {
+  async getBranchRanking(): Promise<{ id: string; name: string; slug: string; category: string | null; subcategory: string | null; city: string | null; address: string | null; coverImageUrl: string | null; profileImageUrl: string | null; averageRating: number; totalReviews: number }[]> {
     const profileImgSubquery = sql<string | null>`(SELECT url FROM branch_photos WHERE branch_id = branches.id AND type = 'profile' LIMIT 1)`;
     const rows = await db
       .select({
@@ -1913,6 +2913,7 @@ export class DatabaseStorage implements IStorage {
         name: branches.name,
         slug: branches.slug,
         category: branches.category,
+        subcategory: branches.subcategory,
         city: branches.city,
         address: branches.address,
         coverImageUrl: branches.coverImageUrl,
@@ -1922,7 +2923,11 @@ export class DatabaseStorage implements IStorage {
       })
       .from(branches)
       .leftJoin(branchReviews, eq(branchReviews.branchId, branches.id))
-      .where(and(eq(branches.status, "active"), isNull(branches.deletedAt)))
+      .where(and(
+        eq(branches.status, "active"),
+        isNull(branches.deletedAt),
+        sql`(${branchReviews.id} IS NULL OR ${branchReviews.isHidden} = false)`,
+      ))
       .groupBy(branches.id)
       .having(sql`COUNT(${branchReviews.id}) > 0`)
       .orderBy(desc(sql`ROUND(COALESCE(AVG(${branchReviews.rating}), 0)::numeric, 1)`), desc(sql`COUNT(${branchReviews.id})`))
@@ -1947,7 +2952,7 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(promotions.createdAt));
   }
 
-  async getGlobalPromotions(): Promise<(Promotion & { branchName: string; branchSlug: string })[]> {
+  async getGlobalPromotions(): Promise<(Promotion & { branchName: string; branchSlug: string; branchWhatsapp: string | null })[]> {
     const today = getMxLocalDate();
     const rows = await db
       .select({

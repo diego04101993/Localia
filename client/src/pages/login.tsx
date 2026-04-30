@@ -103,9 +103,12 @@ function LoginView({ onRegister, initialEmail = "" }: { onRegister: () => void; 
                       data-testid="input-email"
                       className={inputClass}
                       style={inputStyle}
-                      onFocus={onFocusStyle}
-                      onBlur={onBlurStyle}
                       {...field}
+                      onFocus={onFocusStyle}
+                      onBlur={(e) => {
+                        field.onBlur();
+                        onBlurStyle(e);
+                      }}
                     />
                   </div>
                 </FormControl>
@@ -128,9 +131,12 @@ function LoginView({ onRegister, initialEmail = "" }: { onRegister: () => void; 
                       data-testid="input-password"
                       className="w-full h-12 pl-11 pr-12 rounded-2xl text-sm outline-none transition-all"
                       style={inputStyle}
-                      onFocus={onFocusStyle}
-                      onBlur={onBlurStyle}
                       {...field}
+                      onFocus={onFocusStyle}
+                      onBlur={(e) => {
+                        field.onBlur();
+                        onBlurStyle(e);
+                      }}
                     />
                     <button
                       type="button"
@@ -335,9 +341,12 @@ function RegisterView({ onBack, onGoLogin }: { onBack: () => void; onGoLogin: (e
                       data-testid="input-register-name"
                       className={inputClass}
                       style={inputStyle}
-                      onFocus={onFocusStyle}
-                      onBlur={onBlurStyle}
                       {...field}
+                      onFocus={onFocusStyle}
+                      onBlur={(e) => {
+                        field.onBlur();
+                        onBlurStyle(e);
+                      }}
                     />
                   </div>
                 </FormControl>
@@ -361,9 +370,12 @@ function RegisterView({ onBack, onGoLogin }: { onBack: () => void; onGoLogin: (e
                       data-testid="input-register-lastname"
                       className={inputClass}
                       style={inputStyle}
-                      onFocus={onFocusStyle}
-                      onBlur={onBlurStyle}
                       {...field}
+                      onFocus={onFocusStyle}
+                      onBlur={(e) => {
+                        field.onBlur();
+                        onBlurStyle(e);
+                      }}
                     />
                   </div>
                 </FormControl>
@@ -387,9 +399,12 @@ function RegisterView({ onBack, onGoLogin }: { onBack: () => void; onGoLogin: (e
                       data-testid="input-register-email"
                       className={inputClass}
                       style={inputStyle}
-                      onFocus={onFocusStyle}
-                      onBlur={onBlurStyle}
                       {...field}
+                      onFocus={onFocusStyle}
+                      onBlur={(e) => {
+                        field.onBlur();
+                        onBlurStyle(e);
+                      }}
                     />
                   </div>
                 </FormControl>
@@ -413,9 +428,12 @@ function RegisterView({ onBack, onGoLogin }: { onBack: () => void; onGoLogin: (e
                       data-testid="input-register-phone"
                       className={inputClass}
                       style={inputStyle}
-                      onFocus={onFocusStyle}
-                      onBlur={onBlurStyle}
                       {...field}
+                      onFocus={onFocusStyle}
+                      onBlur={(e) => {
+                        field.onBlur();
+                        onBlurStyle(e);
+                      }}
                     />
                   </div>
                 </FormControl>
@@ -439,9 +457,12 @@ function RegisterView({ onBack, onGoLogin }: { onBack: () => void; onGoLogin: (e
                       data-testid="input-register-birthdate"
                       className={inputClass}
                       style={{ ...inputStyle, paddingLeft: "2.75rem" }}
-                      onFocus={onFocusStyle}
-                      onBlur={onBlurStyle}
                       {...field}
+                      onFocus={onFocusStyle}
+                      onBlur={(e) => {
+                        field.onBlur();
+                        onBlurStyle(e);
+                      }}
                     />
                   </div>
                 </FormControl>
@@ -463,9 +484,12 @@ function RegisterView({ onBack, onGoLogin }: { onBack: () => void; onGoLogin: (e
                       data-testid="select-register-gender"
                       className="w-full h-12 pl-4 pr-10 rounded-2xl text-sm outline-none transition-all appearance-none"
                       style={inputStyle}
-                      onFocus={onFocusStyle}
-                      onBlur={onBlurStyle}
                       {...field}
+                      onFocus={onFocusStyle}
+                      onBlur={(e) => {
+                        field.onBlur();
+                        onBlurStyle(e);
+                      }}
                     >
                       <option value="">Sexo (opcional)</option>
                       <option value="M">Masculino</option>
@@ -494,9 +518,12 @@ function RegisterView({ onBack, onGoLogin }: { onBack: () => void; onGoLogin: (e
                       data-testid="input-register-password"
                       className="w-full h-12 pl-11 pr-12 rounded-2xl text-sm outline-none transition-all"
                       style={inputStyle}
-                      onFocus={onFocusStyle}
-                      onBlur={onBlurStyle}
                       {...field}
+                      onFocus={onFocusStyle}
+                      onBlur={(e) => {
+                        field.onBlur();
+                        onBlurStyle(e);
+                      }}
                     />
                     <button
                       type="button"
@@ -528,9 +555,12 @@ function RegisterView({ onBack, onGoLogin }: { onBack: () => void; onGoLogin: (e
                       data-testid="input-register-confirm-password"
                       className="w-full h-12 pl-11 pr-12 rounded-2xl text-sm outline-none transition-all"
                       style={inputStyle}
-                      onFocus={onFocusStyle}
-                      onBlur={onBlurStyle}
                       {...field}
+                      onFocus={onFocusStyle}
+                      onBlur={(e) => {
+                        field.onBlur();
+                        onBlurStyle(e);
+                      }}
                     />
                     <button
                       type="button"

@@ -55,6 +55,10 @@ export const users = pgTable("users", {
   emailVerifiedAt: text("email_verified_at"),
   emailVerificationToken: text("email_verification_token"),
   emailVerificationTokenExpiresAt: text("email_verification_token_expires_at"),
+  isBlocked: boolean("is_blocked").notNull().default(false),
+  blockedAt: timestamp("blocked_at", { withTimezone: true }),
+  blockedReason: text("blocked_reason"),
+  blockedBy: varchar("blocked_by", { length: 36 }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -67,6 +71,7 @@ export const branches = pgTable("branches", {
   status: branchStatusEnum("status").notNull().default("active"),
   category: text("category").default("box"),
   subcategory: text("subcategory"),
+  searchKeywords: text("search_keywords"),
   latitude: doublePrecision("latitude"),
   longitude: doublePrecision("longitude"),
   city: text("city"),
@@ -144,6 +149,53 @@ export const auditLogs = pgTable("audit_logs", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
+export const systemEvents = pgTable("system_events", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  eventType: text("event_type").notNull(),
+  branchId: varchar("branch_id", { length: 36 }).references(() => branches.id),
+  userId: varchar("user_id", { length: 36 }).references(() => users.id),
+  payload: jsonb("payload"),
+  status: text("status").notNull().default("pending"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  processedAt: timestamp("processed_at", { withTimezone: true }),
+});
+
+export const pushTokens = pgTable("push_tokens", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  userId: varchar("user_id", { length: 36 })
+    .notNull()
+    .references(() => users.id),
+  token: text("token").notNull(),
+  platform: text("platform").notNull(),
+  deviceName: text("device_name"),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+}, (table) => [
+  uniqueIndex("push_tokens_token_unique").on(table.token),
+]);
+
+export const notifications = pgTable("notifications", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  recipientUserId: varchar("recipient_user_id", { length: 36 }).references(() => users.id),
+  branchId: varchar("branch_id", { length: 36 }).references(() => branches.id),
+  roleTarget: userRoleEnum("role_target"),
+  type: text("type").notNull(),
+  title: text("title").notNull(),
+  message: text("message").notNull(),
+  data: jsonb("data"),
+  isRead: boolean("is_read").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  readAt: timestamp("read_at", { withTimezone: true }),
+});
+
 export const clientNotes = pgTable("client_notes", {
   id: varchar("id", { length: 36 })
     .primaryKey()
@@ -175,6 +227,72 @@ export const attendances = pgTable("attendances", {
     .notNull()
     .references(() => users.id),
   checkedInAt: timestamp("checked_in_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const branchClientCrm = pgTable("branch_client_crm", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  userId: varchar("user_id", { length: 36 })
+    .notNull()
+    .references(() => users.id),
+  clientStatus: text("client_status"),
+  lastVisit: timestamp("last_visit", { withTimezone: true }),
+  tags: text("tags"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("branch_client_crm_branch_user_idx").on(table.branchId, table.userId),
+]);
+
+export const customerReportStatusEnum = pgEnum("customer_report_status", [
+  "pending",
+  "reviewed",
+  "dismissed",
+  "escalated",
+]);
+
+export const branchCustomerBlocks = pgTable("branch_customer_blocks", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  userId: varchar("user_id", { length: 36 })
+    .notNull()
+    .references(() => users.id),
+  blockedByUserId: varchar("blocked_by_user_id", { length: 36 })
+    .notNull()
+    .references(() => users.id),
+  reason: text("reason"),
+  note: text("note"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  unblockedAt: timestamp("unblocked_at", { withTimezone: true }),
+});
+
+export const customerReports = pgTable("customer_reports", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  userId: varchar("user_id", { length: 36 })
+    .notNull()
+    .references(() => users.id),
+  reportedByUserId: varchar("reported_by_user_id", { length: 36 })
+    .notNull()
+    .references(() => users.id),
+  reason: text("reason").notNull(),
+  note: text("note"),
+  status: customerReportStatusEnum("status").notNull().default("pending"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+  reviewedByUserId: varchar("reviewed_by_user_id", { length: 36 }).references(() => users.id),
 });
 
 export const insertUserSchema = createInsertSchema(users).omit({
@@ -228,6 +346,12 @@ export const createBranchSchema = z.object({
     .regex(/^[a-z0-9-]+$/, "Solo letras minúsculas, números y guiones"),
 });
 
+export const createBranchFormSchema = createBranchSchema.extend({
+  category: z.string().optional(),
+  subcategory: z.string().optional(),
+  searchKeywords: z.string().optional(),
+});
+
 export const joinBranchSchema = z.object({
   branchSlug: z.string().optional(),
   branchId: z.string().optional(),
@@ -240,13 +364,18 @@ export const favoriteBranchSchema = z.object({
 
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
-export type InsertBranch = z.infer<typeof insertBranchSchema>;
+export type InsertBranch = typeof branches.$inferInsert;
 export type Branch = typeof branches.$inferSelect;
 export type Membership = typeof memberships.$inferSelect;
 export type InsertMembership = z.infer<typeof insertMembershipSchema>;
 export type LoginData = z.infer<typeof loginSchema>;
 export type CreateBranchData = z.infer<typeof createBranchSchema>;
+export type CreateBranchFormData = z.infer<typeof createBranchFormSchema>;
 export type AuditLog = typeof auditLogs.$inferSelect;
+export type SystemEvent = typeof systemEvents.$inferSelect;
+export type PushToken = typeof pushTokens.$inferSelect;
+export type InsertPushToken = z.infer<typeof insertPushTokenSchema>;
+export type Notification = typeof notifications.$inferSelect;
 
 export const insertClientNoteSchema = createInsertSchema(clientNotes).omit({
   id: true,
@@ -262,6 +391,9 @@ export type ClientNote = typeof clientNotes.$inferSelect;
 export type InsertClientNote = z.infer<typeof insertClientNoteSchema>;
 export type Attendance = typeof attendances.$inferSelect;
 export type InsertAttendance = z.infer<typeof insertAttendanceSchema>;
+export type BranchClientCrm = typeof branchClientCrm.$inferSelect;
+export type BranchCustomerBlock = typeof branchCustomerBlocks.$inferSelect;
+export type CustomerReport = typeof customerReports.$inferSelect;
 
 export const bookingStatusEnum = pgEnum("booking_status", [
   "confirmed",
@@ -397,6 +529,61 @@ export const updateClientSchema = z.object({
   avatarUrl: z.string().nullable().optional(),
 });
 
+export const branchClientCrmStatusValues = ["nuevo", "activo", "inactivo", "vip"] as const;
+export const customerReportReasonValues = [
+  "comentario_ofensivo",
+  "mal_comportamiento",
+  "no_respeto_reglas",
+  "spam",
+  "otro",
+] as const;
+export const customerReportStatusValues = ["pending", "reviewed", "dismissed", "escalated"] as const;
+
+export const updateBranchClientCrmSchema = z.object({
+  clientStatus: z.enum(branchClientCrmStatusValues).nullable().optional(),
+  tags: z.string().nullable().optional(),
+});
+
+export const createCustomerReportSchema = z.object({
+  reason: z.enum(customerReportReasonValues),
+  note: z.string().nullable().optional(),
+  blockLocally: z.boolean().optional(),
+});
+
+export const updateBranchCustomerBlockSchema = z.object({
+  reason: z.string().nullable().optional(),
+  note: z.string().nullable().optional(),
+});
+
+export const updateCustomerReportStatusSchema = z.object({
+  status: z.enum(customerReportStatusValues),
+});
+
+export const updateCustomerGlobalBlockSchema = z.object({
+  isBlocked: z.boolean(),
+  reason: z.string().nullable().optional(),
+  hideReviews: z.boolean().optional(),
+});
+
+export const pushPlatformValues = ["ios", "android", "web"] as const;
+
+export const insertPushTokenSchema = createInsertSchema(pushTokens).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  lastUsedAt: true,
+});
+
+export const registerPushTokenSchema = z.object({
+  token: z.string().min(1, "Token requerido").max(4096),
+  platform: z.enum(pushPlatformValues),
+  deviceName: z.string().max(120).nullable().optional(),
+});
+
+export const unregisterPushTokenSchema = z.object({
+  token: z.string().min(1, "Token requerido").max(4096),
+});
+
 export const branchPhotoTypeEnum = pgEnum("branch_photo_type", [
   "profile",
   "facility",
@@ -530,6 +717,8 @@ export const branchReviews = pgTable("branch_reviews", {
   rating: integer("rating").notNull(),
   comment: text("comment"),
   adminReply: text("admin_reply"),
+  isHidden: boolean("is_hidden").notNull().default(false),
+  hiddenReason: text("hidden_reason"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -582,3 +771,14 @@ export const BRANCH_CATEGORIES = [
   { value: "freelancer", label: "Freelancer / Consultor" },
   { value: "otro", label: "Otro" },
 ] as const;
+
+export const BRANCH_SUBCATEGORY_PLACEHOLDERS: Record<string, string> = {
+  doctor: "Ej. Nutriologo, Ginecologo, Psicologo, Dentista",
+  estetica: "Ej. Unas, Pestanas, Masajes, Barberia",
+  freelancer: "Ej. Arquitecto, Fotografo, Contador, Disenador",
+  otro: "Ej. Escuela de natacion, Veterinaria, Reposteria",
+  default: "Ej. Especialidad principal del negocio",
+};
+
+export const BRANCH_SEARCH_KEYWORDS_PLACEHOLDER =
+  "Ej. nutricion, dieta, bajar de peso";

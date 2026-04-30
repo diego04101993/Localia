@@ -87,6 +87,7 @@ interface BranchClient {
   planNameSnapshot: string | null;
   planName: string | null;
   planStatus: "active" | "expired" | "deleted" | null;
+  cycleMonths: number | null;
   classesRemaining: number | null;
   classesTotal: number | null;
   expiresAt: string | null;
@@ -95,6 +96,14 @@ interface BranchClient {
   clientStatus: string;
   hasDebt: boolean;
   debtAmount: number;
+  crmClientStatus: string;
+  crmManualStatus: string | null;
+  lastVisit: string | null;
+  tags: string | null;
+  isLocallyBlocked: boolean;
+  localBlockedAt: string | null;
+  localBlockReason: string | null;
+  reportCount: number;
 }
 
 interface MembershipPlan {
@@ -103,6 +112,7 @@ interface MembershipPlan {
   price: number;
   durationDays: number | null;
   classLimit: number | null;
+  cycleMonths: number;
   isActive: boolean;
 }
 
@@ -139,14 +149,40 @@ interface ClientProfile {
     classesTotal: number | null;
     expiresAt: string | null;
     paidAt: string | null;
+    planName?: string | null;
   };
   planStatus: "active" | "expired" | "deleted" | null;
   planNameSnapshot: string | null;
-  plan: { id: string; name: string; price: number; durationDays: number | null; classLimit: number | null } | null;
+  plan: { id: string; name: string; price: number; durationDays: number | null; classLimit: number | null; cycleMonths: number } | null;
   notes: { id: string; content: string; createdAt: string; createdByName?: string }[];
   recentAttendances: { id: string; checkedInAt: string }[];
   totalAttendances: number;
   nextBooking: { bookingDate: string; className: string; startTime: string } | null;
+  crm: {
+    clientStatus: string;
+    manualStatus: string | null;
+    lastVisit: string | null;
+    tags: string | null;
+  };
+  moderation: {
+    localBlock: {
+      id: string;
+      reason: string | null;
+      note: string | null;
+      createdAt: string;
+    } | null;
+    reports: {
+      id: string;
+      reason: string;
+      note: string | null;
+      status: string;
+      createdAt: string;
+      reviewedAt: string | null;
+      reporterName?: string | null;
+      reviewerName?: string | null;
+      branchName?: string | null;
+    }[];
+  };
 }
 
 function formatDate(dateStr: string | null) {
@@ -222,6 +258,56 @@ function clientStatusVariant(s: string): "default" | "secondary" | "destructive"
   return "secondary";
 }
 
+function crmStatusLabel(status: string): string {
+  if (status === "nuevo") return "Nuevo";
+  if (status === "activo") return "Activo";
+  if (status === "inactivo") return "Inactivo";
+  if (status === "vip") return "VIP";
+  return status;
+}
+
+function crmStatusBadgeClass(status: string): string {
+  if (status === "activo") return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  if (status === "inactivo") return "border-red-200 bg-red-50 text-red-700";
+  if (status === "vip") return "border-amber-300 bg-amber-50 text-amber-800";
+  return "border-slate-200 bg-slate-100 text-slate-700";
+}
+
+function parseTags(tags: string | null): string[] {
+  if (!tags) return [];
+  return tags
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+}
+
+const REPORT_REASON_OPTIONS = [
+  { value: "comentario_ofensivo", label: "Comentario ofensivo" },
+  { value: "mal_comportamiento", label: "Mal comportamiento" },
+  { value: "no_respeto_reglas", label: "No respeto reglas" },
+  { value: "spam", label: "Spam" },
+  { value: "otro", label: "Otro" },
+] as const;
+
+function reportReasonLabel(reason: string): string {
+  return REPORT_REASON_OPTIONS.find((option) => option.value === reason)?.label || reason;
+}
+
+function reportStatusLabel(status: string): string {
+  if (status === "pending") return "Pendiente";
+  if (status === "reviewed") return "Revisado";
+  if (status === "dismissed") return "Descartado";
+  if (status === "escalated") return "Escalado";
+  return status;
+}
+
+function reportStatusBadgeClass(status: string): string {
+  if (status === "reviewed") return "border-sky-200 bg-sky-50 text-sky-700";
+  if (status === "dismissed") return "border-slate-200 bg-slate-100 text-slate-700";
+  if (status === "escalated") return "border-amber-300 bg-amber-50 text-amber-800";
+  return "border-orange-200 bg-orange-50 text-orange-700";
+}
+
 function normalizePhoneMX(phone: string): string {
   const digits = phone.replace(/\D/g, "");
   if (digits.startsWith("52")) return digits;
@@ -266,7 +352,7 @@ function WhatsAppModal({ target, branchName, onClose }: {
   });
 
   const vars = useMemo<Record<string, string>>(() => {
-    if (!target) return {};
+    if (!target) return {} as Record<string, string>;
     return {
       firstName: target.name,
       fullName: displayName(target.name, target.lastName),
@@ -663,6 +749,8 @@ function EditClientDialog({ clientId, open, onOpenChange }: { clientId: string |
   const [injuriesNotes, setInjuriesNotes] = useState("");
   const [medicalWarnings, setMedicalWarnings] = useState("");
   const [parqAccepted, setParqAccepted] = useState(false);
+  const [crmClientStatus, setCrmClientStatus] = useState("auto");
+  const [crmTags, setCrmTags] = useState("");
   const [loaded, setLoaded] = useState(false);
 
   const { data: profile } = useQuery<ClientProfile>({
@@ -684,14 +772,20 @@ function EditClientDialog({ clientId, open, onOpenChange }: { clientId: string |
       setInjuriesNotes(profile.user.injuriesNotes || "");
       setMedicalWarnings(profile.user.medicalWarnings || "");
       setParqAccepted(profile.user.parqAccepted || false);
+      setCrmClientStatus(profile.crm.manualStatus || "auto");
+      setCrmTags(profile.crm.tags || "");
       setLoaded(true);
     }
   }, [profile, loaded]);
 
   const editMutation = useMutation({
     mutationFn: async (data: any) => {
-      const resp = await apiRequest("PATCH", `/api/branch/clients/${clientId}`, data);
-      return resp.json();
+      const clientResp = await apiRequest("PATCH", `/api/branch/clients/${clientId}`, data.client);
+      const crmResp = await apiRequest("PATCH", `/api/branch/client/${clientId}`, data.crm);
+      return {
+        client: await clientResp.json(),
+        crm: await crmResp.json(),
+      };
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
@@ -712,19 +806,25 @@ function EditClientDialog({ clientId, open, onOpenChange }: { clientId: string |
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     editMutation.mutate({
-      name: name || undefined,
-      email: email || undefined,
-      lastName: lastName || null,
-      phone: phone || null,
-      birthDate: birthDate || null,
-      gender: gender || null,
-      emergencyContactName: emergencyContactName || null,
-      emergencyContactPhone: emergencyContactPhone || null,
-      medicalNotes: medicalNotes || null,
-      injuriesNotes: injuriesNotes || null,
-      medicalWarnings: medicalWarnings || null,
-      parqAccepted,
-      parqAcceptedDate: parqAccepted ? (profile?.user.parqAcceptedDate || new Date().toISOString().split("T")[0]) : null,
+      client: {
+        name: name || undefined,
+        email: email || undefined,
+        lastName: lastName || null,
+        phone: phone || null,
+        birthDate: birthDate || null,
+        gender: gender || null,
+        emergencyContactName: emergencyContactName || null,
+        emergencyContactPhone: emergencyContactPhone || null,
+        medicalNotes: medicalNotes || null,
+        injuriesNotes: injuriesNotes || null,
+        medicalWarnings: medicalWarnings || null,
+        parqAccepted,
+        parqAcceptedDate: parqAccepted ? (profile?.user.parqAcceptedDate || new Date().toISOString().split("T")[0]) : null,
+      },
+      crm: {
+        clientStatus: crmClientStatus === "auto" ? null : crmClientStatus,
+        tags: crmTags || null,
+      },
     });
   }
 
@@ -759,6 +859,45 @@ function EditClientDialog({ clientId, open, onOpenChange }: { clientId: string |
             <div className="space-y-2">
               <Label>Teléfono</Label>
               <Input value={phone} onChange={(e) => setPhone(e.target.value)} data-testid="input-edit-phone" />
+            </div>
+            <div className="rounded-md border p-3 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-sm font-medium">CRM</p>
+                  <p className="text-xs text-muted-foreground">
+                    Ultima visita detectada: {profile.crm.lastVisit ? formatDateTime(profile.crm.lastVisit) : "Nunca"}
+                  </p>
+                </div>
+                <Badge variant="outline" className={crmStatusBadgeClass(profile.crm.clientStatus)} data-testid="badge-edit-crm-status">
+                  {crmStatusLabel(profile.crm.clientStatus)}
+                </Badge>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label>Estado CRM</Label>
+                  <Select value={crmClientStatus} onValueChange={setCrmClientStatus}>
+                    <SelectTrigger data-testid="select-edit-crm-status">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto">Automatico</SelectItem>
+                      <SelectItem value="nuevo">Nuevo</SelectItem>
+                      <SelectItem value="activo">Activo</SelectItem>
+                      <SelectItem value="inactivo">Inactivo</SelectItem>
+                      <SelectItem value="vip">VIP</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Etiquetas</Label>
+                  <Input
+                    value={crmTags}
+                    onChange={(e) => setCrmTags(e.target.value)}
+                    placeholder="vip, seguimiento, rehab"
+                    data-testid="input-edit-crm-tags"
+                  />
+                </div>
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-2">
@@ -1021,10 +1160,23 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
   const [noteContent, setNoteContent] = useState("");
   const [showAllNotes, setShowAllNotes] = useState(false);
   const [showPlanSelect, setShowPlanSelect] = useState(false);
+  const [reportReason, setReportReason] = useState<(typeof REPORT_REASON_OPTIONS)[number]["value"]>("mal_comportamiento");
+  const [reportNote, setReportNote] = useState("");
+  const [blockLocally, setBlockLocally] = useState(false);
   const { data: profile, isLoading } = useQuery<ClientProfile>({
     queryKey: ["/api/branch/clients", clientId],
     enabled: open && !!clientId,
   });
+
+  useEffect(() => {
+    if (!open) {
+      setReportReason("mal_comportamiento");
+      setReportNote("");
+      setBlockLocally(false);
+      setShowAllNotes(false);
+      setShowPlanSelect(false);
+    }
+  }, [open]);
 
   const { data: plans } = useQuery<MembershipPlan[]>({
     queryKey: ["/api/branch/plans"],
@@ -1108,6 +1260,53 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
     },
   });
 
+  const reportMutation = useMutation({
+    mutationFn: async (payload: { reason: string; note: string | null; blockLocally: boolean }) => {
+      const resp = await apiRequest("POST", `/api/branch/client/${clientId}/report`, payload);
+      return resp.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients", clientId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
+      setReportNote("");
+      setBlockLocally(false);
+      toast({ title: "Incidencia enviada a Super Admin" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message || "Error al reportar cliente", variant: "destructive" });
+    },
+  });
+
+  const localBlockMutation = useMutation({
+    mutationFn: async (payload: { reason: string | null; note: string | null }) => {
+      const resp = await apiRequest("POST", `/api/branch/client/${clientId}/local-block`, payload);
+      return resp.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients", clientId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
+      toast({ title: "Cliente bloqueado en esta sucursal" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message || "Error al bloquear cliente", variant: "destructive" });
+    },
+  });
+
+  const localUnblockMutation = useMutation({
+    mutationFn: async () => {
+      const resp = await apiRequest("DELETE", `/api/branch/client/${clientId}/local-block`);
+      return resp.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients", clientId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
+      toast({ title: "Bloqueo local removido" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message || "Error al desbloquear cliente", variant: "destructive" });
+    },
+  });
+
   const activePlans = (plans || []).filter(p => p.isActive);
   const age = profile ? calcAge(profile.user.birthDate) : null;
 
@@ -1159,7 +1358,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                         expiresAt: profile.membership?.expiresAt ?? null,
                         classesRemaining: profile.membership?.classesRemaining ?? null,
                         classesTotal: profile.membership?.classesTotal ?? null,
-                        planName: profile.membership?.planName ?? null,
+                        planName: profile.plan?.name ?? profile.planNameSnapshot ?? null,
                       });
                     }}
                   >
@@ -1277,6 +1476,157 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
               hasDebt={profile.membership.hasDebt}
               debtAmount={profile.membership.debtAmount}
             />
+
+            <div className="bg-muted/50 rounded-md p-3 space-y-3" data-testid="client-moderation-section">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h4 className="text-sm font-medium flex items-center gap-1.5">
+                    <Shield className="h-3.5 w-3.5" />
+                    Incidencias
+                  </h4>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Reporta comportamiento problemático al Super Admin y, si hace falta, bloquea solo esta sucursal.
+                  </p>
+                </div>
+                {profile.moderation.localBlock ? (
+                  <Badge variant="outline" className="border-red-200 bg-red-50 text-red-700" data-testid="badge-profile-local-block">
+                    Bloqueado local
+                  </Badge>
+                ) : (
+                  <Badge variant="outline" className="border-slate-200 bg-slate-100 text-slate-700">
+                    Sin bloqueo local
+                  </Badge>
+                )}
+              </div>
+
+              {profile.moderation.localBlock && (
+                <div className="rounded-md border border-red-200 bg-red-50/80 p-3 text-sm space-y-1" data-testid="card-profile-local-block">
+                  <p className="font-medium text-red-700">Este cliente no puede interactuar con esta sucursal.</p>
+                  <p className="text-red-700/80">
+                    {profile.moderation.localBlock.reason ? reportReasonLabel(profile.moderation.localBlock.reason) : "Sin motivo especificado"}
+                  </p>
+                  {profile.moderation.localBlock.note && (
+                    <p className="text-red-700/80">{profile.moderation.localBlock.note}</p>
+                  )}
+                  <p className="text-xs text-red-700/70">
+                    Desde {formatDateTime(profile.moderation.localBlock.createdAt)}
+                  </p>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label>Motivo</Label>
+                  <Select value={reportReason} onValueChange={(value) => setReportReason(value as (typeof REPORT_REASON_OPTIONS)[number]["value"])}>
+                    <SelectTrigger data-testid="select-report-reason">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {REPORT_REASON_OPTIONS.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Acciones</Label>
+                  <div className="rounded-md border p-3 space-y-2">
+                    <label className="flex items-center gap-2 text-sm cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={blockLocally}
+                        onChange={(e) => setBlockLocally(e.target.checked)}
+                        className="rounded"
+                        data-testid="checkbox-report-block-locally"
+                      />
+                      Bloquear tambien en esta sucursal
+                    </label>
+                    {!profile.moderation.localBlock ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="w-full"
+                        onClick={() => localBlockMutation.mutate({ reason: reportReason, note: reportNote.trim() || null })}
+                        disabled={localBlockMutation.isPending}
+                        data-testid="button-local-block"
+                      >
+                        {localBlockMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <Shield className="h-3.5 w-3.5 mr-1" />}
+                        Bloquear en esta sucursal
+                      </Button>
+                    ) : (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="w-full"
+                        onClick={() => localUnblockMutation.mutate()}
+                        disabled={localUnblockMutation.isPending}
+                        data-testid="button-local-unblock"
+                      >
+                        {localUnblockMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <Shield className="h-3.5 w-3.5 mr-1" />}
+                        Desbloquear sucursal
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Nota / descripcion</Label>
+                <Textarea
+                  value={reportNote}
+                  onChange={(e) => setReportNote(e.target.value)}
+                  placeholder="Describe la incidencia para que soporte la revise."
+                  className="min-h-[72px] text-sm"
+                  data-testid="textarea-report-note"
+                />
+              </div>
+
+              <div className="flex justify-end">
+                <Button
+                  type="button"
+                  onClick={() => reportMutation.mutate({ reason: reportReason, note: reportNote.trim() || null, blockLocally })}
+                  disabled={reportMutation.isPending}
+                  data-testid="button-report-client"
+                >
+                  {reportMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <AlertTriangle className="h-4 w-4 mr-2" />}
+                  Reportar a Super Admin
+                </Button>
+              </div>
+
+              <div className="space-y-2" data-testid="client-report-history">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-medium text-muted-foreground">
+                    Historial de incidencias ({profile.moderation.reports.length})
+                  </p>
+                </div>
+                {profile.moderation.reports.length === 0 ? (
+                  <p className="text-xs text-muted-foreground italic">Sin incidencias registradas.</p>
+                ) : (
+                  profile.moderation.reports.slice(0, 5).map((report) => (
+                    <div key={report.id} className="rounded-md border p-2 space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <Badge variant="outline" className={reportStatusBadgeClass(report.status)}>
+                          {reportStatusLabel(report.status)}
+                        </Badge>
+                        <Badge variant="secondary">{reportReasonLabel(report.reason)}</Badge>
+                        <span className="text-[11px] text-muted-foreground">
+                          {formatDateTime(report.createdAt)}
+                        </span>
+                      </div>
+                      {report.note && <p className="text-sm">{report.note}</p>}
+                      <p className="text-[11px] text-muted-foreground">
+                        {report.reporterName ? `Reportado por ${report.reporterName}` : "Reportado por admin"}
+                        {report.reviewedAt && report.reviewerName ? ` · Revisado por ${report.reviewerName}` : ""}
+                      </p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
 
             <div className="bg-muted/50 rounded-md p-3 space-y-2">
               <h4 className="text-sm font-medium flex items-center gap-1.5">
@@ -1602,10 +1952,14 @@ export default function ClientesTab() {
     if (!search) return true;
     const q = search.toLowerCase();
     const full = displayName(c.name, c.lastName).toLowerCase();
+    const tagText = (c.tags || "").toLowerCase();
+    const crmStatusText = crmStatusLabel(c.crmClientStatus).toLowerCase();
     return (
       full.includes(q) ||
       c.email.toLowerCase().includes(q) ||
-      (c.phone && c.phone.includes(q))
+      (c.phone && c.phone.includes(q)) ||
+      tagText.includes(q) ||
+      crmStatusText.includes(q)
     );
   });
 
@@ -1708,8 +2062,10 @@ export default function ClientesTab() {
         </Card>
       ) : (
         <div className="space-y-1">
-          {filteredClients.map((client) => (
-            <Card
+          {filteredClients.map((client) => {
+            const clientTags = parseTags(client.tags);
+            return (
+              <Card
               key={client.userId}
               className="cursor-pointer transition-colors hover:bg-muted/50"
               onClick={() => openProfile(client.userId)}
@@ -1730,6 +2086,22 @@ export default function ClientesTab() {
                       >
                         {clientStatusLabel(client.clientStatus)}
                       </Badge>
+                      <Badge
+                        variant="outline"
+                        className={`text-[10px] px-1.5 py-0 ${crmStatusBadgeClass(client.crmClientStatus)}`}
+                        data-testid={`badge-client-crm-status-${client.userId}`}
+                      >
+                        CRM {crmStatusLabel(client.crmClientStatus)}
+                      </Badge>
+                      {client.isLocallyBlocked && (
+                        <Badge
+                          variant="outline"
+                          className="text-[10px] px-1.5 py-0 border-red-200 bg-red-50 text-red-700"
+                          data-testid={`badge-client-local-block-${client.userId}`}
+                        >
+                          Bloqueado local
+                        </Badge>
+                      )}
                       {isBirthdayToday(client.birthDate) && (
                         <span className="inline-flex items-center gap-0.5 text-[10px] text-pink-600 font-medium bg-pink-50 dark:bg-pink-950/40 px-1.5 py-0 rounded-full border border-pink-200 dark:border-pink-800" data-testid={`badge-birthday-${client.userId}`}>
                           🎂 Hoy cumple
@@ -1780,6 +2152,23 @@ export default function ClientesTab() {
                         <span className="text-[10px] text-muted-foreground" data-testid={`text-no-plan-${client.userId}`}>Sin plan</span>
                       )}
                     </div>
+                    {clientTags.length > 0 && (
+                      <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                        {clientTags.slice(0, 3).map((tag) => (
+                          <Badge key={tag} variant="outline" className="text-[10px] px-1.5 py-0" data-testid={`badge-client-tag-${client.userId}`}>
+                            #{tag}
+                          </Badge>
+                        ))}
+                        {clientTags.length > 3 && (
+                          <span className="text-[10px] text-muted-foreground">+{clientTags.length - 3} mas</span>
+                        )}
+                      </div>
+                    )}
+                    {client.reportCount > 0 && (
+                      <div className="text-[10px] text-muted-foreground mt-1" data-testid={`text-client-report-count-${client.userId}`}>
+                        {client.reportCount} incidencia{client.reportCount === 1 ? "" : "s"}
+                      </div>
+                    )}
                   </div>
                   <div className="hidden sm:flex items-center gap-1 shrink-0">
                     <Button
@@ -1816,7 +2205,7 @@ export default function ClientesTab() {
                   </div>
                   <div className="hidden md:flex flex-col items-end gap-0.5 shrink-0">
                     <span className="text-xs text-muted-foreground">
-                      Última visita: {timeAgo(client.lastAttendance)}
+                      Ultima visita: {timeAgo(client.lastVisit)}
                     </span>
                     <span className="text-xs text-muted-foreground">
                       Desde {formatDate(client.joinedAt)}
@@ -1825,8 +2214,9 @@ export default function ClientesTab() {
                   <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
                 </div>
               </CardContent>
-            </Card>
-          ))}
+              </Card>
+            );
+          })}
           <p className="text-xs text-muted-foreground text-center pt-2" data-testid="text-clients-total">
             {filteredClients.length} cliente{filteredClients.length !== 1 ? "s" : ""}
           </p>

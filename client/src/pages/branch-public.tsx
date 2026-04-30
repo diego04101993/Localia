@@ -1355,6 +1355,7 @@ export default function BranchPublicPage() {
                 {branch.category && (
                   <span className="inline-flex items-center bg-white/25 backdrop-blur-sm text-white text-[11px] font-semibold px-3 py-1 rounded-full border border-white/20">
                     {getCategoryLabel(branch.category)}
+                    {branch.subcategory ? ` · ${branch.subcategory}` : ""}
                   </span>
                 )}
               </div>
