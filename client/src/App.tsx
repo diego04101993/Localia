@@ -39,7 +39,11 @@ function AuthenticatedRouter() {
 
   if (isLoading) return <FullScreenLoader />;
 
-  if (location === "/terminos" || location === "/privacidad") {
+  if (
+    location === "/terminos" ||
+    location === "/privacidad" ||
+    location === "/delete-account"
+  ) {
     return <LegalPage />;
   }
 

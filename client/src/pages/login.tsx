@@ -199,6 +199,41 @@ function LoginView({ onRegister, initialEmail = "" }: { onRegister: () => void; 
         </Link>
       </div>
 
+      <div
+        className="mt-4 rounded-2xl px-4 py-3 text-center"
+        style={{ background: "rgba(227,242,253,0.55)", border: "1px solid rgba(30,136,229,0.12)" }}
+      >
+        <p className="mb-2 text-[11px] font-medium" style={{ color: "#78909c" }}>
+          Información legal
+        </p>
+        <div className="flex flex-col gap-1.5 text-sm">
+          <Link
+            href="/terminos"
+            className="font-medium transition-opacity hover:opacity-70"
+            style={{ color: "#1E88E5" }}
+            data-testid="link-login-terms"
+          >
+            Términos y Condiciones
+          </Link>
+          <Link
+            href="/privacidad"
+            className="font-medium transition-opacity hover:opacity-70"
+            style={{ color: "#1E88E5" }}
+            data-testid="link-login-privacy"
+          >
+            Aviso de Privacidad
+          </Link>
+          <Link
+            href="/delete-account"
+            className="font-medium transition-opacity hover:opacity-70"
+            style={{ color: "#1E88E5" }}
+            data-testid="link-login-delete-account"
+          >
+            Eliminar cuenta
+          </Link>
+        </div>
+      </div>
+
       <div className="mt-4 pt-4 border-t text-center" style={{ borderColor: "rgba(30,136,229,0.12)" }}>
         <p className="text-xs mb-2" style={{ color: "#78909c" }}>¿Eres cliente y no tienes cuenta?</p>
         <button

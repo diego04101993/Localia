@@ -1,15 +1,18 @@
-import { useLocation, Link } from "wouter";
+import type { ReactNode } from "react";
 import { ArrowLeft } from "lucide-react";
+import { Link, useLocation } from "wouter";
 import webcool_logo from "@assets/webcool_logo.png";
 
-const TERMS_VERSION = "1.0";
-const EFFECTIVE_DATE = "2 de abril de 2025";
+const LEGAL_VERSION = "1.1";
+const EFFECTIVE_DATE = "5 de mayo de 2026";
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="space-y-2">
-      <h2 className="text-sm font-bold" style={{ color: "#0d47a1" }}>{title}</h2>
-      <div className="text-sm leading-relaxed space-y-1.5" style={{ color: "#455a64" }}>
+      <h2 className="text-sm font-bold" style={{ color: "#0d47a1" }}>
+        {title}
+      </h2>
+      <div className="space-y-2 text-sm leading-relaxed" style={{ color: "#455a64" }}>
         {children}
       </div>
     </div>
@@ -20,93 +23,88 @@ function TermsContent() {
   return (
     <div className="space-y-5">
       <p className="text-xs" style={{ color: "#90a4ae" }}>
-        Versión {TERMS_VERSION} — Vigentes a partir del {EFFECTIVE_DATE}
+        Versión {LEGAL_VERSION} · Vigentes a partir del {EFFECTIVE_DATE}
       </p>
 
       <Section title="1. Aceptación">
         <p>
-          Al crear una cuenta en WebCool, confirmas que has leído, entendido y aceptas estos Términos y
-          Condiciones en su totalidad. Si no estás de acuerdo, no podrás utilizar la plataforma.
+          Al crear una cuenta o usar Webcool aceptas estos Términos y Condiciones. Si no estás de
+          acuerdo con ellos, no debes usar la plataforma.
         </p>
       </Section>
 
-      <Section title="2. Qué es WebCool">
+      <Section title="2. Qué es Webcool">
         <p>
-          WebCool es una plataforma digital que conecta usuarios con negocios de salud y bienestar
-          (gimnasios, estudios de fitness, crossfit, yoga, y similares), permitiendo la gestión de
-          membresías, reservas de clases y comunicación entre usuarios y establecimientos.
+          Webcool es una plataforma digital para descubrir negocios cercanos, revisar perfiles
+          públicos, promociones y servicios, reservar citas o clases, administrar membresías,
+          guardar favoritos y recibir notificaciones relacionadas con la experiencia dentro de la
+          app.
         </p>
       </Section>
 
-      <Section title="3. Tu cuenta">
+      <Section title="3. Cuenta de usuario">
         <ul className="list-disc pl-4 space-y-1">
-          <li>Eres responsable de mantener la confidencialidad de tu contraseña.</li>
-          <li>Debes proporcionar información veraz y actualizada al registrarte.</li>
-          <li>Solo personas mayores de 13 años pueden crear una cuenta.</li>
-          <li>No puedes ceder ni compartir tu cuenta con terceros.</li>
+          <li>Debes proporcionar datos veraces, completos y actualizados.</li>
+          <li>Eres responsable de proteger tu contraseña y el acceso a tu cuenta.</li>
+          <li>No debes compartir tu cuenta ni suplantar la identidad de otra persona.</li>
+          <li>Webcool puede suspender cuentas que incumplan estos términos o la ley aplicable.</li>
         </ul>
       </Section>
 
       <Section title="4. Uso permitido">
-        <p>Puedes usar WebCool para:</p>
         <ul className="list-disc pl-4 space-y-1">
-          <li>Buscar y descubrir negocios de bienestar registrados en la plataforma.</li>
-          <li>Reservar clases y gestionar tu membresía.</li>
-          <li>Ver tu historial de asistencia y actividad.</li>
-          <li>Comunicarte con los establecimientos de los que seas miembro.</li>
+          <li>Buscar negocios y sucursales cercanas.</li>
+          <li>Ver información pública, promociones, servicios y disponibilidad.</li>
+          <li>Reservar citas o clases y administrar tus membresías.</li>
+          <li>Guardar favoritos, publicar reseñas y recibir notificaciones del servicio.</li>
         </ul>
       </Section>
 
       <Section title="5. Uso no permitido">
         <ul className="list-disc pl-4 space-y-1">
-          <li>Utilizar la plataforma para actividades ilícitas o fraudulentas.</li>
-          <li>Suplantar la identidad de otra persona.</li>
-          <li>Interferir con el funcionamiento técnico del servicio.</li>
-          <li>Recopilar datos de otros usuarios sin su consentimiento.</li>
+          <li>Usar Webcool para actividades ilegales, fraudulentas o engañosas.</li>
+          <li>Interferir con la seguridad, disponibilidad o funcionamiento de la plataforma.</li>
+          <li>Publicar contenido ofensivo, falso, difamatorio o que viole derechos de terceros.</li>
+          <li>Extraer o recopilar información de otros usuarios sin autorización.</li>
         </ul>
       </Section>
 
-      <Section title="6. Visibilidad de tu información">
+      <Section title="6. Reservas, membresías y reseñas">
         <p>
-          Los establecimientos (sucursales) de los que seas miembro activo podrán ver tu nombre, datos de
-          contacto, historial de asistencia, membresía y otra información relevante para la gestión de
-          tu relación con ellos. Esta visibilidad es necesaria para la operación del servicio y limitada
-          a los establecimientos con los que tengas una relación activa.
+          Cada sucursal administra sus propias promociones, reservas, membresías, servicios y
+          condiciones comerciales. Webcool facilita la operación tecnológica, pero no sustituye las
+          políticas internas ni la responsabilidad directa de cada negocio sobre su atención.
         </p>
       </Section>
 
-      <Section title="7. Propiedad intelectual">
+      <Section title="7. WhatsApp y enlaces externos">
         <p>
-          El nombre WebCool, su diseño, logotipo y contenido de la plataforma son propiedad de sus
-          titulares. No puedes reproducirlos sin autorización escrita.
+          Algunas sucursales pueden ofrecer comunicación vía WhatsApp u otros enlaces externos.
+          Cuando sales de Webcool para usar esos canales, la interacción se rige también por las
+          políticas del servicio externo correspondiente.
         </p>
       </Section>
 
-      <Section title="8. Limitación de responsabilidad">
+      <Section title="8. Propiedad intelectual">
         <p>
-          WebCool actúa como intermediario tecnológico entre usuarios y establecimientos. No somos
-          responsables por los servicios que ofrezcan dichos establecimientos, ni por daños derivados
-          del uso de la plataforma, salvo lo expresamente establecido por la ley mexicana aplicable.
+          El nombre Webcool, su imagen, diseño, logotipos, software y contenido están protegidos por
+          derechos aplicables. No pueden reproducirse o explotarse sin autorización previa por
+          escrito.
         </p>
       </Section>
 
-      <Section title="9. Modificaciones">
+      <Section title="9. Limitación de responsabilidad">
         <p>
-          WebCool puede actualizar estos Términos. Te notificaremos dentro de la plataforma y podrías
-          requerir una nueva aceptación para continuar usando el servicio.
+          Webcool actúa como intermediario tecnológico. No garantiza la calidad, disponibilidad o
+          resultados de los servicios prestados por las sucursales publicadas en la plataforma,
+          salvo lo que expresamente exija la ley aplicable.
         </p>
       </Section>
 
-      <Section title="10. Ley aplicable">
+      <Section title="10. Cambios y contacto">
         <p>
-          Estos Términos se rigen por la legislación vigente de los Estados Unidos Mexicanos. Cualquier
-          controversia se someterá a los tribunales competentes de la Ciudad de México.
-        </p>
-      </Section>
-
-      <Section title="11. Contacto">
-        <p>
-          Para dudas o aclaraciones: <strong>soporte@webcool.mx</strong>
+          Webcool puede actualizar estos términos para reflejar cambios operativos, legales o del
+          servicio. Si tienes dudas, escríbenos a <strong>soporte@webcool.mx</strong>.
         </p>
       </Section>
     </div>
@@ -117,105 +115,145 @@ function PrivacyContent() {
   return (
     <div className="space-y-5">
       <p className="text-xs" style={{ color: "#90a4ae" }}>
-        Versión {TERMS_VERSION} — Vigente a partir del {EFFECTIVE_DATE}
-        {" "}— Responsable: WebCool
+        Versión {LEGAL_VERSION} · Vigente a partir del {EFFECTIVE_DATE} · Responsable: Webcool
       </p>
 
-      <Section title="1. Datos que recopilamos">
+      <Section title="1. Datos que podemos recopilar">
         <ul className="list-disc pl-4 space-y-1">
-          <li>Nombre y apellidos</li>
-          <li>Correo electrónico</li>
-          <li>Número de celular</li>
-          <li>Fecha de nacimiento y sexo (opcionales)</li>
-          <li>Actividad dentro de la plataforma: reservas, asistencias, membresías, notas de perfil</li>
+          <li>Datos de cuenta como nombre, correo electrónico y teléfono.</li>
+          <li>Ubicación aproximada o coordenadas para mostrar negocios cercanos.</li>
+          <li>Información sobre reservas, citas, clases y membresías.</li>
+          <li>Favoritos, reseñas, calificaciones y actividad dentro de la plataforma.</li>
+          <li>Tokens de notificaciones push, incluyendo token de Firebase cuando aplique.</li>
+          <li>Información técnica básica del dispositivo y uso del servicio.</li>
         </ul>
       </Section>
 
       <Section title="2. Para qué usamos tus datos">
         <ul className="list-disc pl-4 space-y-1">
-          <li>Crear y gestionar tu cuenta de usuario.</li>
-          <li>Conectarte con los establecimientos de los que seas miembro.</li>
-          <li>Gestionar tus membresías, reservas de clases y asistencias.</li>
-          <li>Enviarte comunicaciones relacionadas directamente con el servicio.</li>
-          <li>Mejorar la experiencia y funcionalidades de la plataforma.</li>
-          <li>
-            A futuro: incorporar funciones de fidelización, promociones, recordatorios y comunicación
-            dentro del ecosistema WebCool, siempre relacionadas con el servicio.
-          </li>
+          <li>Crear y administrar tu cuenta de Webcool.</li>
+          <li>Mostrarte negocios, promociones y sucursales relevantes cerca de ti.</li>
+          <li>Gestionar reservas, citas, membresías, favoritos y reseñas.</li>
+          <li>Enviarte avisos operativos y notificaciones relacionadas con tu actividad.</li>
+          <li>Mejorar la seguridad, calidad y funcionamiento general del servicio.</li>
         </ul>
       </Section>
 
-      <Section title="3. Quién puede ver tus datos">
+      <Section title="3. Compartición limitada dentro del servicio">
         <p>
-          Los establecimientos (sucursales) de los que seas miembro activo pueden acceder a tu
-          información de perfil y actividad, exclusivamente para la gestión de tu relación con ellos.
-          Esta visibilidad es necesaria para el funcionamiento del servicio.
+          Las sucursales con las que interactúas pueden ver la información necesaria para operar tu
+          relación con ellas, como tu nombre, contacto, reservas, membresías o reseñas asociadas a
+          esa sucursal.
         </p>
       </Section>
 
-      <Section title="4. Lo que no hacemos">
+      <Section title="4. WhatsApp y enlaces externos">
         <p>
-          <strong>No vendemos, arrendamos ni compartimos</strong> tus datos personales con terceros
-          para fines publicitarios o comerciales ajenos al servicio de WebCool.
+          Algunas comunicaciones pueden realizarse mediante un enlace externo a WhatsApp u otros
+          servicios. Cuando uses esos enlaces, tu interacción también estará sujeta a los términos y
+          políticas del proveedor externo correspondiente.
         </p>
       </Section>
 
-      <Section title="5. Tus derechos ARCO">
+      <Section title="5. Compromiso de privacidad">
         <p>
-          Conforme a la Ley Federal de Protección de Datos Personales en Posesión de los Particulares
-          (LFPDPPP), tienes derecho a solicitar Acceso, Rectificación, Cancelación u Oposición
-          respecto a tus datos personales. Para ejercerlos, escríbenos a:{" "}
-          <strong>soporte@webcool.mx</strong>
+          <strong>Webcool no vende datos personales.</strong> Tampoco compartimos tu información con
+          terceros para fines comerciales ajenos a la operación normal del servicio.
         </p>
       </Section>
 
-      <Section title="6. Seguridad">
+      <Section title="6. Conservación y derechos">
         <p>
-          Implementamos medidas técnicas y organizativas razonables para proteger tus datos contra
-          acceso no autorizado, pérdida o divulgación indebida.
+          Conservamos los datos mientras exista una cuenta activa o sea necesario para prestar el
+          servicio, cumplir obligaciones legales o atender solicitudes válidas. Puedes solicitar
+          acceso, corrección o eliminación escribiendo a <strong>soporte@webcool.mx</strong>.
         </p>
       </Section>
 
-      <Section title="7. Retención de datos">
+      <Section title="7. Seguridad y contacto">
         <p>
-          Conservamos tus datos mientras mantengas una cuenta activa o sea necesario para prestar el
-          servicio, salvo que solicites su cancelación antes.
-        </p>
-      </Section>
-
-      <Section title="8. Cambios a este aviso">
-        <p>
-          Podemos actualizar este Aviso de Privacidad. Los cambios serán comunicados a través de la
-          plataforma y, cuando sea necesario, requeriremos tu nueva aceptación.
-        </p>
-      </Section>
-
-      <Section title="9. Contacto">
-        <p>
-          Responsable del tratamiento: WebCool
-          <br />
-          Correo de contacto: <strong>soporte@webcool.mx</strong>
+          Aplicamos medidas técnicas y organizativas razonables para proteger la información
+          personal. Para dudas sobre privacidad o tratamiento de datos, contáctanos en{" "}
+          <strong>soporte@webcool.mx</strong>.
         </p>
       </Section>
     </div>
   );
 }
 
+function DeleteAccountContent() {
+  return (
+    <div className="space-y-5">
+      <p className="text-sm leading-relaxed" style={{ color: "#455a64" }}>
+        Para solicitar la eliminación de tu cuenta, escribe a{" "}
+        <strong>soporte@webcool.mx</strong> desde el correo registrado en Webcool.
+      </p>
+
+      <Section title="Datos que se eliminan">
+        <ul className="list-disc pl-4 space-y-1">
+          <li>Perfil</li>
+          <li>Datos personales</li>
+          <li>Favoritos</li>
+          <li>Membresías</li>
+          <li>Reservas</li>
+          <li>Reseñas</li>
+          <li>Tokens de notificaciones</li>
+          <li>Datos asociados a la cuenta</li>
+        </ul>
+      </Section>
+
+      <Section title="Tiempo de procesamiento">
+        <p>La solicitud será procesada en un máximo de 90 días.</p>
+      </Section>
+
+      <Section title="Conservación temporal si aplica">
+        <p>
+          Algunos datos administrativos o legales podrían conservarse temporalmente si aplica, por
+          ejemplo para cumplir obligaciones normativas, de seguridad o de soporte.
+        </p>
+      </Section>
+
+      <Section title="Contacto">
+        <p>
+          Correo de atención: <strong>soporte@webcool.mx</strong>
+        </p>
+      </Section>
+    </div>
+  );
+}
+
+const legalTabs = [
+  { href: "/terminos", label: "Términos", testId: "tab-terminos" },
+  { href: "/privacidad", label: "Privacidad", testId: "tab-privacidad" },
+  { href: "/delete-account", label: "Eliminar cuenta", testId: "tab-delete-account" },
+];
+
 export default function LegalPage() {
   const [location] = useLocation();
-  const isPrivacy = location === "/privacidad";
+  const activePage =
+    location === "/privacidad"
+      ? "privacy"
+      : location === "/delete-account"
+        ? "delete"
+        : "terms";
+
+  const title =
+    activePage === "privacy"
+      ? "Aviso de Privacidad"
+      : activePage === "delete"
+        ? "Eliminación de cuenta - Webcool"
+        : "Términos y Condiciones";
 
   return (
     <div
       className="min-h-screen"
       style={{ background: "linear-gradient(160deg, #e3f2fd 0%, #bbdefb 40%, #e8f5e9 100%)" }}
     >
-      <div className="max-w-2xl mx-auto px-4 py-8">
-        {/* Header */}
-        <div className="flex items-center gap-3 mb-6">
+      <div className="max-w-3xl mx-auto px-4 py-8">
+        <div className="mb-6 flex items-center gap-3">
           <Link href="/">
             <button
-              className="flex items-center gap-1.5 text-sm font-medium rounded-xl px-3 py-2 transition-colors"
+              className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-sm font-medium transition-colors"
               style={{ color: "#1565C0", background: "rgba(255,255,255,0.7)" }}
               data-testid="button-legal-back"
             >
@@ -226,43 +264,36 @@ export default function LegalPage() {
           <img
             src={webcool_logo}
             alt="WebCool"
-            className="object-contain rounded-full ml-auto"
+            className="ml-auto rounded-full object-contain"
             style={{ width: 36, height: 36 }}
           />
         </div>
 
-        {/* Tab switcher */}
         <div
-          className="flex rounded-2xl p-1 mb-6"
+          className="mb-6 grid grid-cols-1 gap-2 rounded-2xl p-2 sm:grid-cols-3"
           style={{ background: "rgba(255,255,255,0.7)" }}
         >
-          <Link href="/terminos">
-            <button
-              className="flex-1 py-2.5 text-sm font-medium rounded-xl transition-all"
-              style={{
-                background: !isPrivacy ? "linear-gradient(135deg, #1E88E5, #1565C0)" : "transparent",
-                color: !isPrivacy ? "#fff" : "#546e7a",
-              }}
-              data-testid="tab-terminos"
-            >
-              Términos de uso
-            </button>
-          </Link>
-          <Link href="/privacidad">
-            <button
-              className="flex-1 py-2.5 text-sm font-medium rounded-xl transition-all"
-              style={{
-                background: isPrivacy ? "linear-gradient(135deg, #1E88E5, #1565C0)" : "transparent",
-                color: isPrivacy ? "#fff" : "#546e7a",
-              }}
-              data-testid="tab-privacidad"
-            >
-              Aviso de privacidad
-            </button>
-          </Link>
+          {legalTabs.map((tab) => {
+            const isActive = location === tab.href;
+            return (
+              <Link key={tab.href} href={tab.href}>
+                <button
+                  className="w-full rounded-xl px-3 py-2.5 text-sm font-medium transition-all"
+                  style={{
+                    background: isActive
+                      ? "linear-gradient(135deg, #1E88E5, #1565C0)"
+                      : "transparent",
+                    color: isActive ? "#fff" : "#546e7a",
+                  }}
+                  data-testid={tab.testId}
+                >
+                  {tab.label}
+                </button>
+              </Link>
+            );
+          })}
         </div>
 
-        {/* Content */}
         <div
           className="rounded-3xl p-6"
           style={{
@@ -273,10 +304,16 @@ export default function LegalPage() {
             boxShadow: "0 20px 60px rgba(30,136,229,0.12)",
           }}
         >
-          <h1 className="text-lg font-bold mb-5" style={{ color: "#0d47a1" }}>
-            {isPrivacy ? "Aviso de Privacidad" : "Términos y Condiciones de Uso"}
+          <h1 className="mb-5 text-lg font-bold" style={{ color: "#0d47a1" }}>
+            {title}
           </h1>
-          {isPrivacy ? <PrivacyContent /> : <TermsContent />}
+          {activePage === "privacy" ? (
+            <PrivacyContent />
+          ) : activePage === "delete" ? (
+            <DeleteAccountContent />
+          ) : (
+            <TermsContent />
+          )}
         </div>
       </div>
     </div>
