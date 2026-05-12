@@ -56,6 +56,10 @@ const QUERIES: Array<{ label: string; sql: string }> = [
     label: "branch_announcements.image_url",
     sql: `SELECT image_url AS url FROM branch_announcements WHERE image_url IS NOT NULL`,
   },
+  {
+    label: "promotions.image_url",
+    sql: `SELECT image_url AS url FROM promotions WHERE image_url IS NOT NULL`,
+  },
 ];
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
