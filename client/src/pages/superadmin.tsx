@@ -27,6 +27,11 @@ import {
   LayoutDashboard,
   UserCheck,
   Send,
+  FolderTree,
+  Tags,
+  Settings2,
+  BarChart3,
+  PencilLine,
 } from "lucide-react";
 import {
   createBranchFormSchema,
@@ -43,7 +48,7 @@ import { useTheme } from "@/components/theme-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import NotificationsPanel from "@/components/notifications-panel";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -74,6 +79,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import {
   Tooltip,
   TooltipContent,
@@ -182,6 +189,160 @@ type SystemEventRow = {
   userEmail?: string | null;
   userName?: string | null;
 };
+type CatalogCategoryRow = {
+  key: string;
+  label: string;
+  icon: string | null;
+  isActive: boolean;
+  displayOrder: number;
+  createdAt: string;
+  updatedAt: string;
+};
+type CatalogSubcategoryRow = {
+  id: string;
+  categoryKey: string;
+  label: string;
+  isActive: boolean;
+  displayOrder: number;
+  createdAt: string;
+  updatedAt: string;
+  categoryLabel?: string | null;
+};
+type CatalogKeywordRow = {
+  id: string;
+  categoryKey: string | null;
+  subcategoryId: string | null;
+  keyword: string;
+  normalizedKeyword: string;
+  kind: string;
+  createdAt: string;
+  categoryLabel?: string | null;
+  subcategoryLabel?: string | null;
+};
+type AppSettingRow = {
+  key: string;
+  valueJson: any;
+  scope: string;
+  updatedBy: string | null;
+  updatedAt: string;
+};
+type SearchLogRecord = {
+  id: string;
+  userId: string | null;
+  queryRaw: string | null;
+  queryNormalized: string | null;
+  category: string | null;
+  subcategory: string | null;
+  lat: number | null;
+  lng: number | null;
+  zone: string | null;
+  resultCount: number;
+  selectedBranchId: string | null;
+  source: string;
+  createdAt: string;
+  userEmail?: string | null;
+  selectedBranchName?: string | null;
+};
+type SearchMetricsResponse = {
+  topQueries: Array<{ query: string; total: number }>;
+  zeroResultQueries: Array<{ query: string; total: number }>;
+  topCategories: Array<{ category: string; total: number }>;
+};
+type PlatformMetricsResponse = {
+  totalAppUsers: number;
+  activeBranches: number;
+  totalSearches: number;
+  zeroResultSearches: number;
+  reservationStats: {
+    created: number;
+    cancelled: number;
+    attended: number;
+    noShow: number;
+  };
+  mostActiveBranches: Array<{
+    branchId: string;
+    branchName: string;
+    totalReservations: number;
+  }>;
+};
+type ReviewReportRecord = {
+  id: string;
+  reviewId: string;
+  branchId: string;
+  reporterUserId: string | null;
+  reportedByRole: string;
+  reason: string;
+  note: string | null;
+  status: string;
+  createdAt: string;
+  resolvedAt: string | null;
+  reviewedByUserId: string | null;
+  resolutionNote: string | null;
+  reviewRating?: number | null;
+  reviewComment?: string | null;
+  branchName?: string | null;
+  branchSlug?: string | null;
+  reporterName?: string | null;
+  reviewerName?: string | null;
+  customerName?: string | null;
+  customerLastName?: string | null;
+  isHidden?: boolean;
+  hiddenReason?: string | null;
+  adminReply?: string | null;
+};
+type ReviewModerationLogRecord = {
+  id: string;
+  reviewId: string;
+  action: string;
+  actorUserId: string | null;
+  reason: string | null;
+  metadata: Record<string, any> | null;
+  createdAt: string;
+  branchName?: string | null;
+  reviewComment?: string | null;
+  actorName?: string | null;
+};
+type NotificationJobRecord = {
+  id: string;
+  type: string;
+  branchId: string | null;
+  userId: string | null;
+  payload: Record<string, any> | null;
+  scheduledFor: string;
+  status: string;
+  attempts: number;
+  lastError: string | null;
+  processedAt: string | null;
+  createdAt: string;
+};
+type ReservationAuditRecord = {
+  id: string;
+  bookingId: string;
+  branchId: string;
+  customerUserId: string;
+  actorUserId: string | null;
+  actorRole: string;
+  action: string;
+  reason: string | null;
+  source: string;
+  metadata: Record<string, any> | null;
+  createdAt: string;
+  customerName?: string | null;
+  customerLastName?: string | null;
+  actorName?: string | null;
+  actorEmail?: string | null;
+  className?: string | null;
+  bookingDate?: string | null;
+  bookingStatus?: string | null;
+};
+type BlockedUserRecord = {
+  id: string;
+  name: string;
+  lastName: string | null;
+  email: string;
+  blockedAt: string | null;
+  blockedReason: string | null;
+};
 
 const CUSTOMER_REPORT_LABELS: Record<string, string> = {
   comentario_ofensivo: "Comentario ofensivo",
@@ -250,6 +411,14 @@ function extractErrorMessage(err: any, fallback: string): string {
   }
 }
 
+async function fetchJson<T>(url: string): Promise<T> {
+  const resp = await fetch(url, { credentials: "include" });
+  if (!resp.ok) {
+    throw new Error(await resp.text());
+  }
+  return resp.json();
+}
+
 function invalidateBranches() {
   queryClient.invalidateQueries({ predicate: (q) => (q.queryKey[0] as string).startsWith("/api/branches") });
   queryClient.invalidateQueries({ queryKey: ["/api/superadmin/branches/metrics"] });
@@ -262,6 +431,21 @@ function invalidateAppCustomers() {
     predicate: (q) => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/superadmin/app-customers"),
   });
   queryClient.invalidateQueries({ queryKey: ["/api/superadmin/system-events"] });
+}
+
+function invalidateCatalog() {
+  queryClient.invalidateQueries({ queryKey: ["/api/superadmin/catalog/categories"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/superadmin/catalog/subcategories"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/superadmin/catalog/keywords"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/superadmin/settings"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/superadmin/search-logs"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/superadmin/search-metrics"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/superadmin/platform-metrics"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/superadmin/review-reports"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/superadmin/review-moderation-logs"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/superadmin/blocked-users"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/superadmin/notification-jobs"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/superadmin/reservation-audit"] });
 }
 
 function customerFullName(customer: { name: string; lastName?: string | null }) {
@@ -305,6 +489,12 @@ function customerReportStatusBadge(status: string) {
 
 function systemEventLabel(eventType: string) {
   return SYSTEM_EVENT_LABELS[eventType] || eventType;
+}
+
+function reviewReportStatusLabel(status: string) {
+  if (status === "reviewed") return "Revisado";
+  if (status === "dismissed") return "Descartado";
+  return "Pendiente";
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -379,6 +569,235 @@ function DeleteBranchDialog({ branch }: { branch: Branch }) {
           >
             {mutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
             Eliminar
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function EditBranchDialog({
+  branch,
+  adminEmail,
+}: {
+  branch: Branch;
+  adminEmail?: string | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState(branch.name);
+  const [slug, setSlug] = useState(branch.slug);
+  const [status, setStatus] = useState(branch.status);
+  const [category, setCategory] = useState(branch.category || "box");
+  const [subcategory, setSubcategory] = useState(branch.subcategory || "");
+  const [searchKeywords, setSearchKeywords] = useState(branch.searchKeywords || "");
+  const { toast } = useToast();
+
+  useEffect(() => {
+    if (!open) {
+      setName(branch.name);
+      setSlug(branch.slug);
+      setStatus(branch.status);
+      setCategory(branch.category || "box");
+      setSubcategory(branch.subcategory || "");
+      setSearchKeywords(branch.searchKeywords || "");
+    }
+  }, [
+    open,
+    branch.name,
+    branch.slug,
+    branch.status,
+    branch.category,
+    branch.subcategory,
+    branch.searchKeywords,
+  ]);
+
+  const { data: categories = [] } = useQuery<CatalogCategoryRow[]>({
+    queryKey: ["/api/superadmin/catalog/categories"],
+    queryFn: () => fetchJson("/api/superadmin/catalog/categories"),
+    enabled: open,
+  });
+
+  const { data: subcategories = [] } = useQuery<CatalogSubcategoryRow[]>({
+    queryKey: ["/api/superadmin/catalog/subcategories"],
+    queryFn: () => fetchJson("/api/superadmin/catalog/subcategories"),
+    enabled: open,
+  });
+
+  const availableSubcategories = subcategories.filter((item) => item.categoryKey === category);
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const resp = await apiRequest("PATCH", `/api/superadmin/branches/${branch.id}`, {
+        name: name.trim(),
+        slug: slug.trim(),
+        status,
+        category,
+        subcategory: subcategory.trim() || null,
+        searchKeywords: searchKeywords.trim() || null,
+      });
+      return resp.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Sucursal actualizada" });
+      invalidateBranches();
+      setOpen(false);
+    },
+    onError: (err: any) => {
+      toast({
+        title: "Error",
+        description: extractErrorMessage(err, "No se pudo actualizar la sucursal"),
+        variant: "destructive",
+      });
+    },
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button size="icon" variant="ghost" data-testid={`button-edit-branch-${branch.id}`}>
+                <PencilLine className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Editar sucursal</TooltipContent>
+          </Tooltip>
+        </span>
+      </DialogTrigger>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Editar sucursal</DialogTitle>
+          <DialogDescription>
+            Actualiza los datos visibles y de catálogo sin afectar los contratos actuales de la app.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-5 py-2">
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label>Nombre</Label>
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Nombre de la sucursal"
+                data-testid="input-edit-branch-name"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Slug</Label>
+              <Input
+                value={slug}
+                onChange={(e) => setSlug(e.target.value.toLowerCase().replace(/\s+/g, "-"))}
+                placeholder="mi-sucursal"
+                data-testid="input-edit-branch-slug"
+              />
+            </div>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label>Categoría</Label>
+              <Select
+                value={category}
+                onValueChange={(value) => {
+                  setCategory(value);
+                  setSubcategory("");
+                }}
+              >
+                <SelectTrigger data-testid="select-edit-branch-category">
+                  <SelectValue placeholder="Selecciona una categoría" />
+                </SelectTrigger>
+                <SelectContent>
+                  {categories.map((item) => (
+                    <SelectItem key={item.key} value={item.key}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Subcategoría</Label>
+              <Select value={subcategory || "none"} onValueChange={(value) => setSubcategory(value === "none" ? "" : value)}>
+                <SelectTrigger data-testid="select-edit-branch-subcategory">
+                  <SelectValue placeholder="Subcategoría opcional" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Sin subcategoría</SelectItem>
+                  {subcategory &&
+                    !availableSubcategories.some((item) => item.label === subcategory) && (
+                      <SelectItem value={subcategory}>
+                        {subcategory}
+                      </SelectItem>
+                    )}
+                  {availableSubcategories.map((item) => (
+                    <SelectItem key={item.id} value={item.label}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Si el catálogo tiene especialidades para esta categoría, se muestran aquí automáticamente.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_220px]">
+            <div className="space-y-2">
+              <Label>Palabras clave de búsqueda</Label>
+              <Textarea
+                value={searchKeywords}
+                onChange={(e) => setSearchKeywords(e.target.value)}
+                placeholder={BRANCH_SEARCH_KEYWORDS_PLACEHOLDER}
+                rows={3}
+                data-testid="textarea-edit-branch-keywords"
+              />
+              <p className="text-xs text-muted-foreground">
+                Ayudan a que la app encuentre la sucursal aunque el usuario escriba distinto. Sepáralas por comas.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label>Estado</Label>
+              <Select
+                value={status}
+                onValueChange={(value) => setStatus(value as Branch["status"])}
+              >
+                <SelectTrigger data-testid="select-edit-branch-status">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="active">Activa</SelectItem>
+                  <SelectItem value="suspended">Suspendida</SelectItem>
+                  <SelectItem value="blacklisted">Bloqueada</SelectItem>
+                </SelectContent>
+              </Select>
+              <div className="rounded-lg border bg-muted/30 p-3 text-xs text-muted-foreground">
+                <p className="font-medium text-foreground">Admin actual</p>
+                <p>{adminEmail || "Sin admin asignado"}</p>
+                <p className="mt-1">La gestión de correo y admin sigue disponible en el botón dedicado de admin.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setOpen(false)} data-testid="button-cancel-edit-branch">
+            Cancelar
+          </Button>
+          <Button
+            onClick={() => mutation.mutate()}
+            disabled={
+              mutation.isPending ||
+              !name.trim() ||
+              !slug.trim() ||
+              !category.trim()
+            }
+            data-testid="button-save-edit-branch"
+          >
+            {mutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Guardar
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -1489,6 +1908,1836 @@ function SystemEventsPanel() {
   );
 }
 
+function formatJsonTextarea(value: any) {
+  try {
+    return JSON.stringify(value ?? {}, null, 2);
+  } catch {
+    return "{}";
+  }
+}
+
+const FRIENDLY_CATALOG_SETTINGS: Record<string, {
+  title: string;
+  description: string;
+  fieldLabel: string;
+  min?: number;
+  step?: number;
+}> = {
+  "search.default_radius_km": {
+    title: "Radio default",
+    description: "Cuando alguien usa “Cerca de mí”, se buscarán negocios dentro de este radio inicial.",
+    fieldLabel: "Kilómetros por defecto",
+    min: 1,
+    step: 1,
+  },
+  "search.max_radius_km": {
+    title: "Radio máximo",
+    description: "Evita búsquedas demasiado grandes y lentas al limitar el alcance máximo.",
+    fieldLabel: "Kilómetros máximos",
+    min: 1,
+    step: 1,
+  },
+  "search.suggestions_limit": {
+    title: "Límite de sugerencias",
+    description: "Cantidad máxima de sugerencias visibles mientras la persona escribe en el buscador.",
+    fieldLabel: "Número de sugerencias",
+    min: 1,
+    step: 1,
+  },
+};
+
+function getSettingNumericValue(item: AppSettingRow): string {
+  const raw = item.valueJson;
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    return String(raw);
+  }
+  if (raw && typeof raw === "object") {
+    if (typeof raw.km === "number" && Number.isFinite(raw.km)) {
+      return String(raw.km);
+    }
+    if (typeof raw.value === "number" && Number.isFinite(raw.value)) {
+      return String(raw.value);
+    }
+  }
+  return "";
+}
+
+function buildNumericSettingPayload(item: AppSettingRow, numericValue: number) {
+  const raw = item.valueJson;
+  if (typeof raw === "number") {
+    return numericValue;
+  }
+  if (raw && typeof raw === "object") {
+    if ("km" in raw) {
+      return { ...raw, km: numericValue };
+    }
+    if ("value" in raw) {
+      return { ...raw, value: numericValue };
+    }
+    return { ...raw, value: numericValue };
+  }
+  return { value: numericValue };
+}
+
+function EmptyCatalogState({
+  title,
+  description,
+}: {
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="rounded-xl border border-dashed bg-muted/20 px-4 py-8 text-center">
+      <p className="text-sm font-medium">{title}</p>
+      <p className="mt-1 text-sm text-muted-foreground">{description}</p>
+    </div>
+  );
+}
+
+function ExecutiveMetricCard({
+  title,
+  value,
+  helper,
+  icon: Icon,
+}: {
+  title: string;
+  value: number;
+  helper: string;
+  icon: typeof Users;
+}) {
+  return (
+    <div className="rounded-2xl border bg-card/80 p-4 shadow-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium text-muted-foreground">{title}</p>
+          <p className="mt-2 text-3xl font-semibold tracking-tight">{value}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{helper}</p>
+        </div>
+        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
+          <Icon className="h-5 w-5" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CatalogCategoryEditor({ item }: { item: CatalogCategoryRow }) {
+  const { toast } = useToast();
+  const [label, setLabel] = useState(item.label);
+  const [icon, setIcon] = useState(item.icon || "");
+  const [displayOrder, setDisplayOrder] = useState(String(item.displayOrder ?? 0));
+  const [isActive, setIsActive] = useState(item.isActive);
+
+  useEffect(() => {
+    setLabel(item.label);
+    setIcon(item.icon || "");
+    setDisplayOrder(String(item.displayOrder ?? 0));
+    setIsActive(item.isActive);
+  }, [item.key, item.label, item.icon, item.displayOrder, item.isActive]);
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const resp = await apiRequest("PATCH", `/api/superadmin/catalog/categories/${encodeURIComponent(item.key)}`, {
+        label,
+        icon: icon.trim() || null,
+        displayOrder: Number(displayOrder || 0),
+        isActive,
+      });
+      return resp.json();
+    },
+    onSuccess: () => {
+      invalidateCatalog();
+      toast({ title: "Categoría actualizada" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo actualizar la categoría"), variant: "destructive" });
+    },
+  });
+
+  return (
+    <div className="rounded-2xl border bg-background/70 p-4 shadow-sm">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Badge variant="outline" className="font-mono text-[11px] uppercase tracking-wide">
+              {item.key}
+            </Badge>
+            <Badge variant={isActive ? "default" : "secondary"}>
+              {isActive ? "Activa" : "Inactiva"}
+            </Badge>
+          </div>
+          <p className="text-sm text-muted-foreground">Edita la etiqueta visible, el icono y el orden del catálogo global.</p>
+        </div>
+        <div className="flex items-center gap-3 self-start">
+          <div className="flex items-center gap-2 rounded-full border px-3 py-1.5">
+            <Switch checked={isActive} onCheckedChange={setIsActive} />
+            <span className="text-xs text-muted-foreground">Visible</span>
+          </div>
+          <Button size="sm" onClick={() => mutation.mutate()} disabled={mutation.isPending}>
+            {mutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Guardar cambios
+          </Button>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1.2fr)_120px]">
+        <div className="space-y-2">
+          <Label>Etiqueta</Label>
+          <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Doctor / Clínica" />
+        </div>
+        <div className="space-y-2">
+          <Label>Ícono</Label>
+          <Input value={icon} onChange={(e) => setIcon(e.target.value)} placeholder="stethoscope" />
+        </div>
+        <div className="space-y-2">
+          <Label>Orden</Label>
+          <Input type="number" value={displayOrder} onChange={(e) => setDisplayOrder(e.target.value)} placeholder="0" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CatalogSubcategoryEditor({
+  item,
+  categories,
+}: {
+  item: CatalogSubcategoryRow;
+  categories: CatalogCategoryRow[];
+}) {
+  const { toast } = useToast();
+  const [label, setLabel] = useState(item.label);
+  const [categoryKey, setCategoryKey] = useState(item.categoryKey);
+  const [displayOrder, setDisplayOrder] = useState(String(item.displayOrder ?? 0));
+  const [isActive, setIsActive] = useState(item.isActive);
+
+  useEffect(() => {
+    setLabel(item.label);
+    setCategoryKey(item.categoryKey);
+    setDisplayOrder(String(item.displayOrder ?? 0));
+    setIsActive(item.isActive);
+  }, [item.id, item.label, item.categoryKey, item.displayOrder, item.isActive]);
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const resp = await apiRequest("PATCH", `/api/superadmin/catalog/subcategories/${item.id}`, {
+        categoryKey,
+        label,
+        displayOrder: Number(displayOrder || 0),
+        isActive,
+      });
+      return resp.json();
+    },
+    onSuccess: () => {
+      invalidateCatalog();
+      toast({ title: "Subcategoría actualizada" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo actualizar la subcategoría"), variant: "destructive" });
+    },
+  });
+
+  return (
+    <div className="grid gap-3 rounded-lg border p-3 md:grid-cols-[1.1fr_1fr_120px_120px_auto]">
+      <Select value={categoryKey} onValueChange={setCategoryKey}>
+        <SelectTrigger>
+          <SelectValue placeholder="Categoría" />
+        </SelectTrigger>
+        <SelectContent>
+          {categories.map((category) => (
+            <SelectItem key={category.key} value={category.key}>
+              {category.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Subcategoría" />
+      <Input type="number" value={displayOrder} onChange={(e) => setDisplayOrder(e.target.value)} placeholder="Orden" />
+      <div className="flex items-center gap-2">
+        <Switch checked={isActive} onCheckedChange={setIsActive} />
+        <span className="text-xs text-muted-foreground">Activa</span>
+      </div>
+      <div className="flex justify-end">
+        <Button size="sm" onClick={() => mutation.mutate()} disabled={mutation.isPending}>
+          {mutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          Guardar
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function CatalogSettingEditor({ item }: { item: AppSettingRow }) {
+  const { toast } = useToast();
+  const [draft, setDraft] = useState(formatJsonTextarea(item.valueJson));
+
+  useEffect(() => {
+    setDraft(formatJsonTextarea(item.valueJson));
+  }, [item.key, item.updatedAt, item.valueJson]);
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      let parsed: any;
+      try {
+        parsed = JSON.parse(draft);
+      } catch {
+        throw new Error("El JSON no es válido");
+      }
+      const resp = await apiRequest("PATCH", `/api/superadmin/settings/${encodeURIComponent(item.key)}`, {
+        valueJson: parsed,
+        scope: item.scope,
+      });
+      return resp.json();
+    },
+    onSuccess: () => {
+      invalidateCatalog();
+      toast({ title: "Setting actualizado" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo guardar el setting"), variant: "destructive" });
+    },
+  });
+
+  return (
+    <div className="rounded-lg border p-3 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="font-medium">{item.key}</p>
+          <p className="text-xs text-muted-foreground">Scope: {item.scope} · Actualizado {formatShortDateTime(item.updatedAt)}</p>
+        </div>
+        <Button size="sm" onClick={() => mutation.mutate()} disabled={mutation.isPending}>
+          {mutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          Guardar
+        </Button>
+      </div>
+      <Textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        rows={4}
+        className="font-mono text-xs"
+      />
+    </div>
+  );
+}
+
+function CatalogPanel() {
+  const { toast } = useToast();
+  const [newCategoryKey, setNewCategoryKey] = useState("");
+  const [newCategoryLabel, setNewCategoryLabel] = useState("");
+  const [newCategoryIcon, setNewCategoryIcon] = useState("");
+  const [newCategoryOrder, setNewCategoryOrder] = useState("0");
+
+  const [newSubcategoryCategoryKey, setNewSubcategoryCategoryKey] = useState("");
+  const [newSubcategoryLabel, setNewSubcategoryLabel] = useState("");
+  const [newSubcategoryOrder, setNewSubcategoryOrder] = useState("0");
+
+  const [newKeywordCategoryKey, setNewKeywordCategoryKey] = useState("");
+  const [newKeywordSubcategoryId, setNewKeywordSubcategoryId] = useState("");
+  const [newKeywordValue, setNewKeywordValue] = useState("");
+
+  const { data: categories, isLoading: categoriesLoading } = useQuery<CatalogCategoryRow[]>({
+    queryKey: ["/api/superadmin/catalog/categories"],
+    queryFn: () => fetchJson("/api/superadmin/catalog/categories"),
+  });
+
+  const { data: subcategories, isLoading: subcategoriesLoading } = useQuery<CatalogSubcategoryRow[]>({
+    queryKey: ["/api/superadmin/catalog/subcategories"],
+    queryFn: () => fetchJson("/api/superadmin/catalog/subcategories"),
+  });
+
+  const { data: keywords, isLoading: keywordsLoading } = useQuery<CatalogKeywordRow[]>({
+    queryKey: ["/api/superadmin/catalog/keywords"],
+    queryFn: () => fetchJson("/api/superadmin/catalog/keywords"),
+  });
+
+  const { data: settings, isLoading: settingsLoading } = useQuery<AppSettingRow[]>({
+    queryKey: ["/api/superadmin/settings"],
+    queryFn: () => fetchJson("/api/superadmin/settings"),
+  });
+
+  const { data: metrics } = useQuery<SearchMetricsResponse>({
+    queryKey: ["/api/superadmin/search-metrics"],
+    queryFn: () => fetchJson("/api/superadmin/search-metrics?limit=8"),
+  });
+
+  const { data: platformMetrics } = useQuery<PlatformMetricsResponse>({
+    queryKey: ["/api/superadmin/platform-metrics"],
+    queryFn: () => fetchJson("/api/superadmin/platform-metrics"),
+  });
+
+  const { data: searchLogs } = useQuery<SearchLogRecord[]>({
+    queryKey: ["/api/superadmin/search-logs"],
+    queryFn: () => fetchJson("/api/superadmin/search-logs?limit=20"),
+  });
+
+  const createCategoryMutation = useMutation({
+    mutationFn: async () => {
+      const resp = await apiRequest("POST", "/api/superadmin/catalog/categories", {
+        key: newCategoryKey.trim(),
+        label: newCategoryLabel.trim(),
+        icon: newCategoryIcon.trim() || null,
+        displayOrder: Number(newCategoryOrder || 0),
+      });
+      return resp.json();
+    },
+    onSuccess: () => {
+      setNewCategoryKey("");
+      setNewCategoryLabel("");
+      setNewCategoryIcon("");
+      setNewCategoryOrder("0");
+      invalidateCatalog();
+      toast({ title: "Categoría creada" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo crear la categoría"), variant: "destructive" });
+    },
+  });
+
+  const createSubcategoryMutation = useMutation({
+    mutationFn: async () => {
+      const resp = await apiRequest("POST", "/api/superadmin/catalog/subcategories", {
+        categoryKey: newSubcategoryCategoryKey,
+        label: newSubcategoryLabel.trim(),
+        displayOrder: Number(newSubcategoryOrder || 0),
+      });
+      return resp.json();
+    },
+    onSuccess: () => {
+      setNewSubcategoryLabel("");
+      setNewSubcategoryOrder("0");
+      invalidateCatalog();
+      toast({ title: "Subcategoría creada" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo crear la subcategoría"), variant: "destructive" });
+    },
+  });
+
+  const createKeywordMutation = useMutation({
+    mutationFn: async () => {
+      const resolvedCategoryKey =
+        newKeywordCategoryKey ||
+        subcategories?.find((subcategory) => subcategory.id === newKeywordSubcategoryId)?.categoryKey ||
+        null;
+
+      const resp = await apiRequest("POST", "/api/superadmin/catalog/keywords", {
+        categoryKey: resolvedCategoryKey,
+        subcategoryId: newKeywordSubcategoryId || null,
+        keyword: newKeywordValue.trim(),
+        kind: "alias",
+      });
+      return resp.json();
+    },
+    onSuccess: () => {
+      setNewKeywordValue("");
+      setNewKeywordSubcategoryId("");
+      invalidateCatalog();
+      toast({ title: "Keyword creada" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo crear la keyword"), variant: "destructive" });
+    },
+  });
+
+  const deleteKeywordMutation = useMutation({
+    mutationFn: async (keywordId: string) => {
+      await apiRequest("DELETE", `/api/superadmin/catalog/keywords/${keywordId}`);
+    },
+    onSuccess: () => {
+      invalidateCatalog();
+      toast({ title: "Keyword eliminada" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo eliminar la keyword"), variant: "destructive" });
+    },
+  });
+
+  const availableSubcategories = (subcategories || []).filter((subcategory) =>
+    newKeywordCategoryKey ? subcategory.categoryKey === newKeywordCategoryKey : true,
+  );
+
+  return (
+    <div className="space-y-6">
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card>
+          <CardContent className="p-4 space-y-4">
+            <div className="flex items-center gap-2">
+              <FolderTree className="h-5 w-5 text-primary" />
+              <h2 className="font-semibold text-lg">Categorías</h2>
+            </div>
+            <div className="grid gap-3 md:grid-cols-4">
+              <Input value={newCategoryKey} onChange={(e) => setNewCategoryKey(e.target.value)} placeholder="Clave" />
+              <Input value={newCategoryLabel} onChange={(e) => setNewCategoryLabel(e.target.value)} placeholder="Etiqueta" />
+              <Input value={newCategoryIcon} onChange={(e) => setNewCategoryIcon(e.target.value)} placeholder="Icono" />
+              <div className="flex gap-2">
+                <Input type="number" value={newCategoryOrder} onChange={(e) => setNewCategoryOrder(e.target.value)} placeholder="Orden" />
+                <Button
+                  onClick={() => createCategoryMutation.mutate()}
+                  disabled={createCategoryMutation.isPending || !newCategoryKey.trim() || !newCategoryLabel.trim()}
+                >
+                  {createCategoryMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  <Plus className="h-4 w-4 mr-2" />
+                  Crear
+                </Button>
+              </div>
+            </div>
+            <div className="space-y-3">
+              {categoriesLoading ? (
+                <Skeleton className="h-24 w-full" />
+              ) : (
+                (categories || []).map((item) => <CatalogCategoryEditor key={item.key} item={item} />)
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-4 space-y-4">
+            <div className="flex items-center gap-2">
+              <FolderTree className="h-5 w-5 text-primary" />
+              <h2 className="font-semibold text-lg">Subcategorías</h2>
+            </div>
+            <div className="grid gap-3 md:grid-cols-4">
+              <Select value={newSubcategoryCategoryKey} onValueChange={setNewSubcategoryCategoryKey}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Categoría" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(categories || []).map((category) => (
+                    <SelectItem key={category.key} value={category.key}>
+                      {category.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Input value={newSubcategoryLabel} onChange={(e) => setNewSubcategoryLabel(e.target.value)} placeholder="Subcategoría" />
+              <Input type="number" value={newSubcategoryOrder} onChange={(e) => setNewSubcategoryOrder(e.target.value)} placeholder="Orden" />
+              <Button
+                onClick={() => createSubcategoryMutation.mutate()}
+                disabled={createSubcategoryMutation.isPending || !newSubcategoryCategoryKey || !newSubcategoryLabel.trim()}
+              >
+                {createSubcategoryMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                <Plus className="h-4 w-4 mr-2" />
+                Crear
+              </Button>
+            </div>
+            <div className="space-y-3">
+              {subcategoriesLoading ? (
+                <Skeleton className="h-24 w-full" />
+              ) : (
+                (subcategories || []).map((item) => (
+                  <CatalogSubcategoryEditor key={item.id} item={item} categories={categories || []} />
+                ))
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+        <Card>
+          <CardContent className="p-4 space-y-4">
+            <div className="flex items-center gap-2">
+              <Tags className="h-5 w-5 text-primary" />
+              <h2 className="font-semibold text-lg">Keywords</h2>
+            </div>
+            <div className="grid gap-3 md:grid-cols-4">
+              <Select
+                value={newKeywordCategoryKey || "all"}
+                onValueChange={(value) => {
+                  const next = value === "all" ? "" : value;
+                  setNewKeywordCategoryKey(next);
+                  if (newKeywordSubcategoryId) {
+                    const current = subcategories?.find((subcategory) => subcategory.id === newKeywordSubcategoryId);
+                    if (current && next && current.categoryKey !== next) {
+                      setNewKeywordSubcategoryId("");
+                    }
+                  }
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Categoría opcional" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todas</SelectItem>
+                  {(categories || []).map((category) => (
+                    <SelectItem key={category.key} value={category.key}>
+                      {category.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={newKeywordSubcategoryId || "none"} onValueChange={(value) => setNewKeywordSubcategoryId(value === "none" ? "" : value)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Subcategoría opcional" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Sin subcategoría</SelectItem>
+                  {availableSubcategories.map((subcategory) => (
+                    <SelectItem key={subcategory.id} value={subcategory.id}>
+                      {subcategory.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Input value={newKeywordValue} onChange={(e) => setNewKeywordValue(e.target.value)} placeholder="Ej. nutriologo" />
+              <Button
+                onClick={() => createKeywordMutation.mutate()}
+                disabled={createKeywordMutation.isPending || !newKeywordValue.trim() || (!newKeywordCategoryKey && !newKeywordSubcategoryId)}
+              >
+                {createKeywordMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                <Plus className="h-4 w-4 mr-2" />
+                Crear
+              </Button>
+            </div>
+            <div className="space-y-2">
+              {keywordsLoading ? (
+                <Skeleton className="h-24 w-full" />
+              ) : (
+                (keywords || []).map((keyword) => (
+                  <div key={keyword.id} className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <Badge variant="secondary">{keyword.keyword}</Badge>
+                        <Badge variant="outline">{keyword.kind}</Badge>
+                        {keyword.categoryLabel && <Badge variant="outline">{keyword.categoryLabel}</Badge>}
+                        {keyword.subcategoryLabel && <Badge variant="outline">{keyword.subcategoryLabel}</Badge>}
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Normalizado: {keyword.normalizedKeyword} · {formatShortDate(keyword.createdAt)}
+                      </p>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => deleteKeywordMutation.mutate(keyword.id)}
+                      disabled={deleteKeywordMutation.isPending}
+                    >
+                      <Trash2 className="h-4 w-4 text-destructive" />
+                    </Button>
+                  </div>
+                ))
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-4 space-y-4">
+            <div className="flex items-center gap-2">
+              <Settings2 className="h-5 w-5 text-primary" />
+              <h2 className="font-semibold text-lg">Settings básicos</h2>
+            </div>
+            <div className="space-y-3">
+              {settingsLoading ? (
+                <Skeleton className="h-24 w-full" />
+              ) : (
+                (settings || []).map((setting) => (
+                  <CatalogSettingEditor key={setting.key} item={setting} />
+                ))
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card>
+        <CardContent className="p-4 space-y-4">
+          <div className="flex items-center gap-2">
+            <BarChart3 className="h-5 w-5 text-primary" />
+            <h2 className="font-semibold text-lg">Métricas de búsqueda</h2>
+          </div>
+          <div className="grid gap-4 lg:grid-cols-3">
+            <div className="rounded-lg border p-3">
+              <p className="text-sm font-medium mb-3">Términos más buscados</p>
+              <div className="space-y-2">
+                {(metrics?.topQueries || []).length > 0 ? (
+                  metrics?.topQueries.map((item) => (
+                    <div key={item.query} className="flex items-center justify-between gap-3 text-sm">
+                      <span className="truncate">{item.query}</span>
+                      <Badge variant="secondary">{item.total}</Badge>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-sm text-muted-foreground">Sin datos todavía.</p>
+                )}
+              </div>
+            </div>
+            <div className="rounded-lg border p-3">
+              <p className="text-sm font-medium mb-3">Búsquedas sin resultados</p>
+              <div className="space-y-2">
+                {(metrics?.zeroResultQueries || []).length > 0 ? (
+                  metrics?.zeroResultQueries.map((item) => (
+                    <div key={item.query} className="flex items-center justify-between gap-3 text-sm">
+                      <span className="truncate">{item.query}</span>
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline">{item.total}</Badge>
+                        <Button size="sm" variant="ghost" onClick={() => setNewKeywordValue(item.query)}>
+                          Usar como keyword
+                        </Button>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-sm text-muted-foreground">Sin datos todavía.</p>
+                )}
+              </div>
+            </div>
+            <div className="rounded-lg border p-3">
+              <p className="text-sm font-medium mb-3">Categorías más buscadas</p>
+              <div className="space-y-2">
+                {(metrics?.topCategories || []).length > 0 ? (
+                  metrics?.topCategories.map((item) => (
+                    <div key={item.category} className="flex items-center justify-between gap-3 text-sm">
+                      <span className="truncate">{getCategoryLabel(item.category)}</span>
+                      <Badge>{item.total}</Badge>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-sm text-muted-foreground">Sin datos todavía.</p>
+                )}
+              </div>
+            </div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-4">
+            <div className="rounded-lg border p-3">
+              <p className="text-xs text-muted-foreground">Usuarios app</p>
+              <p className="text-xl font-semibold">{platformMetrics?.totalAppUsers ?? 0}</p>
+            </div>
+            <div className="rounded-lg border p-3">
+              <p className="text-xs text-muted-foreground">Sucursales activas</p>
+              <p className="text-xl font-semibold">{platformMetrics?.activeBranches ?? 0}</p>
+            </div>
+            <div className="rounded-lg border p-3">
+              <p className="text-xs text-muted-foreground">Búsquedas</p>
+              <p className="text-xl font-semibold">{platformMetrics?.totalSearches ?? 0}</p>
+            </div>
+            <div className="rounded-lg border p-3">
+              <p className="text-xs text-muted-foreground">Sin resultados</p>
+              <p className="text-xl font-semibold">{platformMetrics?.zeroResultSearches ?? 0}</p>
+            </div>
+          </div>
+          <div className="rounded-lg border p-3">
+            <p className="text-sm font-medium mb-3">Últimas búsquedas</p>
+            <div className="space-y-2">
+              {(searchLogs || []).length > 0 ? (
+                searchLogs?.map((log) => (
+                  <div key={log.id} className="flex items-start justify-between gap-3 border-b pb-2 last:border-b-0">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium truncate">
+                        {log.queryRaw || log.category || log.subcategory || "Búsqueda sin texto"}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {log.source} · {log.resultCount} resultado(s) · {log.userEmail || "Anónimo"}
+                      </p>
+                    </div>
+                    <p className="text-xs text-muted-foreground shrink-0">{formatShortDateTime(log.createdAt)}</p>
+                  </div>
+                ))
+              ) : (
+                <p className="text-sm text-muted-foreground">Todavía no hay búsquedas registradas.</p>
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function CatalogSubcategoryCardEditor({
+  item,
+  categories,
+}: {
+  item: CatalogSubcategoryRow;
+  categories: CatalogCategoryRow[];
+}) {
+  const { toast } = useToast();
+  const [label, setLabel] = useState(item.label);
+  const [categoryKey, setCategoryKey] = useState(item.categoryKey);
+  const [displayOrder, setDisplayOrder] = useState(String(item.displayOrder ?? 0));
+  const [isActive, setIsActive] = useState(item.isActive);
+
+  useEffect(() => {
+    setLabel(item.label);
+    setCategoryKey(item.categoryKey);
+    setDisplayOrder(String(item.displayOrder ?? 0));
+    setIsActive(item.isActive);
+  }, [item.id, item.label, item.categoryKey, item.displayOrder, item.isActive]);
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const resp = await apiRequest("PATCH", `/api/superadmin/catalog/subcategories/${item.id}`, {
+        categoryKey,
+        label,
+        displayOrder: Number(displayOrder || 0),
+        isActive,
+      });
+      return resp.json();
+    },
+    onSuccess: () => {
+      invalidateCatalog();
+      toast({ title: "Subcategoría actualizada" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo actualizar la subcategoría"), variant: "destructive" });
+    },
+  });
+
+  return (
+    <div className="rounded-2xl border bg-background/70 p-4 shadow-sm">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            {item.categoryLabel && <Badge variant="outline">{item.categoryLabel}</Badge>}
+            <Badge variant={isActive ? "default" : "secondary"}>
+              {isActive ? "Activa" : "Inactiva"}
+            </Badge>
+          </div>
+          <p className="text-sm text-muted-foreground">Organiza especialidades y controla el orden en que aparecen para búsqueda.</p>
+        </div>
+        <div className="flex items-center gap-3 self-start">
+          <div className="flex items-center gap-2 rounded-full border px-3 py-1.5">
+            <Switch checked={isActive} onCheckedChange={setIsActive} />
+            <span className="text-xs text-muted-foreground">Visible</span>
+          </div>
+          <Button size="sm" onClick={() => mutation.mutate()} disabled={mutation.isPending}>
+            {mutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Guardar cambios
+          </Button>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,1.25fr)_120px]">
+        <div className="space-y-2">
+          <Label>Categoría</Label>
+          <Select value={categoryKey} onValueChange={setCategoryKey}>
+            <SelectTrigger>
+              <SelectValue placeholder="Categoría" />
+            </SelectTrigger>
+            <SelectContent>
+              {categories.map((category) => (
+                <SelectItem key={category.key} value={category.key}>
+                  {category.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-2">
+          <Label>Subcategoría</Label>
+          <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Nutriólogo" />
+        </div>
+        <div className="space-y-2">
+          <Label>Orden</Label>
+          <Input type="number" value={displayOrder} onChange={(e) => setDisplayOrder(e.target.value)} placeholder="0" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CatalogSettingFriendlyEditor({ item }: { item: AppSettingRow }) {
+  const { toast } = useToast();
+  const copy = FRIENDLY_CATALOG_SETTINGS[item.key];
+  const [draft, setDraft] = useState(getSettingNumericValue(item));
+
+  useEffect(() => {
+    setDraft(getSettingNumericValue(item));
+  }, [item.key, item.updatedAt, item.valueJson]);
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const numericValue = Number(draft);
+      if (!Number.isFinite(numericValue) || numericValue <= 0) {
+        throw new Error("Ingresa un número válido mayor a cero");
+      }
+
+      const resp = await apiRequest("PATCH", `/api/superadmin/settings/${encodeURIComponent(item.key)}`, {
+        valueJson: buildNumericSettingPayload(item, numericValue),
+        scope: item.scope,
+      });
+      return resp.json();
+    },
+    onSuccess: () => {
+      invalidateCatalog();
+      toast({ title: "Configuración guardada" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo guardar la configuración"), variant: "destructive" });
+    },
+  });
+
+  if (!copy) {
+    return <CatalogSettingEditor item={item} />;
+  }
+
+  return (
+    <div className="rounded-2xl border bg-background/70 p-4 shadow-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div className="space-y-1">
+          <p className="font-medium">{copy.title}</p>
+          <p className="text-sm text-muted-foreground">{copy.description}</p>
+          <p className="text-xs text-muted-foreground">Actualizado {formatShortDateTime(item.updatedAt)}</p>
+        </div>
+        <Badge variant="outline">{item.scope}</Badge>
+      </div>
+      <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
+        <div className="flex-1 space-y-2">
+          <Label>{copy.fieldLabel}</Label>
+          <Input
+            type="number"
+            min={copy.min}
+            step={copy.step ?? 1}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="0"
+          />
+        </div>
+        <Button className="sm:min-w-[150px]" onClick={() => mutation.mutate()} disabled={mutation.isPending}>
+          {mutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          Guardar cambio
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function CatalogExecutivePanel() {
+  const { toast } = useToast();
+  const [newCategoryKey, setNewCategoryKey] = useState("");
+  const [newCategoryLabel, setNewCategoryLabel] = useState("");
+  const [newCategoryIcon, setNewCategoryIcon] = useState("");
+  const [newCategoryOrder, setNewCategoryOrder] = useState("0");
+
+  const [newSubcategoryCategoryKey, setNewSubcategoryCategoryKey] = useState("");
+  const [newSubcategoryLabel, setNewSubcategoryLabel] = useState("");
+  const [newSubcategoryOrder, setNewSubcategoryOrder] = useState("0");
+
+  const [newKeywordCategoryKey, setNewKeywordCategoryKey] = useState("");
+  const [newKeywordSubcategoryId, setNewKeywordSubcategoryId] = useState("");
+  const [newKeywordValue, setNewKeywordValue] = useState("");
+
+  const { data: categories, isLoading: categoriesLoading } = useQuery<CatalogCategoryRow[]>({
+    queryKey: ["/api/superadmin/catalog/categories"],
+    queryFn: () => fetchJson("/api/superadmin/catalog/categories"),
+  });
+
+  const { data: subcategories, isLoading: subcategoriesLoading } = useQuery<CatalogSubcategoryRow[]>({
+    queryKey: ["/api/superadmin/catalog/subcategories"],
+    queryFn: () => fetchJson("/api/superadmin/catalog/subcategories"),
+  });
+
+  const { data: keywords, isLoading: keywordsLoading } = useQuery<CatalogKeywordRow[]>({
+    queryKey: ["/api/superadmin/catalog/keywords"],
+    queryFn: () => fetchJson("/api/superadmin/catalog/keywords"),
+  });
+
+  const { data: settings, isLoading: settingsLoading } = useQuery<AppSettingRow[]>({
+    queryKey: ["/api/superadmin/settings"],
+    queryFn: () => fetchJson("/api/superadmin/settings"),
+  });
+
+  const { data: metrics } = useQuery<SearchMetricsResponse>({
+    queryKey: ["/api/superadmin/search-metrics"],
+    queryFn: () => fetchJson("/api/superadmin/search-metrics?limit=8"),
+  });
+
+  const { data: platformMetrics } = useQuery<PlatformMetricsResponse>({
+    queryKey: ["/api/superadmin/platform-metrics"],
+    queryFn: () => fetchJson("/api/superadmin/platform-metrics"),
+  });
+
+  const { data: searchLogs } = useQuery<SearchLogRecord[]>({
+    queryKey: ["/api/superadmin/search-logs"],
+    queryFn: () => fetchJson("/api/superadmin/search-logs?limit=20"),
+  });
+
+  const createCategoryMutation = useMutation({
+    mutationFn: async () => {
+      const resp = await apiRequest("POST", "/api/superadmin/catalog/categories", {
+        key: newCategoryKey.trim(),
+        label: newCategoryLabel.trim(),
+        icon: newCategoryIcon.trim() || null,
+        displayOrder: Number(newCategoryOrder || 0),
+      });
+      return resp.json();
+    },
+    onSuccess: () => {
+      setNewCategoryKey("");
+      setNewCategoryLabel("");
+      setNewCategoryIcon("");
+      setNewCategoryOrder("0");
+      invalidateCatalog();
+      toast({ title: "Categoría creada" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo crear la categoría"), variant: "destructive" });
+    },
+  });
+
+  const createSubcategoryMutation = useMutation({
+    mutationFn: async () => {
+      const resp = await apiRequest("POST", "/api/superadmin/catalog/subcategories", {
+        categoryKey: newSubcategoryCategoryKey,
+        label: newSubcategoryLabel.trim(),
+        displayOrder: Number(newSubcategoryOrder || 0),
+      });
+      return resp.json();
+    },
+    onSuccess: () => {
+      setNewSubcategoryLabel("");
+      setNewSubcategoryOrder("0");
+      invalidateCatalog();
+      toast({ title: "Subcategoría creada" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo crear la subcategoría"), variant: "destructive" });
+    },
+  });
+
+  const createKeywordMutation = useMutation({
+    mutationFn: async () => {
+      const resolvedCategoryKey =
+        newKeywordCategoryKey ||
+        subcategories?.find((subcategory) => subcategory.id === newKeywordSubcategoryId)?.categoryKey ||
+        null;
+
+      const resp = await apiRequest("POST", "/api/superadmin/catalog/keywords", {
+        categoryKey: resolvedCategoryKey,
+        subcategoryId: newKeywordSubcategoryId || null,
+        keyword: newKeywordValue.trim(),
+        kind: "alias",
+      });
+      return resp.json();
+    },
+    onSuccess: () => {
+      setNewKeywordValue("");
+      setNewKeywordSubcategoryId("");
+      invalidateCatalog();
+      toast({ title: "Keyword creada" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo crear la keyword"), variant: "destructive" });
+    },
+  });
+
+  const deleteKeywordMutation = useMutation({
+    mutationFn: async (keywordId: string) => {
+      await apiRequest("DELETE", `/api/superadmin/catalog/keywords/${keywordId}`);
+    },
+    onSuccess: () => {
+      invalidateCatalog();
+      toast({ title: "Keyword eliminada" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo eliminar la keyword"), variant: "destructive" });
+    },
+  });
+
+  const categoriesList = categories || [];
+  const subcategoriesList = subcategories || [];
+  const keywordsList = keywords || [];
+  const availableSubcategories = subcategoriesList.filter((subcategory) =>
+    newKeywordCategoryKey ? subcategory.categoryKey === newKeywordCategoryKey : true,
+  );
+  const categoryGroups = categoriesList.map((category) => ({
+    category,
+    items: subcategoriesList.filter((subcategory) => subcategory.categoryKey === category.key),
+  }));
+  const friendlySettingKeys = Object.keys(FRIENDLY_CATALOG_SETTINGS);
+  const friendlySettings = (settings || []).filter((item) => friendlySettingKeys.includes(item.key));
+  const advancedSettings = (settings || []).filter((item) => !friendlySettingKeys.includes(item.key));
+
+  return (
+    <div className="space-y-6">
+      <Card className="overflow-hidden border-primary/10 bg-gradient-to-br from-primary/5 via-background to-background">
+        <CardHeader className="space-y-3">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <FolderTree className="h-5 w-5 text-primary" />
+                <CardTitle className="text-2xl">Catálogo</CardTitle>
+              </div>
+              <CardDescription className="max-w-3xl">
+                Administra categorías, subcategorías, keywords y parámetros de búsqueda desde un panel más claro para operación diaria.
+              </CardDescription>
+            </div>
+            <Badge variant="outline" className="self-start px-3 py-1 text-xs">
+              Solo UI · misma lógica
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <ExecutiveMetricCard
+            title="Búsquedas totales"
+            value={platformMetrics?.totalSearches ?? 0}
+            helper="Actividad acumulada en app y web."
+            icon={Search}
+          />
+          <ExecutiveMetricCard
+            title="Sin resultados"
+            value={platformMetrics?.zeroResultSearches ?? 0}
+            helper="Consultas que hoy no encuentran oferta."
+            icon={BarChart3}
+          />
+          <ExecutiveMetricCard
+            title="Usuarios app"
+            value={platformMetrics?.totalAppUsers ?? 0}
+            helper="Clientes finales registrados."
+            icon={Users}
+          />
+          <ExecutiveMetricCard
+            title="Sucursales activas"
+            value={platformMetrics?.activeBranches ?? 0}
+            helper="Negocios visibles actualmente."
+            icon={Building2}
+          />
+        </CardContent>
+      </Card>
+
+      <div className="grid gap-6 2xl:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
+        <div className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-xl">Categorías</CardTitle>
+              <CardDescription>Organiza el catálogo principal que usa Super Admin y sirve como base para búsqueda.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-5">
+              <div className="rounded-2xl border bg-muted/20 p-4">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+                  <div>
+                    <p className="font-medium">Crear categoría</p>
+                    <p className="text-sm text-muted-foreground">Usa una clave corta, una etiqueta visible y el orden deseado.</p>
+                  </div>
+                  <Badge variant="secondary">{categoriesList.length} registradas</Badge>
+                </div>
+                <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)_120px_auto]">
+                  <div className="space-y-2">
+                    <Label>Clave</Label>
+                    <Input value={newCategoryKey} onChange={(e) => setNewCategoryKey(e.target.value)} placeholder="doctor" />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Etiqueta</Label>
+                    <Input value={newCategoryLabel} onChange={(e) => setNewCategoryLabel(e.target.value)} placeholder="Doctor / Clínica" />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Ícono</Label>
+                    <Input value={newCategoryIcon} onChange={(e) => setNewCategoryIcon(e.target.value)} placeholder="stethoscope" />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Orden</Label>
+                    <Input type="number" value={newCategoryOrder} onChange={(e) => setNewCategoryOrder(e.target.value)} placeholder="0" />
+                  </div>
+                  <div className="flex items-end">
+                    <Button
+                      className="w-full xl:w-auto"
+                      onClick={() => createCategoryMutation.mutate()}
+                      disabled={createCategoryMutation.isPending || !newCategoryKey.trim() || !newCategoryLabel.trim()}
+                    >
+                      {createCategoryMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                      <Plus className="mr-2 h-4 w-4" />
+                      Crear categoría
+                    </Button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                {categoriesLoading ? (
+                  <Skeleton className="h-48 w-full" />
+                ) : categoriesList.length > 0 ? (
+                  categoriesList.map((item) => <CatalogCategoryEditor key={item.key} item={item} />)
+                ) : (
+                  <EmptyCatalogState
+                    title="Todavía no hay categorías"
+                    description="Crea la primera categoría para empezar a ordenar el catálogo global."
+                  />
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-xl">Subcategorías</CardTitle>
+              <CardDescription>Las subcategorías son especialidades visibles para los usuarios y ayudan a que el catálogo sea más preciso.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-5">
+              <div className="rounded-2xl border bg-muted/20 p-5">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <p className="font-medium">Crear subcategoría</p>
+                    <p className="text-sm text-muted-foreground">Elige la categoría padre, escribe la especialidad y define su orden visual.</p>
+                  </div>
+                  <Badge variant="secondary">{subcategoriesList.length} registradas</Badge>
+                </div>
+
+                <div className="mt-4 rounded-xl border bg-background/70 p-4">
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Ejemplos rápidos</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Badge variant="outline">Doctor → Ginecólogo</Badge>
+                    <Badge variant="outline">Gym → Natación</Badge>
+                    <Badge variant="outline">Estética → Uñas</Badge>
+                  </div>
+                </div>
+
+                <div className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,1.45fr)_110px_auto]">
+                  <div className="space-y-2">
+                    <Label>Categoría</Label>
+                    <Select value={newSubcategoryCategoryKey} onValueChange={setNewSubcategoryCategoryKey}>
+                      <SelectTrigger className="h-11">
+                        <SelectValue placeholder="Selecciona una categoría" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {categoriesList.map((category) => (
+                          <SelectItem key={category.key} value={category.key}>
+                            {category.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Subcategoría</Label>
+                    <Input
+                      className="h-11"
+                      value={newSubcategoryLabel}
+                      onChange={(e) => setNewSubcategoryLabel(e.target.value)}
+                      placeholder="Nutriólogo, Uñas, Arquitecto..."
+                    />
+                  </div>
+                  <div className="space-y-2 lg:max-w-[110px]">
+                    <Label>Orden</Label>
+                    <Input className="h-11" type="number" value={newSubcategoryOrder} onChange={(e) => setNewSubcategoryOrder(e.target.value)} placeholder="0" />
+                  </div>
+                  <div className="flex items-end lg:justify-end">
+                    <Button
+                      className="h-11 w-full lg:min-w-[180px]"
+                      onClick={() => createSubcategoryMutation.mutate()}
+                      disabled={createSubcategoryMutation.isPending || !newSubcategoryCategoryKey || !newSubcategoryLabel.trim()}
+                    >
+                      {createSubcategoryMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                      <Plus className="mr-2 h-4 w-4" />
+                      Crear subcategoría
+                    </Button>
+                  </div>
+                </div>
+              </div>
+
+              {subcategoriesLoading ? (
+                <Skeleton className="h-56 w-full" />
+              ) : categoryGroups.some((group) => group.items.length > 0) ? (
+                <div className="space-y-4">
+                  {categoryGroups.map(({ category, items }) => {
+                    if (items.length === 0) return null;
+                    return (
+                      <div key={category.key} className="rounded-2xl border bg-card/60 p-4">
+                        <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-dashed bg-muted/15 px-4 py-3">
+                          <div>
+                            <p className="font-medium">{category.label}</p>
+                            <p className="text-sm text-muted-foreground">Especialidades visibles ligadas a esta categoría.</p>
+                          </div>
+                          <Badge variant="outline">{items.length}</Badge>
+                        </div>
+                        <div className="space-y-3">
+                          {items.map((item) => (
+                            <CatalogSubcategoryCardEditor key={item.id} item={item} categories={categoriesList} />
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <EmptyCatalogState
+                  title="Sin subcategorías todavía"
+                  description="Cuando agregues subcategorías, aparecerán agrupadas por categoría para revisarlas más rápido."
+                />
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
+        <div className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-xl">Keywords de búsqueda</CardTitle>
+              <CardDescription>Las keywords ayudan al buscador a encontrar negocios aunque la persona escriba distinto.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-5">
+              <div className="rounded-2xl border bg-muted/20 p-5">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <div>
+                    <p className="font-medium">Crear keyword</p>
+                    <p className="text-sm text-muted-foreground">Relaciona palabras con categorías o subcategorías para mejorar sugerencias y búsqueda libre.</p>
+                  </div>
+                  <Badge variant="secondary">{keywordsList.length} keywords</Badge>
+                </div>
+
+                <div className="mt-4 rounded-xl border bg-background/70 p-4">
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    <div className="space-y-2">
+                      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Subcategoría visible</p>
+                      <Badge className="w-fit" variant="secondary">Nutriólogo</Badge>
+                    </div>
+                    <div className="space-y-2">
+                      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Keywords internas del buscador</p>
+                      <div className="flex flex-wrap gap-2">
+                        <Badge variant="outline">nutrición</Badge>
+                        <Badge variant="outline">dieta</Badge>
+                        <Badge variant="outline">bajar de peso</Badge>
+                        <Badge variant="outline">nutriologo</Badge>
+                      </div>
+                    </div>
+                  </div>
+                  <p className="mt-4 text-sm text-muted-foreground">
+                    No son visibles públicamente. Solo ayudan a que el buscador encuentre mejor cada negocio.
+                  </p>
+                </div>
+
+                <div className="mt-5 grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Categoría</Label>
+                    <Select
+                      value={newKeywordCategoryKey || "all"}
+                      onValueChange={(value) => {
+                        const next = value === "all" ? "" : value;
+                        setNewKeywordCategoryKey(next);
+                        if (newKeywordSubcategoryId) {
+                          const current = subcategoriesList.find((subcategory) => subcategory.id === newKeywordSubcategoryId);
+                          if (current && next && current.categoryKey !== next) {
+                            setNewKeywordSubcategoryId("");
+                          }
+                        }
+                      }}
+                    >
+                      <SelectTrigger className="h-11">
+                        <SelectValue placeholder="Categoría opcional" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">Todas las categorías</SelectItem>
+                        {categoriesList.map((category) => (
+                          <SelectItem key={category.key} value={category.key}>
+                            {category.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Subcategoría</Label>
+                    <Select value={newKeywordSubcategoryId || "none"} onValueChange={(value) => setNewKeywordSubcategoryId(value === "none" ? "" : value)}>
+                      <SelectTrigger className="h-11">
+                        <SelectValue placeholder="Subcategoría opcional" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">Sin subcategoría</SelectItem>
+                        {availableSubcategories.map((subcategory) => (
+                          <SelectItem key={subcategory.id} value={subcategory.id}>
+                            {subcategory.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2 md:col-span-2">
+                    <Label>Keyword</Label>
+                    <div className="flex flex-col gap-3 lg:flex-row">
+                      <Input
+                        className="h-11"
+                        value={newKeywordValue}
+                        onChange={(e) => setNewKeywordValue(e.target.value)}
+                        placeholder="Ej. nutriólogo, fisioterapia, natación..."
+                      />
+                      <Button
+                        className="h-11 lg:min-w-[180px]"
+                        onClick={() => createKeywordMutation.mutate()}
+                        disabled={createKeywordMutation.isPending || !newKeywordValue.trim() || (!newKeywordCategoryKey && !newKeywordSubcategoryId)}
+                      >
+                        {createKeywordMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                        <Plus className="mr-2 h-4 w-4" />
+                        Crear keyword
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {keywordsLoading ? (
+                <Skeleton className="h-56 w-full" />
+              ) : keywordsList.length > 0 ? (
+                <div className="space-y-3">
+                  {keywordsList.map((keyword) => (
+                    <div key={keyword.id} className="rounded-2xl border bg-background/70 p-4 shadow-sm">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <Badge variant="secondary" className="text-sm">{keyword.keyword}</Badge>
+                            <Badge variant="outline">Interna</Badge>
+                            {keyword.categoryLabel && <Badge variant="outline">{keyword.categoryLabel}</Badge>}
+                            {keyword.subcategoryLabel && <Badge variant="outline">{keyword.subcategoryLabel}</Badge>}
+                          </div>
+                          <p className="mt-2 text-xs text-muted-foreground">
+                            Normalizado: {keyword.normalizedKeyword} · Alta {formatShortDate(keyword.createdAt)}
+                          </p>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => deleteKeywordMutation.mutate(keyword.id)}
+                          disabled={deleteKeywordMutation.isPending}
+                        >
+                          <Trash2 className="mr-2 h-4 w-4 text-destructive" />
+                          Eliminar
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <EmptyCatalogState
+                  title="Sin keywords registradas"
+                  description="Agrega sinónimos y frases útiles para mejorar los resultados del buscador."
+                />
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-xl">Settings de búsqueda</CardTitle>
+              <CardDescription>Controla el alcance y comportamiento del buscador con explicaciones claras para personas no técnicas.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {settingsLoading ? (
+                <Skeleton className="h-56 w-full" />
+              ) : (
+                <>
+                  <div className="space-y-3">
+                    {friendlySettings.map((setting) => (
+                      <CatalogSettingFriendlyEditor key={setting.key} item={setting} />
+                    ))}
+                  </div>
+                  {advancedSettings.length > 0 && (
+                    <Accordion type="single" collapsible className="rounded-2xl border border-dashed px-4">
+                      <AccordionItem value="advanced-settings" className="border-b-0">
+                        <AccordionTrigger className="py-4 text-left hover:no-underline">
+                          <div className="space-y-1">
+                            <p className="font-medium">Configuración avanzada</p>
+                            <p className="text-sm font-normal text-muted-foreground">Solo modificar si sabes lo que haces.</p>
+                          </div>
+                        </AccordionTrigger>
+                        <AccordionContent className="space-y-4">
+                          <div className="rounded-xl border bg-muted/20 p-4">
+                            <p className="text-sm font-medium">Radios por categoría</p>
+                            <p className="mt-1 text-sm text-muted-foreground">
+                              Permite radios distintos por categoría. Úsalo si una vertical necesita un alcance diferente.
+                            </p>
+                            <div className="mt-3 rounded-lg bg-background/80 p-3 font-mono text-xs text-muted-foreground">
+                              {`{\n  "doctor": 25,\n  "gym": 15\n}`}
+                            </div>
+                          </div>
+                          <div className="space-y-3">
+                            {advancedSettings.map((setting) => (
+                              <CatalogSettingEditor key={setting.key} item={setting} />
+                            ))}
+                          </div>
+                        </AccordionContent>
+                      </AccordionItem>
+                    </Accordion>
+                  )}
+                </>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-xl">Métricas de búsqueda</CardTitle>
+          <CardDescription>Vista ejecutiva para detectar demanda, huecos de catálogo y comportamiento reciente del buscador.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="grid gap-4 xl:grid-cols-3">
+            <div className="rounded-2xl border bg-card/70 p-4">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <p className="font-medium">Términos más buscados</p>
+                  <p className="text-sm text-muted-foreground">Lo que más están intentando encontrar tus usuarios.</p>
+                </div>
+                <Badge variant="secondary">{metrics?.topQueries.length ?? 0}</Badge>
+              </div>
+              <div className="space-y-2">
+                {(metrics?.topQueries || []).length > 0 ? (
+                  metrics?.topQueries.map((item, index) => (
+                    <div key={item.query} className="flex items-center justify-between gap-3 rounded-xl bg-muted/30 px-3 py-2 text-sm">
+                      <span className="truncate">{index + 1}. {item.query}</span>
+                      <Badge variant="secondary">{item.total}</Badge>
+                    </div>
+                  ))
+                ) : (
+                  <EmptyCatalogState
+                    title="Sin datos todavía"
+                    description="Aquí aparecerán los términos con más tracción conforme se registren búsquedas."
+                  />
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border bg-card/70 p-4">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <p className="font-medium">Búsquedas sin resultados</p>
+                  <p className="text-sm text-muted-foreground">Oportunidades para crear nuevas keywords o mejorar catálogo.</p>
+                </div>
+                <Badge variant="outline">{metrics?.zeroResultQueries.length ?? 0}</Badge>
+              </div>
+              <div className="space-y-2">
+                {(metrics?.zeroResultQueries || []).length > 0 ? (
+                  metrics?.zeroResultQueries.map((item) => (
+                    <div key={item.query} className="rounded-xl bg-muted/30 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="truncate text-sm font-medium">{item.query}</span>
+                        <Badge variant="outline">{item.total}</Badge>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="mt-2 px-0 text-primary hover:bg-transparent"
+                        onClick={() => setNewKeywordValue(item.query)}
+                      >
+                        Usar como keyword
+                      </Button>
+                    </div>
+                  ))
+                ) : (
+                  <EmptyCatalogState
+                    title="Sin pendientes"
+                    description="Aún no hay búsquedas fallidas registradas."
+                  />
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border bg-card/70 p-4">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <p className="font-medium">Categorías más buscadas</p>
+                  <p className="text-sm text-muted-foreground">Ayuda a priorizar qué verticales necesitan más detalle.</p>
+                </div>
+                <Badge>{metrics?.topCategories.length ?? 0}</Badge>
+              </div>
+              <div className="space-y-2">
+                {(metrics?.topCategories || []).length > 0 ? (
+                  metrics?.topCategories.map((item, index) => (
+                    <div key={item.category} className="flex items-center justify-between gap-3 rounded-xl bg-muted/30 px-3 py-2 text-sm">
+                      <span className="truncate">{index + 1}. {getCategoryLabel(item.category)}</span>
+                      <Badge>{item.total}</Badge>
+                    </div>
+                  ))
+                ) : (
+                  <EmptyCatalogState
+                    title="Sin categorías destacadas"
+                    description="Todavía no hay suficiente volumen para mostrar tendencias por categoría."
+                  />
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border bg-card/70 p-4">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <p className="font-medium">Últimas búsquedas</p>
+                <p className="text-sm text-muted-foreground">Rastreo reciente para validar qué se buscó, desde dónde y cuántos resultados devolvió.</p>
+              </div>
+              <Badge variant="outline">{searchLogs?.length ?? 0}</Badge>
+            </div>
+            {(searchLogs || []).length > 0 ? (
+              <ScrollArea className="h-[320px] pr-4">
+                <div className="space-y-3">
+                  {searchLogs?.map((log) => (
+                    <div key={log.id} className="rounded-2xl border bg-background/80 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <p className="text-sm font-medium truncate">
+                              {log.queryRaw || log.category || log.subcategory || "Búsqueda sin texto"}
+                            </p>
+                            {log.resultCount === 0 ? (
+                              <Badge variant="outline">Sin resultados</Badge>
+                            ) : (
+                              <Badge variant="secondary">{log.resultCount} resultado(s)</Badge>
+                            )}
+                          </div>
+                          <p className="mt-2 text-xs text-muted-foreground">
+                            {log.source} · {log.userEmail || "Anónimo"}
+                            {log.zone ? ` · Zona: ${log.zone}` : ""}
+                            {log.selectedBranchName ? ` · Seleccionó: ${log.selectedBranchName}` : ""}
+                          </p>
+                        </div>
+                        <p className="shrink-0 text-xs text-muted-foreground">{formatShortDateTime(log.createdAt)}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            ) : (
+              <EmptyCatalogState
+                title="Todavía no hay búsquedas registradas"
+                description="Cuando entren búsquedas con texto o categoría, aparecerán aquí para análisis."
+              />
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function PlatformMetricsPanel() {
+  const { data, isLoading } = useQuery<PlatformMetricsResponse>({
+    queryKey: ["/api/superadmin/platform-metrics"],
+    queryFn: () => fetchJson("/api/superadmin/platform-metrics"),
+  });
+
+  if (isLoading) {
+    return <Skeleton className="h-48 w-full" />;
+  }
+
+  return (
+    <Card>
+      <CardContent className="p-4 space-y-4">
+        <div className="flex items-center gap-2">
+          <LayoutDashboard className="h-5 w-5 text-primary" />
+          <h2 className="font-semibold text-lg">Métricas generales</h2>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-4">
+          <div className="rounded-lg border p-3"><p className="text-xs text-muted-foreground">Usuarios app</p><p className="text-xl font-semibold">{data?.totalAppUsers ?? 0}</p></div>
+          <div className="rounded-lg border p-3"><p className="text-xs text-muted-foreground">Sucursales activas</p><p className="text-xl font-semibold">{data?.activeBranches ?? 0}</p></div>
+          <div className="rounded-lg border p-3"><p className="text-xs text-muted-foreground">Búsquedas</p><p className="text-xl font-semibold">{data?.totalSearches ?? 0}</p></div>
+          <div className="rounded-lg border p-3"><p className="text-xs text-muted-foreground">Sin resultados</p><p className="text-xl font-semibold">{data?.zeroResultSearches ?? 0}</p></div>
+        </div>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="rounded-lg border p-3">
+            <p className="text-sm font-medium mb-3">Auditoría de reservas</p>
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              <div className="rounded-md bg-muted p-2">Creadas: <span className="font-semibold">{data?.reservationStats.created ?? 0}</span></div>
+              <div className="rounded-md bg-muted p-2">Canceladas: <span className="font-semibold">{data?.reservationStats.cancelled ?? 0}</span></div>
+              <div className="rounded-md bg-muted p-2">Asistidas: <span className="font-semibold">{data?.reservationStats.attended ?? 0}</span></div>
+              <div className="rounded-md bg-muted p-2">No show: <span className="font-semibold">{data?.reservationStats.noShow ?? 0}</span></div>
+            </div>
+          </div>
+          <div className="rounded-lg border p-3">
+            <p className="text-sm font-medium mb-3">Sucursales más activas</p>
+            <div className="space-y-2">
+              {(data?.mostActiveBranches || []).length > 0 ? data?.mostActiveBranches.map((branch) => (
+                <div key={branch.branchId} className="flex items-center justify-between gap-3 text-sm">
+                  <span className="truncate">{branch.branchName}</span>
+                  <Badge>{branch.totalReservations}</Badge>
+                </div>
+              )) : <p className="text-sm text-muted-foreground">Sin actividad todavía.</p>}
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function ReviewModerationPanel() {
+  const { toast } = useToast();
+  const { data: reports, isLoading: reportsLoading } = useQuery<ReviewReportRecord[]>({
+    queryKey: ["/api/superadmin/review-reports"],
+    queryFn: () => fetchJson("/api/superadmin/review-reports?limit=30"),
+  });
+  const { data: logs } = useQuery<ReviewModerationLogRecord[]>({
+    queryKey: ["/api/superadmin/review-moderation-logs"],
+    queryFn: () => fetchJson("/api/superadmin/review-moderation-logs?limit=30"),
+  });
+  const { data: blockedUsers } = useQuery<BlockedUserRecord[]>({
+    queryKey: ["/api/superadmin/blocked-users"],
+    queryFn: () => fetchJson("/api/superadmin/blocked-users"),
+  });
+
+  const reportStatusMutation = useMutation({
+    mutationFn: async ({ reportId, status }: { reportId: string; status: string }) => {
+      const resp = await apiRequest("PATCH", `/api/superadmin/review-reports/${reportId}/status`, { status });
+      return resp.json();
+    },
+    onSuccess: () => {
+      invalidateCatalog();
+      toast({ title: "Reporte actualizado" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo actualizar el reporte"), variant: "destructive" });
+    },
+  });
+
+  const visibilityMutation = useMutation({
+    mutationFn: async ({ reviewId, hidden }: { reviewId: string; hidden: boolean }) => {
+      const resp = await apiRequest("PATCH", `/api/superadmin/reviews/${reviewId}/visibility`, { hidden });
+      return resp.json();
+    },
+    onSuccess: () => {
+      invalidateCatalog();
+      toast({ title: "Visibilidad actualizada" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo actualizar la reseña"), variant: "destructive" });
+    },
+  });
+
+  return (
+    <Card>
+      <CardContent className="p-4 space-y-4">
+        <div className="flex items-center gap-2">
+          <Shield className="h-5 w-5 text-primary" />
+          <h2 className="font-semibold text-lg">Moderación</h2>
+        </div>
+        <div className="grid gap-4 xl:grid-cols-[1.3fr_0.7fr]">
+          <div className="space-y-3">
+            <div className="rounded-lg border p-3">
+              <p className="text-sm font-medium mb-3">Reseñas reportadas</p>
+              {reportsLoading ? (
+                <Skeleton className="h-28 w-full" />
+              ) : (reports || []).length > 0 ? (
+                <div className="space-y-3">
+                  {reports?.map((report) => (
+                    <div key={report.id} className="rounded-lg border p-3 space-y-2">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <Badge variant="outline">{report.branchName || "Sucursal"}</Badge>
+                          <Badge variant={report.status === "pending" ? "secondary" : "default"}>{reviewReportStatusLabel(report.status)}</Badge>
+                          {typeof report.reviewRating === "number" && <Badge>{report.reviewRating}/5</Badge>}
+                        </div>
+                        <span className="text-xs text-muted-foreground">{formatShortDateTime(report.createdAt)}</span>
+                      </div>
+                      <p className="text-sm font-medium">{report.customerName || "Cliente"} · {report.reason}</p>
+                      {report.reviewComment && <p className="text-sm text-muted-foreground">{report.reviewComment}</p>}
+                      {report.note && <p className="text-xs text-muted-foreground">Nota: {report.note}</p>}
+                      <div className="flex gap-2 flex-wrap">
+                        <Button size="sm" variant="outline" onClick={() => reportStatusMutation.mutate({ reportId: report.id, status: "reviewed" })}>Marcar revisado</Button>
+                        <Button size="sm" variant="outline" onClick={() => reportStatusMutation.mutate({ reportId: report.id, status: "dismissed" })}>Descartar</Button>
+                        <Button size="sm" variant={report.isHidden ? "secondary" : "destructive"} onClick={() => visibilityMutation.mutate({ reviewId: report.reviewId, hidden: !report.isHidden })}>
+                          {report.isHidden ? "Mostrar reseña" : "Ocultar reseña"}
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">Sin reseñas reportadas por ahora.</p>
+              )}
+            </div>
+            <div className="rounded-lg border p-3">
+              <p className="text-sm font-medium mb-3">Historial de decisiones</p>
+              <div className="space-y-2">
+                {(logs || []).length > 0 ? logs?.map((log) => (
+                  <div key={log.id} className="flex items-start justify-between gap-3 text-sm border-b pb-2 last:border-b-0">
+                    <div className="min-w-0">
+                      <p className="font-medium">{log.action}</p>
+                      <p className="text-xs text-muted-foreground">{log.branchName || "Sucursal"} · {log.actorName || "Sistema"}</p>
+                      {log.reviewComment && <p className="text-xs text-muted-foreground truncate">{log.reviewComment}</p>}
+                    </div>
+                    <span className="text-xs text-muted-foreground shrink-0">{formatShortDateTime(log.createdAt)}</span>
+                  </div>
+                )) : <p className="text-sm text-muted-foreground">Sin decisiones registradas.</p>}
+              </div>
+            </div>
+          </div>
+          <div className="rounded-lg border p-3">
+            <p className="text-sm font-medium mb-3">Usuarios bloqueados</p>
+            <div className="space-y-2">
+              {(blockedUsers || []).length > 0 ? blockedUsers?.map((user) => (
+                <div key={user.id} className="rounded-md bg-muted p-2">
+                  <p className="text-sm font-medium">{customerFullName(user)}</p>
+                  <p className="text-xs text-muted-foreground truncate">{user.email}</p>
+                  <p className="text-xs text-muted-foreground">{user.blockedReason || "Sin motivo"} · {formatShortDate(user.blockedAt)}</p>
+                </div>
+              )) : <p className="text-sm text-muted-foreground">No hay usuarios bloqueados.</p>}
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function ReservationAuditPanel() {
+  const { data, isLoading } = useQuery<ReservationAuditRecord[]>({
+    queryKey: ["/api/superadmin/reservation-audit"],
+    queryFn: () => fetchJson("/api/superadmin/reservation-audit?limit=40"),
+  });
+
+  return (
+    <Card>
+      <CardContent className="p-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <ClipboardCheck className="h-5 w-5 text-primary" />
+          <h2 className="font-semibold text-lg">Auditoría de reservas</h2>
+        </div>
+        {isLoading ? (
+          <Skeleton className="h-28 w-full" />
+        ) : (data || []).length > 0 ? (
+          <div className="space-y-2 max-h-[360px] overflow-y-auto">
+            {data?.map((item) => (
+              <div key={item.id} className="flex items-start justify-between gap-3 rounded-lg border p-3 text-sm">
+                <div className="min-w-0">
+                  <p className="font-medium">{item.className || "Clase"} · {item.action}</p>
+                  <p className="text-xs text-muted-foreground">{item.customerName || "Cliente"} · {item.actorRole} · {item.source}</p>
+                  <p className="text-xs text-muted-foreground">{item.bookingDate || "Sin fecha"} {item.reason ? `· ${item.reason}` : ""}</p>
+                </div>
+                <span className="text-xs text-muted-foreground shrink-0">{formatShortDateTime(item.createdAt)}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">Sin movimientos de reservas todavía.</p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function NotificationJobsPanel() {
+  const { data, isLoading } = useQuery<NotificationJobRecord[]>({
+    queryKey: ["/api/superadmin/notification-jobs"],
+    queryFn: () => fetchJson("/api/superadmin/notification-jobs?limit=40"),
+  });
+
+  return (
+    <Card>
+      <CardContent className="p-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <Send className="h-5 w-5 text-primary" />
+          <h2 className="font-semibold text-lg">Jobs internos</h2>
+        </div>
+        {isLoading ? (
+          <Skeleton className="h-28 w-full" />
+        ) : (data || []).length > 0 ? (
+          <div className="space-y-2">
+            {data?.map((job) => (
+              <div key={job.id} className="flex items-start justify-between gap-3 rounded-lg border p-3 text-sm">
+                <div className="min-w-0">
+                  <p className="font-medium">{job.type}</p>
+                  <p className="text-xs text-muted-foreground">Estado: {job.status} · Intentos: {job.attempts}</p>
+                  <p className="text-xs text-muted-foreground">Programado: {formatShortDateTime(job.scheduledFor)}</p>
+                </div>
+                {job.lastError ? <Badge variant="destructive">Con error</Badge> : <Badge variant="secondary">{job.status}</Badge>}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">Sin jobs creados por ahora.</p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function AppCustomerDetailDialog({
   userId,
   open,
@@ -2049,6 +4298,7 @@ function BranchCard({
               </TooltipTrigger>
               <TooltipContent>Dashboard (requiere login)</TooltipContent>
             </Tooltip>
+            <EditBranchDialog branch={branch} adminEmail={adminData?.email || null} />
             <ImpersonateButton branch={branch} hasAdmin={hasAdmin} />
             <AdminDialog branch={branch} onAdminChanged={() => refetchAdmin()} />
             <ResetPasswordDialog branch={branch} hasAdmin={hasAdmin} />
@@ -2210,6 +4460,7 @@ export default function SuperAdminPage() {
         <Tabs defaultValue="branches" className="w-full">
           <TabsList data-testid="tabs-superadmin">
             <TabsTrigger value="branches" data-testid="tab-branches">Sucursales</TabsTrigger>
+            <TabsTrigger value="catalog" data-testid="tab-catalog">Catalogo</TabsTrigger>
             <TabsTrigger value="app-customers" data-testid="tab-app-customers">Clientes App</TabsTrigger>
             <TabsTrigger value="activity" data-testid="tab-activity">Actividad</TabsTrigger>
           </TabsList>
@@ -2290,7 +4541,15 @@ export default function SuperAdminPage() {
             <AppCustomersPanel />
           </TabsContent>
 
+          <TabsContent value="catalog" className="mt-4">
+            <CatalogExecutivePanel />
+          </TabsContent>
+
           <TabsContent value="activity" className="mt-4 space-y-4">
+            <PlatformMetricsPanel />
+            <ReviewModerationPanel />
+            <ReservationAuditPanel />
+            <NotificationJobsPanel />
             <Card>
               <CardContent className="p-4">
                 <h2 className="font-semibold text-lg mb-4" data-testid="text-activity-title">Actividad reciente</h2>

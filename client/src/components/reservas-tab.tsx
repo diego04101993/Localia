@@ -94,6 +94,20 @@ interface ClientInfo {
   planName?: string | null;
 }
 
+interface BookingAuditEntry {
+  id: string;
+  bookingId: string;
+  action: string;
+  actorRole: string;
+  reason: string | null;
+  source: string;
+  createdAt: string;
+  customerName?: string | null;
+  customerLastName?: string | null;
+  className?: string | null;
+  bookingDate?: string | null;
+}
+
 const DAY_NAMES = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
 const DAY_NAMES_SHORT = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
 
@@ -122,6 +136,14 @@ function isToday(d: Date): boolean {
   return d.getFullYear() === today.getFullYear() &&
     d.getMonth() === today.getMonth() &&
     d.getDate() === today.getDate();
+}
+
+function reservationAuditActionLabel(action: string): string {
+  if (action === "created") return "Creada";
+  if (action === "cancelled") return "Cancelada";
+  if (action === "attended") return "Asistencia";
+  if (action === "no_show") return "No show";
+  return action;
 }
 
 function ClassFormDialog({
@@ -454,12 +476,22 @@ function ClassDayDetail({
 
   const statusMutation = useMutation({
     mutationFn: async ({ bookingId, status }: { bookingId: string; status: string }) => {
-      const resp = await apiRequest("PATCH", `/api/branch/bookings/${bookingId}/status`, { status });
+      const endpoint =
+        status === "attended"
+          ? `/api/branch/bookings/${bookingId}/mark-attended`
+          : status === "no_show"
+          ? `/api/branch/bookings/${bookingId}/mark-no-show`
+          : status === "cancelled"
+          ? `/api/branch/bookings/${bookingId}/cancel`
+          : `/api/branch/bookings/${bookingId}/status`;
+      const method = endpoint.endsWith("/status") ? "PATCH" : "POST";
+      const resp = await apiRequest(method, endpoint, { status });
       return resp.json();
     },
     onSuccess: (_data: any, variables: { bookingId: string; status: string }) => {
       queryClient.invalidateQueries({ queryKey: [`/api/branch/bookings/class/${classSchedule.id}?date=${bookingDate}`] });
       queryClient.invalidateQueries({ queryKey: ["/api/branch/reservations/stats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/bookings/history"] });
       if (variables.status === "attended" || variables.status === "no_show" || variables.status === "cancelled") {
         queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
         queryClient.invalidateQueries({ queryKey: ["/api/branch/alerts"] });
@@ -724,6 +756,16 @@ export default function ReservasTab() {
 
   const { data: classes, isLoading } = useQuery<ClassSchedule[]>({
     queryKey: ["/api/branch/classes"],
+  });
+  const { data: bookingHistory } = useQuery<BookingAuditEntry[]>({
+    queryKey: ["/api/branch/bookings/history"],
+    queryFn: async () => {
+      const res = await fetch("/api/branch/bookings/history?limit=20", { credentials: "include" });
+      if (!res.ok) {
+        throw new Error("No se pudo cargar el historial de reservas");
+      }
+      return res.json();
+    },
   });
 
   const deactivateMutation = useMutation({
@@ -1034,6 +1076,41 @@ export default function ReservasTab() {
           )}
         </div>
       )}
+
+      <Card data-testid="card-booking-history">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Clock className="h-4 w-4" />
+            Historial reciente
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-4 pt-0">
+          {bookingHistory && bookingHistory.length > 0 ? (
+            <div className="space-y-2 max-h-72 overflow-y-auto">
+              {bookingHistory.map((item) => (
+                <div key={item.id} className="flex items-start justify-between gap-3 rounded-md border p-3 text-sm">
+                  <div className="min-w-0">
+                    <p className="font-medium">
+                      {item.className || "Clase"} · {reservationAuditActionLabel(item.action)}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {[item.customerName, item.customerLastName].filter(Boolean).join(" ") || "Cliente"} · {item.actorRole} · {item.source}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {item.bookingDate || "Sin fecha"}{item.reason ? ` · ${item.reason}` : ""}
+                    </p>
+                  </div>
+                  <span className="text-xs text-muted-foreground shrink-0">
+                    {new Date(item.createdAt).toLocaleDateString("es-MX", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">Todavía no hay movimientos auditados.</p>
+          )}
+        </CardContent>
+      </Card>
 
       {showCreateDialog && (
         <ClassFormDialog open={showCreateDialog} onOpenChange={setShowCreateDialog} />

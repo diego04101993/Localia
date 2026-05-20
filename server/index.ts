@@ -66,6 +66,10 @@ app.use((req, res, next) => {
   await registerRoutes(httpServer, app);
   createNotificationCleanupJob();
 
+  app.use("/api", (_req, res) => {
+    return res.status(404).json({ message: "API endpoint no encontrado" });
+  });
+
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
     const message = err.message || "Internal Server Error";

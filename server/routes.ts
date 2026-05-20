@@ -1,4 +1,4 @@
-import type { Express } from "express";
+import type { Express, Request } from "express";
 import { type Server } from "http";
 import passport from "passport";
 import bcrypt from "bcryptjs";
@@ -23,23 +23,34 @@ import {
   loginSchema,
   publicCustomerRegisterSchema,
   createBranchSchema,
+  createCatalogCategorySchema,
+  createCatalogSubcategorySchema,
+  createCategoryKeywordLinkSchema,
   joinBranchSchema,
   favoriteBranchSchema,
   createClientSchema,
   updateClientSchema,
+  updateCatalogCategorySchema,
+  updateCatalogSubcategorySchema,
   updateBranchClientCrmSchema,
   createCustomerReportSchema,
   updateBranchCustomerBlockSchema,
   updateCustomerGlobalBlockSchema,
   updateCustomerReportStatusSchema,
+  updateAppSettingSchema,
   registerPushTokenSchema,
   unregisterPushTokenSchema,
   createPlanSchema,
   assignPlanSchema,
   createClassScheduleSchema,
   createBookingSchema,
+  createReviewReportSchema,
+  updateReviewReplySchema,
+  updateReviewReportStatusSchema,
+  updateReviewVisibilitySchema,
 } from "@shared/schema";
 import { z } from "zod";
+import { normalizeSearchText } from "./search-utils";
 
 const DEFAULT_CANCEL_CUTOFF_MINUTES = 180;
 
@@ -152,6 +163,17 @@ function getStringParam(value: string | string[] | undefined): string {
   return value ?? "";
 }
 
+function inferSearchSource(req: Request): "web" | "mobile" | "unknown" {
+  const userAgent = String(req.get("user-agent") || "").toLowerCase();
+  if (userAgent.includes("dart") || userAgent.includes("flutter") || userAgent.includes("okhttp")) {
+    return "mobile";
+  }
+  if (userAgent.includes("mozilla") || !!req.get("origin") || !!req.get("sec-fetch-site")) {
+    return "web";
+  }
+  return "unknown";
+}
+
 async function createSystemEventSafe(data: {
   eventType: string;
   branchId?: string | null;
@@ -178,6 +200,90 @@ async function createSystemEventSafe(data: {
   }
 }
 
+async function createReservationAuditSafe(data: {
+  bookingId: string;
+  branchId: string;
+  customerUserId: string;
+  actorUserId?: string | null;
+  actorRole: string;
+  action: "created" | "cancelled" | "attended" | "no_show";
+  reason?: string | null;
+  source?: string;
+  metadata?: any;
+}) {
+  try {
+    await storage.createReservationAuditLog({
+      bookingId: data.bookingId,
+      branchId: data.branchId,
+      customerUserId: data.customerUserId,
+      actorUserId: data.actorUserId ?? null,
+      actorRole: data.actorRole,
+      action: data.action,
+      reason: data.reason ?? null,
+      source: data.source ?? "system",
+      metadata: data.metadata ?? null,
+    });
+  } catch (err: any) {
+    console.error(`[RESERVATION_AUDIT] Failed to create ${data.action}:`, err?.stack || err);
+  }
+}
+
+async function createNotificationJobSafe(data: {
+  type: string;
+  branchId?: string | null;
+  userId?: string | null;
+  payload?: any;
+  scheduledFor: Date;
+  status?: string;
+}) {
+  try {
+    await storage.createNotificationJob({
+      type: data.type,
+      branchId: data.branchId ?? null,
+      userId: data.userId ?? null,
+      payload: data.payload ?? null,
+      scheduledFor: data.scheduledFor,
+      status: data.status ?? "pending",
+      attempts: 0,
+      lastError: null,
+    });
+  } catch (err: any) {
+    console.error(`[NOTIFICATION_JOBS] Failed to create ${data.type}:`, err?.stack || err);
+  }
+}
+
+async function scheduleBookingReminderJobSafe(params: {
+  bookingId: string;
+  branchId: string;
+  userId: string;
+  classScheduleId: string;
+  bookingDate: string;
+}) {
+  try {
+    const schedule = await storage.getClassSchedule(params.classScheduleId);
+    if (!schedule) return;
+
+    const scheduledFor = new Date(`${params.bookingDate}T${schedule.startTime}:00`);
+    if (Number.isNaN(scheduledFor.getTime())) return;
+    scheduledFor.setHours(scheduledFor.getHours() - 2);
+    if (scheduledFor.getTime() <= Date.now()) return;
+
+    await createNotificationJobSafe({
+      type: "booking_reminder",
+      branchId: params.branchId,
+      userId: params.userId,
+      scheduledFor,
+      payload: {
+        bookingId: params.bookingId,
+        classScheduleId: params.classScheduleId,
+        bookingDate: params.bookingDate,
+      },
+    });
+  } catch (err: any) {
+    console.error("[NOTIFICATION_JOBS] Failed to schedule booking reminder:", err?.stack || err);
+  }
+}
+
 async function getActiveBranchBlockMessage(userId: string, branchId: string): Promise<string | null> {
   const block = await storage.getActiveBranchCustomerBlock(branchId, userId);
   if (!block) return null;
@@ -194,6 +300,15 @@ const createBranchWithAdminSchema = z.object({
   category: z.string().optional(),
   subcategory: z.string().optional(),
   searchKeywords: z.string().optional(),
+});
+
+const updateSuperAdminBranchSchema = z.object({
+  name: z.string().min(1, "El nombre es obligatorio").optional(),
+  slug: z.string().min(1, "El slug es obligatorio").regex(/^[a-z0-9-]+$/, "Solo letras minÃºsculas, nÃºmeros y guiones").optional(),
+  status: z.enum(["active", "suspended", "blacklisted"]).optional(),
+  category: z.string().min(1, "La categorÃ­a es obligatoria").optional(),
+  subcategory: z.string().nullable().optional(),
+  searchKeywords: z.string().nullable().optional(),
 });
 
 export async function registerRoutes(
@@ -881,6 +996,75 @@ export async function registerRoutes(
     });
   });
 
+  app.patch("/api/superadmin/branches/:id", requireRole("SUPER_ADMIN"), async (req, res) => {
+    const actor = req.user as any;
+    const branchId = getStringParam(req.params.id);
+    const result = updateSuperAdminBranchSchema.safeParse({
+      name: normalizeOptionalText(req.body.name) ?? undefined,
+      slug: normalizeOptionalText(req.body.slug) ?? undefined,
+      status: normalizeOptionalText(req.body.status) ?? undefined,
+      category: normalizeOptionalText(req.body.category) ?? undefined,
+      subcategory: normalizeOptionalText(req.body.subcategory),
+      searchKeywords: req.body.searchKeywords,
+    });
+
+    if (!result.success) {
+      return res.status(400).json({ message: "Datos invÃ¡lidos", errors: result.error.flatten() });
+    }
+
+    try {
+      const existing = await storage.getBranch(branchId);
+      if (!existing) {
+        return res.status(404).json({ message: "Sucursal no encontrada" });
+      }
+
+      if (result.data.slug && result.data.slug !== existing.slug) {
+        const slugOwner = await storage.getBranchBySlug(result.data.slug);
+        if (slugOwner && slugOwner.id !== branchId) {
+          return res.status(409).json({ message: "Ese slug ya existe" });
+        }
+      }
+
+      const updated = await storage.updateBranch(branchId, {
+        ...(result.data.name !== undefined && { name: result.data.name }),
+        ...(result.data.slug !== undefined && { slug: result.data.slug }),
+        ...(result.data.status !== undefined && { status: result.data.status }),
+        ...(result.data.category !== undefined && { category: result.data.category }),
+        ...(result.data.subcategory !== undefined && { subcategory: result.data.subcategory }),
+        ...(result.data.searchKeywords !== undefined && { searchKeywords: normalizeSearchKeywords(result.data.searchKeywords) }),
+      });
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "UPDATE_BRANCH",
+        branchId,
+        metadata: {
+          old: {
+            name: existing.name,
+            slug: existing.slug,
+            status: existing.status,
+            category: existing.category,
+            subcategory: existing.subcategory,
+            searchKeywords: existing.searchKeywords,
+          },
+          next: {
+            name: updated?.name,
+            slug: updated?.slug,
+            status: updated?.status,
+            category: updated?.category,
+            subcategory: updated?.subcategory,
+            searchKeywords: updated?.searchKeywords,
+          },
+        },
+      });
+
+      res.json(updated);
+    } catch (err: any) {
+      console.error("[SUPERADMIN_UPDATE_BRANCH]", err.stack || err);
+      res.status(500).json({ message: "Error al actualizar sucursal" });
+    }
+  });
+
   app.patch("/api/branches/:id/status", requireRole("SUPER_ADMIN"), async (req, res) => {
     const id = req.params.id as string;
     const { status } = req.body;
@@ -1193,6 +1377,412 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/superadmin/catalog/categories", requireRole("SUPER_ADMIN"), async (_req, res) => {
+    try {
+      const items = await storage.listCategories();
+      res.json(items);
+    } catch (err: any) {
+      console.error("[SUPERADMIN_CATALOG_CATEGORIES]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener categorías" });
+    }
+  });
+
+  app.post("/api/superadmin/catalog/categories", requireRole("SUPER_ADMIN"), async (req, res) => {
+    const actor = req.user as any;
+    const result = createCatalogCategorySchema.safeParse({
+      key: normalizeOptionalText(req.body.key),
+      label: normalizeOptionalText(req.body.label),
+      icon: normalizeOptionalText(req.body.icon) ?? null,
+      isActive: req.body.isActive,
+      displayOrder: req.body.displayOrder,
+    });
+
+    if (!result.success) {
+      return res.status(400).json({ message: "Datos inválidos", errors: result.error.flatten() });
+    }
+
+    try {
+      const created = await storage.createCategory({
+        key: result.data.key,
+        label: result.data.label,
+        icon: result.data.icon ?? null,
+        isActive: result.data.isActive ?? true,
+        displayOrder: result.data.displayOrder ?? 0,
+      });
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "superadmin.catalog.category.created",
+        metadata: { categoryKey: created.key },
+      });
+      res.status(201).json(created);
+    } catch (err: any) {
+      console.error("[SUPERADMIN_CREATE_CATEGORY]", err.stack || err);
+      res.status(500).json({ message: "Error al crear categoría" });
+    }
+  });
+
+  app.patch("/api/superadmin/catalog/categories/:key", requireRole("SUPER_ADMIN"), async (req, res) => {
+    const actor = req.user as any;
+    const categoryKey = getStringParam(req.params.key);
+    const result = updateCatalogCategorySchema.safeParse({
+      label: normalizeOptionalText(req.body.label),
+      icon: normalizeOptionalText(req.body.icon) ?? null,
+      isActive: req.body.isActive,
+      displayOrder: req.body.displayOrder,
+    });
+
+    if (!result.success) {
+      return res.status(400).json({ message: "Datos inválidos", errors: result.error.flatten() });
+    }
+
+    try {
+      const updated = await storage.updateCategory(categoryKey, result.data);
+      if (!updated) {
+        return res.status(404).json({ message: "Categoría no encontrada" });
+      }
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "superadmin.catalog.category.updated",
+        metadata: { categoryKey },
+      });
+      res.json(updated);
+    } catch (err: any) {
+      console.error("[SUPERADMIN_UPDATE_CATEGORY]", err.stack || err);
+      res.status(500).json({ message: "Error al actualizar categoría" });
+    }
+  });
+
+  app.get("/api/superadmin/catalog/subcategories", requireRole("SUPER_ADMIN"), async (req, res) => {
+    try {
+      const categoryKey = typeof req.query.categoryKey === "string" ? req.query.categoryKey : undefined;
+      const items = await storage.listSubcategories(categoryKey);
+      res.json(items);
+    } catch (err: any) {
+      console.error("[SUPERADMIN_CATALOG_SUBCATEGORIES]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener subcategorías" });
+    }
+  });
+
+  app.post("/api/superadmin/catalog/subcategories", requireRole("SUPER_ADMIN"), async (req, res) => {
+    const actor = req.user as any;
+    const result = createCatalogSubcategorySchema.safeParse({
+      categoryKey: normalizeOptionalText(req.body.categoryKey),
+      label: normalizeOptionalText(req.body.label),
+      isActive: req.body.isActive,
+      displayOrder: req.body.displayOrder,
+    });
+
+    if (!result.success) {
+      return res.status(400).json({ message: "Datos inválidos", errors: result.error.flatten() });
+    }
+
+    try {
+      const created = await storage.createSubcategory({
+        categoryKey: result.data.categoryKey,
+        label: result.data.label,
+        isActive: result.data.isActive ?? true,
+        displayOrder: result.data.displayOrder ?? 0,
+      });
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "superadmin.catalog.subcategory.created",
+        metadata: { subcategoryId: created.id, categoryKey: created.categoryKey },
+      });
+      res.status(201).json(created);
+    } catch (err: any) {
+      console.error("[SUPERADMIN_CREATE_SUBCATEGORY]", err.stack || err);
+      res.status(500).json({ message: "Error al crear subcategoría" });
+    }
+  });
+
+  app.patch("/api/superadmin/catalog/subcategories/:id", requireRole("SUPER_ADMIN"), async (req, res) => {
+    const actor = req.user as any;
+    const subcategoryId = getStringParam(req.params.id);
+    const result = updateCatalogSubcategorySchema.safeParse({
+      categoryKey: normalizeOptionalText(req.body.categoryKey),
+      label: normalizeOptionalText(req.body.label),
+      isActive: req.body.isActive,
+      displayOrder: req.body.displayOrder,
+    });
+
+    if (!result.success) {
+      return res.status(400).json({ message: "Datos inválidos", errors: result.error.flatten() });
+    }
+
+    try {
+      const updated = await storage.updateSubcategory(subcategoryId, result.data);
+      if (!updated) {
+        return res.status(404).json({ message: "Subcategoría no encontrada" });
+      }
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "superadmin.catalog.subcategory.updated",
+        metadata: { subcategoryId },
+      });
+      res.json(updated);
+    } catch (err: any) {
+      console.error("[SUPERADMIN_UPDATE_SUBCATEGORY]", err.stack || err);
+      res.status(500).json({ message: "Error al actualizar subcategoría" });
+    }
+  });
+
+  app.get("/api/superadmin/catalog/keywords", requireRole("SUPER_ADMIN"), async (req, res) => {
+    try {
+      const items = await storage.listCategoryKeywords({
+        categoryKey: typeof req.query.categoryKey === "string" ? req.query.categoryKey : undefined,
+        subcategoryId: typeof req.query.subcategoryId === "string" ? req.query.subcategoryId : undefined,
+      });
+      res.json(items);
+    } catch (err: any) {
+      console.error("[SUPERADMIN_CATALOG_KEYWORDS]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener keywords" });
+    }
+  });
+
+  app.post("/api/superadmin/catalog/keywords", requireRole("SUPER_ADMIN"), async (req, res) => {
+    const actor = req.user as any;
+    const result = createCategoryKeywordLinkSchema.safeParse({
+      categoryKey: normalizeOptionalText(req.body.categoryKey) ?? null,
+      subcategoryId: normalizeOptionalText(req.body.subcategoryId) ?? null,
+      keyword: normalizeOptionalText(req.body.keyword),
+      kind: normalizeOptionalText(req.body.kind) || "alias",
+    });
+
+    if (!result.success) {
+      return res.status(400).json({ message: "Datos inválidos", errors: result.error.flatten() });
+    }
+
+    try {
+      const created = await storage.createCategoryKeyword({
+        categoryKey: result.data.categoryKey ?? null,
+        subcategoryId: result.data.subcategoryId ?? null,
+        keyword: result.data.keyword,
+        kind: result.data.kind ?? "alias",
+      });
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "superadmin.catalog.keyword.created",
+        metadata: { keywordId: created.id, categoryKey: created.categoryKey, subcategoryId: created.subcategoryId },
+      });
+      res.status(201).json(created);
+    } catch (err: any) {
+      console.error("[SUPERADMIN_CREATE_KEYWORD]", err.stack || err);
+      res.status(500).json({ message: "Error al crear keyword" });
+    }
+  });
+
+  app.delete("/api/superadmin/catalog/keywords/:id", requireRole("SUPER_ADMIN"), async (req, res) => {
+    const actor = req.user as any;
+    const keywordId = getStringParam(req.params.id);
+    try {
+      const deleted = await storage.deleteCategoryKeyword(keywordId);
+      if (!deleted) {
+        return res.status(404).json({ message: "Keyword no encontrada" });
+      }
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "superadmin.catalog.keyword.deleted",
+        metadata: { keywordId },
+      });
+      res.json({ ok: true });
+    } catch (err: any) {
+      console.error("[SUPERADMIN_DELETE_KEYWORD]", err.stack || err);
+      res.status(500).json({ message: "Error al eliminar keyword" });
+    }
+  });
+
+  app.get("/api/superadmin/settings", requireRole("SUPER_ADMIN"), async (req, res) => {
+    try {
+      const scope = typeof req.query.scope === "string" ? req.query.scope : undefined;
+      const settings = await storage.listAppSettings(scope);
+      res.json(settings);
+    } catch (err: any) {
+      console.error("[SUPERADMIN_SETTINGS]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener settings" });
+    }
+  });
+
+  app.patch("/api/superadmin/settings/:key", requireRole("SUPER_ADMIN"), async (req, res) => {
+    const actor = req.user as any;
+    const settingKey = getStringParam(req.params.key);
+    const result = updateAppSettingSchema.safeParse({
+      valueJson: req.body.valueJson,
+      scope: normalizeOptionalText(req.body.scope) || undefined,
+    });
+
+    if (!result.success) {
+      return res.status(400).json({ message: "Datos inválidos", errors: result.error.flatten() });
+    }
+
+    try {
+      const setting = await storage.upsertAppSetting(settingKey, {
+        valueJson: result.data.valueJson,
+        scope: result.data.scope ?? "global",
+        updatedBy: actor.id,
+      });
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "superadmin.setting.updated",
+        metadata: { key: settingKey },
+      });
+      res.json(setting);
+    } catch (err: any) {
+      console.error("[SUPERADMIN_UPDATE_SETTING]", err.stack || err);
+      res.status(500).json({ message: "Error al actualizar setting" });
+    }
+  });
+
+  app.get("/api/superadmin/search-logs", requireRole("SUPER_ADMIN"), async (req, res) => {
+    try {
+      const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+      const logs = await storage.getSearchLogs(limit);
+      res.json(logs);
+    } catch (err: any) {
+      console.error("[SUPERADMIN_SEARCH_LOGS]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener logs de búsqueda" });
+    }
+  });
+
+  app.get("/api/superadmin/search-metrics", requireRole("SUPER_ADMIN"), async (req, res) => {
+    try {
+      const limit = Math.min(parseInt(req.query.limit as string) || 10, 50);
+      const metrics = await storage.getSearchMetrics(limit);
+      res.json(metrics);
+    } catch (err: any) {
+      console.error("[SUPERADMIN_SEARCH_METRICS]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener métricas de búsqueda" });
+    }
+  });
+
+  app.get("/api/superadmin/platform-metrics", requireRole("SUPER_ADMIN"), async (_req, res) => {
+    try {
+      const metrics = await storage.getPlatformMetrics();
+      res.json(metrics);
+    } catch (err: any) {
+      console.error("[SUPERADMIN_PLATFORM_METRICS]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener métricas generales" });
+    }
+  });
+
+  app.get("/api/superadmin/blocked-users", requireRole("SUPER_ADMIN"), async (_req, res) => {
+    try {
+      const blockedUsers = await storage.getBlockedCustomerUsers();
+      res.json(blockedUsers);
+    } catch (err: any) {
+      console.error("[SUPERADMIN_BLOCKED_USERS]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener usuarios bloqueados" });
+    }
+  });
+
+  app.get("/api/superadmin/review-reports", requireRole("SUPER_ADMIN"), async (req, res) => {
+    try {
+      const status = typeof req.query.status === "string" ? req.query.status.trim() || undefined : undefined;
+      const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 100, 1), 500);
+      const reports = await storage.getReviewReports({ status, limit });
+      res.json(reports);
+    } catch (err: any) {
+      console.error("[SUPERADMIN_REVIEW_REPORTS]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener reportes de reseñas" });
+    }
+  });
+
+  app.get("/api/superadmin/review-moderation-logs", requireRole("SUPER_ADMIN"), async (req, res) => {
+    try {
+      const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 100, 1), 500);
+      const logs = await storage.getReviewModerationLogs(limit);
+      res.json(logs);
+    } catch (err: any) {
+      console.error("[SUPERADMIN_REVIEW_MODERATION_LOGS]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener historial de moderación" });
+    }
+  });
+
+  app.patch("/api/superadmin/review-reports/:id/status", requireRole("SUPER_ADMIN"), async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const reportId = getStringParam(req.params.id);
+      const payload = updateReviewReportStatusSchema.parse(req.body);
+      const updated = await storage.updateReviewReportStatus(
+        reportId,
+        payload.status,
+        actor.id,
+        normalizeModerationText(payload.resolutionNote),
+      );
+
+      if (!updated) {
+        return res.status(404).json({ message: "Reporte no encontrado" });
+      }
+
+      await storage.createReviewModerationLog({
+        reviewId: updated.reviewId,
+        action: `report_${payload.status}`,
+        actorUserId: actor.id,
+        reason: normalizeModerationText(payload.resolutionNote),
+        metadata: { reportId },
+      });
+
+      res.json(updated);
+    } catch (err: any) {
+      if (err.name === "ZodError") {
+        return res.status(400).json({ message: err.errors[0]?.message || "Datos inválidos" });
+      }
+      console.error("[SUPERADMIN_REVIEW_REPORT_STATUS]", err.stack || err);
+      res.status(500).json({ message: "Error al actualizar el reporte" });
+    }
+  });
+
+  app.patch("/api/superadmin/reviews/:id/visibility", requireRole("SUPER_ADMIN"), async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const reviewId = getStringParam(req.params.id);
+      const payload = updateReviewVisibilitySchema.parse(req.body);
+      const review = await storage.getBranchReviewById(reviewId);
+      if (!review) {
+        return res.status(404).json({ message: "Reseña no encontrada" });
+      }
+
+      const updated = await storage.updateReviewVisibility(reviewId, payload.hidden, normalizeModerationText(payload.reason));
+      await storage.createReviewModerationLog({
+        reviewId,
+        action: payload.hidden ? "hidden" : "shown",
+        actorUserId: actor.id,
+        reason: normalizeModerationText(payload.reason),
+        metadata: { previousHidden: review.isHidden },
+      });
+
+      res.json(updated);
+    } catch (err: any) {
+      if (err.name === "ZodError") {
+        return res.status(400).json({ message: err.errors[0]?.message || "Datos inválidos" });
+      }
+      console.error("[SUPERADMIN_REVIEW_VISIBILITY]", err.stack || err);
+      res.status(500).json({ message: "Error al actualizar la visibilidad" });
+    }
+  });
+
+  app.get("/api/superadmin/notification-jobs", requireRole("SUPER_ADMIN"), async (req, res) => {
+    try {
+      const status = typeof req.query.status === "string" ? req.query.status.trim() || undefined : undefined;
+      const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 100, 1), 500);
+      const jobs = await storage.getNotificationJobs({ status, limit });
+      res.json(jobs);
+    } catch (err: any) {
+      console.error("[SUPERADMIN_NOTIFICATION_JOBS]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener jobs" });
+    }
+  });
+
+  app.get("/api/superadmin/reservation-audit", requireRole("SUPER_ADMIN"), async (req, res) => {
+    try {
+      const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 100, 1), 500);
+      const logs = await storage.getReservationAuditLogs({ limit });
+      res.json(logs);
+    } catch (err: any) {
+      console.error("[SUPERADMIN_RESERVATION_AUDIT]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener la auditoría" });
+    }
+  });
+
   app.get("/api/branch/stats", requireAuth, async (req, res) => {
     const user = req.user as any;
     if (!user.branchId) return res.status(400).json({ message: "No hay sucursal asignada" });
@@ -1226,6 +1816,17 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error(`[BRANCH_ALERTS] Error:`, err.stack || err);
       res.status(500).json({ message: "Error al obtener alertas" });
+    }
+  });
+
+  app.get("/api/branch/dashboard-metrics", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const metrics = await storage.getBranchDashboardMetrics(actor.branchId);
+      res.json(metrics);
+    } catch (err: any) {
+      console.error("[BRANCH_DASHBOARD_METRICS]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener métricas del dashboard" });
     }
   });
 
@@ -2572,6 +3173,113 @@ export async function registerRoutes(
     }
   });
 
+  async function handleBranchBookingStatusChange(
+    actor: any,
+    bookingId: string,
+    status: "confirmed" | "cancelled" | "attended" | "no_show",
+    reason?: string | null,
+  ) {
+    const existing = await storage.getBooking(bookingId);
+    if (!existing || existing.branchId !== actor.branchId) {
+      return { error: { status: 404, message: "Reserva no encontrada" } } as const;
+    }
+
+    const previousStatus = existing.status;
+    const alreadyProcessed = existing.status === "attended" || existing.status === "no_show";
+
+    if (status === "attended" && !alreadyProcessed) {
+      const mem = await storage.getMembershipByUserAndBranch(existing.userId, actor.branchId);
+      if (mem && mem.expiresAt && new Date(mem.expiresAt) < new Date()) {
+        return { error: { status: 400, message: "Plan vencido. Renueva la membresía antes de marcar asistencia." } } as const;
+      }
+    }
+
+    let lateCancellation = false;
+    if (status === "cancelled" && existing.status === "confirmed") {
+      const schedule = await storage.getClassSchedule(existing.classScheduleId);
+      const branch = await storage.getBranch(actor.branchId);
+      if (schedule && branch) {
+        const cutoff = (branch as any).cancelCutoffMinutes ?? DEFAULT_CANCEL_CUTOFF_MINUTES;
+        const classStart = new Date(`${existing.bookingDate}T${schedule.startTime}:00`);
+        const diffMin = (classStart.getTime() - Date.now()) / 60000;
+        if (diffMin < cutoff) {
+          lateCancellation = true;
+        }
+      }
+    }
+
+    const updated = await storage.updateBookingStatus(bookingId, status);
+    if (!updated) {
+      return { error: { status: 404, message: "Reserva no encontrada" } } as const;
+    }
+
+    if (lateCancellation) {
+      await storage.markBookingLateCancellation(bookingId);
+    }
+
+    if (status === "attended" && !alreadyProcessed) {
+      try {
+        await storage.createAttendance({
+          userId: existing.userId,
+          branchId: actor.branchId,
+          registeredBy: actor.id,
+        });
+      } catch (attErr: any) {
+        console.error("[BOOKINGS] Error creating attendance record:", attErr.message);
+      }
+    }
+
+    let classesDeducted = false;
+    if (!alreadyProcessed && (status === "attended" || status === "no_show" || (status === "cancelled" && lateCancellation))) {
+      const mem = await storage.getMembershipByUserAndBranch(existing.userId, actor.branchId);
+      if (mem && mem.classesRemaining !== null && mem.classesRemaining > 0) {
+        const updatedMembership = await storage.decrementClassesRemaining(mem.id);
+        classesDeducted = !!updatedMembership;
+      }
+    }
+
+    await createReservationAuditSafe({
+      bookingId,
+      branchId: actor.branchId,
+      customerUserId: existing.userId,
+      actorUserId: actor.id,
+      actorRole: actor.role,
+      action: status === "cancelled" ? "cancelled" : status === "attended" ? "attended" : status === "no_show" ? "no_show" : "created",
+      reason: normalizeModerationText(reason),
+      source: "dashboard",
+      metadata: {
+        previousStatus,
+        lateCancellation,
+        classesDeducted,
+      },
+    });
+
+    await storage.createAuditLog({
+      actorUserId: actor.id,
+      action: "UPDATE_BOOKING_STATUS",
+      branchId: actor.branchId,
+      metadata: { bookingId, previousStatus, status, lateCancellation, classesDeducted, reason: normalizeModerationText(reason) },
+    });
+
+    if (status === "cancelled" && previousStatus !== "cancelled") {
+      await createSystemEventSafe({
+        eventType: "booking_cancelled",
+        branchId: actor.branchId,
+        userId: existing.userId,
+        payload: {
+          bookingId,
+          classScheduleId: existing.classScheduleId,
+          bookingDate: existing.bookingDate,
+          source: "dashboard",
+          lateCancellation,
+          reason: normalizeModerationText(reason),
+        },
+      });
+    }
+
+    return { updated, lateCancellation, classesDeducted } as const;
+  }
+
   // --- Bookings ---
   app.get("/api/branch/bookings", requireBranchAdmin, async (req, res) => {
     const actor = req.user as any;
@@ -2671,6 +3379,28 @@ export async function registerRoutes(
         },
       });
 
+      await createReservationAuditSafe({
+        bookingId: booking.id,
+        branchId: actor.branchId,
+        customerUserId: data.userId,
+        actorUserId: actor.id,
+        actorRole: actor.role,
+        action: "created",
+        source: "dashboard",
+        metadata: {
+          classScheduleId: data.classScheduleId,
+          bookingDate: data.bookingDate,
+        },
+      });
+
+      await scheduleBookingReminderJobSafe({
+        bookingId: booking.id,
+        branchId: actor.branchId,
+        userId: data.userId,
+        classScheduleId: data.classScheduleId,
+        bookingDate: data.bookingDate,
+      });
+
       console.log(`[BOOKINGS] Created booking for user ${data.userId} in class ${schedule.name} on ${data.bookingDate} by ${actor.email}`);
       res.status(201).json(booking);
     } catch (err: any) {
@@ -2679,6 +3409,96 @@ export async function registerRoutes(
       }
       console.error(`[BOOKINGS] Error creating:`, err.stack || err);
       res.status(500).json({ message: "Error al crear reserva" });
+    }
+  });
+
+  app.patch("/api/branch/bookings/:id/status", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const bookingId = req.params.id as string;
+    try {
+      const { status } = z.object({ status: z.enum(["confirmed", "cancelled", "attended", "no_show"]) }).parse(req.body);
+      const result = await handleBranchBookingStatusChange(actor, bookingId, status, normalizeModerationText(req.body.reason));
+      if ("error" in result && result.error) {
+        return res.status(result.error.status).json({ message: result.error.message });
+      }
+
+      console.log(`[BOOKINGS] Updated booking ${bookingId} status to ${status}${result.lateCancellation ? " (late cancel)" : ""} by ${actor.email}`);
+      return res.json({ ...result.updated, lateCancellation: result.lateCancellation, classesRemaining: null });
+    } catch (err: any) {
+      if (err.name === "ZodError") {
+        return res.status(400).json({ message: err.errors[0]?.message || "Datos invÃ¡lidos" });
+      }
+      console.error("[BOOKINGS] Error updating status (safe handler):", err.stack || err);
+      return res.status(500).json({ message: "Error al actualizar reserva" });
+    }
+  });
+
+  app.post("/api/branch/bookings/:id/cancel", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const result = await handleBranchBookingStatusChange(
+        actor,
+        getStringParam(req.params.id),
+        "cancelled",
+        normalizeModerationText(req.body.reason),
+      );
+      if ("error" in result && result.error) {
+        return res.status(result.error.status).json({ message: result.error.message });
+      }
+      res.json({ ...result.updated, lateCancellation: result.lateCancellation });
+    } catch (err: any) {
+      console.error("[BRANCH_CANCEL_BOOKING]", err.stack || err);
+      res.status(500).json({ message: "Error al cancelar la reserva" });
+    }
+  });
+
+  app.post("/api/branch/bookings/:id/mark-attended", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const result = await handleBranchBookingStatusChange(
+        actor,
+        getStringParam(req.params.id),
+        "attended",
+        normalizeModerationText(req.body.reason),
+      );
+      if ("error" in result && result.error) {
+        return res.status(result.error.status).json({ message: result.error.message });
+      }
+      res.json(result.updated);
+    } catch (err: any) {
+      console.error("[BRANCH_MARK_ATTENDED]", err.stack || err);
+      res.status(500).json({ message: "Error al marcar asistencia" });
+    }
+  });
+
+  app.post("/api/branch/bookings/:id/mark-no-show", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const result = await handleBranchBookingStatusChange(
+        actor,
+        getStringParam(req.params.id),
+        "no_show",
+        normalizeModerationText(req.body.reason),
+      );
+      if ("error" in result && result.error) {
+        return res.status(result.error.status).json({ message: result.error.message });
+      }
+      res.json(result.updated);
+    } catch (err: any) {
+      console.error("[BRANCH_MARK_NO_SHOW]", err.stack || err);
+      res.status(500).json({ message: "Error al marcar no asistencia" });
+    }
+  });
+
+  app.get("/api/branch/bookings/history", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 100, 1), 500);
+      const logs = await storage.getReservationAuditLogs({ branchId: actor.branchId, limit });
+      res.json(logs);
+    } catch (err: any) {
+      console.error("[BRANCH_BOOKING_HISTORY]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener el historial de reservas" });
     }
   });
 
@@ -3300,7 +4120,7 @@ export async function registerRoutes(
   app.patch("/api/branch/profile", requireBranchAdmin, async (req, res) => {
     const actor = req.user as any;
     try {
-      const { description, address, city, googleMapsUrl, operatingHours, locations, category, subcategory, searchKeywords, latitude, longitude, whatsappNumber } = req.body;
+      const { description, address, city, googleMapsUrl, operatingHours, locations, summaryHours, category, subcategory, searchKeywords, latitude, longitude, whatsappNumber } = req.body;
       // Normalize whatsappNumber: keep only digits, validate length
       let normalizedWhatsapp: string | null | undefined = undefined;
       const normalizedSubcategory = normalizeOptionalText(subcategory);
@@ -3323,6 +4143,7 @@ export async function registerRoutes(
         ...(googleMapsUrl !== undefined && { googleMapsUrl }),
         ...(operatingHours !== undefined && { operatingHours }),
         ...(locations !== undefined && { locations }),
+        ...(summaryHours !== undefined && { summaryHours: normalizeOptionalText(summaryHours) }),
         ...(category !== undefined && { category }),
         ...(subcategory !== undefined && { subcategory: normalizedSubcategory }),
         ...(searchKeywords !== undefined && { searchKeywords: normalizedSearchKeywords }),
@@ -3379,7 +4200,7 @@ export async function registerRoutes(
       if (actor.role === "CUSTOMER" && actor.isBlocked) {
         return res.status(403).json({ message: CUSTOMER_BLOCKED_MESSAGE });
       }
-      const branch = await storage.getBranchBySlug(req.params.slug);
+      const branch = await storage.getBranchBySlug(getStringParam(req.params.slug));
       if (!branch) return res.status(404).json({ message: "Sucursal no encontrada" });
       const localBlockMessage = await getActiveBranchBlockMessage(actor.id, branch.id);
       if (localBlockMessage) {
@@ -3409,6 +4230,48 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/public/branch/:slug/reviews/:id/report", requireAuth, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const branch = await storage.getBranchBySlug(getStringParam(req.params.slug));
+      if (!branch || branch.deletedAt || branch.status !== "active") {
+        return res.status(404).json({ message: "Sucursal no encontrada" });
+      }
+
+      const reviewId = getStringParam(req.params.id);
+      const payload = createReviewReportSchema.parse(req.body);
+      const review = await storage.getBranchReviewById(reviewId);
+      if (!review || review.branchId !== branch.id) {
+        return res.status(404).json({ message: "Reseña no encontrada" });
+      }
+
+      const report = await storage.createReviewReport({
+        reviewId,
+        branchId: branch.id,
+        reporterUserId: actor.id,
+        reportedByRole: actor.role || "CUSTOMER",
+        reason: payload.reason,
+        note: normalizeModerationText(payload.note),
+      });
+
+      await storage.createReviewModerationLog({
+        reviewId,
+        action: "reported_by_customer",
+        actorUserId: actor.id,
+        reason: payload.reason,
+        metadata: { reportId: report.id },
+      });
+
+      res.status(201).json(report);
+    } catch (err: any) {
+      if (err.name === "ZodError") {
+        return res.status(400).json({ message: err.errors[0]?.message || "Datos inválidos" });
+      }
+      console.error("[PUBLIC_REVIEW_REPORT]", err.stack || err);
+      res.status(500).json({ message: "Error al reportar la reseña" });
+    }
+  });
+
   app.get("/api/branch/reviews", requireBranchAdmin, async (req, res) => {
     const actor = req.user as any;
     try {
@@ -3420,6 +4283,84 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error(`[REVIEWS] Error:`, err.stack || err);
       res.status(500).json({ message: "Error al obtener reseñas" });
+    }
+  });
+
+  app.post("/api/branch/reviews/:id/reply", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const reviewId = getStringParam(req.params.id);
+      const payload = updateReviewReplySchema.parse(req.body);
+      const review = await storage.getBranchReviewById(reviewId);
+      if (!review || review.branchId !== actor.branchId) {
+        return res.status(404).json({ message: "Reseña no encontrada" });
+      }
+
+      const updated = await storage.updateReviewReply(reviewId, normalizeModerationText(payload.adminReply));
+      await storage.createReviewModerationLog({
+        reviewId,
+        action: normalizeModerationText(payload.adminReply) ? "reply_updated" : "reply_deleted",
+        actorUserId: actor.id,
+        reason: null,
+        metadata: { branchId: actor.branchId },
+      });
+      res.json(updated);
+    } catch (err: any) {
+      if (err.name === "ZodError") {
+        return res.status(400).json({ message: err.errors[0]?.message || "Datos inválidos" });
+      }
+      console.error("[BRANCH_REVIEW_REPLY]", err.stack || err);
+      res.status(500).json({ message: "Error al responder la reseña" });
+    }
+  });
+
+  app.post("/api/branch/reviews/:id/report", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const reviewId = getStringParam(req.params.id);
+      const payload = createReviewReportSchema.parse(req.body);
+      const review = await storage.getBranchReviewById(reviewId);
+      if (!review || review.branchId !== actor.branchId) {
+        return res.status(404).json({ message: "Reseña no encontrada" });
+      }
+
+      const report = await storage.createReviewReport({
+        reviewId,
+        branchId: actor.branchId,
+        reporterUserId: actor.id,
+        reportedByRole: "BRANCH_ADMIN",
+        reason: payload.reason,
+        note: normalizeModerationText(payload.note),
+      });
+
+      await storage.createReviewModerationLog({
+        reviewId,
+        action: "reported_by_branch",
+        actorUserId: actor.id,
+        reason: payload.reason,
+        metadata: { reportId: report.id },
+      });
+
+      res.status(201).json(report);
+    } catch (err: any) {
+      if (err.name === "ZodError") {
+        return res.status(400).json({ message: err.errors[0]?.message || "Datos inválidos" });
+      }
+      console.error("[BRANCH_REVIEW_REPORT]", err.stack || err);
+      res.status(500).json({ message: "Error al reportar la reseña" });
+    }
+  });
+
+  app.get("/api/branch/notification-jobs", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const status = typeof req.query.status === "string" ? req.query.status.trim() || undefined : undefined;
+      const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 100, 1), 500);
+      const jobs = await storage.getNotificationJobs({ branchId: actor.branchId, status, limit });
+      res.json(jobs);
+    } catch (err: any) {
+      console.error("[BRANCH_NOTIFICATION_JOBS]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener jobs internos" });
     }
   });
 
@@ -3748,6 +4689,28 @@ export async function registerRoutes(
         },
       });
 
+      await createReservationAuditSafe({
+        bookingId: booking.id,
+        branchId: branch.id,
+        customerUserId: user.id,
+        actorUserId: user.id,
+        actorRole: user.role,
+        action: "created",
+        source: "app",
+        metadata: {
+          classScheduleId,
+          bookingDate,
+        },
+      });
+
+      await scheduleBookingReminderJobSafe({
+        bookingId: booking.id,
+        branchId: branch.id,
+        userId: user.id,
+        classScheduleId,
+        bookingDate,
+      });
+
       res.status(201).json(booking);
     } catch (err: any) {
       if (err.name === "ZodError") {
@@ -3809,6 +4772,21 @@ export async function registerRoutes(
         },
       });
 
+      await createReservationAuditSafe({
+        bookingId,
+        branchId: branch.id,
+        customerUserId: user.id,
+        actorUserId: user.id,
+        actorRole: user.role,
+        action: "cancelled",
+        source: "app",
+        metadata: {
+          classScheduleId: booking.classScheduleId,
+          bookingDate: booking.bookingDate,
+          lateCancellation,
+        },
+      });
+
       res.json({ success: true, lateCancellation });
     } catch (err: any) {
       if (err.name === "ZodError") {
@@ -3829,14 +4807,111 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/search/filters", async (req, res) => {
+    try {
+      const category = typeof req.query.category === "string" ? req.query.category.trim() || undefined : undefined;
+      const [categories, subcategories] = await Promise.all([
+        storage.listPublicCategories(),
+        category ? storage.listPublicSubcategories(category) : Promise.resolve([]),
+      ]);
+
+      res.json({
+        categories,
+        subcategories,
+      });
+    } catch (err: any) {
+      console.error("[SEARCH_FILTERS]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener filtros de bÃºsqueda" });
+    }
+  });
+
+  app.get("/api/search/suggestions", async (req, res) => {
+    const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    if (!q) {
+      return res.json([]);
+    }
+
+    try {
+      const suggestions = await storage.getSearchSuggestions(q, 10);
+      res.json(suggestions);
+    } catch (err: any) {
+      console.error("[SEARCH_SUGGESTIONS]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener sugerencias" });
+    }
+  });
+
+  app.post("/api/search/select", async (req, res) => {
+    try {
+      const payload = z.object({
+        logId: z.string().min(1),
+        branchId: z.string().min(1),
+      }).parse(req.body);
+
+      const updated = await storage.updateSearchLogSelection(payload.logId, payload.branchId);
+      if (!updated) {
+        return res.status(404).json({ message: "Búsqueda no encontrada" });
+      }
+      res.json({ ok: true });
+    } catch (err: any) {
+      if (err.name === "ZodError") {
+        return res.status(400).json({ message: err.errors[0]?.message || "Datos inválidos" });
+      }
+      console.error("[SEARCH_SELECT]", err.stack || err);
+      res.status(500).json({ message: "Error al registrar la selección" });
+    }
+  });
+
   app.get("/api/branches/nearby", async (req, res) => {
     const lat = req.query.lat ? parseFloat(req.query.lat as string) : undefined;
     const lng = req.query.lng ? parseFloat(req.query.lng as string) : undefined;
-    const radiusKm = req.query.radius_km ? parseFloat(req.query.radius_km as string) : 50;
-    const category = (req.query.category as string) || undefined;
-    const q = (req.query.q as string) || undefined;
-    const results = await storage.searchBranchesNearby({ lat, lng, radiusKm, category, q });
-    res.json(results);
+    const category = typeof req.query.category === "string" ? req.query.category.trim() || undefined : undefined;
+    const subcategory = typeof req.query.subcategory === "string" ? req.query.subcategory.trim() || undefined : undefined;
+    const zone = typeof req.query.zone === "string" ? req.query.zone.trim() || undefined : undefined;
+    const q = typeof req.query.q === "string" ? req.query.q.trim() || undefined : undefined;
+
+    try {
+      const globalSettings = await storage.listAppSettings("global");
+      const settingsMap = new Map(globalSettings.map((setting) => [setting.key, setting.valueJson]));
+      const defaultRadiusSetting = settingsMap.get("search.default_radius_km");
+      const maxRadiusSetting = settingsMap.get("search.max_radius_km");
+      const readKmSetting = (value: unknown, fallback: number) => {
+        if (typeof value === "number") return value;
+        if (value && typeof value === "object" && "km" in value && typeof (value as any).km === "number") {
+          return (value as any).km as number;
+        }
+        return fallback;
+      };
+      const defaultRadiusKm = readKmSetting(defaultRadiusSetting, 50);
+      const maxRadiusKm = readKmSetting(maxRadiusSetting, 100);
+      const requestedRadiusKm = req.query.radius_km ? parseFloat(req.query.radius_km as string) : defaultRadiusKm;
+      const radiusKm = Math.min(Math.max(Number.isFinite(requestedRadiusKm) ? requestedRadiusKm : defaultRadiusKm, 1), maxRadiusKm);
+
+      const results = await storage.searchBranchesNearby({ lat, lng, radiusKm, category, subcategory, zone, q });
+
+      if (q || category) {
+        try {
+          await storage.createSearchLog({
+            userId: req.isAuthenticated?.() ? (req.user as any)?.id ?? null : null,
+            queryRaw: q ?? null,
+            queryNormalized: q ? normalizeSearchText(q) : null,
+            category: category ?? null,
+            subcategory: subcategory ?? null,
+            lat: lat ?? null,
+            lng: lng ?? null,
+            zone: zone ?? null,
+            resultCount: results.length,
+            source: inferSearchSource(req),
+          });
+        } catch (logErr: any) {
+          console.error("[SEARCH_LOGS] Failed to persist search log:", logErr?.stack || logErr);
+        }
+      }
+
+      res.json(results);
+    } catch (err: any) {
+      console.error("[BRANCHES_NEARBY]", err.stack || err);
+      res.status(500).json({ message: "Error al buscar sucursales" });
+    }
   });
 
   // --- Memberships ---
@@ -4043,6 +5118,19 @@ export async function registerRoutes(
           isGlobal: promo.isGlobal,
         },
       });
+
+      await createNotificationJobSafe({
+        type: "promotion_created",
+        branchId,
+        userId: user.id,
+        scheduledFor: new Date(),
+        payload: {
+          promotionId: promo.id,
+          title: promo.title,
+          isGlobal: promo.isGlobal,
+        },
+      });
+
       res.status(201).json(promo);
     } catch (err: any) {
       res.status(500).json({ message: err.message });

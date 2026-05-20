@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, pgEnum, doublePrecision, boolean, uniqueIndex, jsonb, integer } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, pgEnum, doublePrecision, boolean, uniqueIndex, jsonb, integer, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -83,10 +83,89 @@ export const branches = pgTable("branches", {
   whatsappNumber: text("whatsapp_number"),
   googleMapsUrl: text("google_maps_url"),
   operatingHours: jsonb("operating_hours"),
+  summaryHours: text("summary_hours"),
   locations: jsonb("locations").$type<Array<{ name: string; address: string; googleMapsUrl: string }>>(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
 });
+
+export const categories = pgTable("categories", {
+  key: text("key").primaryKey(),
+  label: text("label").notNull(),
+  icon: text("icon"),
+  isActive: boolean("is_active").notNull().default(true),
+  displayOrder: integer("display_order").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("categories_is_active_idx").on(table.isActive),
+  index("categories_display_order_idx").on(table.displayOrder),
+]);
+
+export const subcategories = pgTable("subcategories", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  categoryKey: text("category_key")
+    .notNull()
+    .references(() => categories.key),
+  label: text("label").notNull(),
+  isActive: boolean("is_active").notNull().default(true),
+  displayOrder: integer("display_order").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("subcategories_category_key_idx").on(table.categoryKey),
+  index("subcategories_is_active_idx").on(table.isActive),
+]);
+
+export const categoryKeywords = pgTable("category_keywords", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  categoryKey: text("category_key").references(() => categories.key),
+  subcategoryId: varchar("subcategory_id", { length: 36 }).references(() => subcategories.id),
+  keyword: text("keyword").notNull(),
+  normalizedKeyword: text("normalized_keyword").notNull(),
+  kind: text("kind").notNull().default("alias"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("category_keywords_category_key_idx").on(table.categoryKey),
+  index("category_keywords_subcategory_id_idx").on(table.subcategoryId),
+  index("category_keywords_normalized_keyword_idx").on(table.normalizedKeyword),
+]);
+
+export const appSettings = pgTable("app_settings", {
+  key: text("key").primaryKey(),
+  valueJson: jsonb("value_json").notNull(),
+  scope: text("scope").notNull().default("global"),
+  updatedBy: varchar("updated_by", { length: 36 }).references(() => users.id),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("app_settings_scope_idx").on(table.scope),
+]);
+
+export const searchLogs = pgTable("search_logs", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  userId: varchar("user_id", { length: 36 }).references(() => users.id),
+  queryRaw: text("query_raw"),
+  queryNormalized: text("query_normalized"),
+  category: text("category"),
+  subcategory: text("subcategory"),
+  lat: doublePrecision("lat"),
+  lng: doublePrecision("lng"),
+  zone: text("zone"),
+  resultCount: integer("result_count").notNull().default(0),
+  selectedBranchId: varchar("selected_branch_id", { length: 36 }).references(() => branches.id),
+  source: text("source").notNull().default("web"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("search_logs_created_at_idx").on(table.createdAt),
+  index("search_logs_query_normalized_idx").on(table.queryNormalized),
+  index("search_logs_category_idx").on(table.category),
+]);
 
 export const memberships = pgTable("memberships", {
   id: varchar("id", { length: 36 })
@@ -352,6 +431,69 @@ export const createBranchFormSchema = createBranchSchema.extend({
   searchKeywords: z.string().optional(),
 });
 
+export const insertCategorySchema = createInsertSchema(categories).omit({
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const insertSubcategorySchema = createInsertSchema(subcategories).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const insertCategoryKeywordSchema = createInsertSchema(categoryKeywords).omit({
+  id: true,
+  normalizedKeyword: true,
+  createdAt: true,
+});
+
+export const insertAppSettingSchema = createInsertSchema(appSettings).omit({
+  updatedAt: true,
+});
+
+export const insertSearchLogSchema = createInsertSchema(searchLogs).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const createCatalogCategorySchema = z.object({
+  key: z
+    .string()
+    .min(1, "La clave es obligatoria")
+    .regex(/^[a-z0-9._-]+$/, "Solo minúsculas, números, punto, guion y guion bajo"),
+  label: z.string().min(1, "La etiqueta es obligatoria"),
+  icon: z.string().nullable().optional(),
+  isActive: z.boolean().optional(),
+  displayOrder: z.coerce.number().int().optional(),
+});
+
+export const updateCatalogCategorySchema = createCatalogCategorySchema.omit({ key: true }).partial();
+
+export const createCatalogSubcategorySchema = z.object({
+  categoryKey: z.string().min(1, "La categoría es obligatoria"),
+  label: z.string().min(1, "La subcategoría es obligatoria"),
+  isActive: z.boolean().optional(),
+  displayOrder: z.coerce.number().int().optional(),
+});
+
+export const updateCatalogSubcategorySchema = createCatalogSubcategorySchema.partial();
+
+export const createCategoryKeywordLinkSchema = z.object({
+  categoryKey: z.string().nullable().optional(),
+  subcategoryId: z.string().nullable().optional(),
+  keyword: z.string().min(1, "La palabra clave es obligatoria"),
+  kind: z.string().min(1).optional(),
+}).refine((data) => !!(data.categoryKey || data.subcategoryId), {
+  message: "Debes ligar la keyword a una categoría o subcategoría",
+  path: ["categoryKey"],
+});
+
+export const updateAppSettingSchema = z.object({
+  valueJson: z.any(),
+  scope: z.string().min(1).optional(),
+});
+
 export const joinBranchSchema = z.object({
   branchSlug: z.string().optional(),
   branchId: z.string().optional(),
@@ -371,6 +513,16 @@ export type InsertMembership = z.infer<typeof insertMembershipSchema>;
 export type LoginData = z.infer<typeof loginSchema>;
 export type CreateBranchData = z.infer<typeof createBranchSchema>;
 export type CreateBranchFormData = z.infer<typeof createBranchFormSchema>;
+export type Category = typeof categories.$inferSelect;
+export type InsertCategory = z.infer<typeof insertCategorySchema>;
+export type Subcategory = typeof subcategories.$inferSelect;
+export type InsertSubcategory = z.infer<typeof insertSubcategorySchema>;
+export type CategoryKeyword = typeof categoryKeywords.$inferSelect;
+export type InsertCategoryKeyword = z.infer<typeof insertCategoryKeywordSchema>;
+export type AppSetting = typeof appSettings.$inferSelect;
+export type InsertAppSetting = z.infer<typeof insertAppSettingSchema>;
+export type SearchLog = typeof searchLogs.$inferSelect;
+export type InsertSearchLog = z.infer<typeof insertSearchLogSchema>;
 export type AuditLog = typeof auditLogs.$inferSelect;
 export type SystemEvent = typeof systemEvents.$inferSelect;
 export type PushToken = typeof pushTokens.$inferSelect;
@@ -447,12 +599,43 @@ export const classBookings = pgTable("class_bookings", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
+export const reservationAuditLogs = pgTable("reservation_audit_logs", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  bookingId: varchar("booking_id", { length: 36 })
+    .notNull()
+    .references(() => classBookings.id),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  customerUserId: varchar("customer_user_id", { length: 36 })
+    .notNull()
+    .references(() => users.id),
+  actorUserId: varchar("actor_user_id", { length: 36 }).references(() => users.id),
+  actorRole: text("actor_role").notNull(),
+  action: text("action").notNull(),
+  reason: text("reason"),
+  source: text("source").notNull().default("system"),
+  metadata: jsonb("metadata"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("reservation_audit_logs_booking_idx").on(table.bookingId),
+  index("reservation_audit_logs_branch_idx").on(table.branchId),
+  index("reservation_audit_logs_created_at_idx").on(table.createdAt),
+]);
+
 export const insertClassScheduleSchema = createInsertSchema(classSchedules).omit({
   id: true,
   createdAt: true,
 });
 
 export const insertClassBookingSchema = createInsertSchema(classBookings).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertReservationAuditLogSchema = createInsertSchema(reservationAuditLogs).omit({
   id: true,
   createdAt: true,
 });
@@ -477,6 +660,8 @@ export type ClassSchedule = typeof classSchedules.$inferSelect;
 export type InsertClassSchedule = z.infer<typeof insertClassScheduleSchema>;
 export type ClassBooking = typeof classBookings.$inferSelect;
 export type InsertClassBooking = z.infer<typeof insertClassBookingSchema>;
+export type ReservationAuditLog = typeof reservationAuditLogs.$inferSelect;
+export type InsertReservationAuditLog = z.infer<typeof insertReservationAuditLogSchema>;
 
 export const insertMembershipPlanSchema = createInsertSchema(membershipPlans).omit({
   id: true,
@@ -722,13 +907,104 @@ export const branchReviews = pgTable("branch_reviews", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
+export const reviewReportStatusEnum = pgEnum("review_report_status", [
+  "pending",
+  "reviewed",
+  "dismissed",
+]);
+
+export const reviewReports = pgTable("review_reports", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  reviewId: varchar("review_id", { length: 36 })
+    .notNull()
+    .references(() => branchReviews.id),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  reporterUserId: varchar("reporter_user_id", { length: 36 }).references(() => users.id),
+  reportedByRole: text("reported_by_role").notNull().default("CUSTOMER"),
+  reason: text("reason").notNull(),
+  note: text("note"),
+  status: reviewReportStatusEnum("status").notNull().default("pending"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  reviewedByUserId: varchar("reviewed_by_user_id", { length: 36 }).references(() => users.id),
+  resolutionNote: text("resolution_note"),
+}, (table) => [
+  index("review_reports_review_idx").on(table.reviewId),
+  index("review_reports_branch_idx").on(table.branchId),
+  index("review_reports_status_idx").on(table.status),
+]);
+
+export const reviewModerationLogs = pgTable("review_moderation_logs", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  reviewId: varchar("review_id", { length: 36 })
+    .notNull()
+    .references(() => branchReviews.id),
+  action: text("action").notNull(),
+  actorUserId: varchar("actor_user_id", { length: 36 }).references(() => users.id),
+  reason: text("reason"),
+  metadata: jsonb("metadata"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("review_moderation_logs_review_idx").on(table.reviewId),
+  index("review_moderation_logs_created_at_idx").on(table.createdAt),
+]);
+
+export const notificationJobs = pgTable("notification_jobs", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  type: text("type").notNull(),
+  branchId: varchar("branch_id", { length: 36 }).references(() => branches.id),
+  userId: varchar("user_id", { length: 36 }).references(() => users.id),
+  payload: jsonb("payload"),
+  scheduledFor: timestamp("scheduled_for", { withTimezone: true }).notNull(),
+  status: text("status").notNull().default("pending"),
+  attempts: integer("attempts").notNull().default(0),
+  lastError: text("last_error"),
+  processedAt: timestamp("processed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("notification_jobs_status_idx").on(table.status),
+  index("notification_jobs_scheduled_for_idx").on(table.scheduledFor),
+  index("notification_jobs_branch_idx").on(table.branchId),
+]);
+
 export const insertBranchReviewSchema = createInsertSchema(branchReviews).omit({
   id: true,
   createdAt: true,
 });
 
+export const insertReviewReportSchema = createInsertSchema(reviewReports).omit({
+  id: true,
+  createdAt: true,
+  resolvedAt: true,
+});
+
+export const insertReviewModerationLogSchema = createInsertSchema(reviewModerationLogs).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertNotificationJobSchema = createInsertSchema(notificationJobs).omit({
+  id: true,
+  createdAt: true,
+  processedAt: true,
+});
+
 export type BranchReview = typeof branchReviews.$inferSelect;
 export type InsertBranchReview = z.infer<typeof insertBranchReviewSchema>;
+export type ReviewReport = typeof reviewReports.$inferSelect;
+export type InsertReviewReport = z.infer<typeof insertReviewReportSchema>;
+export type ReviewModerationLog = typeof reviewModerationLogs.$inferSelect;
+export type InsertReviewModerationLog = z.infer<typeof insertReviewModerationLogSchema>;
+export type NotificationJob = typeof notificationJobs.$inferSelect;
+export type InsertNotificationJob = z.infer<typeof insertNotificationJobSchema>;
 
 // ─── Password Reset Tokens ───────────────────────────────────────────────────
 export const passwordResetTokens = pgTable("password_reset_tokens", {
@@ -760,6 +1036,35 @@ export const promotions = pgTable("promotions", {
 export const insertPromotionSchema = createInsertSchema(promotions).omit({ id: true, createdAt: true });
 export type InsertPromotion = z.infer<typeof insertPromotionSchema>;
 export type Promotion = typeof promotions.$inferSelect;
+
+export const reviewReportReasonValues = [
+  "ofensiva",
+  "spam",
+  "falsa",
+  "acoso",
+  "otro",
+] as const;
+
+export const reviewReportStatusValues = ["pending", "reviewed", "dismissed"] as const;
+
+export const createReviewReportSchema = z.object({
+  reason: z.enum(reviewReportReasonValues),
+  note: z.string().nullable().optional(),
+});
+
+export const updateReviewReportStatusSchema = z.object({
+  status: z.enum(reviewReportStatusValues),
+  resolutionNote: z.string().nullable().optional(),
+});
+
+export const updateReviewReplySchema = z.object({
+  adminReply: z.string().nullable().optional(),
+});
+
+export const updateReviewVisibilitySchema = z.object({
+  hidden: z.boolean(),
+  reason: z.string().nullable().optional(),
+});
 
 export const BRANCH_CATEGORIES = [
   { value: "box", label: "Box / CrossFit" },

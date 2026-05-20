@@ -18,6 +18,8 @@ import {
   Briefcase,
   Save,
   ExternalLink,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -102,6 +104,7 @@ function BasicProfileSection() {
   const [category, setCategory] = useState(branch?.category || "box");
   const [subcategory, setSubcategory] = useState(branch?.subcategory || "");
   const [searchKeywords, setSearchKeywords] = useState(branch?.searchKeywords || "");
+  const [summaryHours, setSummaryHours] = useState((branch as any)?.summaryHours || "");
   const [saving, setSaving] = useState(false);
 
   const handleSave = async () => {
@@ -112,6 +115,7 @@ function BasicProfileSection() {
         category,
         subcategory: subcategory.trim() || null,
         searchKeywords: searchKeywords.trim() || null,
+        summaryHours: summaryHours.trim() || null,
       });
       await refetch();
       queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
@@ -182,6 +186,18 @@ function BasicProfileSection() {
           />
           <p className="text-xs text-muted-foreground mt-1">
             Opcional. Separa las palabras con comas para mejorar la busqueda.
+          </p>
+        </div>
+        <div>
+          <Label>Horario resumido visible</Label>
+          <Input
+            value={summaryHours}
+            onChange={(e) => setSummaryHours(e.target.value)}
+            placeholder="Ej. Lunes a Viernes 7am-9pm"
+            data-testid="input-summary-hours"
+          />
+          <p className="text-xs text-muted-foreground mt-1">
+            Opcional. Se muestra en tu perfil público como resumen rápido.
           </p>
         </div>
         <Button onClick={handleSave} disabled={saving} data-testid="button-save-profile">
@@ -651,6 +667,7 @@ function ServicesProductsSection() {
   const [imageUrl, setImageUrl] = useState("");
   const [productType, setProductType] = useState<string>("product");
   const [durationMinutes, setDurationMinutes] = useState("");
+  const [isActive, setIsActive] = useState(true);
   const [uploadingImage, setUploadingImage] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -715,6 +732,7 @@ function ServicesProductsSection() {
     setImageUrl("");
     setProductType("product");
     setDurationMinutes("");
+    setIsActive(true);
   };
 
   const openCreate = () => {
@@ -730,6 +748,7 @@ function ServicesProductsSection() {
     setImageUrl(product.imageUrl || "");
     setProductType(product.type || "product");
     setDurationMinutes(product.durationMinutes ? String(product.durationMinutes) : "");
+    setIsActive(product.isActive);
     setDialogOpen(true);
   };
 
@@ -751,6 +770,7 @@ function ServicesProductsSection() {
       name,
       price: priceInCents,
       type: productType,
+      isActive,
     };
     if (description) data.description = description;
     if (imageUrl) data.imageUrl = imageUrl;
@@ -828,6 +848,9 @@ function ServicesProductsSection() {
                       <Badge variant="secondary" className="text-xs" data-testid={`badge-type-${product.id}`}>
                         {product.type === "service" ? "Servicio" : "Producto"}
                       </Badge>
+                      <Badge variant={product.isActive ? "outline" : "destructive"} className="text-xs">
+                        {product.isActive ? "Visible" : "Oculto"}
+                      </Badge>
                       {product.type === "service" && product.durationMinutes && (
                         <Badge variant="outline" className="text-xs" data-testid={`badge-duration-${product.id}`}>
                           {product.durationMinutes} min
@@ -840,6 +863,14 @@ function ServicesProductsSection() {
                   </div>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    onClick={() => updateMutation.mutate({ id: product.id, data: { isActive: !product.isActive } })}
+                    data-testid={`button-toggle-service-visibility-${product.id}`}
+                  >
+                    {product.isActive ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                  </Button>
                   {idx > 0 && (
                     <Button size="icon" variant="ghost" onClick={() => moveProduct(idx, "up")} data-testid={`button-up-service-${product.id}`}>
                       <ArrowUp className="h-3 w-3" />
@@ -932,6 +963,13 @@ function ServicesProductsSection() {
                 data-testid="input-service-description"
               />
             </div>
+            <div className="flex items-center justify-between rounded-md border p-3">
+              <div>
+                <Label className="text-sm">Visible en el perfil público</Label>
+                <p className="text-xs text-muted-foreground">Puedes ocultarlo sin borrar el producto o servicio.</p>
+              </div>
+              <Switch checked={isActive} onCheckedChange={setIsActive} data-testid="switch-service-active" />
+            </div>
             <div>
               <Label>Imagen (opcional)</Label>
               <div className="flex items-center gap-2 mt-1">
@@ -993,8 +1031,49 @@ interface ReviewsResponse {
 }
 
 function ReviewsSummarySection() {
+  const { toast } = useToast();
   const { data, isLoading } = useQuery<ReviewsResponse>({
     queryKey: ["/api/branch/reviews"],
+  });
+  const [replyingReviewId, setReplyingReviewId] = useState<string | null>(null);
+  const [replyDraft, setReplyDraft] = useState("");
+  const [reportingReviewId, setReportingReviewId] = useState<string | null>(null);
+  const [reportReason, setReportReason] = useState("otro");
+  const [reportNote, setReportNote] = useState("");
+
+  const replyMutation = useMutation({
+    mutationFn: async ({ reviewId, adminReply }: { reviewId: string; adminReply: string | null }) => {
+      const resp = await apiRequest("POST", `/api/branch/reviews/${reviewId}/reply`, { adminReply });
+      return resp.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/reviews"] });
+      toast({ title: "Respuesta guardada" });
+      setReplyingReviewId(null);
+      setReplyDraft("");
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message || "No se pudo guardar la respuesta", variant: "destructive" });
+    },
+  });
+
+  const reportMutation = useMutation({
+    mutationFn: async (reviewId: string) => {
+      const resp = await apiRequest("POST", `/api/branch/reviews/${reviewId}/report`, {
+        reason: reportReason,
+        note: reportNote.trim() || null,
+      });
+      return resp.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Reporte enviado" });
+      setReportingReviewId(null);
+      setReportReason("otro");
+      setReportNote("");
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message || "No se pudo reportar la reseña", variant: "destructive" });
+    },
   });
 
   if (isLoading) return <Skeleton className="h-32 w-full" data-testid="skeleton-reviews" />;
@@ -1039,11 +1118,11 @@ function ReviewsSummarySection() {
                 ({totalReviews} {totalReviews === 1 ? "reseña" : "reseñas"})
               </span>
             </div>
-            <div className="space-y-2 max-h-60 overflow-y-auto">
-              {reviews.slice(0, 5).map((review) => (
+            <div className="space-y-2 max-h-80 overflow-y-auto">
+              {reviews.slice(0, 8).map((review) => (
                 <div
                   key={review.id}
-                  className="p-3 rounded-md border space-y-1"
+                  className="p-3 rounded-md border space-y-2"
                   data-testid={`review-item-${review.id}`}
                 >
                   <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -1054,6 +1133,7 @@ function ReviewsSummarySection() {
                           className={`h-3 w-3 ${star <= review.rating ? "fill-yellow-400 text-yellow-400" : "text-muted-foreground/30"}`}
                         />
                       ))}
+                      {review.userName && <span className="text-xs text-muted-foreground ml-2">{review.userName}</span>}
                     </div>
                     <span className="text-xs text-muted-foreground">
                       {new Date(review.createdAt).toLocaleDateString("es-MX", { day: "2-digit", month: "short", year: "numeric" })}
@@ -1070,6 +1150,93 @@ function ReviewsSummarySection() {
                       <p className="text-sm" data-testid={`text-review-reply-${review.id}`}>
                         {review.adminReply}
                       </p>
+                    </div>
+                  )}
+                  <div className="flex gap-2 flex-wrap">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setReplyingReviewId(replyingReviewId === review.id ? null : review.id);
+                        setReplyDraft(review.adminReply || "");
+                        if (reportingReviewId === review.id) {
+                          setReportingReviewId(null);
+                        }
+                      }}
+                      data-testid={`button-reply-review-${review.id}`}
+                    >
+                      {review.adminReply ? "Editar respuesta" : "Responder"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => {
+                        setReportingReviewId(reportingReviewId === review.id ? null : review.id);
+                        setReportReason("otro");
+                        setReportNote("");
+                        if (replyingReviewId === review.id) {
+                          setReplyingReviewId(null);
+                        }
+                      }}
+                      data-testid={`button-report-review-${review.id}`}
+                    >
+                      Reportar
+                    </Button>
+                  </div>
+                  {replyingReviewId === review.id && (
+                    <div className="rounded-md border bg-muted/30 p-3 space-y-2">
+                      <Label className="text-xs">Respuesta del negocio</Label>
+                      <Textarea
+                        value={replyDraft}
+                        onChange={(e) => setReplyDraft(e.target.value)}
+                        rows={3}
+                        placeholder="Escribe una respuesta breve y profesional"
+                        data-testid={`input-reply-review-${review.id}`}
+                      />
+                      <div className="flex justify-end gap-2">
+                        <Button size="sm" variant="ghost" onClick={() => setReplyingReviewId(null)}>
+                          Cancelar
+                        </Button>
+                        <Button
+                          size="sm"
+                          onClick={() => replyMutation.mutate({ reviewId: review.id, adminReply: replyDraft.trim() || null })}
+                          disabled={replyMutation.isPending}
+                        >
+                          {replyMutation.isPending ? "Guardando..." : "Guardar respuesta"}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                  {reportingReviewId === review.id && (
+                    <div className="rounded-md border bg-muted/30 p-3 space-y-2">
+                      <Label className="text-xs">Motivo del reporte</Label>
+                      <Select value={reportReason} onValueChange={setReportReason}>
+                        <SelectTrigger data-testid={`select-report-reason-${review.id}`}>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="ofensiva">Ofensiva</SelectItem>
+                          <SelectItem value="spam">Spam</SelectItem>
+                          <SelectItem value="falsa">Falsa</SelectItem>
+                          <SelectItem value="acoso">Acoso</SelectItem>
+                          <SelectItem value="otro">Otro</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Textarea
+                        value={reportNote}
+                        onChange={(e) => setReportNote(e.target.value)}
+                        rows={2}
+                        placeholder="Nota opcional para Super Admin"
+                        data-testid={`input-report-note-${review.id}`}
+                      />
+                      <div className="flex justify-end gap-2">
+                        <Button size="sm" variant="ghost" onClick={() => setReportingReviewId(null)}>
+                          Cancelar
+                        </Button>
+                        <Button size="sm" onClick={() => reportMutation.mutate(review.id)} disabled={reportMutation.isPending}>
+                          {reportMutation.isPending ? "Enviando..." : "Enviar reporte"}
+                        </Button>
+                      </div>
                     </div>
                   )}
                 </div>

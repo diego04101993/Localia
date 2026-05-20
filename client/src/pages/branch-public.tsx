@@ -470,7 +470,7 @@ function PublicLocationSection({ branch }: { branch: any }) {
   const [active, setActive] = useState(0);
 
   const noAddress = locs.length === 0;
-  const noHours = !branch.operatingHours;
+  const noHours = !branch.operatingHours && !branch.summaryHours;
 
   if (noAddress && noHours) return null;
 
@@ -524,6 +524,13 @@ function PublicLocationSection({ branch }: { branch: any }) {
             </Button>
           )}
 
+          {branch.summaryHours && (
+            <div className="rounded-xl bg-muted/50 px-3 py-2" data-testid="text-summary-hours">
+              <p className="text-[11px] font-medium text-muted-foreground">Horario resumido</p>
+              <p className="text-sm">{branch.summaryHours}</p>
+            </div>
+          )}
+
           {branch.operatingHours && (
             <>
               <div className="border-t" />
@@ -569,6 +576,9 @@ function ReviewsSummary({ slug }: { slug: string }) {
   const [showForm, setShowForm] = useState(false);
   const [rating, setRating] = useState(0);
   const [comment, setComment] = useState("");
+  const [reportingReviewId, setReportingReviewId] = useState<string | null>(null);
+  const [reportReason, setReportReason] = useState("otro");
+  const [reportNote, setReportNote] = useState("");
 
   const { data } = useQuery<{ averageRating: number; totalReviews: number; reviews: any[] }>({
     queryKey: ["/api/public/branch", slug, "reviews"],
@@ -623,6 +633,34 @@ function ReviewsSummary({ slug }: { slug: string }) {
     },
     onError: (e: any) => {
       toast({ description: e.message, variant: "destructive" });
+    },
+  });
+
+  const reportMutation = useMutation({
+    mutationFn: async (reviewId: string) => {
+      const res = await fetch(`/api/public/branch/${slug}/reviews/${reviewId}/report`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          reason: reportReason,
+          note: reportNote.trim() || null,
+        }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error(e.message || "Error al reportar la reseña");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ description: "Reporte enviado a revisión" });
+      setReportingReviewId(null);
+      setReportReason("otro");
+      setReportNote("");
+    },
+    onError: (e: any) => {
+      toast({ description: e.message || "No se pudo reportar la reseña", variant: "destructive" });
     },
   });
 
@@ -702,17 +740,65 @@ function ReviewsSummary({ slug }: { slug: string }) {
         <div className="space-y-3">
           {data.reviews.slice(0, 5).map((r: any) => (
             <div key={r.id} className="border-t pt-3" data-testid={`review-${r.id}`}>
-              <div className="flex items-center gap-1.5 mb-1">
-                {[1, 2, 3, 4, 5].map((s) => (
-                  <Star key={s} className={`h-3 w-3 ${s <= r.rating ? "text-yellow-400 fill-yellow-400" : "text-muted-foreground/20"}`} />
-                ))}
-                <span className="text-xs font-medium ml-1">{r.userName} {r.userLastName}</span>
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  {[1, 2, 3, 4, 5].map((s) => (
+                    <Star key={s} className={`h-3 w-3 ${s <= r.rating ? "text-yellow-400 fill-yellow-400" : "text-muted-foreground/20"}`} />
+                  ))}
+                  <span className="text-xs font-medium ml-1 truncate">{r.userName} {r.userLastName}</span>
+                </div>
+                {user && user.id !== r.userId && (
+                  <button
+                    className="text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-2 shrink-0"
+                    onClick={() => {
+                      setReportingReviewId(reportingReviewId === r.id ? null : r.id);
+                      setReportReason("otro");
+                      setReportNote("");
+                    }}
+                    data-testid={`button-report-review-${r.id}`}
+                  >
+                    Reportar
+                  </button>
+                )}
               </div>
               {r.comment && <p className="text-xs text-muted-foreground leading-relaxed">{r.comment}</p>}
               {r.adminReply && (
                 <div className="mt-2 pl-3 border-l-2 border-primary/30">
                   <p className="text-[10px] text-muted-foreground/60 font-medium mb-0.5">Respuesta del negocio</p>
                   <p className="text-xs text-muted-foreground italic">{r.adminReply}</p>
+                </div>
+              )}
+              {reportingReviewId === r.id && (
+                <div className="mt-3 rounded-xl border bg-muted/30 p-3 space-y-2" data-testid={`report-review-form-${r.id}`}>
+                  <div className="space-y-1">
+                    <p className="text-xs font-medium">Motivo</p>
+                    <select
+                      className="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-xs"
+                      value={reportReason}
+                      onChange={(e) => setReportReason(e.target.value)}
+                    >
+                      <option value="ofensiva">Ofensiva</option>
+                      <option value="spam">Spam</option>
+                      <option value="falsa">Falsa</option>
+                      <option value="acoso">Acoso</option>
+                      <option value="otro">Otro</option>
+                    </select>
+                  </div>
+                  <textarea
+                    className="w-full bg-background text-xs rounded-xl border border-border/60 px-3 py-2 resize-none focus:outline-none focus:ring-1 focus:ring-primary/50 placeholder:text-muted-foreground/50"
+                    rows={2}
+                    placeholder="Nota opcional"
+                    value={reportNote}
+                    onChange={(e) => setReportNote(e.target.value)}
+                  />
+                  <div className="flex justify-end gap-2">
+                    <Button size="sm" variant="ghost" onClick={() => setReportingReviewId(null)}>
+                      Cancelar
+                    </Button>
+                    <Button size="sm" onClick={() => reportMutation.mutate(r.id)} disabled={reportMutation.isPending}>
+                      {reportMutation.isPending ? "Enviando..." : "Enviar reporte"}
+                    </Button>
+                  </div>
                 </div>
               )}
             </div>

@@ -113,6 +113,24 @@ interface ReservationStats {
   nextBooking: { className: string; startTime: string; bookingDate: string } | null;
 }
 
+interface BranchDashboardMetrics {
+  upcomingBookings: number;
+  cancelledBookings: number;
+  noShowBookings: number;
+  activeClients: number;
+  inactiveClients: number;
+  lowClassesClients: number;
+  activePromotions: number;
+  recentReviews: number;
+}
+
+interface BranchNotificationJob {
+  id: string;
+  type: string;
+  scheduledFor: string;
+  status: string;
+}
+
 interface AlertsData {
   expiringMemberships: Array<{
     userId: string;
@@ -195,6 +213,15 @@ function buildWhatsAppUrl(phone: string, message: string): string {
   return `https://wa.me/${normalized}?text=${encodeURIComponent(message)}`;
 }
 
+function formatDateTime(dateStr: string) {
+  return new Date(dateStr).toLocaleDateString("es-MX", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 type WhatsAppTemplates = Record<string, string>;
 
 function WhatsAppButton({ phone, template, vars, testId, label }: { phone: string | null; template: string; vars: Record<string, string>; testId: string; label?: string }) {
@@ -210,13 +237,13 @@ function WhatsAppButton({ phone, template, vars, testId, label }: { phone: strin
       data-testid={testId}
     >
       <MessageCircle className="h-3 w-3 mr-0.5" />
-      {label ?? "WA"}
+      {label || "WA"}
     </Button>
   );
 }
 
 function TodayBirthdaysSection({ alerts, branchName, whatsappTemplates, onViewClient }: { alerts: AlertsData | undefined; branchName: string; whatsappTemplates: WhatsAppTemplates; onViewClient: (userId: string) => void }) {
-  const todayBirthdays = (alerts?.upcomingBirthdays ?? []).filter((b) => isBirthdayToday(b.birthDate));
+  const todayBirthdays = (alerts?.upcomingBirthdays || []).filter((b) => isBirthdayToday(b.birthDate));
   const hasBirthdays = todayBirthdays.length > 0;
 
   return (
@@ -297,11 +324,11 @@ function AlertsSection({ alerts, isLoading, onViewClient, branchName, whatsappTe
     },
   });
 
-  const expiredCount = alerts?.expiredMemberships?.length ?? 0;
-  const expiringCount = alerts?.expiringMemberships?.length ?? 0;
-  const inactiveCount = alerts?.inactiveClients?.length ?? 0;
-  const noClassesCount = alerts?.clientsWithoutClasses?.length ?? 0;
-  const birthdayCount = alerts?.upcomingBirthdays?.length ?? 0;
+  const expiredCount = alerts?.expiredMemberships?.length || 0;
+  const expiringCount = alerts?.expiringMemberships?.length || 0;
+  const inactiveCount = alerts?.inactiveClients?.length || 0;
+  const noClassesCount = alerts?.clientsWithoutClasses?.length || 0;
+  const birthdayCount = alerts?.upcomingBirthdays?.length || 0;
 
   if (isLoading) {
     return (
@@ -1035,7 +1062,7 @@ function AnnouncementsSection({ branchId }: { branchId: string }) {
   );
 }
 
-function ResumenTab({ branchStats, branchStatus, branchSlug, branchId, branchName, isLoading, reservationStats, reservationLoading, alerts, alertsLoading, onViewClient }: {
+function ResumenTab({ branchStats, branchStatus, branchSlug, branchId, branchName, isLoading, reservationStats, reservationLoading, dashboardMetrics, alerts, alertsLoading, onViewClient }: {
   branchStats: { activeMemberships: number; uniqueActiveCustomers: number; totalCustomers: number } | undefined;
   branchStatus: string;
   branchSlug: string;
@@ -1044,12 +1071,23 @@ function ResumenTab({ branchStats, branchStatus, branchSlug, branchId, branchNam
   isLoading: boolean;
   reservationStats: ReservationStats | undefined;
   reservationLoading: boolean;
+  dashboardMetrics: BranchDashboardMetrics | undefined;
   alerts: AlertsData | undefined;
   alertsLoading: boolean;
   onViewClient: (userId: string) => void;
 }) {
   const { data: whatsappTemplates } = useQuery<WhatsAppTemplates>({
     queryKey: ["/api/branch/whatsapp-templates"],
+  });
+  const { data: notificationJobs } = useQuery<BranchNotificationJob[]>({
+    queryKey: ["/api/branch/notification-jobs", "summary"],
+    queryFn: async () => {
+      const res = await fetch("/api/branch/notification-jobs?limit=5", { credentials: "include" });
+      if (!res.ok) {
+        throw new Error("No se pudieron cargar los jobs internos");
+      }
+      return res.json();
+    },
   });
 
   const statusConfig: Record<string, { label: string; description: string; color: string }> = {
@@ -1143,12 +1181,89 @@ function ResumenTab({ branchStats, branchStatus, branchSlug, branchId, branchNam
         </Card>
       </div>
 
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground">Próximas reservas</p>
+            <p className="text-xl font-semibold">{dashboardMetrics?.upcomingBookings ?? 0}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground">Cancelaciones</p>
+            <p className="text-xl font-semibold">{dashboardMetrics?.cancelledBookings ?? 0}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground">No show</p>
+            <p className="text-xl font-semibold">{dashboardMetrics?.noShowBookings ?? 0}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground">Clases bajas</p>
+            <p className="text-xl font-semibold">{dashboardMetrics?.lowClassesClients ?? 0}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground">Clientes activos</p>
+            <p className="text-xl font-semibold">{dashboardMetrics?.activeClients ?? 0}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground">Clientes inactivos</p>
+            <p className="text-xl font-semibold">{dashboardMetrics?.inactiveClients ?? 0}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground">Promociones activas</p>
+            <p className="text-xl font-semibold">{dashboardMetrics?.activePromotions ?? 0}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground">Reseñas recientes</p>
+            <p className="text-xl font-semibold">{dashboardMetrics?.recentReviews ?? 0}</p>
+          </CardContent>
+        </Card>
+      </div>
+
       <NotificationsPanel
         title="Notificaciones de la sucursal"
         limit={5}
         emptyMessage="Sin notificaciones recientes para tu sucursal."
         testIdPrefix="branch-notifications"
       />
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Bell className="h-4 w-4" />
+            Jobs internos
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-4 pt-0 space-y-2">
+          {notificationJobs && notificationJobs.length > 0 ? (
+            notificationJobs.map((job) => (
+              <div key={job.id} className="flex items-center justify-between gap-3 rounded-md border p-2 text-sm">
+                <div className="min-w-0">
+                  <p className="font-medium truncate">{job.type}</p>
+                  <p className="text-xs text-muted-foreground">{formatDateTime(job.scheduledFor)}</p>
+                </div>
+                <Badge variant={job.status === "completed" ? "default" : job.status === "failed" ? "destructive" : "secondary"}>
+                  {job.status}
+                </Badge>
+              </div>
+            ))
+          ) : (
+            <p className="text-sm text-muted-foreground">Sin jobs internos recientes.</p>
+          )}
+        </CardContent>
+      </Card>
 
       <TodayBirthdaysSection alerts={alerts} branchName={branchName} whatsappTemplates={whatsappTemplates || {}} onViewClient={onViewClient} />
 
@@ -1556,9 +1671,9 @@ export default function DashboardPage() {
   const [, setLocation] = useLocation();
   const [activeTab, setActiveTab] = useState<TabValue>("resumen");
 
-  const branchName = user?.branch?.name ?? "Tu Sucursal";
-  const branchSlug = user?.branch?.slug ?? "";
-  const branchStatus = user?.branch?.status ?? "active";
+  const branchName = user?.branch?.name || "Tu Sucursal";
+  const branchSlug = user?.branch?.slug || "";
+  const branchStatus = user?.branch?.status || "active";
   const isImpersonating = !!(user as any)?.impersonating;
   const impersonatedBranchName = (user as any)?.impersonatedBranchName;
 
@@ -1574,6 +1689,11 @@ export default function DashboardPage() {
 
   const { data: alerts, isLoading: alertsLoading } = useQuery<AlertsData>({
     queryKey: ["/api/branch/alerts"],
+    enabled: !!user?.branchId,
+  });
+
+  const { data: dashboardMetrics } = useQuery<BranchDashboardMetrics>({
+    queryKey: ["/api/branch/dashboard-metrics"],
     enabled: !!user?.branchId,
   });
 
@@ -1687,6 +1807,7 @@ export default function DashboardPage() {
               isLoading={statsLoading}
               reservationStats={reservationStats}
               reservationLoading={reservationLoading}
+              dashboardMetrics={dashboardMetrics}
               alerts={alerts}
               alertsLoading={alertsLoading}
               onViewClient={() => setActiveTab("clientes")}

@@ -3,6 +3,11 @@ import { db } from "./db";
 import {
   users,
   branches,
+  categories,
+  subcategories,
+  categoryKeywords,
+  appSettings,
+  searchLogs,
   memberships,
   branchClientCrm,
   branchCustomerBlocks,
@@ -16,6 +21,7 @@ import {
   customerReports,
   classSchedules,
   classBookings,
+  reservationAuditLogs,
   branchPhotos,
   branchPosts,
   branchProducts,
@@ -24,6 +30,16 @@ import {
   type InsertUser,
   type Branch,
   type InsertBranch,
+  type Category,
+  type InsertCategory,
+  type Subcategory,
+  type InsertSubcategory,
+  type CategoryKeyword,
+  type InsertCategoryKeyword,
+  type AppSetting,
+  type InsertAppSetting,
+  type SearchLog,
+  type InsertSearchLog,
   type Membership,
   type InsertMembership,
   type AuditLog,
@@ -56,16 +72,45 @@ import {
   type InsertBranchAnnouncement,
   branchReviews,
   type BranchReview,
+  reviewReports,
+  type ReviewReport,
+  type InsertReviewReport,
+  reviewModerationLogs,
+  type ReviewModerationLog,
+  type InsertReviewModerationLog,
+  notificationJobs,
+  type NotificationJob,
+  type InsertNotificationJob,
+  type ReservationAuditLog,
+  type InsertReservationAuditLog,
   passwordResetTokens,
   type PasswordResetToken,
   promotions,
   type Promotion,
   type InsertPromotion,
 } from "@shared/schema";
+import { normalizeSearchText } from "./search-utils";
 
 const BRANCH_TIMEZONE = "America/Mexico_City";
 const CRM_ACTIVITY_WINDOW_DAYS = 30;
 const CRM_ACTIVITY_WINDOW_MS = CRM_ACTIVITY_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+const DEFAULT_GLOBAL_APP_SETTINGS: Array<{ key: string; valueJson: any; scope: string }> = [
+  {
+    key: "search.default_radius_km",
+    valueJson: { km: 50 },
+    scope: "global",
+  },
+  {
+    key: "search.max_radius_km",
+    valueJson: { km: 100 },
+    scope: "global",
+  },
+  {
+    key: "search.category_radius_overrides",
+    valueJson: {},
+    scope: "global",
+  },
+];
 
 function getMxLocalDate(): string {
   return new Date().toLocaleDateString("en-CA", { timeZone: BRANCH_TIMEZONE });
@@ -77,16 +122,6 @@ function getMxLocalDateAndTime(): { today: string; currentTime: string } {
   const timeStr = now.toLocaleTimeString("en-GB", { timeZone: BRANCH_TIMEZONE, hour12: false });
   const currentTime = timeStr.substring(0, 5);
   return { today, currentTime };
-}
-
-function normalizeSearchText(value: string): string {
-  return value
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim()
-    .replace(/\s+/g, " ");
 }
 
 function normalizedSearchSql(column: any) {
@@ -103,6 +138,19 @@ function normalizedSearchSql(column: any) {
     ' ',
     'g'
   )`;
+}
+
+async function ensureDefaultGlobalAppSettings() {
+  for (const setting of DEFAULT_GLOBAL_APP_SETTINGS) {
+    await db
+      .insert(appSettings)
+      .values({
+        key: setting.key,
+        valueJson: setting.valueJson,
+        scope: setting.scope,
+      })
+      .onConflictDoNothing({ target: appSettings.key });
+  }
 }
 
 function normalizedSearchSqlSafe(column: any) {
@@ -189,6 +237,80 @@ export interface BranchStats {
   totalCustomers: number;
 }
 
+export interface SearchSuggestion {
+  type: "category" | "subcategory" | "keyword" | "branch";
+  label: string;
+  normalized: string;
+  categoryKey?: string | null;
+  subcategoryId?: string | null;
+  branchId?: string | null;
+  branchSlug?: string | null;
+}
+
+export interface SearchLogRow extends SearchLog {
+  userEmail?: string | null;
+  selectedBranchName?: string | null;
+}
+
+export interface SearchMetrics {
+  topQueries: Array<{ query: string; total: number }>;
+  zeroResultQueries: Array<{ query: string; total: number }>;
+  topCategories: Array<{ category: string; total: number }>;
+}
+
+export interface ReservationAuditRow extends ReservationAuditLog {
+  customerName?: string | null;
+  customerLastName?: string | null;
+  actorName?: string | null;
+  actorEmail?: string | null;
+  className?: string | null;
+  bookingDate?: string | null;
+  bookingStatus?: string | null;
+}
+
+export interface ReviewReportRow extends ReviewReport {
+  reviewRating?: number | null;
+  reviewComment?: string | null;
+  branchName?: string | null;
+  branchSlug?: string | null;
+  reporterName?: string | null;
+  reviewerName?: string | null;
+  customerName?: string | null;
+  customerLastName?: string | null;
+  isHidden?: boolean;
+  hiddenReason?: string | null;
+  adminReply?: string | null;
+}
+
+export interface PlatformMetrics {
+  totalAppUsers: number;
+  activeBranches: number;
+  totalSearches: number;
+  zeroResultSearches: number;
+  reservationStats: {
+    created: number;
+    cancelled: number;
+    attended: number;
+    noShow: number;
+  };
+  mostActiveBranches: Array<{
+    branchId: string;
+    branchName: string;
+    totalReservations: number;
+  }>;
+}
+
+export interface BranchDashboardMetrics {
+  upcomingBookings: number;
+  cancelledBookings: number;
+  noShowBookings: number;
+  activeClients: number;
+  inactiveClients: number;
+  lowClassesClients: number;
+  activePromotions: number;
+  recentReviews: number;
+}
+
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
@@ -199,6 +321,14 @@ export interface IStorage {
   getBranchBySlug(slug: string): Promise<Branch | undefined>;
   createBranch(branch: InsertBranch): Promise<Branch>;
   updateBranchStatus(id: string, status: string): Promise<Branch | undefined>;
+  updateBranch(id: string, data: {
+    name?: string;
+    slug?: string;
+    status?: string;
+    category?: string | null;
+    subcategory?: string | null;
+    searchKeywords?: string | null;
+  }): Promise<Branch | undefined>;
   softDeleteBranch(id: string): Promise<Branch | undefined>;
   getBranchAdmins(branchId: string): Promise<User[]>;
   getUsersByRole(role: string): Promise<User[]>;
@@ -209,8 +339,28 @@ export interface IStorage {
     lng?: number;
     radiusKm?: number;
     category?: string;
+    subcategory?: string;
+    zone?: string;
     q?: string;
   }): Promise<(Branch & { distance_km?: number })[]>;
+  listCategories(): Promise<Category[]>;
+  listPublicCategories(): Promise<Category[]>;
+  createCategory(data: InsertCategory): Promise<Category>;
+  updateCategory(key: string, data: Partial<InsertCategory>): Promise<Category | undefined>;
+  listSubcategories(categoryKey?: string): Promise<(Subcategory & { categoryLabel?: string | null })[]>;
+  listPublicSubcategories(categoryKey?: string): Promise<(Subcategory & { categoryLabel?: string | null })[]>;
+  createSubcategory(data: InsertSubcategory): Promise<Subcategory>;
+  updateSubcategory(id: string, data: Partial<InsertSubcategory>): Promise<Subcategory | undefined>;
+  listCategoryKeywords(filters?: { categoryKey?: string; subcategoryId?: string }): Promise<(CategoryKeyword & { categoryLabel?: string | null; subcategoryLabel?: string | null })[]>;
+  createCategoryKeyword(data: InsertCategoryKeyword): Promise<CategoryKeyword>;
+  deleteCategoryKeyword(id: string): Promise<boolean>;
+  listAppSettings(scope?: string): Promise<AppSetting[]>;
+  upsertAppSetting(key: string, data: { valueJson: any; scope?: string; updatedBy?: string | null }): Promise<AppSetting>;
+  createSearchLog(data: InsertSearchLog): Promise<SearchLog>;
+  getSearchLogs(limit?: number): Promise<SearchLogRow[]>;
+  getSearchMetrics(limit?: number): Promise<SearchMetrics>;
+  getSearchSuggestions(q: string, limit?: number): Promise<SearchSuggestion[]>;
+  updateSearchLogSelection(logId: string, selectedBranchId: string): Promise<SearchLog | undefined>;
   updateUser(id: string, data: { name?: string; lastName?: string; email?: string; phone?: string }): Promise<User | undefined>;
   acceptTerms(id: string, version: string): Promise<User | undefined>;
   activateCustomerAccount(id: string, data: { passwordHash: string; name?: string; lastName?: string; phone?: string; birthDate?: string; gender?: string; termsVersion: string }): Promise<User | undefined>;
@@ -283,6 +433,8 @@ export interface IStorage {
   createBooking(data: InsertClassBooking): Promise<ClassBooking>;
   updateBookingStatus(id: string, status: string): Promise<ClassBooking | undefined>;
   markBookingLateCancellation(id: string): Promise<void>;
+  createReservationAuditLog(data: InsertReservationAuditLog): Promise<ReservationAuditLog>;
+  getReservationAuditLogs(filters?: { branchId?: string; limit?: number }): Promise<ReservationAuditRow[]>;
   getBooking(id: string): Promise<ClassBooking | undefined>;
   getTodayBookingsCount(branchId: string): Promise<number>;
   getNextBooking(branchId: string): Promise<{ className: string; startTime: string; bookingDate: string } | null>;
@@ -320,12 +472,26 @@ export interface IStorage {
   softDeleteMembership(membershipId: string): Promise<any>;
   getUpcomingBookingsForUser(branchId: string, userId: string, fromDate: string, limit?: number): Promise<any[]>;
   updateBranchWhatsappTemplates(branchId: string, templates: Record<string, string>): Promise<any>;
-  updateBranchProfile(branchId: string, data: { description?: string | null; address?: string | null; city?: string | null; googleMapsUrl?: string | null; operatingHours?: any; category?: string | null; subcategory?: string | null; searchKeywords?: string | null; latitude?: number | null; longitude?: number | null; whatsappNumber?: string | null }): Promise<any>;
+  updateBranchProfile(branchId: string, data: { description?: string | null; address?: string | null; city?: string | null; googleMapsUrl?: string | null; operatingHours?: any; summaryHours?: string | null; category?: string | null; subcategory?: string | null; searchKeywords?: string | null; latitude?: number | null; longitude?: number | null; whatsappNumber?: string | null }): Promise<any>;
   getUpcomingBirthdays(branchId: string, daysAhead?: number): Promise<any[]>;
   getBranchReviews(branchId: string): Promise<any[]>;
   getBranchReviewsSummary(branchId: string): Promise<{ averageRating: number; totalReviews: number }>;
   getUserReview(branchId: string, userId: string): Promise<BranchReview | null>;
   createOrUpdateReview(branchId: string, userId: string, rating: number, comment?: string | null): Promise<BranchReview>;
+  getBranchReviewById(reviewId: string): Promise<BranchReview | undefined>;
+  updateReviewReply(reviewId: string, adminReply: string | null): Promise<BranchReview | undefined>;
+  updateReviewVisibility(reviewId: string, hidden: boolean, reason?: string | null): Promise<BranchReview | undefined>;
+  createReviewReport(data: InsertReviewReport): Promise<ReviewReport>;
+  getReviewReports(filters?: { branchId?: string; status?: string; limit?: number }): Promise<ReviewReportRow[]>;
+  updateReviewReportStatus(reportId: string, status: string, reviewedByUserId: string, resolutionNote?: string | null): Promise<ReviewReport | undefined>;
+  createReviewModerationLog(data: InsertReviewModerationLog): Promise<ReviewModerationLog>;
+  getReviewModerationLogs(limit?: number): Promise<Array<ReviewModerationLog & { branchName?: string | null; reviewComment?: string | null; actorName?: string | null }>>;
+  getBlockedCustomerUsers(): Promise<User[]>;
+  createNotificationJob(data: InsertNotificationJob): Promise<NotificationJob>;
+  getNotificationJobs(filters?: { branchId?: string; status?: string; limit?: number }): Promise<NotificationJob[]>;
+  updateNotificationJob(id: string, data: Partial<InsertNotificationJob> & { processedAt?: Date | null; attempts?: number; status?: string; lastError?: string | null }): Promise<NotificationJob | undefined>;
+  getPlatformMetrics(): Promise<PlatformMetrics>;
+  getBranchDashboardMetrics(branchId: string): Promise<BranchDashboardMetrics>;
   getCustomerAppOverview(): Promise<{ total: number; active: number; blocked: number; recent: number; pendingReports: number }>;
   getCustomerAppUsers(search?: string): Promise<any[]>;
   getCustomerAppUserDetail(userId: string): Promise<any>;
@@ -412,6 +578,35 @@ export class DatabaseStorage implements IStorage {
     return branch;
   }
 
+  async updateBranch(id: string, data: {
+    name?: string;
+    slug?: string;
+    status?: string;
+    category?: string | null;
+    subcategory?: string | null;
+    searchKeywords?: string | null;
+  }): Promise<Branch | undefined> {
+    const setData: Partial<InsertBranch> = {};
+    if (data.name !== undefined) setData.name = data.name;
+    if (data.slug !== undefined) setData.slug = data.slug;
+    if (data.status !== undefined) setData.status = data.status as any;
+    if (data.category !== undefined) setData.category = data.category;
+    if (data.subcategory !== undefined) setData.subcategory = data.subcategory;
+    if (data.searchKeywords !== undefined) setData.searchKeywords = data.searchKeywords;
+
+    if (Object.keys(setData).length === 0) {
+      const [existing] = await db.select().from(branches).where(eq(branches.id, id)).limit(1);
+      return existing;
+    }
+
+    const [branch] = await db
+      .update(branches)
+      .set(setData)
+      .where(eq(branches.id, id))
+      .returning();
+    return branch;
+  }
+
   async softDeleteBranch(id: string): Promise<Branch | undefined> {
     const [branch] = await db
       .update(branches)
@@ -484,10 +679,14 @@ export class DatabaseStorage implements IStorage {
     lng?: number;
     radiusKm?: number;
     category?: string;
+    subcategory?: string;
+    zone?: string;
     q?: string;
   }): Promise<(Branch & { distance_km?: number })[]> {
-    const { lat, lng, radiusKm = 50, category, q } = params;
+    const { lat, lng, radiusKm = 50, category, subcategory, zone, q } = params;
     const normalizedQuery = q ? normalizeSearchText(q) : "";
+    const normalizedSubcategory = subcategory ? normalizeSearchText(subcategory) : "";
+    const normalizedZone = zone ? normalizeSearchText(zone) : "";
 
     const conditions: any[] = [
       eq(branches.status, "active"),
@@ -496,6 +695,21 @@ export class DatabaseStorage implements IStorage {
 
     if (category) {
       conditions.push(eq(branches.category, category));
+    }
+
+    if (normalizedSubcategory) {
+      const likeSubcategory = `%${normalizedSubcategory}%`;
+      conditions.push(sql`${normalizedSearchSqlSafe(branches.subcategory)} LIKE ${likeSubcategory}`);
+    }
+
+    if (normalizedZone) {
+      const likeZone = `%${normalizedZone}%`;
+      conditions.push(
+        or(
+          sql`${normalizedSearchSqlSafe(branches.city)} LIKE ${likeZone}`,
+          sql`${normalizedSearchSqlSafe(branches.address)} LIKE ${likeZone}`,
+        ),
+      );
     }
 
     if (normalizedQuery) {
@@ -629,6 +843,460 @@ export class DatabaseStorage implements IStorage {
     const resultsWithDistance = results.map((b) => ({ ...b, distance_km: undefined })) as (Branch & { distance_km?: number; profileImageUrl?: string | null; averageRating?: number; totalReviews?: number })[];
     const ratingMap = await this.getBranchRatings(resultsWithDistance.map(b => b.id));
     return resultsWithDistance.map(b => ({ ...b, ...(ratingMap[b.id] || { averageRating: 0, totalReviews: 0 }) }));
+  }
+
+  async listCategories(): Promise<Category[]> {
+    return db
+      .select()
+      .from(categories)
+      .orderBy(asc(categories.displayOrder), asc(categories.label));
+  }
+
+  async listPublicCategories(): Promise<Category[]> {
+    return db
+      .select()
+      .from(categories)
+      .where(eq(categories.isActive, true))
+      .orderBy(asc(categories.displayOrder), asc(categories.label));
+  }
+
+  async createCategory(data: InsertCategory): Promise<Category> {
+    const [category] = await db
+      .insert(categories)
+      .values({
+        key: data.key,
+        label: data.label,
+        icon: data.icon ?? null,
+        isActive: data.isActive ?? true,
+        displayOrder: data.displayOrder ?? 0,
+      })
+      .returning();
+
+    return category;
+  }
+
+  async updateCategory(key: string, data: Partial<InsertCategory>): Promise<Category | undefined> {
+    const setData: Partial<InsertCategory> & { updatedAt?: Date } = {};
+    if (data.label !== undefined) setData.label = data.label;
+    if (data.icon !== undefined) setData.icon = data.icon;
+    if (data.isActive !== undefined) setData.isActive = data.isActive;
+    if (data.displayOrder !== undefined) setData.displayOrder = data.displayOrder;
+    if (Object.keys(setData).length === 0) {
+      const [existing] = await db.select().from(categories).where(eq(categories.key, key)).limit(1);
+      return existing;
+    }
+
+    setData.updatedAt = new Date();
+    const [updated] = await db
+      .update(categories)
+      .set(setData)
+      .where(eq(categories.key, key))
+      .returning();
+
+    return updated;
+  }
+
+  async listSubcategories(categoryKey?: string): Promise<(Subcategory & { categoryLabel?: string | null })[]> {
+    const conditions = categoryKey ? [eq(subcategories.categoryKey, categoryKey)] : [];
+
+    return db
+      .select({
+        id: subcategories.id,
+        categoryKey: subcategories.categoryKey,
+        label: subcategories.label,
+        isActive: subcategories.isActive,
+        displayOrder: subcategories.displayOrder,
+        createdAt: subcategories.createdAt,
+        updatedAt: subcategories.updatedAt,
+        categoryLabel: categories.label,
+      })
+      .from(subcategories)
+      .innerJoin(categories, eq(subcategories.categoryKey, categories.key))
+      .where(conditions.length ? and(...conditions) : undefined)
+      .orderBy(asc(categories.displayOrder), asc(subcategories.displayOrder), asc(subcategories.label));
+  }
+
+  async listPublicSubcategories(categoryKey?: string): Promise<(Subcategory & { categoryLabel?: string | null })[]> {
+    const conditions: any[] = [
+      eq(subcategories.isActive, true),
+      eq(categories.isActive, true),
+    ];
+
+    if (categoryKey) {
+      conditions.push(eq(subcategories.categoryKey, categoryKey));
+    }
+
+    return db
+      .select({
+        id: subcategories.id,
+        categoryKey: subcategories.categoryKey,
+        label: subcategories.label,
+        isActive: subcategories.isActive,
+        displayOrder: subcategories.displayOrder,
+        createdAt: subcategories.createdAt,
+        updatedAt: subcategories.updatedAt,
+        categoryLabel: categories.label,
+      })
+      .from(subcategories)
+      .innerJoin(categories, eq(subcategories.categoryKey, categories.key))
+      .where(and(...conditions))
+      .orderBy(asc(categories.displayOrder), asc(subcategories.displayOrder), asc(subcategories.label));
+  }
+
+  async createSubcategory(data: InsertSubcategory): Promise<Subcategory> {
+    const [subcategory] = await db
+      .insert(subcategories)
+      .values({
+        categoryKey: data.categoryKey,
+        label: data.label,
+        isActive: data.isActive ?? true,
+        displayOrder: data.displayOrder ?? 0,
+      })
+      .returning();
+
+    return subcategory;
+  }
+
+  async updateSubcategory(id: string, data: Partial<InsertSubcategory>): Promise<Subcategory | undefined> {
+    const setData: Partial<InsertSubcategory> & { updatedAt?: Date } = {};
+    if (data.categoryKey !== undefined) setData.categoryKey = data.categoryKey;
+    if (data.label !== undefined) setData.label = data.label;
+    if (data.isActive !== undefined) setData.isActive = data.isActive;
+    if (data.displayOrder !== undefined) setData.displayOrder = data.displayOrder;
+    if (Object.keys(setData).length === 0) {
+      const [existing] = await db.select().from(subcategories).where(eq(subcategories.id, id)).limit(1);
+      return existing;
+    }
+
+    setData.updatedAt = new Date();
+    const [updated] = await db
+      .update(subcategories)
+      .set(setData)
+      .where(eq(subcategories.id, id))
+      .returning();
+
+    return updated;
+  }
+
+  async listCategoryKeywords(filters?: { categoryKey?: string; subcategoryId?: string }): Promise<(CategoryKeyword & { categoryLabel?: string | null; subcategoryLabel?: string | null })[]> {
+    const conditions: any[] = [];
+
+    if (filters?.categoryKey) {
+      conditions.push(eq(categoryKeywords.categoryKey, filters.categoryKey));
+    }
+    if (filters?.subcategoryId) {
+      conditions.push(eq(categoryKeywords.subcategoryId, filters.subcategoryId));
+    }
+
+    return db
+      .select({
+        id: categoryKeywords.id,
+        categoryKey: categoryKeywords.categoryKey,
+        subcategoryId: categoryKeywords.subcategoryId,
+        keyword: categoryKeywords.keyword,
+        normalizedKeyword: categoryKeywords.normalizedKeyword,
+        kind: categoryKeywords.kind,
+        createdAt: categoryKeywords.createdAt,
+        categoryLabel: categories.label,
+        subcategoryLabel: subcategories.label,
+      })
+      .from(categoryKeywords)
+      .leftJoin(categories, eq(categoryKeywords.categoryKey, categories.key))
+      .leftJoin(subcategories, eq(categoryKeywords.subcategoryId, subcategories.id))
+      .where(conditions.length ? and(...conditions) : undefined)
+      .orderBy(asc(categories.displayOrder), asc(subcategories.displayOrder), asc(categoryKeywords.keyword));
+  }
+
+  async createCategoryKeyword(data: InsertCategoryKeyword): Promise<CategoryKeyword> {
+    let resolvedCategoryKey = data.categoryKey ?? null;
+
+    if (data.subcategoryId) {
+      const [subcategory] = await db
+        .select({
+          categoryKey: subcategories.categoryKey,
+        })
+        .from(subcategories)
+        .where(eq(subcategories.id, data.subcategoryId))
+        .limit(1);
+
+      if (subcategory?.categoryKey) {
+        resolvedCategoryKey = subcategory.categoryKey;
+      }
+    }
+
+    const [keyword] = await db
+      .insert(categoryKeywords)
+      .values({
+        categoryKey: resolvedCategoryKey,
+        subcategoryId: data.subcategoryId ?? null,
+        keyword: data.keyword,
+        normalizedKeyword: normalizeSearchText(data.keyword),
+        kind: data.kind ?? "alias",
+      })
+      .returning();
+
+    return keyword;
+  }
+
+  async deleteCategoryKeyword(id: string): Promise<boolean> {
+    const deleted = await db
+      .delete(categoryKeywords)
+      .where(eq(categoryKeywords.id, id))
+      .returning({ id: categoryKeywords.id });
+
+    return deleted.length > 0;
+  }
+
+  async listAppSettings(scope?: string): Promise<AppSetting[]> {
+    if (!scope || scope === "global") {
+      await ensureDefaultGlobalAppSettings();
+    }
+
+    const conditions = scope ? [eq(appSettings.scope, scope)] : [];
+
+    return db
+      .select()
+      .from(appSettings)
+      .where(conditions.length ? and(...conditions) : undefined)
+      .orderBy(asc(appSettings.key));
+  }
+
+  async upsertAppSetting(key: string, data: { valueJson: any; scope?: string; updatedBy?: string | null }): Promise<AppSetting> {
+    const [setting] = await db
+      .insert(appSettings)
+      .values({
+        key,
+        valueJson: data.valueJson,
+        scope: data.scope ?? "global",
+        updatedBy: data.updatedBy ?? null,
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: appSettings.key,
+        set: {
+          valueJson: data.valueJson,
+          scope: data.scope ?? "global",
+          updatedBy: data.updatedBy ?? null,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+
+    return setting;
+  }
+
+  async createSearchLog(data: InsertSearchLog): Promise<SearchLog> {
+    const [log] = await db
+      .insert(searchLogs)
+      .values({
+        userId: data.userId ?? null,
+        queryRaw: data.queryRaw ?? null,
+        queryNormalized: data.queryNormalized ?? (data.queryRaw ? normalizeSearchText(data.queryRaw) : null),
+        category: data.category ?? null,
+        subcategory: data.subcategory ?? null,
+        lat: data.lat ?? null,
+        lng: data.lng ?? null,
+        zone: data.zone ?? null,
+        resultCount: data.resultCount ?? 0,
+        selectedBranchId: data.selectedBranchId ?? null,
+        source: data.source ?? "unknown",
+      })
+      .returning();
+
+    return log;
+  }
+
+  async updateSearchLogSelection(logId: string, selectedBranchId: string): Promise<SearchLog | undefined> {
+    const [updated] = await db
+      .update(searchLogs)
+      .set({ selectedBranchId })
+      .where(eq(searchLogs.id, logId))
+      .returning();
+
+    return updated;
+  }
+
+  async getSearchLogs(limit = 50): Promise<SearchLogRow[]> {
+    return db
+      .select({
+        id: searchLogs.id,
+        userId: searchLogs.userId,
+        queryRaw: searchLogs.queryRaw,
+        queryNormalized: searchLogs.queryNormalized,
+        category: searchLogs.category,
+        subcategory: searchLogs.subcategory,
+        lat: searchLogs.lat,
+        lng: searchLogs.lng,
+        zone: searchLogs.zone,
+        resultCount: searchLogs.resultCount,
+        selectedBranchId: searchLogs.selectedBranchId,
+        source: searchLogs.source,
+        createdAt: searchLogs.createdAt,
+        userEmail: users.email,
+        selectedBranchName: branches.name,
+      })
+      .from(searchLogs)
+      .leftJoin(users, eq(searchLogs.userId, users.id))
+      .leftJoin(branches, eq(searchLogs.selectedBranchId, branches.id))
+      .orderBy(desc(searchLogs.createdAt))
+      .limit(limit);
+  }
+
+  async getSearchMetrics(limit = 10): Promise<SearchMetrics> {
+    const topQueries = await db
+      .select({
+        query: sql<string>`max(coalesce(${searchLogs.queryRaw}, ${searchLogs.queryNormalized}))`.as("query"),
+        total: sql<number>`count(*)::int`.as("total"),
+      })
+      .from(searchLogs)
+      .where(sql`${searchLogs.queryNormalized} is not null and ${searchLogs.queryNormalized} <> ''`)
+      .groupBy(searchLogs.queryNormalized)
+      .orderBy(desc(sql`count(*)::int`))
+      .limit(limit);
+
+    const zeroResultQueries = await db
+      .select({
+        query: sql<string>`max(coalesce(${searchLogs.queryRaw}, ${searchLogs.queryNormalized}))`.as("query"),
+        total: sql<number>`count(*)::int`.as("total"),
+      })
+      .from(searchLogs)
+      .where(and(eq(searchLogs.resultCount, 0), sql`${searchLogs.queryNormalized} is not null and ${searchLogs.queryNormalized} <> ''`))
+      .groupBy(searchLogs.queryNormalized)
+      .orderBy(desc(sql`count(*)::int`))
+      .limit(limit);
+
+    const topCategories = await db
+      .select({
+        category: searchLogs.category,
+        total: sql<number>`count(*)::int`.as("total"),
+      })
+      .from(searchLogs)
+      .where(sql`${searchLogs.category} is not null and ${searchLogs.category} <> ''`)
+      .groupBy(searchLogs.category)
+      .orderBy(desc(sql`count(*)::int`))
+      .limit(limit);
+
+    return {
+      topQueries: topQueries.map((row) => ({
+        query: row.query || "Sin texto",
+        total: Number(row.total) || 0,
+      })),
+      zeroResultQueries: zeroResultQueries.map((row) => ({
+        query: row.query || "Sin texto",
+        total: Number(row.total) || 0,
+      })),
+      topCategories: topCategories.map((row) => ({
+        category: row.category || "Sin categoría",
+        total: Number(row.total) || 0,
+      })),
+    };
+  }
+
+  async getSearchSuggestions(q: string, limit = 10): Promise<SearchSuggestion[]> {
+    const normalizedQuery = normalizeSearchText(q);
+    if (!normalizedQuery || normalizedQuery.length < 2) {
+      return [];
+    }
+
+    const likeQuery = `%${normalizedQuery}%`;
+
+    const [categoryRows, subcategoryRows, keywordRows, branchRows] = await Promise.all([
+      db
+        .select({
+          key: categories.key,
+          label: categories.label,
+        })
+        .from(categories)
+        .where(and(eq(categories.isActive, true), sql`${normalizedSearchSqlSafe(categories.label)} LIKE ${likeQuery}`))
+        .orderBy(asc(categories.displayOrder), asc(categories.label))
+        .limit(limit),
+      db
+        .select({
+          id: subcategories.id,
+          categoryKey: subcategories.categoryKey,
+          label: subcategories.label,
+        })
+        .from(subcategories)
+        .innerJoin(categories, eq(subcategories.categoryKey, categories.key))
+        .where(and(
+          eq(subcategories.isActive, true),
+          eq(categories.isActive, true),
+          sql`${normalizedSearchSqlSafe(subcategories.label)} LIKE ${likeQuery}`,
+        ))
+        .orderBy(asc(categories.displayOrder), asc(subcategories.displayOrder), asc(subcategories.label))
+        .limit(limit),
+      db
+        .select({
+          id: categoryKeywords.id,
+          categoryKey: categoryKeywords.categoryKey,
+          subcategoryId: categoryKeywords.subcategoryId,
+          keyword: categoryKeywords.keyword,
+          normalizedKeyword: categoryKeywords.normalizedKeyword,
+        })
+        .from(categoryKeywords)
+        .where(sql`${categoryKeywords.normalizedKeyword} LIKE ${likeQuery}`)
+        .orderBy(asc(categoryKeywords.keyword))
+        .limit(limit),
+      db
+        .select({
+          id: branches.id,
+          slug: branches.slug,
+          name: branches.name,
+        })
+        .from(branches)
+        .where(and(
+          eq(branches.status, "active"),
+          isNull(branches.deletedAt),
+          sql`${normalizedSearchSqlSafe(branches.name)} LIKE ${likeQuery}`,
+        ))
+        .orderBy(asc(branches.name))
+        .limit(limit),
+    ]);
+
+    const suggestions: SearchSuggestion[] = [
+      ...categoryRows.map((row) => ({
+        type: "category" as const,
+        label: row.label,
+        normalized: normalizeSearchText(row.label),
+        categoryKey: row.key,
+      })),
+      ...subcategoryRows.map((row) => ({
+        type: "subcategory" as const,
+        label: row.label,
+        normalized: normalizeSearchText(row.label),
+        categoryKey: row.categoryKey,
+        subcategoryId: row.id,
+      })),
+      ...keywordRows.map((row) => ({
+        type: "keyword" as const,
+        label: row.keyword,
+        normalized: row.normalizedKeyword,
+        categoryKey: row.categoryKey,
+        subcategoryId: row.subcategoryId,
+      })),
+      ...branchRows.map((row) => ({
+        type: "branch" as const,
+        label: row.name,
+        normalized: normalizeSearchText(row.name),
+        branchId: row.id,
+        branchSlug: row.slug,
+      })),
+    ];
+
+    const deduped = Array.from(
+      new Map(
+        suggestions.map((item) => [`${item.type}:${item.normalized}:${item.branchSlug ?? item.subcategoryId ?? item.categoryKey ?? ""}`, item]),
+      ).values(),
+    );
+
+    return deduped
+      .sort((a, b) => {
+        const aStarts = a.normalized.startsWith(normalizedQuery) ? 0 : 1;
+        const bStarts = b.normalized.startsWith(normalizedQuery) ? 0 : 1;
+        if (aStarts !== bStarts) return aStarts - bStarts;
+        return a.label.localeCompare(b.label, "es");
+      })
+      .slice(0, limit);
   }
 
   async getMembership(userId: string, branchId: string): Promise<Membership | undefined> {
@@ -1920,6 +2588,64 @@ export class DatabaseStorage implements IStorage {
     await db.update(classBookings).set({ lateCancellation: true }).where(eq(classBookings.id, id));
   }
 
+  async createReservationAuditLog(data: InsertReservationAuditLog): Promise<ReservationAuditLog> {
+    const [log] = await db
+      .insert(reservationAuditLogs)
+      .values({
+        bookingId: data.bookingId,
+        branchId: data.branchId,
+        customerUserId: data.customerUserId,
+        actorUserId: data.actorUserId ?? null,
+        actorRole: data.actorRole,
+        action: data.action,
+        reason: data.reason ?? null,
+        source: data.source ?? "system",
+        metadata: data.metadata ?? null,
+      })
+      .returning();
+
+    return log;
+  }
+
+  async getReservationAuditLogs(filters?: { branchId?: string; limit?: number }): Promise<ReservationAuditRow[]> {
+    const conditions: any[] = [];
+    if (filters?.branchId) {
+      conditions.push(eq(reservationAuditLogs.branchId, filters.branchId));
+    }
+
+    const limit = Math.min(Math.max(filters?.limit ?? 100, 1), 500);
+
+    const results = await db
+      .select({
+        id: reservationAuditLogs.id,
+        bookingId: reservationAuditLogs.bookingId,
+        branchId: reservationAuditLogs.branchId,
+        customerUserId: reservationAuditLogs.customerUserId,
+        actorUserId: reservationAuditLogs.actorUserId,
+        actorRole: reservationAuditLogs.actorRole,
+        action: reservationAuditLogs.action,
+        reason: reservationAuditLogs.reason,
+        source: reservationAuditLogs.source,
+        metadata: reservationAuditLogs.metadata,
+        createdAt: reservationAuditLogs.createdAt,
+        customerName: sql<string | null>`(SELECT ${users.name} FROM ${users} WHERE ${users.id} = ${reservationAuditLogs.customerUserId} LIMIT 1)`,
+        customerLastName: sql<string | null>`(SELECT ${users.lastName} FROM ${users} WHERE ${users.id} = ${reservationAuditLogs.customerUserId} LIMIT 1)`,
+        actorName: sql<string | null>`(SELECT ${users.name} FROM ${users} WHERE ${users.id} = ${reservationAuditLogs.actorUserId} LIMIT 1)`,
+        actorEmail: sql<string | null>`(SELECT ${users.email} FROM ${users} WHERE ${users.id} = ${reservationAuditLogs.actorUserId} LIMIT 1)`,
+        className: classSchedules.name,
+        bookingDate: classBookings.bookingDate,
+        bookingStatus: classBookings.status,
+      })
+      .from(reservationAuditLogs)
+      .leftJoin(classBookings, eq(reservationAuditLogs.bookingId, classBookings.id))
+      .leftJoin(classSchedules, eq(classBookings.classScheduleId, classSchedules.id))
+      .where(conditions.length ? and(...conditions) : undefined)
+      .orderBy(desc(reservationAuditLogs.createdAt))
+      .limit(limit);
+
+    return results as ReservationAuditRow[];
+  }
+
   async getBooking(id: string): Promise<ClassBooking | undefined> {
     const [booking] = await db.select().from(classBookings).where(eq(classBookings.id, id));
     return booking;
@@ -2507,7 +3233,7 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(branchAnnouncements.branchId, branchId), eq(branchAnnouncements.isActive, true)));
   }
 
-  async updateBranchProfile(branchId: string, data: { description?: string | null; address?: string | null; city?: string | null; googleMapsUrl?: string | null; operatingHours?: any; locations?: any; category?: string | null; subcategory?: string | null; searchKeywords?: string | null; latitude?: number | null; longitude?: number | null; whatsappNumber?: string | null }): Promise<any> {
+  async updateBranchProfile(branchId: string, data: { description?: string | null; address?: string | null; city?: string | null; googleMapsUrl?: string | null; operatingHours?: any; locations?: any; summaryHours?: string | null; category?: string | null; subcategory?: string | null; searchKeywords?: string | null; latitude?: number | null; longitude?: number | null; whatsappNumber?: string | null }): Promise<any> {
     const setData: any = {};
     if (data.description !== undefined) setData.description = data.description;
     if (data.address !== undefined) setData.address = data.address;
@@ -2515,6 +3241,7 @@ export class DatabaseStorage implements IStorage {
     if (data.googleMapsUrl !== undefined) setData.googleMapsUrl = data.googleMapsUrl;
     if (data.operatingHours !== undefined) setData.operatingHours = data.operatingHours;
     if (data.locations !== undefined) setData.locations = data.locations;
+    if (data.summaryHours !== undefined) setData.summaryHours = data.summaryHours;
     if (data.category !== undefined) setData.category = data.category;
     if (data.subcategory !== undefined) setData.subcategory = data.subcategory;
     if (data.searchKeywords !== undefined) setData.searchKeywords = data.searchKeywords;
@@ -2563,6 +3290,7 @@ export class DatabaseStorage implements IStorage {
     const results = await db
       .select({
         id: branchReviews.id,
+        userId: branchReviews.userId,
         rating: branchReviews.rating,
         comment: branchReviews.comment,
         adminReply: branchReviews.adminReply,
@@ -2624,6 +3352,355 @@ export class DatabaseStorage implements IStorage {
       .values({ branchId, userId, rating, comment: comment || null })
       .returning();
     return inserted[0];
+  }
+
+  async getBranchReviewById(reviewId: string): Promise<BranchReview | undefined> {
+    const [review] = await db.select().from(branchReviews).where(eq(branchReviews.id, reviewId)).limit(1);
+    return review;
+  }
+
+  async updateReviewReply(reviewId: string, adminReply: string | null): Promise<BranchReview | undefined> {
+    const [updated] = await db
+      .update(branchReviews)
+      .set({ adminReply })
+      .where(eq(branchReviews.id, reviewId))
+      .returning();
+    return updated;
+  }
+
+  async updateReviewVisibility(reviewId: string, hidden: boolean, reason?: string | null): Promise<BranchReview | undefined> {
+    const [updated] = await db
+      .update(branchReviews)
+      .set({
+        isHidden: hidden,
+        hiddenReason: hidden ? (reason ?? null) : null,
+      })
+      .where(eq(branchReviews.id, reviewId))
+      .returning();
+    return updated;
+  }
+
+  async createReviewReport(data: InsertReviewReport): Promise<ReviewReport> {
+    const [report] = await db
+      .insert(reviewReports)
+      .values({
+        reviewId: data.reviewId,
+        branchId: data.branchId,
+        reporterUserId: data.reporterUserId ?? null,
+        reportedByRole: data.reportedByRole ?? "CUSTOMER",
+        reason: data.reason,
+        note: data.note ?? null,
+        status: (data.status as any) ?? "pending",
+        reviewedByUserId: data.reviewedByUserId ?? null,
+        resolutionNote: data.resolutionNote ?? null,
+      })
+      .returning();
+    return report;
+  }
+
+  async getReviewReports(filters?: { branchId?: string; status?: string; limit?: number }): Promise<ReviewReportRow[]> {
+    const conditions: any[] = [];
+    if (filters?.branchId) conditions.push(eq(reviewReports.branchId, filters.branchId));
+    if (filters?.status) conditions.push(eq(reviewReports.status, filters.status as any));
+
+    const limit = Math.min(Math.max(filters?.limit ?? 100, 1), 500);
+
+    const rows = await db
+      .select({
+        id: reviewReports.id,
+        reviewId: reviewReports.reviewId,
+        branchId: reviewReports.branchId,
+        reporterUserId: reviewReports.reporterUserId,
+        reportedByRole: reviewReports.reportedByRole,
+        reason: reviewReports.reason,
+        note: reviewReports.note,
+        status: reviewReports.status,
+        createdAt: reviewReports.createdAt,
+        resolvedAt: reviewReports.resolvedAt,
+        reviewedByUserId: reviewReports.reviewedByUserId,
+        resolutionNote: reviewReports.resolutionNote,
+        reviewRating: branchReviews.rating,
+        reviewComment: branchReviews.comment,
+        branchName: branches.name,
+        branchSlug: branches.slug,
+        reporterName: sql<string | null>`(SELECT ${users.name} FROM ${users} WHERE ${users.id} = ${reviewReports.reporterUserId} LIMIT 1)`,
+        reviewerName: sql<string | null>`(SELECT ${users.name} FROM ${users} WHERE ${users.id} = ${reviewReports.reviewedByUserId} LIMIT 1)`,
+        customerName: sql<string | null>`(SELECT ${users.name} FROM ${users} WHERE ${users.id} = ${branchReviews.userId} LIMIT 1)`,
+        customerLastName: sql<string | null>`(SELECT ${users.lastName} FROM ${users} WHERE ${users.id} = ${branchReviews.userId} LIMIT 1)`,
+        isHidden: branchReviews.isHidden,
+        hiddenReason: branchReviews.hiddenReason,
+        adminReply: branchReviews.adminReply,
+      })
+      .from(reviewReports)
+      .innerJoin(branchReviews, eq(reviewReports.reviewId, branchReviews.id))
+      .innerJoin(branches, eq(reviewReports.branchId, branches.id))
+      .where(conditions.length ? and(...conditions) : undefined)
+      .orderBy(desc(reviewReports.createdAt))
+      .limit(limit);
+
+    return rows as ReviewReportRow[];
+  }
+
+  async updateReviewReportStatus(
+    reportId: string,
+    status: string,
+    reviewedByUserId: string,
+    resolutionNote?: string | null,
+  ): Promise<ReviewReport | undefined> {
+    const [updated] = await db
+      .update(reviewReports)
+      .set({
+        status: status as any,
+        reviewedByUserId,
+        resolvedAt: new Date(),
+        resolutionNote: resolutionNote ?? null,
+      })
+      .where(eq(reviewReports.id, reportId))
+      .returning();
+
+    return updated;
+  }
+
+  async createReviewModerationLog(data: InsertReviewModerationLog): Promise<ReviewModerationLog> {
+    const [log] = await db
+      .insert(reviewModerationLogs)
+      .values({
+        reviewId: data.reviewId,
+        action: data.action,
+        actorUserId: data.actorUserId ?? null,
+        reason: data.reason ?? null,
+        metadata: data.metadata ?? null,
+      })
+      .returning();
+
+    return log;
+  }
+
+  async getReviewModerationLogs(limit = 100): Promise<Array<ReviewModerationLog & { branchName?: string | null; reviewComment?: string | null; actorName?: string | null }>> {
+    const rows = await db
+      .select({
+        id: reviewModerationLogs.id,
+        reviewId: reviewModerationLogs.reviewId,
+        action: reviewModerationLogs.action,
+        actorUserId: reviewModerationLogs.actorUserId,
+        reason: reviewModerationLogs.reason,
+        metadata: reviewModerationLogs.metadata,
+        createdAt: reviewModerationLogs.createdAt,
+        branchName: branches.name,
+        reviewComment: branchReviews.comment,
+        actorName: sql<string | null>`(SELECT ${users.name} FROM ${users} WHERE ${users.id} = ${reviewModerationLogs.actorUserId} LIMIT 1)`,
+      })
+      .from(reviewModerationLogs)
+      .innerJoin(branchReviews, eq(reviewModerationLogs.reviewId, branchReviews.id))
+      .innerJoin(branches, eq(branchReviews.branchId, branches.id))
+      .orderBy(desc(reviewModerationLogs.createdAt))
+      .limit(Math.min(Math.max(limit, 1), 500));
+
+    return rows as Array<ReviewModerationLog & { branchName?: string | null; reviewComment?: string | null; actorName?: string | null }>;
+  }
+
+  async getBlockedCustomerUsers(): Promise<User[]> {
+    return db
+      .select()
+      .from(users)
+      .where(and(eq(users.role, "CUSTOMER"), eq(users.isBlocked, true)))
+      .orderBy(desc(users.blockedAt), desc(users.createdAt));
+  }
+
+  async createNotificationJob(data: InsertNotificationJob): Promise<NotificationJob> {
+    const [job] = await db
+      .insert(notificationJobs)
+      .values({
+        type: data.type,
+        branchId: data.branchId ?? null,
+        userId: data.userId ?? null,
+        payload: data.payload ?? null,
+        scheduledFor: data.scheduledFor,
+        status: data.status ?? "pending",
+        attempts: data.attempts ?? 0,
+        lastError: data.lastError ?? null,
+      })
+      .returning();
+    return job;
+  }
+
+  async getNotificationJobs(filters?: { branchId?: string; status?: string; limit?: number }): Promise<NotificationJob[]> {
+    const conditions: any[] = [];
+    if (filters?.branchId) conditions.push(eq(notificationJobs.branchId, filters.branchId));
+    if (filters?.status) conditions.push(eq(notificationJobs.status, filters.status));
+
+    return db
+      .select()
+      .from(notificationJobs)
+      .where(conditions.length ? and(...conditions) : undefined)
+      .orderBy(asc(notificationJobs.scheduledFor), desc(notificationJobs.createdAt))
+      .limit(Math.min(Math.max(filters?.limit ?? 100, 1), 500));
+  }
+
+  async updateNotificationJob(
+    id: string,
+    data: Partial<InsertNotificationJob> & { processedAt?: Date | null; attempts?: number; status?: string; lastError?: string | null },
+  ): Promise<NotificationJob | undefined> {
+    const setData: any = {};
+    if (data.type !== undefined) setData.type = data.type;
+    if (data.branchId !== undefined) setData.branchId = data.branchId;
+    if (data.userId !== undefined) setData.userId = data.userId;
+    if (data.payload !== undefined) setData.payload = data.payload;
+    if (data.scheduledFor !== undefined) setData.scheduledFor = data.scheduledFor;
+    if (data.status !== undefined) setData.status = data.status;
+    if (data.attempts !== undefined) setData.attempts = data.attempts;
+    if (data.lastError !== undefined) setData.lastError = data.lastError;
+    if (data.processedAt !== undefined) setData.processedAt = data.processedAt;
+
+    const [updated] = await db
+      .update(notificationJobs)
+      .set(setData)
+      .where(eq(notificationJobs.id, id))
+      .returning();
+    return updated;
+  }
+
+  async getPlatformMetrics(): Promise<PlatformMetrics> {
+    const [userStatsRows, branchStatsRows, searchStatsRows, reservationStatsRows, activeBranchRows] = await Promise.all([
+      db
+        .select({
+          total: sql<number>`COUNT(*)`,
+        })
+        .from(users)
+        .where(eq(users.role, "CUSTOMER")),
+      db
+        .select({
+          active: sql<number>`COUNT(*)`,
+        })
+        .from(branches)
+        .where(and(eq(branches.status, "active"), isNull(branches.deletedAt))),
+      db
+        .select({
+          total: sql<number>`COUNT(*)`,
+          zeroResults: sql<number>`COUNT(*) FILTER (WHERE ${searchLogs.resultCount} = 0)`,
+        })
+        .from(searchLogs),
+      db
+        .select({
+          action: reservationAuditLogs.action,
+          total: sql<number>`COUNT(*)::int`,
+        })
+        .from(reservationAuditLogs)
+        .groupBy(reservationAuditLogs.action),
+      db
+        .select({
+          branchId: reservationAuditLogs.branchId,
+          branchName: branches.name,
+          totalReservations: sql<number>`COUNT(*) FILTER (WHERE ${reservationAuditLogs.action} = 'created')::int`,
+        })
+        .from(reservationAuditLogs)
+        .innerJoin(branches, eq(reservationAuditLogs.branchId, branches.id))
+        .groupBy(reservationAuditLogs.branchId, branches.name)
+        .orderBy(desc(sql`COUNT(*) FILTER (WHERE ${reservationAuditLogs.action} = 'created')::int`))
+        .limit(5),
+    ]);
+
+    const userStats = userStatsRows[0];
+    const branchStats = branchStatsRows[0];
+    const searchStats = searchStatsRows[0];
+
+    const reservationStats = {
+      created: 0,
+      cancelled: 0,
+      attended: 0,
+      noShow: 0,
+    };
+
+    for (const row of reservationStatsRows) {
+      const total = Number(row.total) || 0;
+      if (row.action === "created") reservationStats.created = total;
+      if (row.action === "cancelled") reservationStats.cancelled = total;
+      if (row.action === "attended") reservationStats.attended = total;
+      if (row.action === "no_show") reservationStats.noShow = total;
+    }
+
+    return {
+      totalAppUsers: Number(userStats?.total) || 0,
+      activeBranches: Number(branchStats?.active) || 0,
+      totalSearches: Number(searchStats?.total) || 0,
+      zeroResultSearches: Number(searchStats?.zeroResults) || 0,
+      reservationStats,
+      mostActiveBranches: activeBranchRows.map((row) => ({
+        branchId: row.branchId,
+        branchName: row.branchName,
+        totalReservations: Number(row.totalReservations) || 0,
+      })),
+    };
+  }
+
+  async getBranchDashboardMetrics(branchId: string): Promise<BranchDashboardMetrics> {
+    const today = getMxLocalDate();
+    const [upcomingRow, reviewRow, promotionRow, auditRows, branchClients] = await Promise.all([
+      db
+        .select({
+          total: sql<number>`COUNT(*)::int`,
+        })
+        .from(classBookings)
+        .where(and(
+          eq(classBookings.branchId, branchId),
+          eq(classBookings.status, "confirmed"),
+          gte(classBookings.bookingDate, today),
+        )),
+      db
+        .select({
+          total: sql<number>`COUNT(*)::int`,
+        })
+        .from(branchReviews)
+        .where(and(
+          eq(branchReviews.branchId, branchId),
+          sql`${branchReviews.createdAt} >= NOW() - INTERVAL '30 days'`,
+        )),
+      db
+        .select({
+          total: sql<number>`COUNT(*)::int`,
+        })
+        .from(promotions)
+        .where(and(
+          eq(promotions.branchId, branchId),
+          eq(promotions.isActive, true),
+        )),
+      db
+        .select({
+          action: reservationAuditLogs.action,
+          total: sql<number>`COUNT(*)::int`,
+        })
+        .from(reservationAuditLogs)
+        .where(eq(reservationAuditLogs.branchId, branchId))
+        .groupBy(reservationAuditLogs.action),
+      this.getBranchClients(branchId),
+    ]);
+
+    let cancelledBookings = 0;
+    let noShowBookings = 0;
+
+    for (const row of auditRows) {
+      const total = Number(row.total) || 0;
+      if (row.action === "cancelled") cancelledBookings = total;
+      if (row.action === "no_show") noShowBookings = total;
+    }
+
+    const activeClients = branchClients.filter((client) => ["activo", "vip"].includes(client.crmClientStatus)).length;
+    const inactiveClients = branchClients.filter((client) => client.crmClientStatus === "inactivo").length;
+    const lowClassesClients = branchClients.filter((client) => {
+      const remaining = client.classesRemaining;
+      return typeof remaining === "number" && remaining > 0 && remaining <= 3;
+    }).length;
+
+    return {
+      upcomingBookings: Number(upcomingRow[0]?.total) || 0,
+      cancelledBookings,
+      noShowBookings,
+      activeClients,
+      inactiveClients,
+      lowClassesClients,
+      activePromotions: Number(promotionRow[0]?.total) || 0,
+      recentReviews: Number(reviewRow[0]?.total) || 0,
+    };
   }
 
   async getCustomerAppOverview(): Promise<{ total: number; active: number; blocked: number; recent: number; pendingReports: number }> {
