@@ -314,6 +314,7 @@ export interface BranchDashboardMetrics {
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
+  getUserByGoogleId(googleId: string): Promise<User | undefined>;
   createUser(user: InsertUser): Promise<User>;
   updateUserPassword(id: string, passwordHash: string): Promise<User | undefined>;
   getAllBranches(includeDeleted?: boolean): Promise<Branch[]>;
@@ -520,6 +521,11 @@ export class DatabaseStorage implements IStorage {
 
   async getUserByEmail(email: string): Promise<User | undefined> {
     const [user] = await db.select().from(users).where(eq(users.email, email));
+    return user;
+  }
+
+  async getUserByGoogleId(googleId: string): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(eq(users.googleId, googleId));
     return user;
   }
 
@@ -1353,12 +1359,31 @@ export class DatabaseStorage implements IStorage {
     return m;
   }
 
-  async updateUser(id: string, data: { name?: string; lastName?: string; email?: string; phone?: string }): Promise<User | undefined> {
+  async updateUser(id: string, data: {
+    name?: string;
+    lastName?: string | null;
+    email?: string;
+    phone?: string | null;
+    birthDate?: string | null;
+    gender?: string | null;
+    avatarUrl?: string | null;
+    googleId?: string | null;
+    authProvider?: string | null;
+    emailVerified?: boolean;
+    emailVerifiedAt?: string | null;
+  }): Promise<User | undefined> {
     const setData: any = {};
     if (data.name !== undefined) setData.name = data.name;
     if (data.lastName !== undefined) setData.lastName = data.lastName;
     if (data.email !== undefined) setData.email = data.email;
     if (data.phone !== undefined) setData.phone = data.phone;
+    if (data.birthDate !== undefined) setData.birthDate = data.birthDate;
+    if (data.gender !== undefined) setData.gender = data.gender;
+    if (data.avatarUrl !== undefined) setData.avatarUrl = data.avatarUrl;
+    if (data.googleId !== undefined) setData.googleId = data.googleId;
+    if (data.authProvider !== undefined) setData.authProvider = data.authProvider;
+    if (data.emailVerified !== undefined) setData.emailVerified = data.emailVerified;
+    if (data.emailVerifiedAt !== undefined) setData.emailVerifiedAt = data.emailVerifiedAt;
     if (Object.keys(setData).length === 0) return this.getUser(id);
     const [user] = await db.update(users).set(setData).where(eq(users.id, id)).returning();
     return user;
@@ -3946,17 +3971,49 @@ export class DatabaseStorage implements IStorage {
       return { deleted: false, reason: "El usuario tiene membresias activas" };
     }
 
-    await db.delete(systemEvents).where(eq(systemEvents.userId, userId));
-    await db.delete(notifications).where(eq(notifications.recipientUserId, userId));
-    await db.delete(pushTokens).where(eq(pushTokens.userId, userId));
-    await db.delete(branchReviews).where(eq(branchReviews.userId, userId));
-    await db.delete(customerReports).where(eq(customerReports.userId, userId));
-    await db.delete(branchCustomerBlocks).where(eq(branchCustomerBlocks.userId, userId));
-    await db.delete(branchClientCrm).where(eq(branchClientCrm.userId, userId));
-    await db.delete(clientNotes).where(eq(clientNotes.userId, userId));
-    await db.delete(memberships).where(eq(memberships.userId, userId));
-    await db.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, userId));
-    await db.delete(users).where(eq(users.id, userId));
+    await db.transaction(async (tx) => {
+      const reviewRows = await tx
+        .select({ id: branchReviews.id })
+        .from(branchReviews)
+        .where(eq(branchReviews.userId, userId));
+
+      const reviewIds = reviewRows.map((row) => row.id);
+
+      if (reviewIds.length > 0) {
+        await tx.delete(reviewModerationLogs).where(inArray(reviewModerationLogs.reviewId, reviewIds));
+        await tx.delete(reviewReports).where(inArray(reviewReports.reviewId, reviewIds));
+      }
+
+      await tx.delete(reviewReports).where(or(
+        eq(reviewReports.reporterUserId, userId),
+        eq(reviewReports.reviewedByUserId, userId),
+      )!);
+      await tx.delete(reviewModerationLogs).where(eq(reviewModerationLogs.actorUserId, userId));
+      await tx.delete(notificationJobs).where(eq(notificationJobs.userId, userId));
+      await tx.delete(searchLogs).where(eq(searchLogs.userId, userId));
+      await tx.delete(auditLogs).where(eq(auditLogs.actorUserId, userId));
+      await tx.delete(systemEvents).where(eq(systemEvents.userId, userId));
+      await tx.delete(notifications).where(eq(notifications.recipientUserId, userId));
+      await tx.delete(pushTokens).where(eq(pushTokens.userId, userId));
+      await tx.delete(branchReviews).where(eq(branchReviews.userId, userId));
+      await tx.delete(customerReports).where(or(
+        eq(customerReports.userId, userId),
+        eq(customerReports.reportedByUserId, userId),
+        eq(customerReports.reviewedByUserId, userId),
+      )!);
+      await tx.delete(branchCustomerBlocks).where(or(
+        eq(branchCustomerBlocks.userId, userId),
+        eq(branchCustomerBlocks.blockedByUserId, userId),
+      )!);
+      await tx.delete(branchClientCrm).where(eq(branchClientCrm.userId, userId));
+      await tx.delete(clientNotes).where(or(
+        eq(clientNotes.userId, userId),
+        eq(clientNotes.createdBy, userId),
+      )!);
+      await tx.delete(memberships).where(eq(memberships.userId, userId));
+      await tx.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, userId));
+      await tx.delete(users).where(eq(users.id, userId));
+    });
 
     return { deleted: true };
   }

@@ -40,6 +40,8 @@ export const users = pgTable("users", {
   phone: text("phone"),
   birthDate: text("birth_date"),
   gender: text("gender"),
+  googleId: text("google_id").unique(),
+  authProvider: text("auth_provider").notNull().default("email"),
   emergencyContactName: text("emergency_contact_name"),
   emergencyContactPhone: text("emergency_contact_phone"),
   medicalNotes: text("medical_notes"),

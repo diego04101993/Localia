@@ -17,7 +17,13 @@ import {
 } from "./notifications";
 import { dispatchPushFromSystemEvent } from "./push";
 import { sendPasswordResetEmail, sendEmailVerificationEmail } from "./email";
-import { setupAuth, requireAuth, requireRole, isImpersonating, getOriginalUserId, CUSTOMER_BLOCKED_MESSAGE } from "./auth";
+import { setupAuth, requireAuth, requireRole, isImpersonating, getOriginalUserId, CUSTOMER_BLOCKED_MESSAGE, applySessionLifetimeForRequest } from "./auth";
+import {
+  GoogleAuthConfigurationError,
+  GoogleAuthTokenError,
+  getConfiguredGoogleAudiences,
+  verifyGoogleMobileIdToken,
+} from "./google-auth";
 import { seedDatabase } from "./seed";
 import {
   loginSchema,
@@ -154,6 +160,22 @@ function normalizeTags(value: unknown): string | null | undefined {
 function normalizeModerationText(value: unknown): string | null {
   const normalized = normalizeOptionalText(value);
   return normalized === undefined ? null : normalized;
+}
+
+function sanitizeUserForResponse(user: any) {
+  const { passwordHash, ...safeUser } = user;
+  return safeUser;
+}
+
+function buildAuthSuccessResponse(user: any, message?: string) {
+  const safeUser = sanitizeUserForResponse(user);
+  return {
+    ...(message ? { message } : {}),
+    success: true,
+    role: safeUser.role,
+    acceptedTerms: !!safeUser.acceptedTerms,
+    user: safeUser,
+  };
 }
 
 function getStringParam(value: string | string[] | undefined): string {
@@ -311,6 +333,10 @@ const updateSuperAdminBranchSchema = z.object({
   searchKeywords: z.string().nullable().optional(),
 });
 
+const googleMobileLoginSchema = z.object({
+  idToken: z.string().min(1, "El idToken es obligatorio"),
+});
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
@@ -360,15 +386,181 @@ export async function registerRoutes(
         return res.status(401).json({ message: info?.message || "Credenciales incorrectas" });
       req.logIn(user, (err) => {
         if (err) return next(err);
+        applySessionLifetimeForRequest(req, user);
+        if (process.env.SESSION_DEBUG_LOGS === "true") {
+          console.log(`[AUTH] Sesión local creada para ${user.email} (${user.role}) :: sid=${req.sessionID}`);
+        }
         const { passwordHash, ...safeUser } = user;
         return res.json(safeUser);
       });
     })(req, res, next);
   });
 
+  app.post("/api/auth/google-mobile", async (req, res, next) => {
+    const result = googleMobileLoginSchema.safeParse(req.body);
+    if (!result.success) {
+      return res.status(400).json({ message: "Datos invÃ¡lidos", errors: result.error.flatten() });
+    }
+
+    if (getConfiguredGoogleAudiences().length === 0) {
+      return res.status(503).json({
+        message: "Google Sign-In no estÃ¡ configurado en el servidor",
+        code: "GOOGLE_AUTH_NOT_CONFIGURED",
+      });
+    }
+
+    try {
+      const identity = await verifyGoogleMobileIdToken(result.data.idToken);
+      const verifiedAt = identity.emailVerified ? new Date().toISOString() : null;
+      let user = await storage.getUserByGoogleId(identity.googleId);
+      let createdNewUser = false;
+
+      if (user) {
+        if (user.role !== "CUSTOMER") {
+          return res.status(403).json({
+            message: "Esta cuenta pertenece a un administrador. Usa el acceso web correspondiente.",
+            code: "WRONG_ROLE",
+          });
+        }
+        if ((user as any).isBlocked) {
+          return res.status(403).json({ message: CUSTOMER_BLOCKED_MESSAGE });
+        }
+
+        const updates: Record<string, any> = {};
+        if (!user.name && (identity.givenName || identity.fullName)) {
+          updates.name = identity.givenName || identity.fullName;
+        }
+        if (!user.lastName && identity.familyName) {
+          updates.lastName = identity.familyName;
+        }
+        if (!user.avatarUrl && identity.avatarUrl) {
+          updates.avatarUrl = identity.avatarUrl;
+        }
+        if (!user.emailVerified && identity.emailVerified) {
+          updates.emailVerified = true;
+          updates.emailVerifiedAt = verifiedAt;
+        }
+        if (user.authProvider !== "google" && user.authProvider !== "email_google") {
+          updates.authProvider = user.authProvider ? "email_google" : "google";
+        }
+
+        if (Object.keys(updates).length > 0) {
+          user = (await storage.updateUser(user.id, updates)) || user;
+        }
+      } else {
+        const existingByEmail = await storage.getUserByEmail(identity.email);
+
+        if (existingByEmail) {
+          if (existingByEmail.role !== "CUSTOMER") {
+            return res.status(403).json({
+              message: "Este correo pertenece a una cuenta de administrador. Usa el acceso web correspondiente.",
+              code: "WRONG_ROLE",
+            });
+          }
+          if ((existingByEmail as any).isBlocked) {
+            return res.status(403).json({ message: CUSTOMER_BLOCKED_MESSAGE });
+          }
+
+          user = (await storage.updateUser(existingByEmail.id, {
+            googleId: identity.googleId,
+            authProvider: existingByEmail.authProvider === "google" ? "google" : "email_google",
+            ...(existingByEmail.name ? {} : { name: identity.givenName || identity.fullName || existingByEmail.name }),
+            ...(existingByEmail.lastName ? {} : { lastName: identity.familyName || existingByEmail.lastName || null }),
+            ...(existingByEmail.avatarUrl ? {} : { avatarUrl: identity.avatarUrl || null }),
+            ...(!existingByEmail.emailVerified && identity.emailVerified
+              ? { emailVerified: true, emailVerifiedAt: verifiedAt }
+              : {}),
+          })) || existingByEmail;
+        } else {
+          const generatedPassword = generateSecurePassword(24);
+          const passwordHash = await bcrypt.hash(generatedPassword, 10);
+          const resolvedName = identity.givenName || identity.fullName || identity.email.split("@")[0] || "Cliente";
+          const createdUser = await storage.createUser({
+            email: identity.email,
+            passwordHash,
+            role: "CUSTOMER",
+            name: resolvedName,
+            lastName: identity.familyName || null,
+            avatarUrl: identity.avatarUrl || null,
+            googleId: identity.googleId,
+            authProvider: "google",
+            emailVerified: identity.emailVerified,
+            emailVerifiedAt: verifiedAt,
+            acceptedTerms: false,
+          } as any);
+
+          user = createdUser;
+          createdNewUser = true;
+
+          await createSystemEventSafe({
+            eventType: "customer_registered",
+            userId: createdUser.id,
+            payload: {
+              source: "google_mobile",
+              activatedExisting: false,
+              provider: "google",
+              audience: identity.audience,
+            },
+          });
+        }
+      }
+
+      if (!user) {
+        return res.status(500).json({ message: "No fue posible iniciar sesiÃ³n con Google" });
+      }
+
+      req.logIn(user, (err) => {
+        if (err) return next(err);
+        applySessionLifetimeForRequest(req, user);
+        if (process.env.SESSION_DEBUG_LOGS === "true") {
+          console.log(`[AUTH] SesiÃ³n Google creada para ${user.email} (${user.role}) :: sid=${req.sessionID}`);
+        }
+        return res.json(buildAuthSuccessResponse(
+          user,
+          createdNewUser ? "Cuenta creada con Google" : "Inicio de sesiÃ³n con Google correcto",
+        ));
+      });
+    } catch (err) {
+      if (err instanceof GoogleAuthConfigurationError) {
+        return res.status(503).json({ message: err.message, code: "GOOGLE_AUTH_NOT_CONFIGURED" });
+      }
+      if (err instanceof GoogleAuthTokenError) {
+        return res.status(401).json({ message: err.message, code: "INVALID_GOOGLE_TOKEN" });
+      }
+      const errorCode = typeof (err as any)?.code === "string" ? (err as any).code : "";
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      if (
+        errorMessage.includes("Failed to retrieve verification certificates") ||
+        ["UNABLE_TO_VERIFY_LEAF_SIGNATURE", "SELF_SIGNED_CERT_IN_CHAIN", "ENOTFOUND", "ECONNRESET", "EAI_AGAIN"].includes(errorCode)
+      ) {
+        return res.status(503).json({
+          message: "Google Sign-In no pudo validarse en este momento. Intenta de nuevo más tarde.",
+          code: "GOOGLE_AUTH_TEMPORARILY_UNAVAILABLE",
+        });
+      }
+      if (
+        errorMessage.toLowerCase().includes("wrong number of segments") ||
+        errorMessage.toLowerCase().includes("invalid token") ||
+        errorMessage.toLowerCase().includes("jwt") ||
+        errorMessage.toLowerCase().includes("token used too late") ||
+        errorMessage.toLowerCase().includes("token used too early")
+      ) {
+        return res.status(401).json({
+          message: "No fue posible validar el token de Google",
+          code: "INVALID_GOOGLE_TOKEN",
+        });
+      }
+      next(err);
+    }
+  });
+
   app.post("/api/auth/logout", (req, res) => {
+    const actor = req.user as any;
     req.logout((err) => {
       if (err) return res.status(500).json({ message: "Error al cerrar sesión" });
+      if (process.env.SESSION_DEBUG_LOGS === "true" && actor?.email) {
+        console.log(`[AUTH] Sesión cerrada para ${actor.email} :: sid=${req.sessionID}`);
+      }
       res.json({ message: "Sesión cerrada" });
     });
   });
@@ -429,6 +621,7 @@ export async function registerRoutes(
         });
         req.logIn(updated!, (err) => {
           if (err) return next(err);
+          applySessionLifetimeForRequest(req, updated!);
           const { passwordHash: _ph, ...safeUser } = updated as any;
           return res.json({ message: "Cuenta activada correctamente", user: safeUser });
         });
@@ -474,6 +667,7 @@ export async function registerRoutes(
 
       req.logIn(freshUser!, (err) => {
         if (err) return next(err);
+        applySessionLifetimeForRequest(req, freshUser!);
         const { passwordHash: _ph, ...safeUser } = freshUser as any;
         return res.status(201).json({ message: "Cuenta creada correctamente", user: safeUser });
       });
@@ -808,14 +1002,22 @@ export async function registerRoutes(
       return res.status(403).json({ message: CUSTOMER_BLOCKED_MESSAGE });
     }
     try {
-      const { name, lastName, phone } = req.body;
+      const { name, lastName, phone, birthDate, gender } = req.body;
       if (name !== undefined && (typeof name !== "string" || name.trim().length === 0)) {
         return res.status(400).json({ message: "Nombre inválido" });
+      }
+      if (birthDate !== undefined && birthDate !== null && typeof birthDate !== "string") {
+        return res.status(400).json({ message: "Fecha de nacimiento inválida" });
+      }
+      if (gender !== undefined && gender !== null && !["M", "F", "NE"].includes(String(gender))) {
+        return res.status(400).json({ message: "Género inválido" });
       }
       const updated = await storage.updateUser(actor.id, {
         name: name?.trim(),
         lastName: lastName?.trim() ?? undefined,
         phone: phone?.trim() ?? undefined,
+        birthDate: normalizeOptionalText(birthDate),
+        gender: normalizeOptionalText(gender),
       });
       const { passwordHash, ...safeUser } = updated as any;
       res.json(safeUser);
@@ -1866,6 +2068,7 @@ export async function registerRoutes(
       await new Promise<void>((resolve, reject) => {
         req.logIn(targetAdmin, (err) => {
           if (err) return reject(err);
+          applySessionLifetimeForRequest(req, targetAdmin);
           resolve();
         });
       });
@@ -1920,6 +2123,7 @@ export async function registerRoutes(
     await new Promise<void>((resolve, reject) => {
       req.logIn(originalUser, (err) => {
         if (err) return reject(err);
+        applySessionLifetimeForRequest(req, originalUser);
         resolve();
       });
     });
@@ -3502,6 +3706,8 @@ export async function registerRoutes(
     }
   });
 
+  /* Legacy duplicate route disabled. The canonical /api/branch/bookings/:id/status
+     handler is the earlier implementation backed by handleBranchBookingStatusChange.
   app.patch("/api/branch/bookings/:id/status", requireBranchAdmin, async (req, res) => {
     const actor = req.user as any;
     const bookingId = req.params.id as string;
@@ -3607,6 +3813,8 @@ export async function registerRoutes(
       res.status(500).json({ message: "Error al actualizar reserva" });
     }
   });
+
+  */
 
   // --- Branch Content Management ---
 
@@ -5031,10 +5239,13 @@ export async function registerRoutes(
     return res.json({ message: "No membership to update" });
   });
 
-  try {
-    await seedDatabase();
-  } catch (e) {
-    console.error("Seed error:", e);
+  const shouldRunSeed = process.env.RUN_SEED === "true" || process.env.NODE_ENV !== "production";
+  if (shouldRunSeed) {
+    try {
+      await seedDatabase();
+    } catch (e) {
+      console.error("Seed error:", e);
+    }
   }
 
   // Branch info endpoint (includes whatsappNumber)

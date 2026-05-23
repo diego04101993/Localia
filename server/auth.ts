@@ -9,35 +9,124 @@ import { pool } from "./db";
 
 const PgSession = connectPgSimple(session);
 export const CUSTOMER_BLOCKED_MESSAGE = "Tu cuenta ha sido bloqueada. Contacta a soporte.";
+const DEFAULT_CUSTOMER_SESSION_MAX_AGE_DAYS = 365;
+const DEFAULT_ADMIN_SESSION_MAX_AGE_DAYS = 30;
+const MAX_ALLOWED_SESSION_DAYS = 365;
+const ADMIN_ROLES = new Set(["SUPER_ADMIN", "BRANCH_ADMIN"]);
+
+const sessionTimingConfig = {
+  customerMaxAgeMs: DEFAULT_CUSTOMER_SESSION_MAX_AGE_DAYS * 24 * 60 * 60 * 1000,
+  adminMaxAgeMs: DEFAULT_ADMIN_SESSION_MAX_AGE_DAYS * 24 * 60 * 60 * 1000,
+};
 
 function isBlockedCustomer(user: any): boolean {
   return user?.role === "CUSTOMER" && !!user?.isBlocked;
 }
 
+function resolveSessionMaxAgeDays(): number {
+  const rawValue = Number.parseInt(process.env.SESSION_MAX_AGE_DAYS || "", 10);
+  if (!Number.isFinite(rawValue) || rawValue <= 0) {
+    return DEFAULT_CUSTOMER_SESSION_MAX_AGE_DAYS;
+  }
+  return Math.min(rawValue, MAX_ALLOWED_SESSION_DAYS);
+}
+
+function resolveAdminSessionMaxAgeDays(customerMaxAgeDays: number): number {
+  const rawValue = Number.parseInt(process.env.ADMIN_SESSION_MAX_AGE_DAYS || "", 10);
+  if (!Number.isFinite(rawValue) || rawValue <= 0) {
+    return Math.min(DEFAULT_ADMIN_SESSION_MAX_AGE_DAYS, customerMaxAgeDays);
+  }
+  return Math.min(Math.max(rawValue, 1), customerMaxAgeDays, MAX_ALLOWED_SESSION_DAYS);
+}
+
+function shouldLogSessionDebug(): boolean {
+  return process.env.SESSION_DEBUG_LOGS === "true";
+}
+
+function authDebugLog(message: string) {
+  if (!shouldLogSessionDebug()) return;
+  console.log(`[AUTH] ${message}`);
+}
+
+function resolveSessionMaxAgeMsForRole(role?: string | null, impersonating = false): number {
+  if (impersonating || (role && ADMIN_ROLES.has(role))) {
+    return sessionTimingConfig.adminMaxAgeMs;
+  }
+  return sessionTimingConfig.customerMaxAgeMs;
+}
+
+export function applySessionLifetimeForRequest(req: Request, user?: { role?: string | null } | null) {
+  const sess = req.session as any;
+  if (!sess?.cookie) return;
+
+  const effectiveUser = user ?? ((req.user as any) || null);
+  const impersonating = !!(sess.impersonating && sess.originalUserId);
+  const targetMaxAgeMs = resolveSessionMaxAgeMsForRole(effectiveUser?.role, impersonating);
+
+  if (sess.cookie.maxAge !== targetMaxAgeMs) {
+    sess.cookie.maxAge = targetMaxAgeMs;
+  }
+}
+
 export function setupAuth(app: Express) {
+  const isProduction = process.env.NODE_ENV === "production";
+  const sessionSecret = process.env.SESSION_SECRET?.trim();
+  const customerSessionMaxAgeDays = resolveSessionMaxAgeDays();
+  const adminSessionMaxAgeDays = resolveAdminSessionMaxAgeDays(customerSessionMaxAgeDays);
+  const customerSessionMaxAgeMs = customerSessionMaxAgeDays * 24 * 60 * 60 * 1000;
+  const adminSessionMaxAgeMs = adminSessionMaxAgeDays * 24 * 60 * 60 * 1000;
+  const sessionTtlSeconds = Math.floor(Math.max(customerSessionMaxAgeMs, adminSessionMaxAgeMs) / 1000);
+  const cookieDomain = process.env.SESSION_COOKIE_DOMAIN?.trim();
+
+  sessionTimingConfig.customerMaxAgeMs = customerSessionMaxAgeMs;
+  sessionTimingConfig.adminMaxAgeMs = adminSessionMaxAgeMs;
+
+  if (isProduction && !sessionSecret) {
+    throw new Error("SESSION_SECRET es obligatorio en produccion");
+  }
+
+  if (isProduction) {
+    app.set("trust proxy", 1);
+  }
+
   const sessionStore = new PgSession({
     pool: pool as any,
     tableName: "session",
     createTableIfMissing: true,
+    ttl: sessionTtlSeconds,
+    pruneSessionInterval: 60 * 60,
   });
+
+  authDebugLog(
+    `Session store configurado: customer=${customerSessionMaxAgeDays} dias, admin=${adminSessionMaxAgeDays} dias, rolling=true, secure=${isProduction}, sameSite=lax, domain=${cookieDomain || "(default)"}`,
+  );
 
   app.use(
     session({
       store: sessionStore,
-      secret: process.env.SESSION_SECRET || "box-manager-secret-key",
+      secret: sessionSecret || "box-manager-secret-key",
       resave: false,
       saveUninitialized: false,
+      rolling: true,
+      proxy: isProduction,
       cookie: {
-        maxAge: 7 * 24 * 60 * 60 * 1000,
+        maxAge: customerSessionMaxAgeMs,
         httpOnly: true,
-        secure: false,
+        secure: isProduction,
         sameSite: "lax",
+        ...(cookieDomain ? { domain: cookieDomain } : {}),
       },
-    })
+    }),
   );
 
   app.use(passport.initialize());
   app.use(passport.session());
+  app.use((req, _res, next) => {
+    if (req.session && (req.isAuthenticated?.() || (req.session as any)?.impersonating)) {
+      applySessionLifetimeForRequest(req);
+    }
+    next();
+  });
 
   passport.use(
     new LocalStrategy(
@@ -51,12 +140,13 @@ export function setupAuth(app: Express) {
           if (isBlockedCustomer(user)) {
             return done(null, false, { message: CUSTOMER_BLOCKED_MESSAGE });
           }
+          authDebugLog(`Autenticacion local exitosa para ${user.email} (${user.role})`);
           return done(null, user);
         } catch (err) {
           return done(err);
         }
-      }
-    )
+      },
+    ),
   );
 
   passport.serializeUser((user: any, done) => {
@@ -66,6 +156,9 @@ export function setupAuth(app: Express) {
   passport.deserializeUser(async (id: string, done) => {
     try {
       const user = await storage.getUser(id);
+      if (!user) {
+        authDebugLog(`Sesion sin usuario asociado o expirada para id=${id}`);
+      }
       done(null, user || null);
     } catch (err) {
       done(err);
@@ -75,6 +168,7 @@ export function setupAuth(app: Express) {
 
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
   if (!req.isAuthenticated()) {
+    authDebugLog(`Sesion no encontrada para ${req.method} ${req.path}`);
     return res.status(401).json({ message: "No autenticado" });
   }
   const user = req.user as any;
@@ -87,6 +181,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
 export function requireRole(...roles: string[]) {
   return (req: Request, res: Response, next: NextFunction) => {
     if (!req.isAuthenticated()) {
+      authDebugLog(`Sesion no encontrada para ${req.method} ${req.path}`);
       return res.status(401).json({ message: "No autenticado" });
     }
     const user = req.user as any;

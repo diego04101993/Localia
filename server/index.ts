@@ -34,9 +34,28 @@ export function log(message: string, source = "express") {
   console.log(`${formattedTime} [${source}] ${message}`);
 }
 
+function summarizeApiResponseForLogs(body: unknown, statusCode: number, isProduction: boolean): string | null {
+  if (!body || typeof body !== "object") {
+    return null;
+  }
+
+  const responseBody = body as Record<string, unknown>;
+  const message = typeof responseBody.message === "string" ? responseBody.message : null;
+
+  if (isProduction) {
+    if (statusCode >= 400 && message) {
+      return `message=${JSON.stringify(message)}`;
+    }
+    return null;
+  }
+
+  return JSON.stringify(responseBody);
+}
+
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
+  const isProduction = process.env.NODE_ENV === "production";
   let capturedJsonResponse: Record<string, any> | undefined = undefined;
 
   const originalResJson = res.json;
@@ -49,8 +68,9 @@ app.use((req, res, next) => {
     const duration = Date.now() - start;
     if (path.startsWith("/api")) {
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+      const responseSummary = summarizeApiResponseForLogs(capturedJsonResponse, res.statusCode, isProduction);
+      if (responseSummary) {
+        logLine += ` :: ${responseSummary}`;
       }
 
       log(logLine);

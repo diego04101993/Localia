@@ -7,5 +7,6 @@ vite.config.ts.*
 .env
 uploads/
 webcool-137ba-firebase-adminsdk-fbsvc-9752d42b3d.json
+codex-*.log
 !package.json
 !package-lock.json
