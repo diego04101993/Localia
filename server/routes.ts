@@ -54,6 +54,8 @@ import {
   updateReviewReplySchema,
   updateReviewReportStatusSchema,
   updateReviewVisibilitySchema,
+  createBranchFinanceEntrySchema,
+  updateBranchFinanceEntrySchema,
 } from "@shared/schema";
 import { z } from "zod";
 import { normalizeSearchText } from "./search-utils";
@@ -183,6 +185,21 @@ function getStringParam(value: string | string[] | undefined): string {
     return value[0] ?? "";
   }
   return value ?? "";
+}
+
+function parseDateQueryValue(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ? trimmed : undefined;
+}
+
+function escapeCsvValue(value: string | number | null | undefined): string {
+  if (value === null || value === undefined) return "";
+  const stringValue = String(value);
+  if (stringValue.includes(",") || stringValue.includes('"') || stringValue.includes("\n")) {
+    return `"${stringValue.replace(/"/g, '""')}"`;
+  }
+  return stringValue;
 }
 
 function inferSearchSource(req: Request): "web" | "mobile" | "unknown" {
@@ -2324,6 +2341,208 @@ export async function registerRoutes(
     if (!user.branchId) return res.status(400).json({ message: "No hay sucursal asignada" });
     next();
   }
+
+  app.get("/api/branch/finance/summary", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    try {
+      const from = parseDateQueryValue(req.query.from);
+      const to = parseDateQueryValue(req.query.to);
+      const summary = await storage.getBranchFinanceSummary(user.branchId, { from, to });
+      res.json(summary);
+    } catch (err: any) {
+      console.error("[BRANCH_FINANCE_SUMMARY]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener el resumen de caja" });
+    }
+  });
+
+  app.get("/api/branch/finance/entries", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    try {
+      const from = parseDateQueryValue(req.query.from);
+      const to = parseDateQueryValue(req.query.to);
+      const type = typeof req.query.type === "string" && ["income", "expense"].includes(req.query.type) ? req.query.type : undefined;
+      const category = typeof req.query.category === "string" ? req.query.category.trim() || undefined : undefined;
+      const clientId = typeof req.query.clientId === "string" ? req.query.clientId.trim() || undefined : undefined;
+      const q = typeof req.query.q === "string" ? req.query.q.trim() || undefined : undefined;
+      const page = Math.max(parseInt(String(req.query.page || "1"), 10) || 1, 1);
+      const limit = Math.min(Math.max(parseInt(String(req.query.limit || "50"), 10) || 50, 1), 200);
+
+      const entries = await storage.getBranchFinanceEntries(user.branchId, {
+        from,
+        to,
+        type,
+        category,
+        clientId,
+        q,
+        page,
+        limit,
+      });
+      res.json(entries);
+    } catch (err: any) {
+      console.error("[BRANCH_FINANCE_ENTRIES]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener movimientos de caja" });
+    }
+  });
+
+  app.post("/api/branch/finance/entries", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    const parsed = createBranchFinanceEntrySchema.safeParse(req.body);
+
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const data = parsed.data;
+      let clientUserId = normalizeOptionalText(data.clientUserId) ?? null;
+      let clientName = normalizeOptionalText(data.clientName) ?? null;
+
+      if (clientUserId) {
+        const clientProfile = await storage.getClientProfile(clientUserId, user.branchId);
+        if (!clientProfile) {
+          return res.status(400).json({ message: "Cliente no encontrado en esta sucursal" });
+        }
+        clientName = null;
+      }
+
+      const created = await storage.createBranchFinanceEntry({
+        branchId: user.branchId,
+        type: data.type,
+        category: normalizeOptionalText(data.category) ?? null,
+        concept: data.concept.trim(),
+        amount: data.amount.toFixed(2),
+        paymentMethod: normalizeOptionalText(data.paymentMethod) ?? null,
+        clientUserId,
+        clientName,
+        notes: normalizeOptionalText(data.notes) ?? null,
+        entryDate: data.entryDate,
+        source: normalizeOptionalText(data.source) ?? null,
+        sourceId: normalizeOptionalText(data.sourceId) ?? null,
+        metadata: data.metadata ?? null,
+        createdBy: user.id,
+      } as any);
+
+      await storage.createAuditLog({
+        actorUserId: user.id,
+        action: "CREATE_FINANCE_ENTRY",
+        branchId: user.branchId,
+        metadata: { entryId: created.id, type: created.type, amount: created.amount, entryDate: created.entryDate },
+      });
+
+      res.status(201).json(created);
+    } catch (err: any) {
+      console.error("[BRANCH_FINANCE_CREATE]", err.stack || err);
+      res.status(500).json({ message: "Error al crear movimiento de caja" });
+    }
+  });
+
+  app.patch("/api/branch/finance/entries/:id", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    const entryId = getStringParam(req.params.id);
+    const parsed = updateBranchFinanceEntrySchema.safeParse(req.body);
+
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const data = parsed.data;
+      let clientUserId = data.clientUserId === undefined ? undefined : (normalizeOptionalText(data.clientUserId) ?? null);
+      let clientName = data.clientName === undefined ? undefined : (normalizeOptionalText(data.clientName) ?? null);
+
+      if (clientUserId) {
+        const clientProfile = await storage.getClientProfile(clientUserId, user.branchId);
+        if (!clientProfile) {
+          return res.status(400).json({ message: "Cliente no encontrado en esta sucursal" });
+        }
+        clientName = null;
+      }
+
+      const updated = await storage.updateBranchFinanceEntry(user.branchId, entryId, {
+        ...(data.type !== undefined ? { type: data.type } : {}),
+        ...(data.category !== undefined ? { category: normalizeOptionalText(data.category) ?? null } : {}),
+        ...(data.concept !== undefined ? { concept: data.concept.trim() } : {}),
+        ...(data.amount !== undefined ? { amount: data.amount.toFixed(2) } : {}),
+        ...(data.paymentMethod !== undefined ? { paymentMethod: normalizeOptionalText(data.paymentMethod) ?? null } : {}),
+        ...(data.clientUserId !== undefined ? { clientUserId } : {}),
+        ...(data.clientName !== undefined ? { clientName } : {}),
+        ...(data.notes !== undefined ? { notes: normalizeOptionalText(data.notes) ?? null } : {}),
+        ...(data.entryDate !== undefined ? { entryDate: data.entryDate } : {}),
+        ...(data.source !== undefined ? { source: normalizeOptionalText(data.source) ?? null } : {}),
+        ...(data.sourceId !== undefined ? { sourceId: normalizeOptionalText(data.sourceId) ?? null } : {}),
+        ...(data.metadata !== undefined ? { metadata: data.metadata ?? null } : {}),
+      } as any);
+
+      if (!updated) {
+        return res.status(404).json({ message: "Movimiento no encontrado" });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: user.id,
+        action: "UPDATE_FINANCE_ENTRY",
+        branchId: user.branchId,
+        metadata: { entryId: updated.id, type: updated.type, amount: updated.amount, entryDate: updated.entryDate },
+      });
+
+      res.json(updated);
+    } catch (err: any) {
+      console.error("[BRANCH_FINANCE_UPDATE]", err.stack || err);
+      res.status(500).json({ message: "Error al actualizar movimiento de caja" });
+    }
+  });
+
+  app.delete("/api/branch/finance/entries/:id", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    try {
+      const deleted = await storage.softDeleteBranchFinanceEntry(user.branchId, getStringParam(req.params.id));
+      if (!deleted) {
+        return res.status(404).json({ message: "Movimiento no encontrado" });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: user.id,
+        action: "DELETE_FINANCE_ENTRY",
+        branchId: user.branchId,
+        metadata: { entryId: getStringParam(req.params.id) },
+      });
+
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("[BRANCH_FINANCE_DELETE]", err.stack || err);
+      res.status(500).json({ message: "Error al eliminar movimiento de caja" });
+    }
+  });
+
+  app.get("/api/branch/finance/export.csv", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    try {
+      const from = parseDateQueryValue(req.query.from);
+      const to = parseDateQueryValue(req.query.to);
+      const type = typeof req.query.type === "string" && ["income", "expense"].includes(req.query.type) ? req.query.type : undefined;
+      const entries = await storage.listBranchFinanceEntriesForExport(user.branchId, { from, to, type });
+
+      const header = "fecha,tipo,categoria,concepto,cliente,correo_cliente,metodo_pago,monto,notas";
+      const rows = entries.map((entry) => [
+        escapeCsvValue(entry.entryDate),
+        escapeCsvValue(entry.type === "income" ? "Ingreso" : "Gasto"),
+        escapeCsvValue(entry.category),
+        escapeCsvValue(entry.concept),
+        escapeCsvValue(entry.clientDisplayName),
+        escapeCsvValue(entry.clientEmail),
+        escapeCsvValue(entry.paymentMethod),
+        escapeCsvValue(entry.amount.toFixed(2)),
+        escapeCsvValue(entry.notes),
+      ].join(","));
+
+      const csv = [header, ...rows].join("\n");
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", "attachment; filename=caja.csv");
+      res.send(csv);
+    } catch (err: any) {
+      console.error("[BRANCH_FINANCE_EXPORT]", err.stack || err);
+      res.status(500).json({ message: "Error al exportar movimientos de caja" });
+    }
+  });
 
   app.get("/api/branch/clients", requireBranchAdmin, async (req, res) => {
     const user = req.user as any;

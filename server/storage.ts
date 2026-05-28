@@ -1,4 +1,4 @@
-import { eq, and, sql, or, ne, isNull, count, desc, asc, gte, inArray } from "drizzle-orm";
+import { eq, and, sql, or, ne, isNull, count, desc, asc, gte, inArray, lte } from "drizzle-orm";
 import { db } from "./db";
 import {
   users,
@@ -81,6 +81,9 @@ import {
   notificationJobs,
   type NotificationJob,
   type InsertNotificationJob,
+  branchFinanceEntries,
+  type BranchFinanceEntry,
+  type InsertBranchFinanceEntry,
   type ReservationAuditLog,
   type InsertReservationAuditLog,
   passwordResetTokens,
@@ -122,6 +125,19 @@ function getMxLocalDateAndTime(): { today: string; currentTime: string } {
   const timeStr = now.toLocaleTimeString("en-GB", { timeZone: BRANCH_TIMEZONE, hour12: false });
   const currentTime = timeStr.substring(0, 5);
   return { today, currentTime };
+}
+
+function getCurrentMonthRange() {
+  const today = getMxLocalDate();
+  return {
+    from: `${today.slice(0, 7)}-01`,
+    to: today,
+  };
+}
+
+function toFinanceAmount(value: unknown): number {
+  const amount = Number(value);
+  return Number.isFinite(amount) ? amount : 0;
 }
 
 function normalizedSearchSql(column: any) {
@@ -311,6 +327,49 @@ export interface BranchDashboardMetrics {
   recentReviews: number;
 }
 
+export interface BranchFinanceEntryRow {
+  id: string;
+  branchId: string;
+  type: "income" | "expense";
+  category: string | null;
+  concept: string;
+  amount: number;
+  paymentMethod: string | null;
+  clientUserId: string | null;
+  clientName: string | null;
+  clientDisplayName: string | null;
+  clientEmail: string | null;
+  notes: string | null;
+  entryDate: string;
+  source: string | null;
+  sourceId: string | null;
+  metadata: any;
+  createdBy: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}
+
+export interface BranchFinanceSummary {
+  totalIncome: number;
+  totalExpense: number;
+  netProfit: number;
+  todayIncome: number;
+  todayExpense: number;
+  monthIncome: number;
+  monthExpense: number;
+  dailyBreakdown: Array<{ date: string; income: number; expense: number; net: number }>;
+  topIncomeCategories: Array<{ category: string; total: number }>;
+  topExpenseCategories: Array<{ category: string; total: number }>;
+}
+
+export interface BranchFinanceEntriesResult {
+  items: BranchFinanceEntryRow[];
+  total: number;
+  page: number;
+  limit: number;
+  pageCount: number;
+}
+
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
@@ -362,6 +421,25 @@ export interface IStorage {
   getSearchMetrics(limit?: number): Promise<SearchMetrics>;
   getSearchSuggestions(q: string, limit?: number): Promise<SearchSuggestion[]>;
   updateSearchLogSelection(logId: string, selectedBranchId: string): Promise<SearchLog | undefined>;
+  getBranchFinanceSummary(branchId: string, filters?: { from?: string; to?: string }): Promise<BranchFinanceSummary>;
+  getBranchFinanceEntries(branchId: string, filters?: {
+    from?: string;
+    to?: string;
+    type?: string;
+    category?: string;
+    clientId?: string;
+    q?: string;
+    page?: number;
+    limit?: number;
+  }): Promise<BranchFinanceEntriesResult>;
+  listBranchFinanceEntriesForExport(branchId: string, filters?: {
+    from?: string;
+    to?: string;
+    type?: string;
+  }): Promise<BranchFinanceEntryRow[]>;
+  createBranchFinanceEntry(data: InsertBranchFinanceEntry): Promise<BranchFinanceEntryRow>;
+  updateBranchFinanceEntry(branchId: string, entryId: string, data: Partial<InsertBranchFinanceEntry>): Promise<BranchFinanceEntryRow | undefined>;
+  softDeleteBranchFinanceEntry(branchId: string, entryId: string): Promise<boolean>;
   updateUser(id: string, data: { name?: string; lastName?: string; email?: string; phone?: string }): Promise<User | undefined>;
   acceptTerms(id: string, version: string): Promise<User | undefined>;
   activateCustomerAccount(id: string, data: { passwordHash: string; name?: string; lastName?: string; phone?: string; birthDate?: string; gender?: string; termsVersion: string }): Promise<User | undefined>;
@@ -3726,6 +3804,405 @@ export class DatabaseStorage implements IStorage {
       activePromotions: Number(promotionRow[0]?.total) || 0,
       recentReviews: Number(reviewRow[0]?.total) || 0,
     };
+  }
+
+  private mapBranchFinanceEntryRow(row: any): BranchFinanceEntryRow {
+    const linkedFullName = [row.linkedClientName, row.linkedClientLastName].filter(Boolean).join(" ").trim();
+    return {
+      id: row.id,
+      branchId: row.branchId,
+      type: row.type,
+      category: row.category ?? null,
+      concept: row.concept,
+      amount: toFinanceAmount(row.amount),
+      paymentMethod: row.paymentMethod ?? null,
+      clientUserId: row.clientUserId ?? null,
+      clientName: row.clientName ?? null,
+      clientDisplayName: linkedFullName || row.clientName || null,
+      clientEmail: row.linkedClientEmail ?? null,
+      notes: row.notes ?? null,
+      entryDate: row.entryDate,
+      source: row.source ?? null,
+      sourceId: row.sourceId ?? null,
+      metadata: row.metadata ?? null,
+      createdBy: row.createdBy ?? null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  }
+
+  private async getBranchFinanceEntryById(branchId: string, entryId: string): Promise<BranchFinanceEntryRow | undefined> {
+    const [row] = await db
+      .select({
+        id: branchFinanceEntries.id,
+        branchId: branchFinanceEntries.branchId,
+        type: branchFinanceEntries.type,
+        category: branchFinanceEntries.category,
+        concept: branchFinanceEntries.concept,
+        amount: branchFinanceEntries.amount,
+        paymentMethod: branchFinanceEntries.paymentMethod,
+        clientUserId: branchFinanceEntries.clientUserId,
+        clientName: branchFinanceEntries.clientName,
+        notes: branchFinanceEntries.notes,
+        entryDate: branchFinanceEntries.entryDate,
+        source: branchFinanceEntries.source,
+        sourceId: branchFinanceEntries.sourceId,
+        metadata: branchFinanceEntries.metadata,
+        createdBy: branchFinanceEntries.createdBy,
+        createdAt: branchFinanceEntries.createdAt,
+        updatedAt: branchFinanceEntries.updatedAt,
+        linkedClientName: users.name,
+        linkedClientLastName: users.lastName,
+        linkedClientEmail: users.email,
+      })
+      .from(branchFinanceEntries)
+      .leftJoin(users, eq(branchFinanceEntries.clientUserId, users.id))
+      .where(and(
+        eq(branchFinanceEntries.branchId, branchId),
+        eq(branchFinanceEntries.id, entryId),
+        isNull(branchFinanceEntries.deletedAt),
+      ))
+      .limit(1);
+
+    return row ? this.mapBranchFinanceEntryRow(row) : undefined;
+  }
+
+  async getBranchFinanceSummary(branchId: string, filters?: { from?: string; to?: string }): Promise<BranchFinanceSummary> {
+    const today = getMxLocalDate();
+    const monthRange = getCurrentMonthRange();
+    const rangeFrom = filters?.from || monthRange.from;
+    const rangeTo = filters?.to || monthRange.to;
+
+    const baseConditions = and(
+      eq(branchFinanceEntries.branchId, branchId),
+      isNull(branchFinanceEntries.deletedAt),
+      gte(branchFinanceEntries.entryDate, rangeFrom),
+      lte(branchFinanceEntries.entryDate, rangeTo),
+    )!;
+
+    const todayConditions = and(
+      eq(branchFinanceEntries.branchId, branchId),
+      isNull(branchFinanceEntries.deletedAt),
+      eq(branchFinanceEntries.entryDate, today),
+    )!;
+
+    const monthConditions = and(
+      eq(branchFinanceEntries.branchId, branchId),
+      isNull(branchFinanceEntries.deletedAt),
+      gte(branchFinanceEntries.entryDate, monthRange.from),
+      lte(branchFinanceEntries.entryDate, monthRange.to),
+    )!;
+
+    const [summaryRows, todayRows, monthRows, dailyRows, topIncomeRows, topExpenseRows] = await Promise.all([
+      db
+        .select({
+          totalIncome: sql<string>`COALESCE(SUM(CASE WHEN ${branchFinanceEntries.type} = 'income' THEN ${branchFinanceEntries.amount} ELSE 0 END), 0)`,
+          totalExpense: sql<string>`COALESCE(SUM(CASE WHEN ${branchFinanceEntries.type} = 'expense' THEN ${branchFinanceEntries.amount} ELSE 0 END), 0)`,
+        })
+        .from(branchFinanceEntries)
+        .where(baseConditions),
+      db
+        .select({
+          totalIncome: sql<string>`COALESCE(SUM(CASE WHEN ${branchFinanceEntries.type} = 'income' THEN ${branchFinanceEntries.amount} ELSE 0 END), 0)`,
+          totalExpense: sql<string>`COALESCE(SUM(CASE WHEN ${branchFinanceEntries.type} = 'expense' THEN ${branchFinanceEntries.amount} ELSE 0 END), 0)`,
+        })
+        .from(branchFinanceEntries)
+        .where(todayConditions),
+      db
+        .select({
+          totalIncome: sql<string>`COALESCE(SUM(CASE WHEN ${branchFinanceEntries.type} = 'income' THEN ${branchFinanceEntries.amount} ELSE 0 END), 0)`,
+          totalExpense: sql<string>`COALESCE(SUM(CASE WHEN ${branchFinanceEntries.type} = 'expense' THEN ${branchFinanceEntries.amount} ELSE 0 END), 0)`,
+        })
+        .from(branchFinanceEntries)
+        .where(monthConditions),
+      db
+        .select({
+          date: sql<string>`${branchFinanceEntries.entryDate}`.as("date"),
+          income: sql<string>`COALESCE(SUM(CASE WHEN ${branchFinanceEntries.type} = 'income' THEN ${branchFinanceEntries.amount} ELSE 0 END), 0)`,
+          expense: sql<string>`COALESCE(SUM(CASE WHEN ${branchFinanceEntries.type} = 'expense' THEN ${branchFinanceEntries.amount} ELSE 0 END), 0)`,
+        })
+        .from(branchFinanceEntries)
+        .where(baseConditions)
+        .groupBy(branchFinanceEntries.entryDate)
+        .orderBy(asc(branchFinanceEntries.entryDate)),
+      db
+        .select({
+          category: sql<string>`COALESCE(NULLIF(${branchFinanceEntries.category}, ''), 'otro')`.as("category"),
+          total: sql<string>`COALESCE(SUM(${branchFinanceEntries.amount}), 0)`,
+        })
+        .from(branchFinanceEntries)
+        .where(and(baseConditions, eq(branchFinanceEntries.type, "income"))!)
+        .groupBy(sql`COALESCE(NULLIF(${branchFinanceEntries.category}, ''), 'otro')`)
+        .orderBy(desc(sql`COALESCE(SUM(${branchFinanceEntries.amount}), 0)`))
+        .limit(5),
+      db
+        .select({
+          category: sql<string>`COALESCE(NULLIF(${branchFinanceEntries.category}, ''), 'otro')`.as("category"),
+          total: sql<string>`COALESCE(SUM(${branchFinanceEntries.amount}), 0)`,
+        })
+        .from(branchFinanceEntries)
+        .where(and(baseConditions, eq(branchFinanceEntries.type, "expense"))!)
+        .groupBy(sql`COALESCE(NULLIF(${branchFinanceEntries.category}, ''), 'otro')`)
+        .orderBy(desc(sql`COALESCE(SUM(${branchFinanceEntries.amount}), 0)`))
+        .limit(5),
+    ]);
+
+    const totalIncome = toFinanceAmount(summaryRows[0]?.totalIncome);
+    const totalExpense = toFinanceAmount(summaryRows[0]?.totalExpense);
+    const todayIncome = toFinanceAmount(todayRows[0]?.totalIncome);
+    const todayExpense = toFinanceAmount(todayRows[0]?.totalExpense);
+    const monthIncome = toFinanceAmount(monthRows[0]?.totalIncome);
+    const monthExpense = toFinanceAmount(monthRows[0]?.totalExpense);
+
+    return {
+      totalIncome,
+      totalExpense,
+      netProfit: totalIncome - totalExpense,
+      todayIncome,
+      todayExpense,
+      monthIncome,
+      monthExpense,
+      dailyBreakdown: dailyRows.map((row) => {
+        const income = toFinanceAmount(row.income);
+        const expense = toFinanceAmount(row.expense);
+        return {
+          date: row.date,
+          income,
+          expense,
+          net: income - expense,
+        };
+      }),
+      topIncomeCategories: topIncomeRows.map((row) => ({
+        category: row.category || "otro",
+        total: toFinanceAmount(row.total),
+      })),
+      topExpenseCategories: topExpenseRows.map((row) => ({
+        category: row.category || "otro",
+        total: toFinanceAmount(row.total),
+      })),
+    };
+  }
+
+  async getBranchFinanceEntries(branchId: string, filters?: {
+    from?: string;
+    to?: string;
+    type?: string;
+    category?: string;
+    clientId?: string;
+    q?: string;
+    page?: number;
+    limit?: number;
+  }): Promise<BranchFinanceEntriesResult> {
+    const page = Math.max(filters?.page || 1, 1);
+    const limit = Math.min(Math.max(filters?.limit || 50, 1), 200);
+    const offset = (page - 1) * limit;
+    const conditions: any[] = [
+      eq(branchFinanceEntries.branchId, branchId),
+      isNull(branchFinanceEntries.deletedAt),
+    ];
+
+    if (filters?.from) {
+      conditions.push(gte(branchFinanceEntries.entryDate, filters.from));
+    }
+    if (filters?.to) {
+      conditions.push(lte(branchFinanceEntries.entryDate, filters.to));
+    }
+    if (filters?.type) {
+      conditions.push(eq(branchFinanceEntries.type, filters.type));
+    }
+    if (filters?.category) {
+      conditions.push(eq(branchFinanceEntries.category, filters.category));
+    }
+    if (filters?.clientId) {
+      conditions.push(eq(branchFinanceEntries.clientUserId, filters.clientId));
+    }
+
+    const normalizedQuery = filters?.q ? normalizeSearchText(filters.q) : "";
+    const linkedClientFullName = sql<string>`concat_ws(' ', ${users.name}, coalesce(${users.lastName}, ''))`;
+
+    if (normalizedQuery) {
+      const likeQuery = `%${normalizedQuery}%`;
+      conditions.push(or(
+        sql`${normalizedSearchSqlSafe(branchFinanceEntries.concept)} LIKE ${likeQuery}`,
+        sql`${normalizedSearchSqlSafe(branchFinanceEntries.category)} LIKE ${likeQuery}`,
+        sql`${normalizedSearchSqlSafe(branchFinanceEntries.clientName)} LIKE ${likeQuery}`,
+        sql`${normalizedSearchSqlSafe(branchFinanceEntries.notes)} LIKE ${likeQuery}`,
+        sql`${normalizedSearchSqlSafe(linkedClientFullName)} LIKE ${likeQuery}`,
+        sql`${normalizedSearchSqlSafe(users.email)} LIKE ${likeQuery}`,
+      )!);
+    }
+
+    const whereClause = and(...conditions)!;
+
+    const [countRows, rows] = await Promise.all([
+      db
+        .select({
+          total: sql<number>`COUNT(*)::int`,
+        })
+        .from(branchFinanceEntries)
+        .leftJoin(users, eq(branchFinanceEntries.clientUserId, users.id))
+        .where(whereClause),
+      db
+        .select({
+          id: branchFinanceEntries.id,
+          branchId: branchFinanceEntries.branchId,
+          type: branchFinanceEntries.type,
+          category: branchFinanceEntries.category,
+          concept: branchFinanceEntries.concept,
+          amount: branchFinanceEntries.amount,
+          paymentMethod: branchFinanceEntries.paymentMethod,
+          clientUserId: branchFinanceEntries.clientUserId,
+          clientName: branchFinanceEntries.clientName,
+          notes: branchFinanceEntries.notes,
+          entryDate: branchFinanceEntries.entryDate,
+          source: branchFinanceEntries.source,
+          sourceId: branchFinanceEntries.sourceId,
+          metadata: branchFinanceEntries.metadata,
+          createdBy: branchFinanceEntries.createdBy,
+          createdAt: branchFinanceEntries.createdAt,
+          updatedAt: branchFinanceEntries.updatedAt,
+          linkedClientName: users.name,
+          linkedClientLastName: users.lastName,
+          linkedClientEmail: users.email,
+        })
+        .from(branchFinanceEntries)
+        .leftJoin(users, eq(branchFinanceEntries.clientUserId, users.id))
+        .where(whereClause)
+        .orderBy(desc(branchFinanceEntries.entryDate), desc(branchFinanceEntries.createdAt))
+        .limit(limit)
+        .offset(offset),
+    ]);
+
+    const total = Number(countRows[0]?.total) || 0;
+    return {
+      items: rows.map((row) => this.mapBranchFinanceEntryRow(row)),
+      total,
+      page,
+      limit,
+      pageCount: total > 0 ? Math.ceil(total / limit) : 1,
+    };
+  }
+
+  async listBranchFinanceEntriesForExport(branchId: string, filters?: {
+    from?: string;
+    to?: string;
+    type?: string;
+  }): Promise<BranchFinanceEntryRow[]> {
+    const conditions: any[] = [
+      eq(branchFinanceEntries.branchId, branchId),
+      isNull(branchFinanceEntries.deletedAt),
+    ];
+
+    if (filters?.from) {
+      conditions.push(gte(branchFinanceEntries.entryDate, filters.from));
+    }
+    if (filters?.to) {
+      conditions.push(lte(branchFinanceEntries.entryDate, filters.to));
+    }
+    if (filters?.type) {
+      conditions.push(eq(branchFinanceEntries.type, filters.type));
+    }
+
+    const rows = await db
+      .select({
+        id: branchFinanceEntries.id,
+        branchId: branchFinanceEntries.branchId,
+        type: branchFinanceEntries.type,
+        category: branchFinanceEntries.category,
+        concept: branchFinanceEntries.concept,
+        amount: branchFinanceEntries.amount,
+        paymentMethod: branchFinanceEntries.paymentMethod,
+        clientUserId: branchFinanceEntries.clientUserId,
+        clientName: branchFinanceEntries.clientName,
+        notes: branchFinanceEntries.notes,
+        entryDate: branchFinanceEntries.entryDate,
+        source: branchFinanceEntries.source,
+        sourceId: branchFinanceEntries.sourceId,
+        metadata: branchFinanceEntries.metadata,
+        createdBy: branchFinanceEntries.createdBy,
+        createdAt: branchFinanceEntries.createdAt,
+        updatedAt: branchFinanceEntries.updatedAt,
+        linkedClientName: users.name,
+        linkedClientLastName: users.lastName,
+        linkedClientEmail: users.email,
+      })
+      .from(branchFinanceEntries)
+      .leftJoin(users, eq(branchFinanceEntries.clientUserId, users.id))
+      .where(and(...conditions))
+      .orderBy(desc(branchFinanceEntries.entryDate), desc(branchFinanceEntries.createdAt));
+
+    return rows.map((row) => this.mapBranchFinanceEntryRow(row));
+  }
+
+  async createBranchFinanceEntry(data: InsertBranchFinanceEntry): Promise<BranchFinanceEntryRow> {
+    const [created] = await db
+      .insert(branchFinanceEntries)
+      .values({
+        ...data,
+        amount: String(data.amount),
+      })
+      .returning({
+        id: branchFinanceEntries.id,
+        branchId: branchFinanceEntries.branchId,
+      });
+
+    return (await this.getBranchFinanceEntryById(created.branchId, created.id))!;
+  }
+
+  async updateBranchFinanceEntry(branchId: string, entryId: string, data: Partial<InsertBranchFinanceEntry>): Promise<BranchFinanceEntryRow | undefined> {
+    const updateData: Record<string, any> = {
+      updatedAt: new Date(),
+    };
+
+    if (data.type !== undefined) updateData.type = data.type;
+    if (data.category !== undefined) updateData.category = data.category;
+    if (data.concept !== undefined) updateData.concept = data.concept;
+    if (data.amount !== undefined) {
+      updateData.amount = String(data.amount);
+    }
+    if (data.paymentMethod !== undefined) updateData.paymentMethod = data.paymentMethod;
+    if (data.clientUserId !== undefined) updateData.clientUserId = data.clientUserId;
+    if (data.clientName !== undefined) updateData.clientName = data.clientName;
+    if (data.notes !== undefined) updateData.notes = data.notes;
+    if (data.entryDate !== undefined) updateData.entryDate = data.entryDate;
+    if (data.source !== undefined) updateData.source = data.source;
+    if (data.sourceId !== undefined) updateData.sourceId = data.sourceId;
+    if (data.metadata !== undefined) updateData.metadata = data.metadata;
+    if (data.createdBy !== undefined) updateData.createdBy = data.createdBy;
+
+    const [updated] = await db
+      .update(branchFinanceEntries)
+      .set(updateData)
+      .where(and(
+        eq(branchFinanceEntries.id, entryId),
+        eq(branchFinanceEntries.branchId, branchId),
+        isNull(branchFinanceEntries.deletedAt),
+      ))
+      .returning({
+        id: branchFinanceEntries.id,
+      });
+
+    if (!updated) return undefined;
+    return this.getBranchFinanceEntryById(branchId, updated.id);
+  }
+
+  async softDeleteBranchFinanceEntry(branchId: string, entryId: string): Promise<boolean> {
+    const [deleted] = await db
+      .update(branchFinanceEntries)
+      .set({
+        deletedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(branchFinanceEntries.id, entryId),
+        eq(branchFinanceEntries.branchId, branchId),
+        isNull(branchFinanceEntries.deletedAt),
+      ))
+      .returning({
+        id: branchFinanceEntries.id,
+      });
+
+    return !!deleted;
   }
 
   async getCustomerAppOverview(): Promise<{ total: number; active: number; blocked: number; recent: number; pendingReports: number }> {

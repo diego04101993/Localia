@@ -11,6 +11,7 @@ import {
   AlertTriangle,
   X,
   CreditCard,
+  DollarSign,
   Calendar,
   FileText,
   Monitor,
@@ -69,11 +70,13 @@ import ContenidoTab from "@/components/contenido-tab";
 import TvModeTab from "@/components/tv-mode-tab";
 import PerfilPublicoTab from "@/components/perfil-publico-tab";
 import NotificationsPanel from "@/components/notifications-panel";
+import CajaTab from "@/components/caja-tab";
 
 const DASHBOARD_TABS = [
   { value: "resumen", label: "Resumen", icon: LayoutDashboard },
   { value: "clientes", label: "Clientes", icon: Users },
   { value: "membresias", label: "Membresías", icon: CreditCard },
+  { value: "caja", label: "Caja", icon: DollarSign },
   { value: "reservas", label: "Reservas", icon: Calendar },
   { value: "contenido", label: "Contenido", icon: FileText },
   { value: "perfil", label: "Perfil Público", icon: Building2 },
@@ -122,13 +125,6 @@ interface BranchDashboardMetrics {
   lowClassesClients: number;
   activePromotions: number;
   recentReviews: number;
-}
-
-interface BranchNotificationJob {
-  id: string;
-  type: string;
-  scheduledFor: string;
-  status: string;
 }
 
 interface AlertsData {
@@ -1079,16 +1075,6 @@ function ResumenTab({ branchStats, branchStatus, branchSlug, branchId, branchNam
   const { data: whatsappTemplates } = useQuery<WhatsAppTemplates>({
     queryKey: ["/api/branch/whatsapp-templates"],
   });
-  const { data: notificationJobs } = useQuery<BranchNotificationJob[]>({
-    queryKey: ["/api/branch/notification-jobs", "summary"],
-    queryFn: async () => {
-      const res = await fetch("/api/branch/notification-jobs?limit=5", { credentials: "include" });
-      if (!res.ok) {
-        throw new Error("No se pudieron cargar los jobs internos");
-      }
-      return res.json();
-    },
-  });
 
   const statusConfig: Record<string, { label: string; description: string; color: string }> = {
     active: { label: "Activa", description: "Tu sucursal está operando normalmente.", color: "text-green-600 dark:text-green-400" },
@@ -1114,7 +1100,7 @@ function ResumenTab({ branchStats, branchStatus, branchSlug, branchId, branchNam
                   {branchStats?.uniqueActiveCustomers ?? 0}
                 </p>
               )}
-              <p className="text-xs text-muted-foreground">Clientes activos</p>
+              <p className="text-xs text-muted-foreground">Clientes con membresía</p>
               {branchStats && branchStats.totalCustomers > branchStats.uniqueActiveCustomers && (
                 <p className="text-[10px] text-muted-foreground" data-testid="text-clients-total">{branchStats.totalCustomers} totales</p>
               )}
@@ -1202,19 +1188,19 @@ function ResumenTab({ branchStats, branchStatus, branchSlug, branchId, branchNam
         </Card>
         <Card>
           <CardContent className="p-4">
-            <p className="text-xs text-muted-foreground">Clases bajas</p>
+            <p className="text-xs text-muted-foreground">Clases por agotarse</p>
             <p className="text-xl font-semibold">{dashboardMetrics?.lowClassesClients ?? 0}</p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="p-4">
-            <p className="text-xs text-muted-foreground">Clientes activos</p>
+            <p className="text-xs text-muted-foreground">Clientes recurrentes</p>
             <p className="text-xl font-semibold">{dashboardMetrics?.activeClients ?? 0}</p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="p-4">
-            <p className="text-xs text-muted-foreground">Clientes inactivos</p>
+            <p className="text-xs text-muted-foreground">Clientes inactivos (CRM)</p>
             <p className="text-xl font-semibold">{dashboardMetrics?.inactiveClients ?? 0}</p>
           </CardContent>
         </Card>
@@ -1238,33 +1224,6 @@ function ResumenTab({ branchStats, branchStatus, branchSlug, branchId, branchNam
         emptyMessage="Sin notificaciones recientes para tu sucursal."
         testIdPrefix="branch-notifications"
       />
-
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base flex items-center gap-2">
-            <Bell className="h-4 w-4" />
-            Jobs internos
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="p-4 pt-0 space-y-2">
-          {notificationJobs && notificationJobs.length > 0 ? (
-            notificationJobs.map((job) => (
-              <div key={job.id} className="flex items-center justify-between gap-3 rounded-md border p-2 text-sm">
-                <div className="min-w-0">
-                  <p className="font-medium truncate">{job.type}</p>
-                  <p className="text-xs text-muted-foreground">{formatDateTime(job.scheduledFor)}</p>
-                </div>
-                <Badge variant={job.status === "completed" ? "default" : job.status === "failed" ? "destructive" : "secondary"}>
-                  {job.status}
-                </Badge>
-              </div>
-            ))
-          ) : (
-            <p className="text-sm text-muted-foreground">Sin jobs internos recientes.</p>
-          )}
-        </CardContent>
-      </Card>
-
       <TodayBirthdaysSection alerts={alerts} branchName={branchName} whatsappTemplates={whatsappTemplates || {}} onViewClient={onViewClient} />
 
       <AlertsSection alerts={alerts} isLoading={alertsLoading} branchName={branchName} whatsappTemplates={whatsappTemplates || {}} onViewClient={onViewClient} />
@@ -1820,6 +1779,10 @@ export default function DashboardPage() {
 
           <TabsContent value="membresias" className="mt-4">
             <MembresiasTab />
+          </TabsContent>
+
+          <TabsContent value="caja" className="mt-4">
+            <CajaTab />
           </TabsContent>
 
           <TabsContent value="reservas" className="mt-4">

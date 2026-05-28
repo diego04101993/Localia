@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, pgEnum, doublePrecision, boolean, uniqueIndex, jsonb, integer, index } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, pgEnum, doublePrecision, boolean, uniqueIndex, jsonb, integer, index, numeric, date } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -977,6 +977,37 @@ export const notificationJobs = pgTable("notification_jobs", {
   index("notification_jobs_branch_idx").on(table.branchId),
 ]);
 
+export const branchFinanceEntries = pgTable("branch_finance_entries", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  type: text("type").notNull(),
+  category: text("category"),
+  concept: text("concept").notNull(),
+  amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
+  paymentMethod: text("payment_method"),
+  clientUserId: varchar("client_user_id", { length: 36 }).references(() => users.id),
+  clientName: text("client_name"),
+  notes: text("notes"),
+  entryDate: date("entry_date").notNull(),
+  source: text("source"),
+  sourceId: varchar("source_id", { length: 36 }),
+  metadata: jsonb("metadata"),
+  createdBy: varchar("created_by", { length: 36 }).references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+}, (table) => [
+  index("branch_finance_entries_branch_idx").on(table.branchId),
+  index("branch_finance_entries_entry_date_idx").on(table.entryDate),
+  index("branch_finance_entries_type_idx").on(table.type),
+  index("branch_finance_entries_deleted_at_idx").on(table.deletedAt),
+  index("branch_finance_entries_client_user_idx").on(table.clientUserId),
+]);
+
 export const insertBranchReviewSchema = createInsertSchema(branchReviews).omit({
   id: true,
   createdAt: true,
@@ -999,6 +1030,13 @@ export const insertNotificationJobSchema = createInsertSchema(notificationJobs).
   processedAt: true,
 });
 
+export const insertBranchFinanceEntrySchema = createInsertSchema(branchFinanceEntries).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  deletedAt: true,
+});
+
 export type BranchReview = typeof branchReviews.$inferSelect;
 export type InsertBranchReview = z.infer<typeof insertBranchReviewSchema>;
 export type ReviewReport = typeof reviewReports.$inferSelect;
@@ -1007,6 +1045,8 @@ export type ReviewModerationLog = typeof reviewModerationLogs.$inferSelect;
 export type InsertReviewModerationLog = z.infer<typeof insertReviewModerationLogSchema>;
 export type NotificationJob = typeof notificationJobs.$inferSelect;
 export type InsertNotificationJob = z.infer<typeof insertNotificationJobSchema>;
+export type BranchFinanceEntry = typeof branchFinanceEntries.$inferSelect;
+export type InsertBranchFinanceEntry = z.infer<typeof insertBranchFinanceEntrySchema>;
 
 // ─── Password Reset Tokens ───────────────────────────────────────────────────
 export const passwordResetTokens = pgTable("password_reset_tokens", {
@@ -1067,6 +1107,51 @@ export const updateReviewVisibilitySchema = z.object({
   hidden: z.boolean(),
   reason: z.string().nullable().optional(),
 });
+
+export const branchFinanceEntryTypeValues = ["income", "expense"] as const;
+export const branchFinanceIncomeCategories = [
+  "membresia",
+  "paquete",
+  "servicio",
+  "producto",
+  "clase",
+  "otro",
+] as const;
+export const branchFinanceExpenseCategories = [
+  "renta",
+  "productos",
+  "sueldos",
+  "mantenimiento",
+  "publicidad",
+  "otro",
+] as const;
+export const branchFinancePaymentMethodValues = [
+  "efectivo",
+  "tarjeta",
+  "transferencia",
+  "mercado_pago",
+  "otro",
+] as const;
+
+export const createBranchFinanceEntrySchema = z.object({
+  type: z.enum(branchFinanceEntryTypeValues),
+  category: z.string().min(1, "La categoria es obligatoria").nullable().optional(),
+  concept: z.string().min(1, "El concepto es obligatorio").max(160, "Maximo 160 caracteres"),
+  amount: z.coerce.number().positive("El monto debe ser mayor a 0"),
+  paymentMethod: z.enum(branchFinancePaymentMethodValues).nullable().optional(),
+  clientUserId: z.string().min(1).nullable().optional(),
+  clientName: z.string().max(120).nullable().optional(),
+  notes: z.string().max(500).nullable().optional(),
+  entryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Formato YYYY-MM-DD"),
+  source: z.string().max(40).nullable().optional(),
+  sourceId: z.string().max(36).nullable().optional(),
+  metadata: z.any().optional(),
+});
+
+export const updateBranchFinanceEntrySchema = createBranchFinanceEntrySchema.partial().refine(
+  (data) => Object.keys(data).length > 0,
+  { message: "Debes enviar al menos un campo para actualizar" },
+);
 
 export const BRANCH_CATEGORIES = [
   { value: "box", label: "Box / CrossFit" },
