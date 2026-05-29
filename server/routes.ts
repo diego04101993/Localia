@@ -16,7 +16,13 @@ import {
   markNotificationRead,
 } from "./notifications";
 import { dispatchPushFromSystemEvent } from "./push";
-import { sendPasswordResetEmail, sendEmailVerificationEmail } from "./email";
+import {
+  EmailConfigurationError,
+  EmailDeliveryError,
+  getTransactionalEmailStatus,
+  sendPasswordResetEmail,
+  sendEmailVerificationEmail,
+} from "./email";
 import { setupAuth, requireAuth, requireRole, isImpersonating, getOriginalUserId, CUSTOMER_BLOCKED_MESSAGE, applySessionLifetimeForRequest } from "./auth";
 import {
   GoogleAuthConfigurationError,
@@ -178,6 +184,32 @@ function buildAuthSuccessResponse(user: any, message?: string) {
     acceptedTerms: !!safeUser.acceptedTerms,
     user: safeUser,
   };
+}
+
+function completeLoginSession(
+  req: Request,
+  res: any,
+  next: (err?: any) => void,
+  user: any,
+  responseBody: any,
+  statusCode = 200,
+  loginLabel = "auth",
+) {
+  req.logIn(user, (err) => {
+    if (err) return next(err);
+
+    applySessionLifetimeForRequest(req, user);
+
+    req.session.save((saveErr) => {
+      if (saveErr) return next(saveErr);
+
+      if (process.env.SESSION_DEBUG_LOGS === "true") {
+        console.log(`[AUTH] Sesión ${loginLabel} creada para ${user.email} (${user.role}) :: sid=${req.sessionID}`);
+      }
+
+      return res.status(statusCode).json(responseBody);
+    });
+  });
 }
 
 function getStringParam(value: string | string[] | undefined): string {
@@ -399,17 +431,12 @@ export async function registerRoutes(
     }
     passport.authenticate("local", (err: any, user: any, info: any) => {
       if (err) return next(err);
-      if (!user)
+      if (!user) {
         return res.status(401).json({ message: info?.message || "Credenciales incorrectas" });
-      req.logIn(user, (err) => {
-        if (err) return next(err);
-        applySessionLifetimeForRequest(req, user);
-        if (process.env.SESSION_DEBUG_LOGS === "true") {
-          console.log(`[AUTH] Sesión local creada para ${user.email} (${user.role}) :: sid=${req.sessionID}`);
-        }
-        const { passwordHash, ...safeUser } = user;
-        return res.json(safeUser);
-      });
+      }
+
+      const { passwordHash, ...safeUser } = user;
+      return completeLoginSession(req, res, next, user, safeUser, 200, "local");
     })(req, res, next);
   });
 
@@ -421,8 +448,9 @@ export async function registerRoutes(
 
     if (getConfiguredGoogleAudiences().length === 0) {
       return res.status(503).json({
-        message: "Google Sign-In no estÃ¡ configurado en el servidor",
+        message: "Google Sign-In no está configurado en el servidor",
         code: "GOOGLE_AUTH_NOT_CONFIGURED",
+        missingEnv: ["GOOGLE_SERVER_CLIENT_ID o GOOGLE_CLIENT_IDS", "GOOGLE_CLIENT_ID_ANDROID/IOS/WEB"],
       });
     }
 
@@ -522,26 +550,29 @@ export async function registerRoutes(
         }
       }
 
-      if (!user) {
-        return res.status(500).json({ message: "No fue posible iniciar sesiÃ³n con Google" });
+if (!user) {
+        return res.status(500).json({ message: "No fue posible iniciar sesión con Google" });
       }
 
-      req.logIn(user, (err) => {
-        if (err) return next(err);
-        applySessionLifetimeForRequest(req, user);
-        if (process.env.SESSION_DEBUG_LOGS === "true") {
-          console.log(`[AUTH] SesiÃ³n Google creada para ${user.email} (${user.role}) :: sid=${req.sessionID}`);
-        }
-        return res.json(buildAuthSuccessResponse(
+      return completeLoginSession(
+        req,
+        res,
+        next,
+        user,
+        buildAuthSuccessResponse(
           user,
-          createdNewUser ? "Cuenta creada con Google" : "Inicio de sesiÃ³n con Google correcto",
-        ));
-      });
+          createdNewUser ? "Cuenta creada con Google" : "Inicio de sesión con Google correcto",
+        ),
+        200,
+        "google",
+      );
     } catch (err) {
       if (err instanceof GoogleAuthConfigurationError) {
+        console.error("[GOOGLE_AUTH] configuration error:", err.message);
         return res.status(503).json({ message: err.message, code: "GOOGLE_AUTH_NOT_CONFIGURED" });
       }
       if (err instanceof GoogleAuthTokenError) {
+        console.warn("[GOOGLE_AUTH] token rejected:", err.message);
         return res.status(401).json({ message: err.message, code: "INVALID_GOOGLE_TOKEN" });
       }
       const errorCode = typeof (err as any)?.code === "string" ? (err as any).code : "";
@@ -550,6 +581,7 @@ export async function registerRoutes(
         errorMessage.includes("Failed to retrieve verification certificates") ||
         ["UNABLE_TO_VERIFY_LEAF_SIGNATURE", "SELF_SIGNED_CERT_IN_CHAIN", "ENOTFOUND", "ECONNRESET", "EAI_AGAIN"].includes(errorCode)
       ) {
+        console.error("[GOOGLE_AUTH] temporarily unavailable:", errorCode || errorMessage);
         return res.status(503).json({
           message: "Google Sign-In no pudo validarse en este momento. Intenta de nuevo más tarde.",
           code: "GOOGLE_AUTH_TEMPORARILY_UNAVAILABLE",
@@ -562,6 +594,7 @@ export async function registerRoutes(
         errorMessage.toLowerCase().includes("token used too late") ||
         errorMessage.toLowerCase().includes("token used too early")
       ) {
+        console.warn("[GOOGLE_AUTH] invalid token:", errorMessage);
         return res.status(401).json({
           message: "No fue posible validar el token de Google",
           code: "INVALID_GOOGLE_TOKEN",
@@ -636,12 +669,16 @@ export async function registerRoutes(
             activatedExisting: true,
           },
         });
-        req.logIn(updated!, (err) => {
-          if (err) return next(err);
-          applySessionLifetimeForRequest(req, updated!);
-          const { passwordHash: _ph, ...safeUser } = updated as any;
-          return res.json({ message: "Cuenta activada correctamente", user: safeUser });
-        });
+        const { passwordHash: _ph, ...safeUser } = updated as any;
+        return completeLoginSession(
+          req,
+          res,
+          next,
+          updated!,
+          { message: "Cuenta activada correctamente", user: safeUser },
+          200,
+          "register-activation",
+        );
         return;
       }
 
@@ -682,12 +719,16 @@ export async function registerRoutes(
         },
       });
 
-      req.logIn(freshUser!, (err) => {
-        if (err) return next(err);
-        applySessionLifetimeForRequest(req, freshUser!);
-        const { passwordHash: _ph, ...safeUser } = freshUser as any;
-        return res.status(201).json({ message: "Cuenta creada correctamente", user: safeUser });
-      });
+      const { passwordHash: _ph, ...safeUser } = freshUser as any;
+      return completeLoginSession(
+        req,
+        res,
+        next,
+        freshUser!,
+        { message: "Cuenta creada correctamente", user: safeUser },
+        201,
+        "register",
+      );
     } catch (err: any) {
       if (err?.code === "23505") {
         return res.status(409).json({
@@ -718,6 +759,14 @@ export async function registerRoutes(
     if (!email || typeof email !== "string") {
       return res.status(400).json({ message: "Correo requerido" });
     }
+    const emailStatus = getTransactionalEmailStatus();
+    if (!emailStatus.configured) {
+      return res.status(503).json({
+        message: "Recuperación de contraseña no disponible: falta configurar el correo transaccional",
+        code: "EMAIL_NOT_CONFIGURED",
+        missingEnv: emailStatus.missingEnv,
+      });
+    }
     // Always respond the same way for security (don't reveal if email exists)
     const GENERIC_OK = { message: "Si el correo está registrado, te enviamos instrucciones en breve." };
     try {
@@ -731,6 +780,20 @@ export async function registerRoutes(
       await sendPasswordResetEmail(user.email, token);
       return res.json(GENERIC_OK);
     } catch (err) {
+      if (err instanceof EmailConfigurationError) {
+        return res.status(503).json({
+          message: "Recuperación de contraseña no disponible: falta configurar el correo transaccional",
+          code: "EMAIL_NOT_CONFIGURED",
+          missingEnv: err.missingEnv,
+        });
+      }
+      if (err instanceof EmailDeliveryError) {
+        console.error("[FORGOT_PASSWORD] Email delivery failed:", err.message);
+        return res.status(503).json({
+          message: "No se pudo enviar el correo de recuperación en este momento",
+          code: "EMAIL_DELIVERY_FAILED",
+        });
+      }
       next(err);
     }
   });

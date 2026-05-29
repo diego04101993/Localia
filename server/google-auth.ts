@@ -12,6 +12,9 @@ function collectConfiguredAudiences(): string[] {
     process.env.GOOGLE_CLIENT_ID_ANDROID,
     process.env.GOOGLE_CLIENT_ID_IOS,
     process.env.GOOGLE_CLIENT_ID_WEB,
+    process.env.GOOGLE_SERVER_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_WEB_CLIENT_ID,
   ]
     .map((value) => value?.trim())
     .filter((value): value is string => !!value);
