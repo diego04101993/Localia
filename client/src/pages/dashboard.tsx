@@ -2,6 +2,7 @@ import { useState, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import {
   Building2,
+  BarChart3,
   LogOut,
   Users,
   CalendarDays,
@@ -17,6 +18,8 @@ import {
   Monitor,
   Clock,
   TrendingUp,
+  ArrowDownRight,
+  ArrowUpRight,
   ExternalLink,
   CheckCircle2,
   PauseCircle,
@@ -39,6 +42,8 @@ import {
   Globe,
   Eye,
   EyeOff,
+  Sparkles,
+  Wallet,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -60,9 +65,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
+import { Area, AreaChart, CartesianGrid, Line, XAxis, YAxis } from "recharts";
 import ClientesTab from "@/components/clientes-tab";
 import MembresiasTab from "@/components/membresias-tab";
 import ReservasTab from "@/components/reservas-tab";
@@ -125,6 +132,24 @@ interface BranchDashboardMetrics {
   lowClassesClients: number;
   activePromotions: number;
   recentReviews: number;
+}
+
+interface BranchFinanceSummary {
+  totalIncome: number;
+  totalExpense: number;
+  netProfit: number;
+  todayIncome: number;
+  todayExpense: number;
+  monthIncome: number;
+  monthExpense: number;
+  dailyBreakdown: Array<{
+    date: string;
+    income: number;
+    expense: number;
+    net: number;
+  }>;
+  topIncomeCategories: Array<{ category: string; total: number }>;
+  topExpenseCategories: Array<{ category: string; total: number }>;
 }
 
 interface AlertsData {
@@ -216,6 +241,43 @@ function formatDateTime(dateStr: string) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function formatCurrencyMx(value: number) {
+  return new Intl.NumberFormat("es-MX", {
+    style: "currency",
+    currency: "MXN",
+    maximumFractionDigits: 0,
+  }).format(value || 0);
+}
+
+function formatCompactNumber(value: number) {
+  return new Intl.NumberFormat("es-MX", {
+    notation: "compact",
+    compactDisplay: "short",
+    maximumFractionDigits: 1,
+  }).format(value || 0);
+}
+
+function formatShortDate(dateStr: string) {
+  return new Date(`${dateStr}T12:00:00`).toLocaleDateString("es-MX", {
+    day: "2-digit",
+    month: "short",
+  });
+}
+
+function getIsoDateDaysAgo(daysAgo: number) {
+  const date = new Date();
+  date.setHours(12, 0, 0, 0);
+  date.setDate(date.getDate() - daysAgo);
+  return date.toISOString().slice(0, 10);
+}
+
+function formatCategoryLabel(value: string | null | undefined) {
+  if (!value) return "Sin categoría";
+  return value
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 type WhatsAppTemplates = Record<string, string>;
@@ -940,14 +1002,14 @@ function AnnouncementsSection({ branchId }: { branchId: string }) {
           Anuncio rápido
         </CardTitle>
       </CardHeader>
-      <CardContent className="p-4 pt-0 space-y-3">
+      <CardContent className="space-y-2.5 p-4 pt-0">
         <p className="text-xs text-muted-foreground">
           Se muestra como banner en tu página pública. Solo 1 activo a la vez.
         </p>
         <div className="space-y-2">
           <div className="flex gap-2">
             <Input
-              placeholder="Ej: Hoy clase especial a las 7pm..."
+              placeholder="Ej: Hoy clase especial a las 7pm"
               value={newMessage}
               onChange={(e) => setNewMessage(e.target.value)}
               maxLength={500}
@@ -960,7 +1022,7 @@ function AnnouncementsSection({ branchId }: { branchId: string }) {
               data-testid="button-create-announcement"
             >
               <Send className="h-4 w-4 mr-1" />
-              Publicar
+              Guardar
             </Button>
           </div>
           <div className="flex items-center gap-2">
@@ -979,7 +1041,7 @@ function AnnouncementsSection({ branchId }: { branchId: string }) {
             </label>
             {announcementImageUrl && (
               <div className="flex items-center gap-2">
-                <img src={announcementImageUrl} alt="Preview" className="h-8 w-8 rounded object-cover" />
+                <img src={announcementImageUrl} alt="Preview" className="h-7 w-7 rounded object-cover" />
                 <button
                   type="button"
                   className="text-xs text-red-500 hover:text-red-700"
@@ -1003,7 +1065,7 @@ function AnnouncementsSection({ branchId }: { branchId: string }) {
                 data-testid={`announcement-${a.id}`}
               >
                 {a.imageUrl && (
-                  <img src={a.imageUrl} alt="Anuncio" className="w-full max-h-40 object-cover" data-testid={`img-announcement-${a.id}`} />
+                  <img src={a.imageUrl} alt="Anuncio" className="w-full max-h-24 object-cover" data-testid={`img-announcement-${a.id}`} />
                 )}
                 <div className="p-2 flex items-start justify-between gap-2">
                   <div className="min-w-0">
@@ -1011,7 +1073,7 @@ function AnnouncementsSection({ branchId }: { branchId: string }) {
                       <Megaphone className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
                       <span className="text-[10px] text-amber-600 dark:text-amber-400 font-medium">Activo · {timeAgo(a.createdAt)}</span>
                     </div>
-                    <span className="text-sm" data-testid={`text-announcement-${a.id}`}>{a.message}</span>
+                    <span className="line-clamp-2 text-sm" data-testid={`text-announcement-${a.id}`}>{a.message}</span>
                   </div>
                   <Button
                     variant="ghost"
@@ -1282,6 +1344,1515 @@ function ResumenTab({ branchStats, branchStatus, branchSlug, branchId, branchNam
   );
 }
 
+function ResumenTabPremium({ branchStats, branchStatus, branchSlug, branchId, branchName, isLoading, reservationStats, reservationLoading, dashboardMetrics, alerts, alertsLoading, onViewClient }: {
+  branchStats: { activeMemberships: number; uniqueActiveCustomers: number; totalCustomers: number } | undefined;
+  branchStatus: string;
+  branchSlug: string;
+  branchId: string;
+  branchName: string;
+  isLoading: boolean;
+  reservationStats: ReservationStats | undefined;
+  reservationLoading: boolean;
+  dashboardMetrics: BranchDashboardMetrics | undefined;
+  alerts: AlertsData | undefined;
+  alertsLoading: boolean;
+  onViewClient: (userId: string) => void;
+}) {
+  const { data: whatsappTemplates } = useQuery<WhatsAppTemplates>({
+    queryKey: ["/api/branch/whatsapp-templates"],
+  });
+
+  const financeFrom = getIsoDateDaysAgo(29);
+  const financeTo = getIsoDateDaysAgo(0);
+  const { data: financeSummary, isLoading: financeLoading } = useQuery<BranchFinanceSummary>({
+    queryKey: ["/api/branch/finance/summary", "overview", financeFrom, financeTo],
+    queryFn: async () => {
+      const res = await fetch(`/api/branch/finance/summary?from=${financeFrom}&to=${financeTo}`, {
+        credentials: "include",
+      });
+      if (!res.ok) {
+        throw new Error("No se pudo cargar el resumen financiero");
+      }
+      return res.json();
+    },
+    staleTime: 60_000,
+  });
+
+  const statusConfig: Record<string, { label: string; description: string; accent: string; surface: string }> = {
+    active: {
+      label: "Activa",
+      description: "Tu sucursal está operando con normalidad y lista para recibir clientes.",
+      accent: "text-emerald-600 dark:text-emerald-400",
+      surface: "bg-emerald-500/10 border-emerald-200/70 dark:border-emerald-800/60",
+    },
+    suspended: {
+      label: "Suspendida",
+      description: "Hay una restricción temporal. Conviene revisarla cuanto antes.",
+      accent: "text-amber-600 dark:text-amber-400",
+      surface: "bg-amber-500/10 border-amber-200/70 dark:border-amber-800/60",
+    },
+    blacklisted: {
+      label: "Bloqueada",
+      description: "La sucursal necesita atención administrativa antes de volver a operar.",
+      accent: "text-rose-600 dark:text-rose-400",
+      surface: "bg-rose-500/10 border-rose-200/70 dark:border-rose-800/60",
+    },
+  };
+
+  const currentStatus = statusConfig[branchStatus] || statusConfig.active;
+  const monthIncome = financeSummary?.monthIncome ?? 0;
+  const monthExpense = financeSummary?.monthExpense ?? 0;
+  const monthNet = monthIncome - monthExpense;
+  const chartData = (financeSummary?.dailyBreakdown || []).map((item) => ({
+    ...item,
+    shortDate: formatShortDate(item.date),
+  }));
+  const hasChartData = chartData.some((item) => item.income > 0 || item.expense > 0 || item.net !== 0);
+
+  const financeChartConfig = {
+    income: { label: "Ingresos", color: "#22c55e" },
+    expense: { label: "Gastos", color: "#f97316" },
+    net: { label: "Ganancia", color: "#2563eb" },
+  } as const;
+
+  const topOverviewCards = [
+    {
+      title: "Clientes con membresía",
+      value: branchStats?.uniqueActiveCustomers ?? 0,
+      helper: branchStats && branchStats.totalCustomers > branchStats.uniqueActiveCustomers
+        ? `${branchStats.totalCustomers} clientes registrados`
+        : "Clientes con membresía activa hoy",
+      icon: Users,
+      tint: "from-sky-500/15 via-sky-500/5 to-transparent",
+      iconClassName: "text-sky-600 dark:text-sky-400",
+      valueTestId: "text-clients-count",
+    },
+    {
+      title: "Membresías activas",
+      value: branchStats?.activeMemberships ?? 0,
+      helper: "Planes activos cobrando valor al negocio",
+      icon: CreditCard,
+      tint: "from-emerald-500/15 via-emerald-500/5 to-transparent",
+      iconClassName: "text-emerald-600 dark:text-emerald-400",
+      valueTestId: "text-memberships-count",
+    },
+    {
+      title: "Reservas de hoy",
+      value: reservationStats?.todayCount ?? 0,
+      helper: "Citas o clases confirmadas para hoy",
+      icon: CalendarDays,
+      tint: "from-violet-500/15 via-violet-500/5 to-transparent",
+      iconClassName: "text-violet-600 dark:text-violet-400",
+      valueTestId: "text-reservations-today",
+    },
+    {
+      title: "Ingresos del mes",
+      value: formatCurrencyMx(monthIncome),
+      helper: "Cobros registrados en Caja",
+      icon: ArrowUpRight,
+      tint: "from-emerald-500/15 via-emerald-500/5 to-transparent",
+      iconClassName: "text-emerald-600 dark:text-emerald-400",
+      valueTestId: "text-income-month-overview",
+    },
+  ];
+
+  const commercialHighlights = [
+    {
+      title: "Clientes recurrentes",
+      value: dashboardMetrics?.activeClients ?? 0,
+      helper: "Activos o VIP en tu CRM",
+      icon: Sparkles,
+      accent: "text-fuchsia-600 dark:text-fuchsia-400",
+    },
+    {
+      title: "Promociones activas",
+      value: dashboardMetrics?.activePromotions ?? 0,
+      helper: "Campañas visibles hoy",
+      icon: Tag,
+      accent: "text-amber-600 dark:text-amber-400",
+    },
+    {
+      title: "Reseñas recientes",
+      value: dashboardMetrics?.recentReviews ?? 0,
+      helper: "Últimos 30 días",
+      icon: MessageCircle,
+      accent: "text-cyan-600 dark:text-cyan-400",
+    },
+    {
+      title: "Clases por agotarse",
+      value: dashboardMetrics?.lowClassesClients ?? 0,
+      helper: "Clientes listos para renovar",
+      icon: Gift,
+      accent: "text-rose-600 dark:text-rose-400",
+    },
+  ];
+
+  return (
+    <div className="space-y-6">
+      <div className="relative overflow-hidden rounded-[28px] border border-white/60 bg-gradient-to-br from-sky-50 via-white to-emerald-50 shadow-[0_24px_80px_-40px_rgba(15,23,42,0.35)] dark:border-white/10 dark:bg-[radial-gradient(circle_at_top_left,_rgba(56,189,248,0.18),_transparent_35%),radial-gradient(circle_at_top_right,_rgba(16,185,129,0.14),_transparent_30%),linear-gradient(135deg,rgba(15,23,42,0.96),rgba(15,23,42,0.88))]">
+        <div className="pointer-events-none absolute inset-0">
+          <div className="absolute -left-14 top-8 h-36 w-36 rounded-full bg-sky-400/15 blur-3xl" />
+          <div className="absolute right-0 top-0 h-48 w-48 rounded-full bg-emerald-400/15 blur-3xl" />
+        </div>
+
+        <div className="relative grid gap-6 p-6 lg:grid-cols-[minmax(0,1.45fr)_380px]">
+          <div className="space-y-6">
+            <div className="flex flex-wrap items-center gap-3">
+              <StatusBadge status={branchStatus} testId="badge-summary-status" />
+              <Badge variant="outline" className={`rounded-full border px-3 py-1 text-[11px] uppercase tracking-[0.22em] ${currentStatus.surface} ${currentStatus.accent}`}>
+                Vista ejecutiva
+              </Badge>
+            </div>
+
+            <div className="space-y-3">
+              <div className="space-y-2">
+                <p className="text-xs font-medium uppercase tracking-[0.3em] text-muted-foreground">Resumen comercial</p>
+                <h2 className="max-w-3xl text-3xl font-semibold tracking-tight text-foreground md:text-4xl">
+                  Tu sucursal, clientes y agenda en una sola vista.
+                </h2>
+                <p className="max-w-2xl text-sm leading-6 text-muted-foreground" data-testid="text-status-description">
+                  {currentStatus.description}
+                </p>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-3">
+                {topOverviewCards.map((item) => (
+                  <div
+                    key={item.title}
+                    className={`rounded-2xl border border-white/70 bg-gradient-to-br ${item.tint} p-4 shadow-sm backdrop-blur-sm dark:border-white/10 dark:bg-white/5`}
+                  >
+                    <div className="mb-4 flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-xs font-medium uppercase tracking-[0.22em] text-muted-foreground">{item.title}</p>
+                        {isLoading || reservationLoading ? (
+                          <Skeleton className="mt-3 h-8 w-20 rounded-lg" />
+                        ) : (
+                          <p className="mt-3 text-3xl font-semibold tracking-tight" data-testid={item.valueTestId}>
+                            {item.value}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-white/85 shadow-sm dark:bg-slate-950/60">
+                        <item.icon className={`h-5 w-5 ${item.iconClassName}`} />
+                      </div>
+                    </div>
+                    <p className="text-xs leading-5 text-muted-foreground">{item.helper}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-4">
+            <Card className="border-white/70 bg-white/85 shadow-[0_18px_45px_-35px_rgba(15,23,42,0.55)] backdrop-blur-sm dark:border-white/10 dark:bg-slate-950/70">
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Clock className="h-4 w-4 text-violet-500" />
+                  Próxima reserva
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {reservationLoading ? (
+                  <div className="space-y-2">
+                    <Skeleton className="h-6 w-40" />
+                    <Skeleton className="h-4 w-28" />
+                  </div>
+                ) : reservationStats?.nextBooking ? (
+                  <div className="space-y-1">
+                    <p className="text-xl font-semibold leading-tight" data-testid="text-next-reservation">
+                      {reservationStats.nextBooking.className}
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      {reservationStats.nextBooking.startTime} · {formatShortDate(reservationStats.nextBooking.bookingDate)}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="rounded-2xl border border-dashed border-border/70 bg-muted/30 p-4">
+                    <p className="text-sm font-medium text-foreground" data-testid="text-next-reservation">Sin reservas próximas</p>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">Cuando entren nuevas citas o clases, aparecerán aquí.</p>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="rounded-2xl bg-sky-50 p-3 dark:bg-sky-950/30">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Próximas</p>
+                    <p className="mt-2 text-xl font-semibold">{dashboardMetrics?.upcomingBookings ?? 0}</p>
+                  </div>
+                  <div className="rounded-2xl bg-amber-50 p-3 dark:bg-amber-950/30">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Canceladas</p>
+                    <p className="mt-2 text-xl font-semibold">{dashboardMetrics?.cancelledBookings ?? 0}</p>
+                  </div>
+                  <div className="rounded-2xl bg-rose-50 p-3 dark:bg-rose-950/30">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">No show</p>
+                    <p className="mt-2 text-xl font-semibold">{dashboardMetrics?.noShowBookings ?? 0}</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="border-white/70 bg-white/85 shadow-[0_18px_45px_-35px_rgba(15,23,42,0.55)] backdrop-blur-sm dark:border-white/10 dark:bg-slate-950/70">
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Building2 className="h-4 w-4 text-sky-500" />
+                  Perfil público
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="rounded-2xl bg-muted/40 p-4">
+                  <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Ruta visible</p>
+                  <p className="mt-2 text-base font-semibold" data-testid="text-branch-slug-dashboard">
+                    /app/{branchSlug}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">Comparte este enlace con tus clientes para reservas y contenido.</p>
+                </div>
+                <Button
+                  variant="outline"
+                  className="w-full justify-between rounded-2xl border-border/70 bg-background/80"
+                  onClick={() => window.open(`/app/${branchSlug}`, "_blank")}
+                  data-testid="button-view-public-page"
+                >
+                  Ver perfil público
+                  <ExternalLink className="h-4 w-4" />
+                </Button>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-3">
+        <Card className="border-emerald-200/70 bg-gradient-to-br from-emerald-50 via-white to-emerald-50/40 shadow-sm dark:border-emerald-900/40 dark:bg-emerald-950/20">
+          <CardContent className="p-5">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-medium uppercase tracking-[0.22em] text-muted-foreground">Ingresos del mes</p>
+                {financeLoading ? <Skeleton className="mt-3 h-8 w-32" /> : <p className="mt-3 text-3xl font-semibold">{formatCurrencyMx(monthIncome)}</p>}
+              </div>
+              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-500/10">
+                <ArrowUpRight className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
+              </div>
+            </div>
+            <p className="mt-3 text-xs text-muted-foreground">Ventas o cobros registrados en Caja durante el mes actual.</p>
+          </CardContent>
+        </Card>
+
+        <Card className="border-amber-200/70 bg-gradient-to-br from-amber-50 via-white to-amber-50/40 shadow-sm dark:border-amber-900/40 dark:bg-amber-950/20">
+          <CardContent className="p-5">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-medium uppercase tracking-[0.22em] text-muted-foreground">Gastos del mes</p>
+                {financeLoading ? <Skeleton className="mt-3 h-8 w-32" /> : <p className="mt-3 text-3xl font-semibold">{formatCurrencyMx(monthExpense)}</p>}
+              </div>
+              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-500/10">
+                <ArrowDownRight className="h-5 w-5 text-amber-600 dark:text-amber-400" />
+              </div>
+            </div>
+            <p className="mt-3 text-xs text-muted-foreground">Egresos operativos capturados por tu equipo en este periodo.</p>
+          </CardContent>
+        </Card>
+
+        <Card className="border-sky-200/70 bg-gradient-to-br from-sky-50 via-white to-sky-50/40 shadow-sm dark:border-sky-900/40 dark:bg-sky-950/20">
+          <CardContent className="p-5">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-medium uppercase tracking-[0.22em] text-muted-foreground">Ganancia del mes</p>
+                {financeLoading ? <Skeleton className="mt-3 h-8 w-32" /> : <p className="mt-3 text-3xl font-semibold">{formatCurrencyMx(monthNet)}</p>}
+              </div>
+              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-sky-500/10">
+                <Wallet className="h-5 w-5 text-sky-600 dark:text-sky-400" />
+              </div>
+            </div>
+            <p className="mt-3 text-xs text-muted-foreground">Diferencia simple entre ingresos y gastos. No sustituye contabilidad fiscal.</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.45fr)_minmax(320px,0.9fr)]">
+        <Card className="border-white/70 bg-white/90 shadow-[0_18px_50px_-40px_rgba(15,23,42,0.65)] dark:border-white/10 dark:bg-slate-950/70">
+          <CardHeader className="space-y-2 pb-2">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <CardTitle className="flex items-center gap-2 text-lg">
+                  <BarChart3 className="h-5 w-5 text-primary" />
+                  Movimiento de los últimos 30 días
+                </CardTitle>
+                <p className="text-sm text-muted-foreground">Visualiza ingresos, gastos y ganancia neta con la información ya capturada en Caja.</p>
+              </div>
+              <Badge variant="outline" className="rounded-full px-3 py-1 text-[11px] uppercase tracking-[0.18em]">
+                Últimos 30 días
+              </Badge>
+            </div>
+          </CardHeader>
+          <CardContent className="pt-4">
+            {financeLoading ? (
+              <Skeleton className="h-[320px] w-full rounded-2xl" />
+            ) : hasChartData ? (
+              <ChartContainer config={financeChartConfig} className="h-[320px] w-full">
+                <AreaChart data={chartData} margin={{ top: 10, right: 8, left: 8, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="incomeFill" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="var(--color-income)" stopOpacity={0.35} />
+                      <stop offset="95%" stopColor="var(--color-income)" stopOpacity={0.02} />
+                    </linearGradient>
+                    <linearGradient id="expenseFill" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="var(--color-expense)" stopOpacity={0.22} />
+                      <stop offset="95%" stopColor="var(--color-expense)" stopOpacity={0.02} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid vertical={false} strokeDasharray="3 3" />
+                  <XAxis dataKey="shortDate" tickLine={false} axisLine={false} minTickGap={24} />
+                  <YAxis
+                    tickLine={false}
+                    axisLine={false}
+                    width={62}
+                    tickFormatter={(value: number) => formatCompactNumber(value)}
+                  />
+                  <ChartTooltip
+                    content={
+                      <ChartTooltipContent
+                        formatter={(value, name) => (
+                          <div className="flex min-w-[160px] items-center justify-between gap-4">
+                            <span className="text-muted-foreground">{name}</span>
+                            <span className="font-medium text-foreground">{formatCurrencyMx(Number(value) || 0)}</span>
+                          </div>
+                        )}
+                        labelFormatter={(_, payload) => payload?.[0]?.payload?.shortDate || ""}
+                      />
+                    }
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="income"
+                    stroke="var(--color-income)"
+                    fill="url(#incomeFill)"
+                    strokeWidth={2.4}
+                    activeDot={{ r: 5 }}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="expense"
+                    stroke="var(--color-expense)"
+                    fill="url(#expenseFill)"
+                    strokeWidth={2.1}
+                    activeDot={{ r: 4 }}
+                  />
+                  <Line type="monotone" dataKey="net" stroke="var(--color-net)" strokeWidth={2.2} dot={false} />
+                </AreaChart>
+              </ChartContainer>
+            ) : (
+              <div className="flex h-[320px] flex-col items-center justify-center rounded-3xl border border-dashed border-border/70 bg-muted/20 px-6 text-center">
+                <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10">
+                  <BarChart3 className="h-6 w-6 text-primary" />
+                </div>
+                <h3 className="text-lg font-semibold">Aún no hay suficiente movimiento para la gráfica</h3>
+                <p className="mt-2 max-w-md text-sm leading-6 text-muted-foreground">
+                  Registra ingresos o gastos en la pestaña Caja y aquí verás la tendencia comercial de tu sucursal en tiempo real.
+                </p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <div className="grid gap-4">
+          <Card className="border-white/70 bg-white/90 shadow-[0_18px_50px_-40px_rgba(15,23,42,0.65)] dark:border-white/10 dark:bg-slate-950/70">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Sparkles className="h-4 w-4 text-fuchsia-500" />
+                Tracción comercial
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+              {commercialHighlights.map((item) => (
+                <div key={item.title} className="rounded-2xl border border-border/60 bg-background/70 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{item.title}</p>
+                      <p className="mt-2 text-2xl font-semibold">{item.value}</p>
+                    </div>
+                    <item.icon className={`h-5 w-5 ${item.accent}`} />
+                  </div>
+                  <p className="mt-2 text-xs text-muted-foreground">{item.helper}</p>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+
+          <Card className="border-white/70 bg-white/90 shadow-[0_18px_50px_-40px_rgba(15,23,42,0.65)] dark:border-white/10 dark:bg-slate-950/70">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <TrendingUp className="h-4 w-4 text-emerald-500" />
+                Lo que más se mueve
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Top ingresos</p>
+                  <span className="text-[11px] text-muted-foreground">Mes actual</span>
+                </div>
+                {financeSummary?.topIncomeCategories?.length ? (
+                  financeSummary.topIncomeCategories.slice(0, 3).map((item) => (
+                    <div key={`income-${item.category}`} className="flex items-center justify-between gap-3 rounded-2xl bg-emerald-50/70 px-3 py-2 dark:bg-emerald-950/20">
+                      <span className="text-sm font-medium">{formatCategoryLabel(item.category)}</span>
+                      <span className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">{formatCurrencyMx(item.total)}</span>
+                    </div>
+                  ))
+                ) : (
+                  <p className="rounded-2xl border border-dashed border-border/70 px-3 py-4 text-sm text-muted-foreground">
+                    Aún no hay ingresos suficientes para destacar categorías.
+                  </p>
+                )}
+              </div>
+
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Top gastos</p>
+                  <span className="text-[11px] text-muted-foreground">Mes actual</span>
+                </div>
+                {financeSummary?.topExpenseCategories?.length ? (
+                  financeSummary.topExpenseCategories.slice(0, 3).map((item) => (
+                    <div key={`expense-${item.category}`} className="flex items-center justify-between gap-3 rounded-2xl bg-amber-50/70 px-3 py-2 dark:bg-amber-950/20">
+                      <span className="text-sm font-medium">{formatCategoryLabel(item.category)}</span>
+                      <span className="text-sm font-semibold text-amber-700 dark:text-amber-400">{formatCurrencyMx(item.total)}</span>
+                    </div>
+                  ))
+                ) : (
+                  <p className="rounded-2xl border border-dashed border-border/70 px-3 py-4 text-sm text-muted-foreground">
+                    Todavía no hay gastos categorizados para mostrar.
+                  </p>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
+        <NotificationsPanel
+          title="Notificaciones de la sucursal"
+          limit={5}
+          emptyMessage="Sin notificaciones recientes para tu sucursal."
+          testIdPrefix="branch-notifications"
+        />
+
+        <TodayBirthdaysSection
+          alerts={alerts}
+          branchName={branchName}
+          whatsappTemplates={whatsappTemplates || {}}
+          onViewClient={onViewClient}
+        />
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
+        <AlertsSection
+          alerts={alerts}
+          isLoading={alertsLoading}
+          branchName={branchName}
+          whatsappTemplates={whatsappTemplates || {}}
+          onViewClient={onViewClient}
+        />
+
+        <div className="grid gap-4">
+          <Card className="border-white/70 bg-white/90 shadow-[0_18px_50px_-40px_rgba(15,23,42,0.65)] dark:border-white/10 dark:bg-slate-950/70">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <TrendingUp className="h-4 w-4 text-primary" />
+                Estado de la sucursal
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex items-center gap-3">
+                <StatusBadge status={branchStatus} testId="badge-summary-status-compact" />
+                <p className={`text-sm ${currentStatus.accent}`}>{currentStatus.label}</p>
+              </div>
+              <p className="text-sm leading-6 text-muted-foreground">{currentStatus.description}</p>
+            </CardContent>
+          </Card>
+
+          <AnnouncementsSection branchId={branchId} />
+        </div>
+      </div>
+
+      <WhatsAppConfigCard />
+    </div>
+  );
+}
+
+function ResumenTabPremiumCompact({ branchStats, branchStatus, branchSlug, branchId, branchName, isLoading, reservationStats, reservationLoading, dashboardMetrics, alerts, alertsLoading, onViewClient }: {
+  branchStats: { activeMemberships: number; uniqueActiveCustomers: number; totalCustomers: number } | undefined;
+  branchStatus: string;
+  branchSlug: string;
+  branchId: string;
+  branchName: string;
+  isLoading: boolean;
+  reservationStats: ReservationStats | undefined;
+  reservationLoading: boolean;
+  dashboardMetrics: BranchDashboardMetrics | undefined;
+  alerts: AlertsData | undefined;
+  alertsLoading: boolean;
+  onViewClient: (userId: string) => void;
+}) {
+  const { data: whatsappTemplates } = useQuery<WhatsAppTemplates>({
+    queryKey: ["/api/branch/whatsapp-templates"],
+  });
+
+  const financeFrom = getIsoDateDaysAgo(29);
+  const financeTo = getIsoDateDaysAgo(0);
+  const { data: financeSummary, isLoading: financeLoading } = useQuery<BranchFinanceSummary>({
+    queryKey: ["/api/branch/finance/summary", "overview", financeFrom, financeTo],
+    queryFn: async () => {
+      const res = await fetch(`/api/branch/finance/summary?from=${financeFrom}&to=${financeTo}`, {
+        credentials: "include",
+      });
+      if (!res.ok) {
+        throw new Error("No se pudo cargar el resumen financiero");
+      }
+      return res.json();
+    },
+    staleTime: 60_000,
+  });
+
+  const statusConfig: Record<string, { label: string; description: string; accent: string; surface: string }> = {
+    active: {
+      label: "Activa",
+      description: "Tu sucursal está operando con normalidad y lista para recibir clientes.",
+      accent: "text-emerald-600 dark:text-emerald-400",
+      surface: "bg-emerald-500/10 border-emerald-200/70 dark:border-emerald-800/60",
+    },
+    suspended: {
+      label: "Suspendida",
+      description: "Hay una restricción temporal. Conviene revisarla cuanto antes.",
+      accent: "text-amber-600 dark:text-amber-400",
+      surface: "bg-amber-500/10 border-amber-200/70 dark:border-amber-800/60",
+    },
+    blacklisted: {
+      label: "Bloqueada",
+      description: "La sucursal necesita atención administrativa antes de volver a operar.",
+      accent: "text-rose-600 dark:text-rose-400",
+      surface: "bg-rose-500/10 border-rose-200/70 dark:border-rose-800/60",
+    },
+  };
+
+  const currentStatus = statusConfig[branchStatus] || statusConfig.active;
+  const monthIncome = financeSummary?.monthIncome ?? 0;
+  const monthExpense = financeSummary?.monthExpense ?? 0;
+  const monthNet = monthIncome - monthExpense;
+  const chartData = (financeSummary?.dailyBreakdown || []).map((item) => ({
+    ...item,
+    shortDate: formatShortDate(item.date),
+  }));
+  const hasChartData = chartData.some((item) => item.income > 0 || item.expense > 0 || item.net !== 0);
+
+  const financeChartConfig = {
+    income: { label: "Ingresos", color: "#22c55e" },
+    expense: { label: "Gastos", color: "#f97316" },
+    net: { label: "Ganancia", color: "#2563eb" },
+  } as const;
+
+  const topOverviewCards = [
+    {
+      title: "Clientes con membresía",
+      value: branchStats?.uniqueActiveCustomers ?? 0,
+      helper: branchStats && branchStats.totalCustomers > branchStats.uniqueActiveCustomers
+        ? `${branchStats.totalCustomers} clientes registrados`
+        : "Clientes con membresía activa hoy",
+      icon: Users,
+      tint: "from-sky-500/15 via-sky-500/5 to-transparent",
+      iconClassName: "text-sky-600 dark:text-sky-400",
+      valueTestId: "text-clients-count",
+    },
+    {
+      title: "Membresías activas",
+      value: branchStats?.activeMemberships ?? 0,
+      helper: "Planes activos cobrando valor al negocio",
+      icon: CreditCard,
+      tint: "from-emerald-500/15 via-emerald-500/5 to-transparent",
+      iconClassName: "text-emerald-600 dark:text-emerald-400",
+      valueTestId: "text-memberships-count",
+    },
+    {
+      title: "Reservas de hoy",
+      value: reservationStats?.todayCount ?? 0,
+      helper: "Citas o clases confirmadas para hoy",
+      icon: CalendarDays,
+      tint: "from-violet-500/15 via-violet-500/5 to-transparent",
+      iconClassName: "text-violet-600 dark:text-violet-400",
+      valueTestId: "text-reservations-today",
+    },
+  ];
+
+  const commercialHighlights = [
+    {
+      title: "Clientes recurrentes",
+      value: dashboardMetrics?.activeClients ?? 0,
+      helper: "Activos o VIP en tu CRM",
+      icon: Sparkles,
+      accent: "text-fuchsia-600 dark:text-fuchsia-400",
+    },
+    {
+      title: "Promociones activas",
+      value: dashboardMetrics?.activePromotions ?? 0,
+      helper: "Campañas visibles hoy",
+      icon: Tag,
+      accent: "text-amber-600 dark:text-amber-400",
+    },
+    {
+      title: "Reseñas recientes",
+      value: dashboardMetrics?.recentReviews ?? 0,
+      helper: "Últimos 30 días",
+      icon: MessageCircle,
+      accent: "text-cyan-600 dark:text-cyan-400",
+    },
+    {
+      title: "Clases por agotarse",
+      value: dashboardMetrics?.lowClassesClients ?? 0,
+      helper: "Clientes listos para renovar",
+      icon: Gift,
+      accent: "text-rose-600 dark:text-rose-400",
+    },
+  ];
+
+  return (
+    <div className="space-y-3">
+      <div className="relative overflow-hidden rounded-[22px] border border-slate-200/70 bg-white/95 shadow-sm dark:border-slate-800/80 dark:bg-slate-950/80">
+        <div className="pointer-events-none absolute inset-0">
+          <div className="absolute -left-10 top-4 h-24 w-24 rounded-full bg-sky-400/10 blur-3xl" />
+          <div className="absolute right-0 top-0 h-28 w-28 rounded-full bg-emerald-400/10 blur-3xl" />
+        </div>
+
+        <div className="relative grid gap-3 p-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <StatusBadge status={branchStatus} testId="badge-summary-status" />
+              <Badge variant="outline" className={`rounded-full border px-3 py-1 text-[11px] uppercase tracking-[0.22em] ${currentStatus.surface} ${currentStatus.accent}`}>
+                Vista ejecutiva
+              </Badge>
+            </div>
+
+            <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
+              <div className="space-y-1">
+                <p className="text-xs font-medium uppercase tracking-[0.26em] text-muted-foreground">Resumen comercial</p>
+                <h2 className="max-w-3xl text-xl font-semibold tracking-tight text-foreground md:text-2xl">
+                  Así va {branchName}
+                </h2>
+                <p className="max-w-2xl text-sm text-muted-foreground" data-testid="text-status-description">
+                  {currentStatus.description}
+                </p>
+              </div>
+              <div className="rounded-2xl border border-slate-200/80 bg-slate-50/80 px-3 py-2 text-sm shadow-sm dark:border-slate-800/80 dark:bg-slate-900/50">
+                <p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Perfil público</p>
+                <p className="mt-1 font-medium text-foreground">/app/{branchSlug}</p>
+              </div>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-4">
+              {topOverviewCards.map((item) => (
+                <div
+                  key={item.title}
+                  className={`min-h-[102px] rounded-2xl border border-white/70 bg-gradient-to-br ${item.tint} p-3.5 shadow-sm backdrop-blur-sm dark:border-white/10 dark:bg-white/5`}
+                >
+                  <div className="mb-3 flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">{item.title}</p>
+                      {isLoading || reservationLoading ? (
+                        <Skeleton className="mt-2.5 h-7 w-20 rounded-lg" />
+                      ) : (
+                        <p className="mt-2.5 text-xl font-semibold tracking-tight md:text-2xl" data-testid={item.valueTestId}>
+                          {item.value}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-white/85 shadow-sm dark:bg-slate-950/60">
+                      <item.icon className={`h-4.5 w-4.5 ${item.iconClassName}`} />
+                    </div>
+                  </div>
+                  <p className="text-xs leading-5 text-muted-foreground">{item.helper}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid gap-3">
+            <Card className="border-white/70 bg-white/85 shadow-[0_18px_45px_-35px_rgba(15,23,42,0.55)] backdrop-blur-sm dark:border-white/10 dark:bg-slate-950/70">
+              <CardHeader className="pb-2">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Clock className="h-4 w-4 text-violet-500" />
+                  Próxima reserva
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {reservationLoading ? (
+                  <div className="space-y-2">
+                    <Skeleton className="h-6 w-40" />
+                    <Skeleton className="h-4 w-28" />
+                  </div>
+                ) : reservationStats?.nextBooking ? (
+                  <div className="space-y-1">
+                    <p className="text-lg font-semibold leading-tight" data-testid="text-next-reservation">
+                      {reservationStats.nextBooking.className}
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      {reservationStats.nextBooking.startTime} · {formatShortDate(reservationStats.nextBooking.bookingDate)}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="rounded-2xl border border-dashed border-border/70 bg-muted/30 p-3.5">
+                    <p className="text-sm font-medium text-foreground" data-testid="text-next-reservation">Sin reservas próximas</p>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">Cuando entren nuevas citas o clases, aparecerán aquí.</p>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-3 gap-2.5">
+                  <div className="rounded-2xl bg-sky-50 p-2.5 dark:bg-sky-950/30">
+                    <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Próximas</p>
+                    <p className="mt-1.5 text-lg font-semibold">{dashboardMetrics?.upcomingBookings ?? 0}</p>
+                  </div>
+                  <div className="rounded-2xl bg-amber-50 p-2.5 dark:bg-amber-950/30">
+                    <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Canceladas</p>
+                    <p className="mt-1.5 text-lg font-semibold">{dashboardMetrics?.cancelledBookings ?? 0}</p>
+                  </div>
+                  <div className="rounded-2xl bg-rose-50 p-2.5 dark:bg-rose-950/30">
+                    <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">No show</p>
+                    <p className="mt-1.5 text-lg font-semibold">{dashboardMetrics?.noShowBookings ?? 0}</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="border-white/70 bg-white/85 shadow-[0_18px_45px_-35px_rgba(15,23,42,0.55)] backdrop-blur-sm dark:border-white/10 dark:bg-slate-950/70">
+              <CardHeader className="pb-2">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Building2 className="h-4 w-4 text-sky-500" />
+                  Perfil público
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="rounded-2xl bg-muted/40 p-3.5">
+                  <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Ruta visible</p>
+                  <p className="mt-2 text-sm font-semibold" data-testid="text-branch-slug-dashboard">
+                    /app/{branchSlug}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">Comparte este enlace con tus clientes para reservas y contenido.</p>
+                </div>
+                <Button
+                  variant="outline"
+                  className="w-full justify-between rounded-2xl border-border/70 bg-background/80"
+                  onClick={() => window.open(`/app/${branchSlug}`, "_blank")}
+                  data-testid="button-view-public-page"
+                >
+                  Ver perfil público
+                  <ExternalLink className="h-4 w-4" />
+                </Button>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-3 xl:grid-cols-3">
+        <Card className="border-emerald-200/70 bg-gradient-to-br from-emerald-50 via-white to-emerald-50/40 shadow-sm dark:border-emerald-900/40 dark:bg-emerald-950/20">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-medium uppercase tracking-[0.22em] text-muted-foreground">Ingresos del mes</p>
+                {financeLoading ? <Skeleton className="mt-2.5 h-7 w-28" /> : <p className="mt-2.5 text-2xl font-semibold">{formatCurrencyMx(monthIncome)}</p>}
+              </div>
+              <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-emerald-500/10">
+                <ArrowUpRight className="h-4.5 w-4.5 text-emerald-600 dark:text-emerald-400" />
+              </div>
+            </div>
+            <p className="mt-2.5 text-xs text-muted-foreground">Ventas o cobros registrados en Caja durante el mes actual.</p>
+          </CardContent>
+        </Card>
+
+        <Card className="border-amber-200/70 bg-gradient-to-br from-amber-50 via-white to-amber-50/40 shadow-sm dark:border-amber-900/40 dark:bg-amber-950/20">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-medium uppercase tracking-[0.22em] text-muted-foreground">Gastos del mes</p>
+                {financeLoading ? <Skeleton className="mt-2.5 h-7 w-28" /> : <p className="mt-2.5 text-2xl font-semibold">{formatCurrencyMx(monthExpense)}</p>}
+              </div>
+              <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-amber-500/10">
+                <ArrowDownRight className="h-4.5 w-4.5 text-amber-600 dark:text-amber-400" />
+              </div>
+            </div>
+            <p className="mt-2.5 text-xs text-muted-foreground">Egresos operativos capturados por tu equipo en este periodo.</p>
+          </CardContent>
+        </Card>
+
+        <Card className="border-sky-200/70 bg-gradient-to-br from-sky-50 via-white to-sky-50/40 shadow-sm dark:border-sky-900/40 dark:bg-sky-950/20">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-medium uppercase tracking-[0.22em] text-muted-foreground">Ganancia del mes</p>
+                {financeLoading ? <Skeleton className="mt-2.5 h-7 w-28" /> : <p className="mt-2.5 text-2xl font-semibold">{formatCurrencyMx(monthNet)}</p>}
+              </div>
+              <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-sky-500/10">
+                <Wallet className="h-4.5 w-4.5 text-sky-600 dark:text-sky-400" />
+              </div>
+            </div>
+            <p className="mt-2.5 text-xs text-muted-foreground">Diferencia simple entre ingresos y gastos. No sustituye contabilidad fiscal.</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid gap-3 xl:grid-cols-12">
+        <div className="space-y-3 xl:col-span-8">
+          <Card className="border-white/70 bg-white/90 shadow-[0_18px_50px_-40px_rgba(15,23,42,0.65)] dark:border-white/10 dark:bg-slate-950/70">
+            <CardHeader className="space-y-2 pb-2">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <BarChart3 className="h-4 w-4 text-primary" />
+                    Movimiento de los últimos 30 días
+                  </CardTitle>
+                  <p className="text-sm text-muted-foreground">Visualiza ingresos, gastos y ganancia neta con la información ya capturada en Caja.</p>
+                </div>
+                <Badge variant="outline" className="rounded-full px-3 py-1 text-[11px] uppercase tracking-[0.18em]">
+                  Últimos 30 días
+                </Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="pt-3">
+              {financeLoading ? (
+                <Skeleton className="h-[248px] w-full rounded-2xl" />
+              ) : hasChartData ? (
+                <ChartContainer config={financeChartConfig} className="h-[248px] w-full">
+                  <AreaChart data={chartData} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="incomeFill" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="var(--color-income)" stopOpacity={0.35} />
+                        <stop offset="95%" stopColor="var(--color-income)" stopOpacity={0.02} />
+                      </linearGradient>
+                      <linearGradient id="expenseFill" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="var(--color-expense)" stopOpacity={0.22} />
+                        <stop offset="95%" stopColor="var(--color-expense)" stopOpacity={0.02} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid vertical={false} strokeDasharray="3 3" />
+                    <XAxis dataKey="shortDate" tickLine={false} axisLine={false} minTickGap={24} />
+                    <YAxis
+                      tickLine={false}
+                      axisLine={false}
+                      width={62}
+                      tickFormatter={(value: number) => formatCompactNumber(value)}
+                    />
+                    <ChartTooltip
+                      content={
+                        <ChartTooltipContent
+                          formatter={(value, name) => (
+                            <div className="flex min-w-[160px] items-center justify-between gap-4">
+                              <span className="text-muted-foreground">{name}</span>
+                              <span className="font-medium text-foreground">{formatCurrencyMx(Number(value) || 0)}</span>
+                            </div>
+                          )}
+                          labelFormatter={(_, payload) => payload?.[0]?.payload?.shortDate || ""}
+                        />
+                      }
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="income"
+                      stroke="var(--color-income)"
+                      fill="url(#incomeFill)"
+                      strokeWidth={2.4}
+                      activeDot={{ r: 5 }}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="expense"
+                      stroke="var(--color-expense)"
+                      fill="url(#expenseFill)"
+                      strokeWidth={2.1}
+                      activeDot={{ r: 4 }}
+                    />
+                    <Line type="monotone" dataKey="net" stroke="var(--color-net)" strokeWidth={2.2} dot={false} />
+                  </AreaChart>
+                </ChartContainer>
+              ) : (
+                <div className="flex h-[212px] flex-col items-center justify-center rounded-3xl border border-dashed border-border/70 bg-muted/20 px-6 text-center">
+                  <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10">
+                    <BarChart3 className="h-5 w-5 text-primary" />
+                  </div>
+                  <h3 className="text-base font-semibold">Aún no hay suficiente movimiento para la gráfica</h3>
+                  <p className="mt-2 max-w-md text-sm leading-6 text-muted-foreground">
+                    Registra ingresos o gastos en la pestaña Caja y aquí verás la tendencia comercial de tu sucursal en tiempo real.
+                  </p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <AlertsSection
+            alerts={alerts}
+            isLoading={alertsLoading}
+            branchName={branchName}
+            whatsappTemplates={whatsappTemplates || {}}
+            onViewClient={onViewClient}
+          />
+        </div>
+
+        <div className="space-y-3 xl:col-span-4">
+          <Card className="border-white/70 bg-white/90 shadow-[0_18px_50px_-40px_rgba(15,23,42,0.65)] dark:border-white/10 dark:bg-slate-950/70">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Sparkles className="h-4 w-4 text-fuchsia-500" />
+                Tracción comercial
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+              {commercialHighlights.map((item) => (
+                <div key={item.title} className="rounded-2xl border border-border/60 bg-background/70 p-3.5">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{item.title}</p>
+                      <p className="mt-1.5 text-xl font-semibold">{item.value}</p>
+                    </div>
+                    <item.icon className={`h-4.5 w-4.5 ${item.accent}`} />
+                  </div>
+                  <p className="mt-1.5 text-xs text-muted-foreground">{item.helper}</p>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+
+          <Card className="border-white/70 bg-white/90 shadow-[0_18px_50px_-40px_rgba(15,23,42,0.65)] dark:border-white/10 dark:bg-slate-950/70">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <TrendingUp className="h-4 w-4 text-emerald-500" />
+                Lo que más se mueve
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Top ingresos</p>
+                  <span className="text-[11px] text-muted-foreground">Mes actual</span>
+                </div>
+                {financeSummary?.topIncomeCategories?.length ? (
+                  financeSummary.topIncomeCategories.slice(0, 3).map((item) => (
+                    <div key={`income-${item.category}`} className="flex items-center justify-between gap-3 rounded-2xl bg-emerald-50/70 px-3 py-2 dark:bg-emerald-950/20">
+                      <span className="text-sm font-medium">{formatCategoryLabel(item.category)}</span>
+                      <span className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">{formatCurrencyMx(item.total)}</span>
+                    </div>
+                  ))
+                ) : (
+                  <p className="rounded-2xl border border-dashed border-border/70 px-3 py-4 text-sm text-muted-foreground">
+                    Aún no hay ingresos suficientes para destacar categorías.
+                  </p>
+                )}
+              </div>
+
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Top gastos</p>
+                  <span className="text-[11px] text-muted-foreground">Mes actual</span>
+                </div>
+                {financeSummary?.topExpenseCategories?.length ? (
+                  financeSummary.topExpenseCategories.slice(0, 3).map((item) => (
+                    <div key={`expense-${item.category}`} className="flex items-center justify-between gap-3 rounded-2xl bg-amber-50/70 px-3 py-2 dark:bg-amber-950/20">
+                      <span className="text-sm font-medium">{formatCategoryLabel(item.category)}</span>
+                      <span className="text-sm font-semibold text-amber-700 dark:text-amber-400">{formatCurrencyMx(item.total)}</span>
+                    </div>
+                  ))
+                ) : (
+                  <p className="rounded-2xl border border-dashed border-border/70 px-3 py-4 text-sm text-muted-foreground">
+                    Todavía no hay gastos categorizados para mostrar.
+                  </p>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
+          <NotificationsPanel
+            title="Notificaciones de la sucursal"
+            limit={5}
+            emptyMessage="Sin notificaciones recientes para tu sucursal."
+            testIdPrefix="branch-notifications"
+          />
+
+          <TodayBirthdaysSection
+            alerts={alerts}
+            branchName={branchName}
+            whatsappTemplates={whatsappTemplates || {}}
+            onViewClient={onViewClient}
+          />
+
+          <AnnouncementsSection branchId={branchId} />
+          <WhatsAppConfigCard />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ResumenTabDesktopSaaS({ branchStats, branchStatus, branchSlug, branchId, branchName, isLoading, reservationStats, reservationLoading, dashboardMetrics, alerts, alertsLoading, onViewClient }: {
+  branchStats: { activeMemberships: number; uniqueActiveCustomers: number; totalCustomers: number } | undefined;
+  branchStatus: string;
+  branchSlug: string;
+  branchId: string;
+  branchName: string;
+  isLoading: boolean;
+  reservationStats: ReservationStats | undefined;
+  reservationLoading: boolean;
+  dashboardMetrics: BranchDashboardMetrics | undefined;
+  alerts: AlertsData | undefined;
+  alertsLoading: boolean;
+  onViewClient: (userId: string) => void;
+}) {
+  const { data: whatsappTemplates } = useQuery<WhatsAppTemplates>({
+    queryKey: ["/api/branch/whatsapp-templates"],
+  });
+
+  const financeFrom = getIsoDateDaysAgo(29);
+  const financeTo = getIsoDateDaysAgo(0);
+  const { data: financeSummary, isLoading: financeLoading } = useQuery<BranchFinanceSummary>({
+    queryKey: ["/api/branch/finance/summary", "overview", financeFrom, financeTo],
+    queryFn: async () => {
+      const res = await fetch(`/api/branch/finance/summary?from=${financeFrom}&to=${financeTo}`, {
+        credentials: "include",
+      });
+      if (!res.ok) {
+        throw new Error("No se pudo cargar el resumen financiero");
+      }
+      return res.json();
+    },
+    staleTime: 60_000,
+  });
+
+  const statusConfig: Record<string, { label: string; description: string; accent: string; surface: string }> = {
+    active: {
+      label: "Activa",
+      description: "Tu sucursal está operando con normalidad y lista para recibir clientes.",
+      accent: "text-emerald-600 dark:text-emerald-400",
+      surface: "bg-emerald-500/10 border-emerald-200/70 dark:border-emerald-800/60",
+    },
+    suspended: {
+      label: "Suspendida",
+      description: "Hay una restricción temporal. Conviene revisarla cuanto antes.",
+      accent: "text-amber-600 dark:text-amber-400",
+      surface: "bg-amber-500/10 border-amber-200/70 dark:border-amber-800/60",
+    },
+    blacklisted: {
+      label: "Bloqueada",
+      description: "La sucursal necesita atención administrativa antes de volver a operar.",
+      accent: "text-rose-600 dark:text-rose-400",
+      surface: "bg-rose-500/10 border-rose-200/70 dark:border-rose-800/60",
+    },
+  };
+
+  const currentStatus = statusConfig[branchStatus] || statusConfig.active;
+  const monthIncome = financeSummary?.monthIncome ?? 0;
+  const monthExpense = financeSummary?.monthExpense ?? 0;
+  const monthNet = monthIncome - monthExpense;
+  const chartData = (financeSummary?.dailyBreakdown || []).map((item) => ({
+    ...item,
+    shortDate: formatShortDate(item.date),
+  }));
+  const hasChartData = chartData.some((item) => item.income > 0 || item.expense > 0 || item.net !== 0);
+
+  const financeChartConfig = {
+    income: { label: "Ingresos", color: "#22c55e" },
+    expense: { label: "Gastos", color: "#f97316" },
+    net: { label: "Ganancia", color: "#2563eb" },
+  } as const;
+
+  const topCards = [
+    {
+      title: "Clientes con membresía",
+      value: branchStats?.uniqueActiveCustomers ?? 0,
+      helper: branchStats && branchStats.totalCustomers > branchStats.uniqueActiveCustomers
+        ? `${branchStats.totalCustomers} registrados`
+        : "Activos hoy",
+      icon: Users,
+      iconClassName: "text-sky-600 dark:text-sky-400",
+      tint: "from-sky-500/15 via-sky-500/5 to-transparent",
+      testId: "text-clients-count",
+    },
+    {
+      title: "Membresías activas",
+      value: branchStats?.activeMemberships ?? 0,
+      helper: "Planes vigentes",
+      icon: CreditCard,
+      iconClassName: "text-emerald-600 dark:text-emerald-400",
+      tint: "from-emerald-500/15 via-emerald-500/5 to-transparent",
+      testId: "text-memberships-count",
+    },
+    {
+      title: "Reservas de hoy",
+      value: reservationStats?.todayCount ?? 0,
+      helper: "Agenda confirmada",
+      icon: CalendarDays,
+      iconClassName: "text-violet-600 dark:text-violet-400",
+      tint: "from-violet-500/15 via-violet-500/5 to-transparent",
+      testId: "text-reservations-today",
+    },
+    {
+      title: "Ingresos del mes",
+      value: formatCurrencyMx(monthIncome),
+      helper: "Cobros en Caja",
+      icon: ArrowUpRight,
+      iconClassName: "text-emerald-600 dark:text-emerald-400",
+      tint: "from-emerald-500/15 via-emerald-500/5 to-transparent",
+      testId: "text-income-month-overview",
+    },
+    {
+      title: "Gastos del mes",
+      value: formatCurrencyMx(monthExpense),
+      helper: "Salidas registradas",
+      icon: ArrowDownRight,
+      iconClassName: "text-amber-600 dark:text-amber-400",
+      tint: "from-amber-500/15 via-amber-500/5 to-transparent",
+    },
+    {
+      title: "Ganancia del mes",
+      value: formatCurrencyMx(monthNet),
+      helper: "Ingreso menos gasto",
+      icon: Wallet,
+      iconClassName: "text-sky-600 dark:text-sky-400",
+      tint: "from-sky-500/15 via-sky-500/5 to-transparent",
+    },
+  ];
+
+  const commercialHighlights = [
+    {
+      title: "Clientes recurrentes",
+      value: dashboardMetrics?.activeClients ?? 0,
+      helper: "Activos o VIP en tu CRM",
+      icon: Sparkles,
+      accent: "text-fuchsia-600 dark:text-fuchsia-400",
+    },
+    {
+      title: "Promociones activas",
+      value: dashboardMetrics?.activePromotions ?? 0,
+      helper: "Campañas visibles",
+      icon: Tag,
+      accent: "text-amber-600 dark:text-amber-400",
+    },
+    {
+      title: "Reseñas recientes",
+      value: dashboardMetrics?.recentReviews ?? 0,
+      helper: "Últimos 30 días",
+      icon: MessageCircle,
+      accent: "text-cyan-600 dark:text-cyan-400",
+    },
+    {
+      title: "Clases por agotarse",
+      value: dashboardMetrics?.lowClassesClients ?? 0,
+      helper: "Listos para renovar",
+      icon: Gift,
+      accent: "text-rose-600 dark:text-rose-400",
+    },
+  ];
+
+  return (
+    <div className="space-y-3">
+      <section className="rounded-[22px] border border-slate-200/70 bg-white/95 p-4 shadow-sm dark:border-slate-800/80 dark:bg-slate-950/80">
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <StatusBadge status={branchStatus} testId="badge-summary-status" />
+              <Badge variant="outline" className={`rounded-full border px-3 py-1 text-[11px] uppercase tracking-[0.22em] ${currentStatus.surface} ${currentStatus.accent}`}>
+                Resumen ejecutivo
+              </Badge>
+            </div>
+            <h2 className="text-xl font-semibold tracking-tight text-foreground md:text-2xl">
+              Así va {branchName}
+            </h2>
+            <p className="text-sm text-muted-foreground" data-testid="text-status-description">
+              {currentStatus.description}
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="rounded-2xl border border-slate-200/80 bg-slate-50/80 px-3 py-2 text-sm shadow-sm dark:border-slate-800/80 dark:bg-slate-900/50">
+              <p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Perfil público</p>
+              <p className="mt-1 font-medium text-foreground">/app/{branchSlug}</p>
+            </div>
+            <Button
+              variant="outline"
+              className="rounded-2xl"
+              onClick={() => window.open(`/app/${branchSlug}`, "_blank")}
+              data-testid="button-view-public-page"
+            >
+              Ver perfil
+              <ExternalLink className="ml-2 h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+
+        <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
+          {topCards.map((item) => (
+            <div
+              key={item.title}
+              className={`min-h-[102px] rounded-2xl border border-white/70 bg-gradient-to-br ${item.tint} p-3.5 shadow-sm backdrop-blur-sm dark:border-white/10 dark:bg-white/5`}
+            >
+              <div className="mb-3 flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">{item.title}</p>
+                  {isLoading || reservationLoading ? (
+                    <Skeleton className="mt-2.5 h-7 w-20 rounded-lg" />
+                  ) : (
+                    <p className="mt-2.5 truncate text-xl font-semibold tracking-tight md:text-2xl" data-testid={item.testId}>
+                      {item.value}
+                    </p>
+                  )}
+                </div>
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-white/85 shadow-sm dark:bg-slate-950/60">
+                  <item.icon className={`h-4.5 w-4.5 ${item.iconClassName}`} />
+                </div>
+              </div>
+              <p className="text-xs leading-5 text-muted-foreground">{item.helper}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="grid gap-3 xl:grid-cols-[minmax(0,1.55fr)_360px]">
+        <Card className="border-white/70 bg-white/90 shadow-sm dark:border-white/10 dark:bg-slate-950/70">
+          <CardHeader className="space-y-2 pb-2">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <BarChart3 className="h-4 w-4 text-primary" />
+                  Movimiento de los últimos 30 días
+                </CardTitle>
+                <p className="text-sm text-muted-foreground">Ingresos, gastos y ganancia neta con la información ya capturada en Caja.</p>
+              </div>
+              <Badge variant="outline" className="rounded-full px-3 py-1 text-[11px] uppercase tracking-[0.18em]">
+                Últimos 30 días
+              </Badge>
+            </div>
+          </CardHeader>
+          <CardContent className="pt-3">
+            {financeLoading ? (
+              <Skeleton className="h-[240px] w-full rounded-2xl" />
+            ) : hasChartData ? (
+              <ChartContainer config={financeChartConfig} className="h-[240px] w-full">
+                <AreaChart data={chartData} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="incomeFillDesktop" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="var(--color-income)" stopOpacity={0.35} />
+                      <stop offset="95%" stopColor="var(--color-income)" stopOpacity={0.02} />
+                    </linearGradient>
+                    <linearGradient id="expenseFillDesktop" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="var(--color-expense)" stopOpacity={0.22} />
+                      <stop offset="95%" stopColor="var(--color-expense)" stopOpacity={0.02} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid vertical={false} strokeDasharray="3 3" />
+                  <XAxis dataKey="shortDate" tickLine={false} axisLine={false} minTickGap={24} />
+                  <YAxis
+                    tickLine={false}
+                    axisLine={false}
+                    width={62}
+                    tickFormatter={(value: number) => formatCompactNumber(value)}
+                  />
+                  <ChartTooltip
+                    content={
+                      <ChartTooltipContent
+                        formatter={(value, name) => (
+                          <div className="flex min-w-[160px] items-center justify-between gap-4">
+                            <span className="text-muted-foreground">{name}</span>
+                            <span className="font-medium text-foreground">{formatCurrencyMx(Number(value) || 0)}</span>
+                          </div>
+                        )}
+                        labelFormatter={(_, payload) => payload?.[0]?.payload?.shortDate || ""}
+                      />
+                    }
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="income"
+                    stroke="var(--color-income)"
+                    fill="url(#incomeFillDesktop)"
+                    strokeWidth={2.4}
+                    activeDot={{ r: 5 }}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="expense"
+                    stroke="var(--color-expense)"
+                    fill="url(#expenseFillDesktop)"
+                    strokeWidth={2.1}
+                    activeDot={{ r: 4 }}
+                  />
+                  <Line type="monotone" dataKey="net" stroke="var(--color-net)" strokeWidth={2.2} dot={false} />
+                </AreaChart>
+              </ChartContainer>
+            ) : (
+              <div className="flex h-[210px] flex-col items-center justify-center rounded-3xl border border-dashed border-border/70 bg-muted/20 px-6 text-center">
+                <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10">
+                  <BarChart3 className="h-5 w-5 text-primary" />
+                </div>
+                <h3 className="text-base font-semibold">Aún no hay suficiente movimiento para la gráfica</h3>
+                <p className="mt-2 max-w-md text-sm leading-6 text-muted-foreground">
+                  Registra ingresos o gastos en la pestaña Caja y aquí verás la tendencia comercial de tu sucursal.
+                </p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <div className="grid gap-3">
+          <Card className="border-white/70 bg-white/90 shadow-sm dark:border-white/10 dark:bg-slate-950/70">
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Clock className="h-4 w-4 text-violet-500" />
+                Próxima reserva
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {reservationLoading ? (
+                <div className="space-y-2">
+                  <Skeleton className="h-6 w-40" />
+                  <Skeleton className="h-4 w-28" />
+                </div>
+              ) : reservationStats?.nextBooking ? (
+                <div className="space-y-1">
+                  <p className="text-lg font-semibold leading-tight" data-testid="text-next-reservation">
+                    {reservationStats.nextBooking.className}
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    {reservationStats.nextBooking.startTime} · {formatShortDate(reservationStats.nextBooking.bookingDate)}
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-dashed border-border/70 bg-muted/30 p-3.5">
+                  <p className="text-sm font-medium text-foreground" data-testid="text-next-reservation">Sin reservas próximas</p>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">Cuando entren nuevas citas o clases, aparecerán aquí.</p>
+                </div>
+              )}
+
+              <div className="grid grid-cols-3 gap-2.5">
+                <div className="rounded-2xl bg-sky-50 p-2.5 dark:bg-sky-950/30">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Próximas</p>
+                  <p className="mt-1.5 text-lg font-semibold">{dashboardMetrics?.upcomingBookings ?? 0}</p>
+                </div>
+                <div className="rounded-2xl bg-amber-50 p-2.5 dark:bg-amber-950/30">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Canceladas</p>
+                  <p className="mt-1.5 text-lg font-semibold">{dashboardMetrics?.cancelledBookings ?? 0}</p>
+                </div>
+                <div className="rounded-2xl bg-rose-50 p-2.5 dark:bg-rose-950/30">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">No show</p>
+                  <p className="mt-1.5 text-lg font-semibold">{dashboardMetrics?.noShowBookings ?? 0}</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-white/70 bg-white/90 shadow-sm dark:border-white/10 dark:bg-slate-950/70">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Sparkles className="h-4 w-4 text-fuchsia-500" />
+                Tracción comercial
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+              {commercialHighlights.map((item) => (
+                <div key={item.title} className="rounded-2xl border border-border/60 bg-background/70 p-3.5">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{item.title}</p>
+                      <p className="mt-1.5 text-xl font-semibold">{item.value}</p>
+                    </div>
+                    <item.icon className={`h-4.5 w-4.5 ${item.accent}`} />
+                  </div>
+                  <p className="mt-1.5 text-xs text-muted-foreground">{item.helper}</p>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+
+          <Card className="border-white/70 bg-white/90 shadow-sm dark:border-white/10 dark:bg-slate-950/70">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <TrendingUp className="h-4 w-4 text-emerald-500" />
+                Top ingresos y gastos
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Top ingresos</p>
+                  <span className="text-[11px] text-muted-foreground">Mes actual</span>
+                </div>
+                {financeSummary?.topIncomeCategories?.length ? (
+                  financeSummary.topIncomeCategories.slice(0, 3).map((item) => (
+                    <div key={`income-dashboard-${item.category}`} className="flex items-center justify-between gap-3 rounded-2xl bg-emerald-50/70 px-3 py-2 dark:bg-emerald-950/20">
+                      <span className="text-sm font-medium">{formatCategoryLabel(item.category)}</span>
+                      <span className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">{formatCurrencyMx(item.total)}</span>
+                    </div>
+                  ))
+                ) : (
+                  <p className="rounded-2xl border border-dashed border-border/70 px-3 py-4 text-sm text-muted-foreground">
+                    Aún no hay ingresos suficientes para destacar categorías.
+                  </p>
+                )}
+              </div>
+
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Top gastos</p>
+                  <span className="text-[11px] text-muted-foreground">Mes actual</span>
+                </div>
+                {financeSummary?.topExpenseCategories?.length ? (
+                  financeSummary.topExpenseCategories.slice(0, 3).map((item) => (
+                    <div key={`expense-dashboard-${item.category}`} className="flex items-center justify-between gap-3 rounded-2xl bg-amber-50/70 px-3 py-2 dark:bg-amber-950/20">
+                      <span className="text-sm font-medium">{formatCategoryLabel(item.category)}</span>
+                      <span className="text-sm font-semibold text-amber-700 dark:text-amber-400">{formatCurrencyMx(item.total)}</span>
+                    </div>
+                  ))
+                ) : (
+                  <p className="rounded-2xl border border-dashed border-border/70 px-3 py-4 text-sm text-muted-foreground">
+                    Todavía no hay gastos categorizados para mostrar.
+                  </p>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="text-base font-semibold text-foreground">Operación rápida</h3>
+            <p className="text-sm text-muted-foreground">Accesos cortos para lo que tu equipo revisa más seguido.</p>
+          </div>
+        </div>
+
+        <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-4">
+          <NotificationsPanel
+            title="Notificaciones"
+            limit={3}
+            emptyMessage="Sin notificaciones recientes para tu sucursal."
+            testIdPrefix="branch-notifications"
+          />
+
+          <TodayBirthdaysSection
+            alerts={alerts}
+            branchName={branchName}
+            whatsappTemplates={whatsappTemplates || {}}
+            onViewClient={onViewClient}
+          />
+
+          <AnnouncementsSection branchId={branchId} />
+          <WhatsAppConfigCard />
+        </div>
+      </section>
+
+      <AlertsSection
+        alerts={alerts}
+        isLoading={alertsLoading}
+        branchName={branchName}
+        whatsappTemplates={whatsappTemplates || {}}
+        onViewClient={onViewClient}
+      />
+    </div>
+  );
+}
+
 function WhatsAppConfigCard() {
   const { toast } = useToast();
   const [editing, setEditing] = useState(false);
@@ -1342,7 +2913,7 @@ function WhatsAppConfigCard() {
             </Button>
           </div>
         ) : (
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-3">
             <div>
               {currentNumber ? (
                 <p className="text-sm font-medium text-green-700 dark:text-green-400" data-testid="text-whatsapp-configured">
@@ -1357,7 +2928,7 @@ function WhatsAppConfigCard() {
                 {currentNumber ? "Los clientes pueden contactarte por WhatsApp" : "Configura tu número para que los clientes te contacten"}
               </p>
             </div>
-            <Button variant="outline" size="sm" onClick={handleEdit} data-testid="button-edit-whatsapp">
+            <Button variant="outline" size="sm" className="shrink-0 rounded-xl" onClick={handleEdit} data-testid="button-edit-whatsapp">
               {currentNumber ? "Editar" : "Agregar"}
             </Button>
           </div>
@@ -1711,7 +3282,7 @@ export default function DashboardPage() {
       )}
 
       <header className="sticky top-0 z-50 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60" style={{ top: (branchStatus === "suspended" && isImpersonating) ? '80px' : (branchStatus === "suspended" || isImpersonating) ? '40px' : undefined }}>
-        <div className="max-w-5xl mx-auto flex items-center justify-between gap-3 p-4 flex-wrap">
+        <div className="mx-auto flex max-w-[1680px] items-center justify-between gap-3 px-4 py-4 lg:px-6">
           <div className="flex items-center gap-3">
             <div className="flex items-center justify-center w-9 h-9 rounded-md bg-primary">
               <LayoutDashboard className="h-5 w-5 text-primary-foreground" />
@@ -1723,7 +3294,11 @@ export default function DashboardPage() {
               <p className="text-xs text-muted-foreground">Panel de administración</p>
             </div>
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-2">
+            <div className="hidden text-right lg:block">
+              <p className="text-sm font-medium text-foreground">{user?.name || user?.email || "Administrador"}</p>
+              <p className="text-xs text-muted-foreground">{user?.email || "Sucursal"}</p>
+            </div>
             <StatusBadge status={branchStatus} />
             <Button size="icon" variant="ghost" onClick={toggleTheme} data-testid="button-theme-dashboard">
               {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
@@ -1738,9 +3313,9 @@ export default function DashboardPage() {
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto p-4">
+      <main className="mx-auto max-w-[1680px] px-4 py-4 lg:px-6">
         <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as TabValue)}>
-          <div className="overflow-x-auto -mx-4 px-4 pb-1">
+          <div className="overflow-x-auto pb-1 lg:hidden">
             <TabsList className="w-full sm:w-auto" data-testid="tabs-dashboard-nav">
               {DASHBOARD_TABS.map((tab) => (
                 <TabsTrigger
@@ -1756,54 +3331,104 @@ export default function DashboardPage() {
             </TabsList>
           </div>
 
-          <TabsContent value="resumen" className="mt-4">
-            <ResumenTab
-              branchStats={branchStats}
-              branchStatus={branchStatus}
-              branchSlug={branchSlug}
-              branchId={user?.branchId || ""}
-              branchName={branchName}
-              isLoading={statsLoading}
-              reservationStats={reservationStats}
-              reservationLoading={reservationLoading}
-              dashboardMetrics={dashboardMetrics}
-              alerts={alerts}
-              alertsLoading={alertsLoading}
-              onViewClient={() => setActiveTab("clientes")}
-            />
-          </TabsContent>
+          <div className="mt-4 grid gap-4 lg:grid-cols-[240px_minmax(0,1fr)] lg:items-start lg:gap-6">
+            <aside className="hidden lg:block lg:sticky lg:top-24">
+              <div className="rounded-[28px] border border-slate-800/80 bg-slate-950 px-4 py-5 text-white shadow-[0_22px_70px_-38px_rgba(15,23,42,0.65)]">
+                <div className="flex items-center gap-3 px-1">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-sky-500/20 text-sky-100">
+                    <LayoutDashboard className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold">Webcool</p>
+                    <p className="text-xs text-slate-400">Panel de sucursal</p>
+                  </div>
+                </div>
 
-          <TabsContent value="clientes" className="mt-4">
-            <ClientesTab />
-          </TabsContent>
+                <div className="mt-5 rounded-2xl border border-white/10 bg-white/5 px-3 py-3">
+                  <p className="text-sm font-medium text-white">{branchName}</p>
+                  <div className="mt-2 flex items-center gap-2">
+                    <StatusBadge status={branchStatus} />
+                  </div>
+                </div>
 
-          <TabsContent value="membresias" className="mt-4">
-            <MembresiasTab />
-          </TabsContent>
+                <TabsList className="mt-4 flex h-auto w-full flex-col items-stretch gap-1 bg-transparent p-0" data-testid="tabs-dashboard-nav-desktop">
+                  {DASHBOARD_TABS.map((tab) => (
+                    <TabsTrigger
+                      key={tab.value}
+                      value={tab.value}
+                      className="h-auto w-full justify-start gap-3 rounded-2xl px-3 py-3 text-left text-sm font-medium text-slate-300 data-[state=active]:bg-white data-[state=active]:text-slate-950 data-[state=active]:shadow-sm"
+                      data-testid={`tab-desktop-${tab.value}`}
+                    >
+                      <tab.icon className="h-4 w-4 shrink-0" />
+                      <span>{tab.label}</span>
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </div>
+            </aside>
 
-          <TabsContent value="caja" className="mt-4">
-            <CajaTab />
-          </TabsContent>
+            <div className="min-w-0">
+              <div className="mb-4 hidden items-center justify-between rounded-[26px] border border-slate-200/70 bg-white/90 px-4 py-3 shadow-sm dark:border-slate-800/80 dark:bg-slate-950/75 lg:flex">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.24em] text-muted-foreground">Dashboard de sucursal</p>
+                  <h2 className="text-lg font-semibold text-foreground">Resumen operativo y comercial</h2>
+                </div>
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <span className="rounded-full border border-border/70 bg-background px-3 py-1.5">Sucursal: {branchName}</span>
+                  <span className="rounded-full border border-border/70 bg-background px-3 py-1.5">{user?.name || user?.email || "Administrador"}</span>
+                </div>
+              </div>
 
-          <TabsContent value="reservas" className="mt-4">
-            <ReservasTab />
-          </TabsContent>
+              <TabsContent value="resumen" className="mt-0">
+                <ResumenTabDesktopSaaS
+                  branchStats={branchStats}
+                  branchStatus={branchStatus}
+                  branchSlug={branchSlug}
+                  branchId={user?.branchId || ""}
+                  branchName={branchName}
+                  isLoading={statsLoading}
+                  reservationStats={reservationStats}
+                  reservationLoading={reservationLoading}
+                  dashboardMetrics={dashboardMetrics}
+                  alerts={alerts}
+                  alertsLoading={alertsLoading}
+                  onViewClient={() => setActiveTab("clientes")}
+                />
+              </TabsContent>
 
-          <TabsContent value="contenido" className="mt-4">
-            <ContenidoTab />
-          </TabsContent>
+              <TabsContent value="clientes" className="mt-0">
+                <ClientesTab />
+              </TabsContent>
 
-          <TabsContent value="perfil" className="mt-4">
-            <PerfilPublicoTab />
-          </TabsContent>
+              <TabsContent value="membresias" className="mt-0">
+                <MembresiasTab />
+              </TabsContent>
 
-          <TabsContent value="promociones" className="mt-4">
-            <PromocionesTab />
-          </TabsContent>
+              <TabsContent value="caja" className="mt-0">
+                <CajaTab />
+              </TabsContent>
 
-          <TabsContent value="tv" className="mt-4">
-            <TvModeTab />
-          </TabsContent>
+              <TabsContent value="reservas" className="mt-0">
+                <ReservasTab />
+              </TabsContent>
+
+              <TabsContent value="contenido" className="mt-0">
+                <ContenidoTab />
+              </TabsContent>
+
+              <TabsContent value="perfil" className="mt-0">
+                <PerfilPublicoTab />
+              </TabsContent>
+
+              <TabsContent value="promociones" className="mt-0">
+                <PromocionesTab />
+              </TabsContent>
+
+              <TabsContent value="tv" className="mt-0">
+                <TvModeTab />
+              </TabsContent>
+            </div>
+          </div>
         </Tabs>
       </main>
     </div>

@@ -128,7 +128,7 @@ function NotificationList({
                   disabled={markReadPending}
                   data-testid={`${testIdPrefix}-read-${notification.id}`}
                 >
-                  Marcar leida
+                  Marcar leída
                 </Button>
               )}
               <Button
@@ -277,7 +277,7 @@ export default function NotificationsPanel({
                 data-testid={`${testIdPrefix}-read-all`}
               >
                 {readAllMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
-                Marcar todas como leidas
+                Marcar todas como leídas
               </Button>
             </div>
           </div>
@@ -316,7 +316,7 @@ export default function NotificationsPanel({
               {unreadCount > 0 && <Badge variant="destructive">{unreadCount}</Badge>}
             </DialogTitle>
             <DialogDescription>
-              Administra tus notificaciones internas. Se muestran un maximo de {FULL_PAGE_SIZE} por pagina.
+              Administra tus notificaciones internas. Se muestran un máximo de {FULL_PAGE_SIZE} por página.
             </DialogDescription>
           </DialogHeader>
 
@@ -338,7 +338,7 @@ export default function NotificationsPanel({
                 onClick={() => setFilter("unread")}
                 data-testid={`${testIdPrefix}-filter-unread`}
               >
-                No leidas ({unreadCount})
+                No leídas ({unreadCount})
               </Button>
               <Button
                 type="button"
@@ -347,7 +347,7 @@ export default function NotificationsPanel({
                 onClick={() => setFilter("read")}
                 data-testid={`${testIdPrefix}-filter-read`}
               >
-                Leidas ({readCount})
+                Leídas ({readCount})
               </Button>
             </div>
 
@@ -359,7 +359,7 @@ export default function NotificationsPanel({
                 disabled={readAllMutation.isPending || unreadCount === 0}
                 data-testid={`${testIdPrefix}-dialog-read-all`}
               >
-                Marcar todas como leidas
+                Marcar todas como leídas
               </Button>
               <Button
                 variant="outline"
@@ -369,7 +369,7 @@ export default function NotificationsPanel({
                 data-testid={`${testIdPrefix}-delete-read`}
               >
                 {deleteReadMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
-                Eliminar leidas
+                Eliminar leídas
               </Button>
               <Button
                 variant="destructive"
@@ -409,7 +409,7 @@ export default function NotificationsPanel({
           </div>
 
           <div className="flex items-center justify-between gap-3 pt-2 border-t">
-            <p className="text-sm text-muted-foreground">Pagina {page}</p>
+            <p className="text-sm text-muted-foreground">Página {page}</p>
             <div className="flex items-center gap-2">
               <Button
                 variant="outline"

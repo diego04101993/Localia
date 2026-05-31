@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   ArrowDownRight,
   ArrowUpRight,
+  ChartPie,
   CalendarRange,
   Download,
   Loader2,
@@ -21,11 +22,14 @@ import {
 } from "@shared/schema";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/lib/auth";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Progress } from "@/components/ui/progress";
 import {
   Select,
   SelectContent,
@@ -43,6 +47,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
+import { CartesianGrid, Cell, Line, LineChart, Pie, PieChart, XAxis, YAxis } from "recharts";
 
 type FinanceEntryType = "income" | "expense";
 type RangePreset = "today" | "week" | "month" | "three_months" | "custom";
@@ -119,7 +124,7 @@ const PAYMENT_LABELS: Record<string, string> = {
 };
 
 const CATEGORY_LABELS: Record<string, string> = {
-  membresia: "Membresia",
+  membresia: "Membresía",
   paquete: "Paquete",
   servicio: "Servicio",
   producto: "Producto",
@@ -179,6 +184,34 @@ function getQuickRange(preset: Exclude<RangePreset, "custom">) {
   return { from: fromDate.toLocaleDateString("en-CA"), to };
 }
 
+function getLastNDaysRange(days: number) {
+  const today = new Date(`${getTodayDateString()}T12:00:00`);
+  const fromDate = new Date(today);
+  fromDate.setDate(fromDate.getDate() - (days - 1));
+  return {
+    from: fromDate.toLocaleDateString("en-CA"),
+    to: today.toLocaleDateString("en-CA"),
+  };
+}
+
+function getCurrentMonthRange() {
+  const today = getTodayDateString();
+  return {
+    from: `${today.slice(0, 7)}-01`,
+    to: today,
+  };
+}
+
+function getPreviousMonthRange() {
+  const today = new Date(`${getTodayDateString()}T12:00:00`);
+  const previousMonthStart = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+  const previousMonthEnd = new Date(today.getFullYear(), today.getMonth(), 0);
+  return {
+    from: previousMonthStart.toLocaleDateString("en-CA"),
+    to: previousMonthEnd.toLocaleDateString("en-CA"),
+  };
+}
+
 function buildSummaryUrl(from: string, to: string) {
   const params = new URLSearchParams();
   if (from) params.set("from", from);
@@ -235,7 +268,7 @@ function createInitialFormState(): FinanceFormState {
 }
 
 function getCategoryLabel(category: string | null) {
-  if (!category) return "Sin categoria";
+  if (!category) return "Sin categoría";
   return CATEGORY_LABELS[category] || category;
 }
 
@@ -252,7 +285,23 @@ function invalidateFinanceQueries() {
   });
 }
 
+function getExpenseBucketLabel(category: string) {
+  switch (category) {
+    case "renta":
+      return "Renta";
+    case "sueldos":
+      return "Sueldos";
+    case "mantenimiento":
+      return "Servicios";
+    case "publicidad":
+      return "Marketing";
+    default:
+      return "Otros";
+  }
+}
+
 export default function CajaTab() {
+  const { user } = useAuth();
   const { toast } = useToast();
   const [rangePreset, setRangePreset] = useState<RangePreset>("month");
   const [from, setFrom] = useState(getQuickRange("month").from);
@@ -265,6 +314,9 @@ export default function CajaTab() {
   const [clientSearch, setClientSearch] = useState("");
   const [form, setForm] = useState<FinanceFormState>(createInitialFormState());
   const [editingEntry, setEditingEntry] = useState<BranchFinanceEntry | null>(null);
+  const [monthlyGoal, setMonthlyGoal] = useState<number | null>(null);
+  const [goalDraft, setGoalDraft] = useState("");
+  const [goalEditing, setGoalEditing] = useState(false);
 
   const summaryUrl = buildSummaryUrl(from, to);
   const entriesUrl = buildEntriesUrl({
@@ -277,9 +329,27 @@ export default function CajaTab() {
     page,
     limit: 20,
   });
+  const last30Range = getLastNDaysRange(30);
+  const currentMonthRange = getCurrentMonthRange();
+  const previousMonthRange = getPreviousMonthRange();
+  const financeGoalStorageKey = user?.branchId
+    ? `webcool:caja:goal:${user.branchId}:${currentMonthRange.from.slice(0, 7)}`
+    : null;
 
   const { data: summary, isLoading: summaryLoading } = useQuery<BranchFinanceSummary>({
     queryKey: [summaryUrl],
+  });
+
+  const { data: last30Summary, isLoading: last30Loading } = useQuery<BranchFinanceSummary>({
+    queryKey: [buildSummaryUrl(last30Range.from, last30Range.to), "last30"],
+  });
+
+  const { data: currentMonthSummary } = useQuery<BranchFinanceSummary>({
+    queryKey: [buildSummaryUrl(currentMonthRange.from, currentMonthRange.to), "current-month"],
+  });
+
+  const { data: previousMonthSummary } = useQuery<BranchFinanceSummary>({
+    queryKey: [buildSummaryUrl(previousMonthRange.from, previousMonthRange.to), "previous-month"],
   });
 
   const { data: entriesData, isLoading: entriesLoading } = useQuery<FinanceEntriesResponse>({
@@ -293,6 +363,25 @@ export default function CajaTab() {
   useEffect(() => {
     setPage(1);
   }, [from, to, typeFilter, categoryFilter, clientFilter, search]);
+
+  useEffect(() => {
+    if (!financeGoalStorageKey || typeof window === "undefined") return;
+    const rawValue = window.localStorage.getItem(financeGoalStorageKey);
+    if (!rawValue) {
+      setMonthlyGoal(null);
+      setGoalDraft("");
+      return;
+    }
+
+    const parsed = Number(rawValue);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      setMonthlyGoal(parsed);
+      setGoalDraft(parsed.toString());
+    } else {
+      setMonthlyGoal(null);
+      setGoalDraft("");
+    }
+  }, [financeGoalStorageKey]);
 
   const filteredClients = clients.filter((client) => {
     const fullName = [client.name, client.lastName].filter(Boolean).join(" ").trim().toLowerCase();
@@ -415,8 +504,80 @@ export default function CajaTab() {
     link.click();
   }
 
+  function handleSaveGoal() {
+    const numericGoal = Number(goalDraft);
+    if (!financeGoalStorageKey) {
+      toast({
+        title: "No se pudo guardar la meta",
+        description: "No encontramos la sucursal activa para guardar esta configuración.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!Number.isFinite(numericGoal) || numericGoal <= 0) {
+      toast({
+        title: "Meta inválida",
+        description: "Captura una meta mensual válida mayor a cero.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    window.localStorage.setItem(financeGoalStorageKey, String(numericGoal));
+    setMonthlyGoal(numericGoal);
+    setGoalEditing(false);
+    toast({ title: "Meta mensual guardada" });
+  }
+
   const pageCount = entriesData?.pageCount || 1;
   const pageLabel = entriesData?.total ? `${entriesData.total} movimientos` : "Sin movimientos";
+  const last30ChartData = useMemo(
+    () =>
+      (last30Summary?.dailyBreakdown || []).map((item) => ({
+        ...item,
+        shortDate: new Date(`${item.date}T12:00:00`).toLocaleDateString("es-MX", {
+          day: "2-digit",
+          month: "short",
+        }),
+      })),
+    [last30Summary],
+  );
+  const hasLast30Data = last30ChartData.some((item) => item.income > 0 || item.expense > 0);
+  const financeChartConfig = {
+    income: { label: "Ingresos", color: "#16a34a" },
+    expense: { label: "Gastos", color: "#dc2626" },
+  } as const;
+
+  const expenseDistribution = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const item of summary?.topExpenseCategories || []) {
+      const bucket = getExpenseBucketLabel(item.category);
+      totals.set(bucket, (totals.get(bucket) || 0) + Number(item.total || 0));
+    }
+
+    const donutColors: Record<string, string> = {
+      Renta: "#2563eb",
+      Sueldos: "#7c3aed",
+      Servicios: "#0f766e",
+      Marketing: "#ea580c",
+      Otros: "#64748b",
+    };
+
+    return Array.from(totals.entries()).map(([label, total]) => ({
+      label,
+      total,
+      fill: donutColors[label] || "#64748b",
+    }));
+  }, [summary]);
+
+  const totalExpenseDistribution = expenseDistribution.reduce((acc, item) => acc + item.total, 0);
+  const currentMonthNet = (currentMonthSummary?.monthIncome || 0) - (currentMonthSummary?.monthExpense || 0);
+  const previousMonthNet = (previousMonthSummary?.monthIncome || 0) - (previousMonthSummary?.monthExpense || 0);
+  const monthVariation = previousMonthNet === 0
+    ? null
+    : ((currentMonthNet - previousMonthNet) / Math.abs(previousMonthNet)) * 100;
+  const goalProgress = monthlyGoal ? Math.min(100, ((currentMonthSummary?.monthIncome || 0) / monthlyGoal) * 100) : 0;
 
   return (
     <div className="space-y-6">
@@ -484,6 +645,239 @@ export default function CajaTab() {
         )}
       </div>
 
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(320px,0.9fr)]">
+        <Card className="border-white/70 bg-white/95 shadow-sm dark:border-slate-800/80 dark:bg-slate-950/85">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <CalendarRange className="h-4 w-4 text-emerald-600" />
+              Ingresos vs Gastos
+            </CardTitle>
+            <CardDescription>Últimos 30 días de movimientos registrados en Caja.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {last30Loading ? (
+              <Skeleton className="h-[240px] w-full rounded-2xl" />
+            ) : hasLast30Data ? (
+              <ChartContainer config={financeChartConfig} className="h-[240px] w-full">
+                <LineChart data={last30ChartData} margin={{ top: 8, right: 12, left: 4, bottom: 0 }}>
+                  <CartesianGrid vertical={false} strokeDasharray="3 3" />
+                  <XAxis dataKey="shortDate" tickLine={false} axisLine={false} minTickGap={24} />
+                  <YAxis
+                    tickLine={false}
+                    axisLine={false}
+                    width={70}
+                    tickFormatter={(value: number) => `$${Math.round(value).toLocaleString("es-MX")}`}
+                  />
+                  <ChartTooltip
+                    content={
+                      <ChartTooltipContent
+                        formatter={(value, name) => (
+                          <div className="flex min-w-[160px] items-center justify-between gap-4">
+                            <span className="text-muted-foreground">{name}</span>
+                            <span className="font-medium text-foreground">{formatCurrency(Number(value) || 0)}</span>
+                          </div>
+                        )}
+                        labelFormatter={(_, payload) => payload?.[0]?.payload?.shortDate || ""}
+                      />
+                    }
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="income"
+                    stroke="var(--color-income)"
+                    strokeWidth={2.6}
+                    dot={false}
+                    activeDot={{ r: 5 }}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="expense"
+                    stroke="var(--color-expense)"
+                    strokeWidth={2.6}
+                    dot={false}
+                    activeDot={{ r: 5 }}
+                  />
+                </LineChart>
+              </ChartContainer>
+            ) : (
+              <div className="flex h-[220px] flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-6 text-center dark:border-slate-800 dark:bg-slate-900/30">
+                <PiggyBank className="mb-3 h-9 w-9 text-slate-400" />
+                <p className="text-sm font-medium text-foreground">Todavía no hay suficientes movimientos</p>
+                <p className="mt-1 max-w-md text-sm text-muted-foreground">
+                  Registra ingresos o gastos y aquí verás la tendencia de tu negocio en los últimos 30 días.
+                </p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <div className="grid gap-4">
+          <Card className="border-white/70 bg-white/95 shadow-sm dark:border-slate-800/80 dark:bg-slate-950/85">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">Meta mensual</CardTitle>
+              <CardDescription>Referencia simple para seguir tu objetivo comercial.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {goalEditing ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={goalDraft}
+                    onChange={(event) => setGoalDraft(event.target.value)}
+                    placeholder="Ej. 50000"
+                    className="max-w-[180px]"
+                  />
+                  <Button size="sm" onClick={handleSaveGoal}>Guardar</Button>
+                  <Button size="sm" variant="ghost" onClick={() => {
+                    setGoalEditing(false);
+                    setGoalDraft(monthlyGoal ? String(monthlyGoal) : "");
+                  }}>
+                    Cancelar
+                  </Button>
+                </div>
+              ) : monthlyGoal ? (
+                <>
+                  <div className="flex items-end justify-between gap-3">
+                    <div>
+                      <p className="text-2xl font-semibold text-foreground">
+                        {formatCurrency(currentMonthSummary?.monthIncome || 0)}
+                      </p>
+                      <p className="text-sm text-muted-foreground">
+                        de {formatCurrency(monthlyGoal)}
+                      </p>
+                    </div>
+                    <Button size="sm" variant="outline" onClick={() => setGoalEditing(true)}>
+                      Editar meta
+                    </Button>
+                  </div>
+                  <Progress value={goalProgress} className="h-2.5" />
+                  <p className="text-xs text-muted-foreground">
+                    {goalProgress >= 100 ? "Meta alcanzada o superada este mes." : `${goalProgress.toFixed(0)}% de avance mensual.`}
+                  </p>
+                </>
+              ) : (
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 p-4 dark:border-slate-800 dark:bg-slate-900/30">
+                  <p className="text-sm font-medium text-foreground">Aún no tienes una meta mensual</p>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Define una meta simple para comparar lo que ya ingresó este mes.
+                  </p>
+                  <Button size="sm" className="mt-3" onClick={() => setGoalEditing(true)}>
+                    Definir meta
+                  </Button>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-1">
+            <Card className="border-white/70 bg-white/95 shadow-sm dark:border-slate-800/80 dark:bg-slate-950/85">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Comparativo mensual</CardTitle>
+                <CardDescription>Comparación simple de ganancia neta.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Mes anterior</span>
+                  <span className="font-medium">{formatCurrency(previousMonthNet)}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Mes actual</span>
+                  <span className="font-medium">{formatCurrency(currentMonthNet)}</span>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-2 dark:border-slate-800 dark:bg-slate-900/40">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm text-muted-foreground">Variación</span>
+                    <span className={`text-sm font-semibold ${
+                      monthVariation == null
+                        ? "text-slate-600 dark:text-slate-300"
+                        : monthVariation >= 0
+                          ? "text-emerald-600 dark:text-emerald-400"
+                          : "text-rose-600 dark:text-rose-400"
+                    }`}>
+                      {monthVariation == null ? "Sin base comparativa" : `${monthVariation >= 0 ? "+" : ""}${monthVariation.toFixed(1)}%`}
+                    </span>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="border-white/70 bg-white/95 shadow-sm dark:border-slate-800/80 dark:bg-slate-950/85">
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <ChartPie className="h-4 w-4 text-rose-600" />
+                  Distribución de gastos
+                </CardTitle>
+                <CardDescription>Cómo se reparten tus egresos en el rango filtrado.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {totalExpenseDistribution > 0 ? (
+                  <>
+                    <ChartContainer
+                      config={{
+                        renta: { label: "Renta", color: "#2563eb" },
+                        sueldos: { label: "Sueldos", color: "#7c3aed" },
+                        servicios: { label: "Servicios", color: "#0f766e" },
+                        marketing: { label: "Marketing", color: "#ea580c" },
+                        otros: { label: "Otros", color: "#64748b" },
+                      }}
+                      className="mx-auto h-[220px] w-full max-w-[260px]"
+                    >
+                      <PieChart>
+                        <Pie
+                          data={expenseDistribution}
+                          dataKey="total"
+                          nameKey="label"
+                          innerRadius={56}
+                          outerRadius={84}
+                          paddingAngle={2}
+                        >
+                          {expenseDistribution.map((entry) => (
+                            <Cell key={entry.label} fill={entry.fill} />
+                          ))}
+                        </Pie>
+                        <ChartTooltip
+                          content={
+                            <ChartTooltipContent
+                              formatter={(value, name) => (
+                                <div className="flex min-w-[150px] items-center justify-between gap-4">
+                                  <span className="text-muted-foreground">{name}</span>
+                                  <span className="font-medium text-foreground">{formatCurrency(Number(value) || 0)}</span>
+                                </div>
+                              )}
+                            />
+                          }
+                        />
+                      </PieChart>
+                    </ChartContainer>
+                    <div className="grid gap-2">
+                      {expenseDistribution.map((item) => (
+                        <div key={item.label} className="flex items-center justify-between rounded-xl border border-slate-200/70 bg-slate-50/70 px-3 py-2 text-sm dark:border-slate-800 dark:bg-slate-900/40">
+                          <div className="flex items-center gap-2">
+                            <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: item.fill }} />
+                            <span>{item.label}</span>
+                          </div>
+                          <span className="font-medium">{formatCurrency(item.total)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex h-[220px] flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-6 text-center dark:border-slate-800 dark:bg-slate-900/30">
+                    <ChartPie className="mb-3 h-9 w-9 text-slate-400" />
+                    <p className="text-sm font-medium text-foreground">Aún no hay gastos para distribuir</p>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Cuando registres egresos, aquí verás en qué se está yendo tu dinero.
+                    </p>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      </div>
+
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-2 text-base">
@@ -497,7 +891,7 @@ export default function CajaTab() {
             <Button variant={rangePreset === "today" ? "default" : "outline"} size="sm" onClick={() => handleQuickRangeChange("today")}>Hoy</Button>
             <Button variant={rangePreset === "week" ? "default" : "outline"} size="sm" onClick={() => handleQuickRangeChange("week")}>Esta semana</Button>
             <Button variant={rangePreset === "month" ? "default" : "outline"} size="sm" onClick={() => handleQuickRangeChange("month")}>Este mes</Button>
-            <Button variant={rangePreset === "three_months" ? "default" : "outline"} size="sm" onClick={() => handleQuickRangeChange("three_months")}>Ultimos 3 meses</Button>
+            <Button variant={rangePreset === "three_months" ? "default" : "outline"} size="sm" onClick={() => handleQuickRangeChange("three_months")}>Últimos 3 meses</Button>
             <Button variant={rangePreset === "custom" ? "default" : "outline"} size="sm" onClick={() => setRangePreset("custom")}>Rango personalizado</Button>
           </div>
 
@@ -536,7 +930,7 @@ export default function CajaTab() {
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>Categoria</Label>
+              <Label>Categoría</Label>
               <Select value={categoryFilter} onValueChange={setCategoryFilter}>
                 <SelectTrigger><SelectValue placeholder="Todas" /></SelectTrigger>
                 <SelectContent>
@@ -621,7 +1015,7 @@ export default function CajaTab() {
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>Categoria</Label>
+              <Label>Categoría</Label>
               <Select
                 value={form.category}
                 onValueChange={(value) => setForm((current) => ({ ...current, category: value }))}
@@ -654,7 +1048,7 @@ export default function CajaTab() {
               />
             </div>
             <div className="space-y-2">
-              <Label>Metodo de pago</Label>
+              <Label>Método de pago</Label>
               <Select
                 value={form.paymentMethod}
                 onValueChange={(value) => setForm((current) => ({ ...current, paymentMethod: value }))}
@@ -748,7 +1142,7 @@ export default function CajaTab() {
             </Button>
             {editingEntry ? (
               <Button variant="outline" onClick={handleCancelEdit}>
-                Cancelar edicion
+                Cancelar edición
               </Button>
             ) : null}
           </div>
@@ -778,7 +1172,7 @@ export default function CajaTab() {
               </div>
             ) : !entriesData?.items.length ? (
               <div className="rounded-xl border border-dashed p-8 text-center">
-                <p className="font-medium">Aun no hay movimientos para este rango</p>
+                <p className="font-medium">Aún no hay movimientos para este rango</p>
                 <p className="mt-1 text-sm text-muted-foreground">Registra un ingreso o gasto para empezar a usar tu caja.</p>
               </div>
             ) : (
@@ -788,10 +1182,10 @@ export default function CajaTab() {
                     <TableRow>
                       <TableHead>Fecha</TableHead>
                       <TableHead>Tipo</TableHead>
-                      <TableHead>Categoria</TableHead>
+                      <TableHead>Categoría</TableHead>
                       <TableHead>Concepto</TableHead>
                       <TableHead>Cliente</TableHead>
-                      <TableHead>Metodo</TableHead>
+                      <TableHead>Método</TableHead>
                       <TableHead className="text-right">Monto</TableHead>
                       <TableHead>Acciones</TableHead>
                     </TableRow>
@@ -843,7 +1237,7 @@ export default function CajaTab() {
 
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-sm text-muted-foreground">
-                    Pagina {entriesData.page} de {pageCount}
+                    Página {entriesData.page} de {pageCount}
                   </p>
                   <div className="flex gap-2">
                     <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((current) => current - 1)}>
@@ -862,7 +1256,7 @@ export default function CajaTab() {
         <div className="space-y-4">
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-base">Total por dia</CardTitle>
+              <CardTitle className="text-base">Total por día</CardTitle>
               <CardDescription>Comparativo diario del rango elegido.</CardDescription>
             </CardHeader>
             <CardContent>
@@ -893,8 +1287,8 @@ export default function CajaTab() {
 
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-base">Categorias top</CardTitle>
-              <CardDescription>Las categorias que mas mueven tu caja.</CardDescription>
+              <CardTitle className="text-base">Categorías top</CardTitle>
+              <CardDescription>Las categorías que más mueven tu caja.</CardDescription>
             </CardHeader>
             <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-1">
               <div>
