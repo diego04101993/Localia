@@ -343,6 +343,23 @@ type BlockedUserRecord = {
   blockedAt: string | null;
   blockedReason: string | null;
 };
+type MonthlyBillingRow = {
+  id: string | null;
+  branchId: string;
+  branchName: string;
+  branchSlug: string;
+  branchStatus: string;
+  monthlyFeeAmount: number;
+  paymentDay: number | null;
+  lastPaymentDate: string | null;
+  nextPaymentDate: string | null;
+  paymentStatus: "pending" | "paid" | "overdue";
+  sellerName: string | null;
+  sellerCommissionAmount: number;
+  notes: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
 
 const CUSTOMER_REPORT_LABELS: Record<string, string> = {
   comentario_ofensivo: "Comentario ofensivo",
@@ -448,6 +465,13 @@ function invalidateCatalog() {
   queryClient.invalidateQueries({ queryKey: ["/api/superadmin/reservation-audit"] });
 }
 
+function invalidateMonthlyBilling() {
+  queryClient.invalidateQueries({ queryKey: ["/api/superadmin/monthly-billing"] });
+  queryClient.invalidateQueries({
+    predicate: (q) => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/notifications"),
+  });
+}
+
 function customerFullName(customer: { name: string; lastName?: string | null }) {
   return customer.lastName ? `${customer.name} ${customer.lastName}` : customer.name;
 }
@@ -470,6 +494,46 @@ function formatShortDateTime(date?: string | null) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function formatMoney(value?: number | null) {
+  return new Intl.NumberFormat("es-MX", {
+    style: "currency",
+    currency: "MXN",
+    maximumFractionDigits: 2,
+  }).format(Number(value || 0));
+}
+
+function monthlyBillingStatusLabel(status: MonthlyBillingRow["paymentStatus"]) {
+  if (status === "paid") return "Pagado";
+  if (status === "overdue") return "Vencido";
+  return "Pendiente";
+}
+
+function monthlyBillingStatusClass(status: MonthlyBillingRow["paymentStatus"]) {
+  if (status === "paid") return "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300";
+  if (status === "overdue") return "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300";
+  return "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300";
+}
+
+function buildDefaultMonthlyBillingRow(branch: Branch): MonthlyBillingRow {
+  return {
+    id: null,
+    branchId: branch.id,
+    branchName: branch.name,
+    branchSlug: branch.slug,
+    branchStatus: branch.status,
+    monthlyFeeAmount: 0,
+    paymentDay: null,
+    lastPaymentDate: null,
+    nextPaymentDate: null,
+    paymentStatus: "pending",
+    sellerName: null,
+    sellerCommissionAmount: 0,
+    notes: null,
+    createdAt: null,
+    updatedAt: null,
+  };
 }
 
 function customerReportReasonLabel(reason: string) {
@@ -569,6 +633,185 @@ function DeleteBranchDialog({ branch }: { branch: Branch }) {
           >
             {mutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
             Eliminar
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function HardDeleteBranchDialog({ branch }: { branch: Branch }) {
+  const [open, setOpen] = useState(false);
+  const [confirmationText, setConfirmationText] = useState("");
+  const { toast } = useToast();
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const resp = await apiRequest("DELETE", `/api/superadmin/branches/${branch.id}/hard`, {
+        confirmationText,
+      });
+      return resp.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Sucursal eliminada definitivamente" });
+      invalidateBranches();
+      invalidateMonthlyBilling();
+      setOpen(false);
+      setConfirmationText("");
+    },
+    onError: (err: any) => {
+      toast({
+        title: "Error",
+        description: extractErrorMessage(err, "No se pudo eliminar definitivamente la sucursal"),
+        variant: "destructive",
+      });
+    },
+  });
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(value) => {
+        setOpen(value);
+        if (!value) {
+          setConfirmationText("");
+        }
+      }}
+    >
+      <DialogTrigger asChild>
+        <Button
+          size="sm"
+          variant="destructive"
+          className="gap-2"
+          data-testid={`button-hard-delete-branch-${branch.id}`}
+        >
+          <Trash2 className="h-4 w-4" />
+          Borrado total
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Eliminar sucursal definitivamente</DialogTitle>
+          <DialogDescription>
+            Esta acción borra la sucursal, sus admins, contenido, reservas, membresías, promociones, caja y demás datos relacionados. No se puede deshacer.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4 py-2">
+          <div className="rounded-lg border border-destructive/25 bg-destructive/5 p-3 text-sm text-muted-foreground">
+            Escribe <strong>ELIMINAR SUCURSAL</strong> para confirmar el borrado permanente de <strong>{branch.name}</strong>.
+          </div>
+          <Input
+            value={confirmationText}
+            onChange={(e) => setConfirmationText(e.target.value)}
+            placeholder="ELIMINAR SUCURSAL"
+            data-testid={`input-hard-delete-branch-${branch.id}`}
+          />
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setOpen(false)}>
+            Cancelar
+          </Button>
+          <Button
+            variant="destructive"
+            disabled={confirmationText.trim() !== "ELIMINAR SUCURSAL" || mutation.isPending}
+            onClick={() => mutation.mutate()}
+            data-testid={`button-confirm-hard-delete-branch-${branch.id}`}
+          >
+            {mutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Eliminar definitivamente
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function HardDeleteCustomerDialog({
+  customerId,
+  customerName,
+  onDeleted,
+}: {
+  customerId: string;
+  customerName: string;
+  onDeleted: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [confirmationText, setConfirmationText] = useState("");
+  const { toast } = useToast();
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const resp = await apiRequest("DELETE", `/api/superadmin/app-customers/${customerId}/hard`, {
+        confirmationText,
+      });
+      return resp.json();
+    },
+    onSuccess: () => {
+      invalidateAppCustomers();
+      toast({ title: "Cliente eliminado definitivamente" });
+      setOpen(false);
+      setConfirmationText("");
+      onDeleted();
+    },
+    onError: (err: any) => {
+      toast({
+        title: "Error",
+        description: extractErrorMessage(err, "No se pudo eliminar definitivamente el cliente"),
+        variant: "destructive",
+      });
+    },
+  });
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(value) => {
+        setOpen(value);
+        if (!value) {
+          setConfirmationText("");
+        }
+      }}
+    >
+      <DialogTrigger asChild>
+        <Button
+          variant="destructive"
+          className="gap-2"
+          data-testid="button-delete-hard-customer"
+        >
+          <Trash2 className="h-4 w-4" />
+          Eliminar definitivamente
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Eliminar cliente definitivamente</DialogTitle>
+          <DialogDescription>
+            Esta acción borra la cuenta app, membresías, reservas, favoritos, notificaciones y datos relacionados. No se puede deshacer.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4 py-2">
+          <div className="rounded-lg border border-destructive/25 bg-destructive/5 p-3 text-sm text-muted-foreground">
+            Escribe <strong>ELIMINAR CLIENTE</strong> para confirmar el borrado permanente de <strong>{customerName}</strong>.
+          </div>
+          <Input
+            value={confirmationText}
+            onChange={(e) => setConfirmationText(e.target.value)}
+            placeholder="ELIMINAR CLIENTE"
+            data-testid="input-hard-delete-customer"
+          />
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setOpen(false)}>
+            Cancelar
+          </Button>
+          <Button
+            variant="destructive"
+            disabled={confirmationText.trim() !== "ELIMINAR CLIENTE" || mutation.isPending}
+            onClick={() => mutation.mutate()}
+            data-testid="button-confirm-hard-delete-customer"
+          >
+            {mutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Eliminar definitivamente
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -3497,6 +3740,296 @@ function CatalogExecutivePanel() {
   );
 }
 
+function MonthlyBillingPanel() {
+  const { toast } = useToast();
+  const [editingItem, setEditingItem] = useState<MonthlyBillingRow | null>(null);
+  const [formState, setFormState] = useState({
+    monthlyFeeAmount: "0",
+    paymentDay: "1",
+    sellerName: "",
+    sellerCommissionAmount: "0",
+    notes: "",
+  });
+
+  const {
+    data: branchesData,
+    isLoading: branchesLoading,
+    error: branchesError,
+  } = useQuery<Branch[]>({
+    queryKey: ["/api/branches"],
+    queryFn: () => fetchJson("/api/branches"),
+  });
+
+  const {
+    data: billingData,
+    isLoading: billingLoading,
+    error: billingError,
+  } = useQuery<MonthlyBillingRow[]>({
+    queryKey: ["/api/superadmin/monthly-billing"],
+    queryFn: () => fetchJson("/api/superadmin/monthly-billing"),
+  });
+
+  useEffect(() => {
+    if (!editingItem) return;
+    setFormState({
+      monthlyFeeAmount: String(editingItem.monthlyFeeAmount ?? 0),
+      paymentDay: String(editingItem.paymentDay ?? 1),
+      sellerName: editingItem.sellerName ?? "",
+      sellerCommissionAmount: String(editingItem.sellerCommissionAmount ?? 0),
+      notes: editingItem.notes ?? "",
+    });
+  }, [editingItem]);
+
+  const saveMutation = useMutation({
+    mutationFn: async (payload: { branchId: string; data: Record<string, any> }) => {
+      const resp = await apiRequest("PUT", `/api/superadmin/monthly-billing/${payload.branchId}`, payload.data);
+      return resp.json();
+    },
+    onSuccess: () => {
+      invalidateMonthlyBilling();
+      toast({ title: "Iguala guardada", description: "La configuración mensual de la sucursal fue actualizada." });
+      setEditingItem(null);
+    },
+    onError: (err) => {
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo guardar la iguala"), variant: "destructive" });
+    },
+  });
+
+  const markPaidMutation = useMutation({
+    mutationFn: async (branchId: string) => {
+      const resp = await apiRequest("POST", `/api/superadmin/monthly-billing/${branchId}/mark-paid`);
+      return resp.json();
+    },
+    onSuccess: () => {
+      invalidateMonthlyBilling();
+      toast({ title: "Pago registrado", description: "La sucursal quedó marcada como pagada y se notificó al Super Admin." });
+    },
+    onError: (err) => {
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo marcar como pagada"), variant: "destructive" });
+    },
+  });
+
+  const monthlyBillingMap = new Map((billingData || []).map((row) => [row.branchId, row]));
+  const rows = (branchesData || []).map((branch) => monthlyBillingMap.get(branch.id) ?? buildDefaultMonthlyBillingRow(branch));
+  const configuredCount = rows.filter((row) => !!row.id).length;
+  const overdueCount = rows.filter((row) => row.paymentStatus === "overdue").length;
+  const pendingCount = rows.filter((row) => row.paymentStatus === "pending").length;
+  const monthlyTotal = rows.reduce((sum, row) => sum + row.monthlyFeeAmount, 0);
+  const isLoading = branchesLoading || (billingLoading && !billingData);
+
+  const handleSave = () => {
+    if (!editingItem) return;
+    saveMutation.mutate({
+      branchId: editingItem.branchId,
+      data: {
+        monthlyFeeAmount: Number(formState.monthlyFeeAmount || 0),
+        paymentDay: Number(formState.paymentDay || 1),
+        sellerName: formState.sellerName.trim() || null,
+        sellerCommissionAmount: Number(formState.sellerCommissionAmount || 0),
+        notes: formState.notes.trim() || null,
+      },
+    });
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card className="border-0 shadow-sm">
+        <CardHeader className="pb-3">
+          <CardTitle>Igualas mensuales</CardTitle>
+          <CardDescription>
+            Todas las sucursales aparecen aquí aunque todavía no tengan iguala configurada.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <div className="rounded-2xl border bg-card/70 p-4">
+              <p className="text-sm text-muted-foreground">Sucursales configuradas</p>
+              <p className="mt-2 text-2xl font-semibold">{configuredCount}</p>
+            </div>
+            <div className="rounded-2xl border bg-card/70 p-4">
+              <p className="text-sm text-muted-foreground">Pendientes</p>
+              <p className="mt-2 text-2xl font-semibold text-amber-600">{pendingCount}</p>
+            </div>
+            <div className="rounded-2xl border bg-card/70 p-4">
+              <p className="text-sm text-muted-foreground">Vencidas</p>
+              <p className="mt-2 text-2xl font-semibold text-rose-600">{overdueCount}</p>
+            </div>
+            <div className="rounded-2xl border bg-card/70 p-4">
+              <p className="text-sm text-muted-foreground">Ingreso mensual esperado</p>
+              <p className="mt-2 text-2xl font-semibold">{formatMoney(monthlyTotal)}</p>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border bg-card/60">
+            <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
+              <div>
+                <p className="font-medium">Sucursales y cobros</p>
+                <p className="text-sm text-muted-foreground">Configura la iguala por sucursal sin crear registros manuales en SQL.</p>
+              </div>
+              <Badge variant="outline">{rows.length} sucursal(es)</Badge>
+            </div>
+
+            {billingError && (
+              <div className="border-b bg-amber-50/80 px-4 py-3 text-sm text-amber-800 dark:bg-amber-950/20 dark:text-amber-300">
+                No se pudo cargar toda la configuración guardada de igualas. Aun así, se muestran todas las sucursales actuales para configurarlas.
+              </div>
+            )}
+
+            {branchesError ? (
+              <div className="p-10 text-center text-sm text-destructive">
+                No se pudieron cargar las sucursales del sistema.
+              </div>
+            ) : isLoading ? (
+              <div className="space-y-3 p-4">
+                {[1, 2, 3].map((item) => (
+                  <Skeleton key={item} className="h-16 w-full rounded-xl" />
+                ))}
+              </div>
+            ) : rows.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-muted/40 text-left text-muted-foreground">
+                    <tr>
+                      <th className="px-4 py-3 font-medium">Sucursal</th>
+                      <th className="px-4 py-3 font-medium">Monto</th>
+                      <th className="px-4 py-3 font-medium">Día</th>
+                      <th className="px-4 py-3 font-medium">Último pago</th>
+                      <th className="px-4 py-3 font-medium">Próximo cobro</th>
+                      <th className="px-4 py-3 font-medium">Estado</th>
+                      <th className="px-4 py-3 font-medium">Vendedor</th>
+                      <th className="px-4 py-3 font-medium">Comisión</th>
+                      <th className="px-4 py-3 font-medium">Notas</th>
+                      <th className="px-4 py-3 font-medium text-right">Acciones</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((row) => (
+                      <tr key={row.branchId} className="border-t align-top">
+                        <td className="px-4 py-3">
+                          <div className="min-w-[180px]">
+                            <p className="font-medium">{row.branchName}</p>
+                            <p className="text-xs text-muted-foreground">/{row.branchSlug}</p>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap">{formatMoney(row.monthlyFeeAmount)}</td>
+                        <td className="px-4 py-3 whitespace-nowrap">{row.paymentDay ?? "—"}</td>
+                        <td className="px-4 py-3 whitespace-nowrap">{formatShortDate(row.lastPaymentDate)}</td>
+                        <td className="px-4 py-3 whitespace-nowrap">{formatShortDate(row.nextPaymentDate)}</td>
+                        <td className="px-4 py-3">
+                          <Badge className={monthlyBillingStatusClass(row.paymentStatus)}>
+                            {monthlyBillingStatusLabel(row.paymentStatus)}
+                          </Badge>
+                        </td>
+                        <td className="px-4 py-3">{row.sellerName || "—"}</td>
+                        <td className="px-4 py-3 whitespace-nowrap">{formatMoney(row.sellerCommissionAmount)}</td>
+                        <td className="px-4 py-3 max-w-[220px]">
+                          <p className="line-clamp-2 text-muted-foreground">{row.notes || "Sin notas"}</p>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setEditingItem(row)}
+                            >
+                              {row.id ? "Editar" : "Configurar"}
+                            </Button>
+                            <Button
+                              size="sm"
+                              onClick={() => markPaidMutation.mutate(row.branchId)}
+                              disabled={!row.id || !row.paymentDay || markPaidMutation.isPending}
+                            >
+                              Marcar pagado
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="p-10 text-center text-sm text-muted-foreground">
+                Aún no hay sucursales disponibles en el sistema.
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Dialog open={!!editingItem} onOpenChange={(open) => !open && setEditingItem(null)}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{editingItem?.id ? "Editar iguala mensual" : "Configurar iguala mensual"}</DialogTitle>
+            <DialogDescription>
+              Completa los datos básicos de la iguala mensual de esta sucursal.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label>Monto mensual</Label>
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                value={formState.monthlyFeeAmount}
+                onChange={(e) => setFormState((current) => ({ ...current, monthlyFeeAmount: e.target.value }))}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Día de cobro</Label>
+              <Input
+                type="number"
+                min="1"
+                max="31"
+                value={formState.paymentDay}
+                onChange={(e) => setFormState((current) => ({ ...current, paymentDay: e.target.value }))}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Vendedor</Label>
+              <Input
+                value={formState.sellerName}
+                onChange={(e) => setFormState((current) => ({ ...current, sellerName: e.target.value }))}
+                placeholder="Ej. Andrea Ventas"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Comisión mensual</Label>
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                value={formState.sellerCommissionAmount}
+                onChange={(e) => setFormState((current) => ({ ...current, sellerCommissionAmount: e.target.value }))}
+              />
+            </div>
+            <div className="md:col-span-2 space-y-2">
+              <Label>Notas</Label>
+              <Textarea
+                value={formState.notes}
+                onChange={(e) => setFormState((current) => ({ ...current, notes: e.target.value }))}
+                placeholder="Notas internas sobre el acuerdo, seguimiento o cobranza."
+                rows={4}
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditingItem(null)}>
+              Cancelar
+            </Button>
+            <Button onClick={handleSave} disabled={saveMutation.isPending}>
+              {saveMutation.isPending ? "Guardando..." : "Guardar"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
 function PlatformMetricsPanel() {
   const { data, isLoading } = useQuery<PlatformMetricsResponse>({
     queryKey: ["/api/superadmin/platform-metrics"],
@@ -3913,6 +4446,11 @@ function AppCustomerDetailDialog({
                     {deleteMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
                     Eliminar usuario de prueba
                   </Button>
+                  <HardDeleteCustomerDialog
+                    customerId={detail.user.id}
+                    customerName={customerFullName(detail.user)}
+                    onDeleted={() => onOpenChange(false)}
+                  />
                 </div>
               </div>
               <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-center">
@@ -4306,6 +4844,10 @@ function BranchCard({
             <DeleteBranchDialog branch={branch} />
           </div>
         )}
+
+        <div className="mt-3 pt-3 border-t flex justify-end">
+          <HardDeleteBranchDialog branch={branch} />
+        </div>
       </CardContent>
     </Card>
   );
@@ -4460,6 +5002,7 @@ export default function SuperAdminPage() {
         <Tabs defaultValue="branches" className="w-full">
           <TabsList data-testid="tabs-superadmin">
             <TabsTrigger value="branches" data-testid="tab-branches">Sucursales</TabsTrigger>
+            <TabsTrigger value="monthly-billing" data-testid="tab-monthly-billing">Igualas mensuales</TabsTrigger>
             <TabsTrigger value="catalog" data-testid="tab-catalog">Catalogo</TabsTrigger>
             <TabsTrigger value="app-customers" data-testid="tab-app-customers">Clientes App</TabsTrigger>
             <TabsTrigger value="activity" data-testid="tab-activity">Actividad</TabsTrigger>
@@ -4539,6 +5082,10 @@ export default function SuperAdminPage() {
 
           <TabsContent value="app-customers" className="mt-4">
             <AppCustomersPanel />
+          </TabsContent>
+
+          <TabsContent value="monthly-billing" className="mt-4">
+            <MonthlyBillingPanel />
           </TabsContent>
 
           <TabsContent value="catalog" className="mt-4">

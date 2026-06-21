@@ -41,6 +41,7 @@ export const users = pgTable("users", {
   birthDate: text("birth_date"),
   gender: text("gender"),
   googleId: text("google_id").unique(),
+  firebaseUid: text("firebase_uid").unique(),
   authProvider: text("auth_provider").notNull().default("email"),
   emergencyContactName: text("emergency_contact_name"),
   emergencyContactPhone: text("emergency_contact_phone"),
@@ -1008,6 +1009,30 @@ export const branchFinanceEntries = pgTable("branch_finance_entries", {
   index("branch_finance_entries_client_user_idx").on(table.clientUserId),
 ]);
 
+export const branchMonthlyBilling = pgTable("branch_monthly_billing", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .unique()
+    .references(() => branches.id),
+  monthlyFeeAmount: numeric("monthly_fee_amount", { precision: 10, scale: 2 }).notNull().default("0"),
+  paymentDay: integer("payment_day").notNull(),
+  lastPaymentDate: date("last_payment_date"),
+  nextPaymentDate: date("next_payment_date"),
+  paymentStatus: text("payment_status").notNull().default("pending"),
+  sellerName: text("seller_name"),
+  sellerCommissionAmount: numeric("seller_commission_amount", { precision: 10, scale: 2 }).notNull().default("0"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("branch_monthly_billing_status_idx").on(table.paymentStatus),
+  index("branch_monthly_billing_next_payment_date_idx").on(table.nextPaymentDate),
+  index("branch_monthly_billing_seller_name_idx").on(table.sellerName),
+]);
+
 export const insertBranchReviewSchema = createInsertSchema(branchReviews).omit({
   id: true,
   createdAt: true,
@@ -1037,6 +1062,12 @@ export const insertBranchFinanceEntrySchema = createInsertSchema(branchFinanceEn
   deletedAt: true,
 });
 
+export const insertBranchMonthlyBillingSchema = createInsertSchema(branchMonthlyBilling).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
 export type BranchReview = typeof branchReviews.$inferSelect;
 export type InsertBranchReview = z.infer<typeof insertBranchReviewSchema>;
 export type ReviewReport = typeof reviewReports.$inferSelect;
@@ -1047,6 +1078,8 @@ export type NotificationJob = typeof notificationJobs.$inferSelect;
 export type InsertNotificationJob = z.infer<typeof insertNotificationJobSchema>;
 export type BranchFinanceEntry = typeof branchFinanceEntries.$inferSelect;
 export type InsertBranchFinanceEntry = z.infer<typeof insertBranchFinanceEntrySchema>;
+export type BranchMonthlyBilling = typeof branchMonthlyBilling.$inferSelect;
+export type InsertBranchMonthlyBilling = z.infer<typeof insertBranchMonthlyBillingSchema>;
 
 // ─── Password Reset Tokens ───────────────────────────────────────────────────
 export const passwordResetTokens = pgTable("password_reset_tokens", {
@@ -1132,6 +1165,11 @@ export const branchFinancePaymentMethodValues = [
   "mercado_pago",
   "otro",
 ] as const;
+export const monthlyBillingStatusValues = [
+  "pending",
+  "paid",
+  "overdue",
+] as const;
 
 export const createBranchFinanceEntrySchema = z.object({
   type: z.enum(branchFinanceEntryTypeValues),
@@ -1152,6 +1190,17 @@ export const updateBranchFinanceEntrySchema = createBranchFinanceEntrySchema.par
   (data) => Object.keys(data).length > 0,
   { message: "Debes enviar al menos un campo para actualizar" },
 );
+
+export const upsertBranchMonthlyBillingSchema = z.object({
+  monthlyFeeAmount: z.coerce.number().min(0, "El monto no puede ser negativo"),
+  paymentDay: z.coerce.number().int().min(1, "Debe ser del 1 al 31").max(31, "Debe ser del 1 al 31"),
+  lastPaymentDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Formato YYYY-MM-DD").nullable().optional(),
+  nextPaymentDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Formato YYYY-MM-DD").nullable().optional(),
+  paymentStatus: z.enum(monthlyBillingStatusValues).optional(),
+  sellerName: z.string().max(160, "Maximo 160 caracteres").nullable().optional(),
+  sellerCommissionAmount: z.coerce.number().min(0, "La comision no puede ser negativa").optional(),
+  notes: z.string().max(1000, "Maximo 1000 caracteres").nullable().optional(),
+});
 
 export const BRANCH_CATEGORIES = [
   { value: "box", label: "Box / CrossFit" },

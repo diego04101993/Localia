@@ -84,6 +84,9 @@ import {
   branchFinanceEntries,
   type BranchFinanceEntry,
   type InsertBranchFinanceEntry,
+  branchMonthlyBilling,
+  type BranchMonthlyBilling,
+  type InsertBranchMonthlyBilling,
   type ReservationAuditLog,
   type InsertReservationAuditLog,
   passwordResetTokens,
@@ -138,6 +141,42 @@ function getCurrentMonthRange() {
 function toFinanceAmount(value: unknown): number {
   const amount = Number(value);
   return Number.isFinite(amount) ? amount : 0;
+}
+
+function getClampedMonthDate(year: number, monthIndex: number, day: number): Date {
+  const lastDay = new Date(year, monthIndex + 1, 0).getDate();
+  return new Date(year, monthIndex, Math.min(day, lastDay));
+}
+
+function formatDateOnly(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function computeCurrentCyclePaymentDate(paymentDay: number, fromDate = new Date()): string {
+  return formatDateOnly(getClampedMonthDate(fromDate.getFullYear(), fromDate.getMonth(), paymentDay));
+}
+
+function computeNextMonthlyPaymentDate(paymentDay: number, fromDate = new Date()): string {
+  const year = fromDate.getFullYear();
+  const monthIndex = fromDate.getMonth() + 1;
+  return formatDateOnly(getClampedMonthDate(year + Math.floor(monthIndex / 12), monthIndex % 12, paymentDay));
+}
+
+function resolveMonthlyBillingStatus(
+  paymentStatus: string | null | undefined,
+  nextPaymentDate: string | null | undefined,
+): "pending" | "paid" | "overdue" {
+  const today = getMxLocalDate();
+  if (nextPaymentDate && nextPaymentDate < today) {
+    return "overdue";
+  }
+  if (paymentStatus === "paid") {
+    return "paid";
+  }
+  return "pending";
 }
 
 function normalizedSearchSql(column: any) {
@@ -370,11 +409,39 @@ export interface BranchFinanceEntriesResult {
   pageCount: number;
 }
 
+export interface BranchHardDeleteResult {
+  deleted: boolean;
+  reason?: string;
+  branchName?: string;
+  deletedAdminCount: number;
+  uploadUrls: string[];
+}
+
+export interface BranchMonthlyBillingRow {
+  id: string | null;
+  branchId: string;
+  branchName: string;
+  branchSlug: string;
+  branchStatus: string;
+  monthlyFeeAmount: number;
+  paymentDay: number | null;
+  lastPaymentDate: string | null;
+  nextPaymentDate: string | null;
+  paymentStatus: "pending" | "paid" | "overdue";
+  sellerName: string | null;
+  sellerCommissionAmount: number;
+  notes: string | null;
+  createdAt: Date | string | null;
+  updatedAt: Date | string | null;
+}
+
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
   getUserByGoogleId(googleId: string): Promise<User | undefined>;
+  getUserByFirebaseUid(firebaseUid: string): Promise<User | undefined>;
   createUser(user: InsertUser): Promise<User>;
+  deleteCustomerAccount(id: string): Promise<void>;
   updateUserPassword(id: string, passwordHash: string): Promise<User | undefined>;
   getAllBranches(includeDeleted?: boolean): Promise<Branch[]>;
   getBranch(id: string): Promise<Branch | undefined>;
@@ -390,6 +457,7 @@ export interface IStorage {
     searchKeywords?: string | null;
   }): Promise<Branch | undefined>;
   softDeleteBranch(id: string): Promise<Branch | undefined>;
+  hardDeleteBranch(id: string): Promise<BranchHardDeleteResult>;
   getBranchAdmins(branchId: string): Promise<User[]>;
   getUsersByRole(role: string): Promise<User[]>;
   getBranchMetrics(): Promise<BranchMetrics[]>;
@@ -440,7 +508,32 @@ export interface IStorage {
   createBranchFinanceEntry(data: InsertBranchFinanceEntry): Promise<BranchFinanceEntryRow>;
   updateBranchFinanceEntry(branchId: string, entryId: string, data: Partial<InsertBranchFinanceEntry>): Promise<BranchFinanceEntryRow | undefined>;
   softDeleteBranchFinanceEntry(branchId: string, entryId: string): Promise<boolean>;
-  updateUser(id: string, data: { name?: string; lastName?: string; email?: string; phone?: string }): Promise<User | undefined>;
+  getSuperAdminMonthlyBilling(): Promise<BranchMonthlyBillingRow[]>;
+  upsertBranchMonthlyBilling(branchId: string, data: {
+    monthlyFeeAmount: number;
+    paymentDay: number;
+    lastPaymentDate?: string | null;
+    nextPaymentDate?: string | null;
+    paymentStatus?: "pending" | "paid" | "overdue";
+    sellerName?: string | null;
+    sellerCommissionAmount?: number;
+    notes?: string | null;
+  }): Promise<BranchMonthlyBillingRow | undefined>;
+  markBranchMonthlyBillingPaid(branchId: string, paidDate?: string): Promise<BranchMonthlyBillingRow | undefined>;
+  updateUser(id: string, data: {
+    name?: string;
+    lastName?: string | null;
+    email?: string;
+    phone?: string | null;
+    birthDate?: string | null;
+    gender?: string | null;
+    avatarUrl?: string | null;
+    googleId?: string | null;
+    firebaseUid?: string | null;
+    authProvider?: string | null;
+    emailVerified?: boolean;
+    emailVerifiedAt?: string | null;
+  }): Promise<User | undefined>;
   acceptTerms(id: string, version: string): Promise<User | undefined>;
   activateCustomerAccount(id: string, data: { passwordHash: string; name?: string; lastName?: string; phone?: string; birthDate?: string; gender?: string; termsVersion: string }): Promise<User | undefined>;
   createPasswordResetToken(userId: string, token: string, expiresAt: string): Promise<PasswordResetToken>;
@@ -475,6 +568,7 @@ export interface IStorage {
   deleteReadNotifications(actor: { id: string; role: string; branchId?: string | null }): Promise<number>;
   deleteAllNotifications(actor: { id: string; role: string; branchId?: string | null }): Promise<number>;
   cleanupOldNotifications(maxAgeDays?: number): Promise<number>;
+  cleanupOldBranchFinanceEntries(maxAgeDays?: number): Promise<number>;
   getBranchClients(branchId: string, includeLeft?: boolean): Promise<any[]>;
   getClientProfile(userId: string, branchId: string): Promise<any>;
   updateBranchClientCrm(branchId: string, userId: string, data: { clientStatus?: string | null; tags?: string | null; lastVisit?: Date | null }): Promise<any>;
@@ -607,9 +701,86 @@ export class DatabaseStorage implements IStorage {
     return user;
   }
 
+  async getUserByFirebaseUid(firebaseUid: string): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(eq(users.firebaseUid, firebaseUid));
+    return user;
+  }
+
   async createUser(insertUser: InsertUser): Promise<User> {
     const [user] = await db.insert(users).values(insertUser).returning();
     return user;
+  }
+
+  async deleteCustomerAccount(id: string): Promise<void> {
+    await db.transaction(async (tx) => {
+      const userReviewRows = await tx
+        .select({ id: branchReviews.id })
+        .from(branchReviews)
+        .where(eq(branchReviews.userId, id));
+      const userReviewIds = userReviewRows.map((row) => row.id);
+
+      const userBookingRows = await tx
+        .select({ id: classBookings.id })
+        .from(classBookings)
+        .where(eq(classBookings.userId, id));
+      const userBookingIds = userBookingRows.map((row) => row.id);
+
+      const reviewReportsClauses = [eq(reviewReports.reporterUserId, id)];
+      const reviewModerationClauses = [eq(reviewModerationLogs.actorUserId, id)];
+      if (userReviewIds.length > 0) {
+        reviewReportsClauses.push(inArray(reviewReports.reviewId, userReviewIds));
+        reviewModerationClauses.push(inArray(reviewModerationLogs.reviewId, userReviewIds));
+      }
+
+      const reservationAuditClauses = [
+        eq(reservationAuditLogs.customerUserId, id),
+        eq(reservationAuditLogs.actorUserId, id),
+      ];
+      if (userBookingIds.length > 0) {
+        reservationAuditClauses.push(inArray(reservationAuditLogs.bookingId, userBookingIds));
+      }
+
+      await tx.delete(reviewReports).where(or(...reviewReportsClauses));
+      await tx.delete(reviewModerationLogs).where(or(...reviewModerationClauses));
+      await tx.delete(reservationAuditLogs).where(or(...reservationAuditClauses));
+      await tx.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, id));
+      await tx.delete(branchReviews).where(eq(branchReviews.userId, id));
+      await tx.delete(classBookings).where(eq(classBookings.userId, id));
+      await tx.delete(searchLogs).where(eq(searchLogs.userId, id));
+      await tx.delete(memberships).where(eq(memberships.userId, id));
+      await tx.delete(pushTokens).where(eq(pushTokens.userId, id));
+      await tx.delete(notifications).where(eq(notifications.recipientUserId, id));
+      await tx
+        .delete(clientNotes)
+        .where(or(eq(clientNotes.userId, id), eq(clientNotes.createdBy, id)));
+      await tx
+        .delete(attendances)
+        .where(or(eq(attendances.userId, id), eq(attendances.registeredBy, id)));
+      await tx.delete(branchClientCrm).where(eq(branchClientCrm.userId, id));
+      await tx
+        .delete(branchCustomerBlocks)
+        .where(or(eq(branchCustomerBlocks.userId, id), eq(branchCustomerBlocks.blockedByUserId, id)));
+      await tx
+        .delete(customerReports)
+        .where(
+          or(
+            eq(customerReports.userId, id),
+            eq(customerReports.reportedByUserId, id),
+            eq(customerReports.reviewedByUserId, id),
+          ),
+        );
+      await tx.delete(notificationJobs).where(eq(notificationJobs.userId, id));
+      await tx
+        .delete(branchFinanceEntries)
+        .where(or(eq(branchFinanceEntries.clientUserId, id), eq(branchFinanceEntries.createdBy, id)));
+      await tx.delete(systemEvents).where(eq(systemEvents.userId, id));
+      await tx.delete(auditLogs).where(eq(auditLogs.actorUserId, id));
+
+      const deletedRows = await tx.delete(users).where(eq(users.id, id)).returning({ id: users.id });
+      if (deletedRows.length == 0) {
+        throw new Error("User not found");
+      }
+    });
   }
 
   async updateUserPassword(id: string, passwordHash: string): Promise<User | undefined> {
@@ -701,6 +872,211 @@ export class DatabaseStorage implements IStorage {
       .where(eq(branches.id, id))
       .returning();
     return branch;
+  }
+
+  async hardDeleteBranch(id: string): Promise<BranchHardDeleteResult> {
+    const [branch] = await db
+      .select()
+      .from(branches)
+      .where(eq(branches.id, id))
+      .limit(1);
+
+    if (!branch) {
+      return {
+        deleted: false,
+        reason: "Sucursal no encontrada",
+        deletedAdminCount: 0,
+        uploadUrls: [],
+      };
+    }
+
+    const uploadUrls = new Set<string>();
+    let deletedAdminCount = 0;
+
+    const addUploadUrl = (value: string | null | undefined) => {
+      if (typeof value === "string" && value.trim().length > 0) {
+        uploadUrls.add(value.trim());
+      }
+    };
+
+    await db.transaction(async (tx) => {
+      const adminRows = await tx
+        .select({ id: users.id, avatarUrl: users.avatarUrl })
+        .from(users)
+        .where(and(eq(users.branchId, id), eq(users.role, "BRANCH_ADMIN")));
+
+      const adminIds = adminRows.map((row) => row.id);
+      deletedAdminCount = adminIds.length;
+
+      addUploadUrl(branch.coverImageUrl);
+      adminRows.forEach((row) => addUploadUrl(row.avatarUrl));
+
+      const [
+        scheduleRows,
+        photoRows,
+        postRows,
+        productRows,
+        videoRows,
+        announcementRows,
+        promotionRows,
+        reviewRows,
+        bookingRows,
+      ] = await Promise.all([
+        tx
+          .select({ routineImageUrl: classSchedules.routineImageUrl })
+          .from(classSchedules)
+          .where(eq(classSchedules.branchId, id)),
+        tx.select({ url: branchPhotos.url }).from(branchPhotos).where(eq(branchPhotos.branchId, id)),
+        tx.select({ mediaUrl: branchPosts.mediaUrl }).from(branchPosts).where(eq(branchPosts.branchId, id)),
+        tx.select({ imageUrl: branchProducts.imageUrl }).from(branchProducts).where(eq(branchProducts.branchId, id)),
+        tx
+          .select({ url: branchVideos.url, thumbnailUrl: branchVideos.thumbnailUrl })
+          .from(branchVideos)
+          .where(eq(branchVideos.branchId, id)),
+        tx
+          .select({ imageUrl: branchAnnouncements.imageUrl })
+          .from(branchAnnouncements)
+          .where(eq(branchAnnouncements.branchId, id)),
+        tx.select({ imageUrl: promotions.imageUrl }).from(promotions).where(eq(promotions.branchId, id)),
+        tx.select({ id: branchReviews.id }).from(branchReviews).where(eq(branchReviews.branchId, id)),
+        tx.select({ id: classBookings.id }).from(classBookings).where(eq(classBookings.branchId, id)),
+      ]);
+
+      scheduleRows.forEach((row) => addUploadUrl(row.routineImageUrl));
+      photoRows.forEach((row) => addUploadUrl(row.url));
+      postRows.forEach((row) => addUploadUrl(row.mediaUrl));
+      productRows.forEach((row) => addUploadUrl(row.imageUrl));
+      videoRows.forEach((row) => {
+        addUploadUrl(row.url);
+        addUploadUrl(row.thumbnailUrl);
+      });
+      announcementRows.forEach((row) => addUploadUrl(row.imageUrl));
+      promotionRows.forEach((row) => addUploadUrl(row.imageUrl));
+
+      const reviewIds = reviewRows.map((row) => row.id);
+      const bookingIds = bookingRows.map((row) => row.id);
+
+      const reviewModerationClauses = [];
+      if (reviewIds.length > 0) {
+        reviewModerationClauses.push(inArray(reviewModerationLogs.reviewId, reviewIds));
+      }
+      if (adminIds.length > 0) {
+        reviewModerationClauses.push(inArray(reviewModerationLogs.actorUserId, adminIds));
+      }
+      if (reviewModerationClauses.length > 0) {
+        await tx.delete(reviewModerationLogs).where(or(...reviewModerationClauses)!);
+      }
+
+      const reviewReportClauses = [eq(reviewReports.branchId, id)];
+      if (reviewIds.length > 0) {
+        reviewReportClauses.push(inArray(reviewReports.reviewId, reviewIds));
+      }
+      if (adminIds.length > 0) {
+        reviewReportClauses.push(inArray(reviewReports.reporterUserId, adminIds));
+        reviewReportClauses.push(inArray(reviewReports.reviewedByUserId, adminIds));
+      }
+      await tx.delete(reviewReports).where(or(...reviewReportClauses)!);
+
+      const reservationAuditClauses = [eq(reservationAuditLogs.branchId, id)];
+      if (bookingIds.length > 0) {
+        reservationAuditClauses.push(inArray(reservationAuditLogs.bookingId, bookingIds));
+      }
+      if (adminIds.length > 0) {
+        reservationAuditClauses.push(inArray(reservationAuditLogs.actorUserId, adminIds));
+      }
+      await tx.delete(reservationAuditLogs).where(or(...reservationAuditClauses)!);
+
+      const searchLogClauses = [eq(searchLogs.selectedBranchId, id)];
+      if (adminIds.length > 0) {
+        searchLogClauses.push(inArray(searchLogs.userId, adminIds));
+      }
+      await tx.delete(searchLogs).where(or(...searchLogClauses)!);
+
+      const notificationClauses = [eq(notifications.branchId, id)];
+      if (adminIds.length > 0) {
+        notificationClauses.push(inArray(notifications.recipientUserId, adminIds));
+      }
+      await tx.delete(notifications).where(or(...notificationClauses)!);
+
+      const systemEventClauses = [eq(systemEvents.branchId, id)];
+      if (adminIds.length > 0) {
+        systemEventClauses.push(inArray(systemEvents.userId, adminIds));
+      }
+      await tx.delete(systemEvents).where(or(...systemEventClauses)!);
+
+      const notificationJobClauses = [eq(notificationJobs.branchId, id)];
+      if (adminIds.length > 0) {
+        notificationJobClauses.push(inArray(notificationJobs.userId, adminIds));
+      }
+      await tx.delete(notificationJobs).where(or(...notificationJobClauses)!);
+
+      const customerReportClauses = [eq(customerReports.branchId, id)];
+      if (adminIds.length > 0) {
+        customerReportClauses.push(inArray(customerReports.reportedByUserId, adminIds));
+        customerReportClauses.push(inArray(customerReports.reviewedByUserId, adminIds));
+      }
+      await tx.delete(customerReports).where(or(...customerReportClauses)!);
+
+      const customerBlockClauses = [eq(branchCustomerBlocks.branchId, id)];
+      if (adminIds.length > 0) {
+        customerBlockClauses.push(inArray(branchCustomerBlocks.blockedByUserId, adminIds));
+      }
+      await tx.delete(branchCustomerBlocks).where(or(...customerBlockClauses)!);
+
+      const clientNoteClauses = [eq(clientNotes.branchId, id)];
+      if (adminIds.length > 0) {
+        clientNoteClauses.push(inArray(clientNotes.createdBy, adminIds));
+      }
+      await tx.delete(clientNotes).where(or(...clientNoteClauses)!);
+
+      const attendanceClauses = [eq(attendances.branchId, id)];
+      if (adminIds.length > 0) {
+        attendanceClauses.push(inArray(attendances.registeredBy, adminIds));
+      }
+      await tx.delete(attendances).where(or(...attendanceClauses)!);
+
+      const auditLogClauses = [eq(auditLogs.branchId, id)];
+      if (adminIds.length > 0) {
+        auditLogClauses.push(inArray(auditLogs.actorUserId, adminIds));
+      }
+      await tx.delete(auditLogs).where(or(...auditLogClauses)!);
+
+      const financeClauses = [eq(branchFinanceEntries.branchId, id)];
+      if (adminIds.length > 0) {
+        financeClauses.push(inArray(branchFinanceEntries.createdBy, adminIds));
+      }
+      await tx.delete(branchFinanceEntries).where(or(...financeClauses)!);
+
+      await tx.delete(branchMonthlyBilling).where(eq(branchMonthlyBilling.branchId, id));
+      await tx.delete(promotions).where(eq(promotions.branchId, id));
+      await tx.delete(branchAnnouncements).where(eq(branchAnnouncements.branchId, id));
+      await tx.delete(branchPhotos).where(eq(branchPhotos.branchId, id));
+      await tx.delete(branchPosts).where(eq(branchPosts.branchId, id));
+      await tx.delete(branchProducts).where(eq(branchProducts.branchId, id));
+      await tx.delete(branchVideos).where(eq(branchVideos.branchId, id));
+      await tx.delete(branchClientCrm).where(eq(branchClientCrm.branchId, id));
+      await tx.delete(classBookings).where(eq(classBookings.branchId, id));
+      await tx.delete(classSchedules).where(eq(classSchedules.branchId, id));
+      await tx.delete(branchReviews).where(eq(branchReviews.branchId, id));
+      await tx.delete(memberships).where(eq(memberships.branchId, id));
+      await tx.delete(membershipPlans).where(eq(membershipPlans.branchId, id));
+
+      if (adminIds.length > 0) {
+        await tx.delete(pushTokens).where(inArray(pushTokens.userId, adminIds));
+        await tx.delete(passwordResetTokens).where(inArray(passwordResetTokens.userId, adminIds));
+        await tx.delete(users).where(inArray(users.id, adminIds));
+      }
+
+      await tx.update(users).set({ branchId: null }).where(eq(users.branchId, id));
+      await tx.delete(branches).where(eq(branches.id, id));
+    });
+
+    return {
+      deleted: true,
+      branchName: branch.name,
+      deletedAdminCount,
+      uploadUrls: Array.from(uploadUrls),
+    };
   }
 
   async getBranchAdmins(branchId: string): Promise<User[]> {
@@ -1446,6 +1822,7 @@ export class DatabaseStorage implements IStorage {
     gender?: string | null;
     avatarUrl?: string | null;
     googleId?: string | null;
+    firebaseUid?: string | null;
     authProvider?: string | null;
     emailVerified?: boolean;
     emailVerifiedAt?: string | null;
@@ -1459,6 +1836,7 @@ export class DatabaseStorage implements IStorage {
     if (data.gender !== undefined) setData.gender = data.gender;
     if (data.avatarUrl !== undefined) setData.avatarUrl = data.avatarUrl;
     if (data.googleId !== undefined) setData.googleId = data.googleId;
+    if (data.firebaseUid !== undefined) setData.firebaseUid = data.firebaseUid;
     if (data.authProvider !== undefined) setData.authProvider = data.authProvider;
     if (data.emailVerified !== undefined) setData.emailVerified = data.emailVerified;
     if (data.emailVerifiedAt !== undefined) setData.emailVerifiedAt = data.emailVerifiedAt;
@@ -1833,6 +2211,18 @@ export class DatabaseStorage implements IStorage {
       .delete(notifications)
       .where(sql`${notifications.createdAt} < ${cutoff}`)
       .returning({ id: notifications.id });
+
+    return rows.length;
+  }
+
+  async cleanupOldBranchFinanceEntries(maxAgeDays = 90): Promise<number> {
+    const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000)
+      .toLocaleDateString("en-CA", { timeZone: BRANCH_TIMEZONE });
+
+    const rows = await db
+      .delete(branchFinanceEntries)
+      .where(sql`${branchFinanceEntries.entryDate} < ${cutoff}`)
+      .returning({ id: branchFinanceEntries.id });
 
     return rows.length;
   }
@@ -3804,6 +4194,193 @@ export class DatabaseStorage implements IStorage {
       activePromotions: Number(promotionRow[0]?.total) || 0,
       recentReviews: Number(reviewRow[0]?.total) || 0,
     };
+  }
+
+  private mapBranchMonthlyBillingRow(row: any): BranchMonthlyBillingRow {
+    const nextPaymentDate = row.nextPaymentDate ?? null;
+    return {
+      id: row.id ?? null,
+      branchId: row.branchId,
+      branchName: row.branchName,
+      branchSlug: row.branchSlug,
+      branchStatus: row.branchStatus,
+      monthlyFeeAmount: toFinanceAmount(row.monthlyFeeAmount),
+      paymentDay: row.paymentDay === null || row.paymentDay === undefined ? null : Number(row.paymentDay),
+      lastPaymentDate: row.lastPaymentDate ?? null,
+      nextPaymentDate,
+      paymentStatus: resolveMonthlyBillingStatus(row.paymentStatus, nextPaymentDate),
+      sellerName: row.sellerName ?? null,
+      sellerCommissionAmount: toFinanceAmount(row.sellerCommissionAmount),
+      notes: row.notes ?? null,
+      createdAt: row.createdAt ?? null,
+      updatedAt: row.updatedAt ?? null,
+    };
+  }
+
+  private async getBranchMonthlyBillingByBranchId(branchId: string): Promise<BranchMonthlyBillingRow | undefined> {
+    const [row] = await db
+      .select({
+        id: branchMonthlyBilling.id,
+        branchId: branches.id,
+        branchName: branches.name,
+        branchSlug: branches.slug,
+        branchStatus: branches.status,
+        monthlyFeeAmount: branchMonthlyBilling.monthlyFeeAmount,
+        paymentDay: branchMonthlyBilling.paymentDay,
+        lastPaymentDate: branchMonthlyBilling.lastPaymentDate,
+        nextPaymentDate: branchMonthlyBilling.nextPaymentDate,
+        paymentStatus: branchMonthlyBilling.paymentStatus,
+        sellerName: branchMonthlyBilling.sellerName,
+        sellerCommissionAmount: branchMonthlyBilling.sellerCommissionAmount,
+        notes: branchMonthlyBilling.notes,
+        createdAt: branchMonthlyBilling.createdAt,
+        updatedAt: branchMonthlyBilling.updatedAt,
+      })
+      .from(branches)
+      .leftJoin(branchMonthlyBilling, eq(branchMonthlyBilling.branchId, branches.id))
+      .where(and(eq(branches.id, branchId), isNull(branches.deletedAt)))
+      .limit(1);
+
+    return row ? this.mapBranchMonthlyBillingRow(row) : undefined;
+  }
+
+  async getSuperAdminMonthlyBilling(): Promise<BranchMonthlyBillingRow[]> {
+    const rows = await db
+      .select({
+        id: branchMonthlyBilling.id,
+        branchId: branches.id,
+        branchName: branches.name,
+        branchSlug: branches.slug,
+        branchStatus: branches.status,
+        monthlyFeeAmount: branchMonthlyBilling.monthlyFeeAmount,
+        paymentDay: branchMonthlyBilling.paymentDay,
+        lastPaymentDate: branchMonthlyBilling.lastPaymentDate,
+        nextPaymentDate: branchMonthlyBilling.nextPaymentDate,
+        paymentStatus: branchMonthlyBilling.paymentStatus,
+        sellerName: branchMonthlyBilling.sellerName,
+        sellerCommissionAmount: branchMonthlyBilling.sellerCommissionAmount,
+        notes: branchMonthlyBilling.notes,
+        createdAt: branchMonthlyBilling.createdAt,
+        updatedAt: branchMonthlyBilling.updatedAt,
+      })
+      .from(branches)
+      .leftJoin(branchMonthlyBilling, eq(branchMonthlyBilling.branchId, branches.id))
+      .where(isNull(branches.deletedAt))
+      .orderBy(
+        asc(sql`CASE WHEN ${branches.status} = 'active' THEN 0 WHEN ${branches.status} = 'suspended' THEN 1 ELSE 2 END`),
+        asc(branches.name),
+      );
+
+    return rows.map((row) => this.mapBranchMonthlyBillingRow(row));
+  }
+
+  async upsertBranchMonthlyBilling(
+    branchId: string,
+    data: {
+      monthlyFeeAmount: number;
+      paymentDay: number;
+      lastPaymentDate?: string | null;
+      nextPaymentDate?: string | null;
+      paymentStatus?: "pending" | "paid" | "overdue";
+      sellerName?: string | null;
+      sellerCommissionAmount?: number;
+      notes?: string | null;
+    },
+  ): Promise<BranchMonthlyBillingRow | undefined> {
+    const [existing] = await db
+      .select()
+      .from(branchMonthlyBilling)
+      .where(eq(branchMonthlyBilling.branchId, branchId))
+      .limit(1);
+
+    const lastPaymentDate =
+      data.lastPaymentDate !== undefined
+        ? data.lastPaymentDate
+        : existing?.lastPaymentDate ?? null;
+
+    const nextPaymentDate =
+      data.nextPaymentDate !== undefined
+        ? data.nextPaymentDate
+        : existing?.nextPaymentDate ?? computeCurrentCyclePaymentDate(data.paymentDay);
+
+    const sellerName =
+      data.sellerName !== undefined
+        ? data.sellerName
+        : existing?.sellerName ?? null;
+
+    const sellerCommissionAmount =
+      data.sellerCommissionAmount !== undefined
+        ? data.sellerCommissionAmount
+        : toFinanceAmount(existing?.sellerCommissionAmount);
+
+    const notes =
+      data.notes !== undefined
+        ? data.notes
+        : existing?.notes ?? null;
+
+    const paymentStatus = resolveMonthlyBillingStatus(
+      data.paymentStatus ?? existing?.paymentStatus ?? "pending",
+      nextPaymentDate,
+    );
+
+    await db
+      .insert(branchMonthlyBilling)
+      .values({
+        branchId,
+        monthlyFeeAmount: data.monthlyFeeAmount.toFixed(2),
+        paymentDay: data.paymentDay,
+        lastPaymentDate,
+        nextPaymentDate,
+        paymentStatus,
+        sellerName,
+        sellerCommissionAmount: sellerCommissionAmount.toFixed(2),
+        notes,
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: branchMonthlyBilling.branchId,
+        set: {
+          monthlyFeeAmount: data.monthlyFeeAmount.toFixed(2),
+          paymentDay: data.paymentDay,
+          lastPaymentDate,
+          nextPaymentDate,
+          paymentStatus,
+          sellerName,
+          sellerCommissionAmount: sellerCommissionAmount.toFixed(2),
+          notes,
+          updatedAt: new Date(),
+        },
+      });
+
+    return this.getBranchMonthlyBillingByBranchId(branchId);
+  }
+
+  async markBranchMonthlyBillingPaid(branchId: string, paidDate?: string): Promise<BranchMonthlyBillingRow | undefined> {
+    const [existing] = await db
+      .select()
+      .from(branchMonthlyBilling)
+      .where(eq(branchMonthlyBilling.branchId, branchId))
+      .limit(1);
+
+    if (!existing) {
+      return undefined;
+    }
+
+    const effectivePaidDate = paidDate ?? getMxLocalDate();
+    const referenceDate = new Date(`${effectivePaidDate}T12:00:00`);
+    const nextPaymentDate = computeNextMonthlyPaymentDate(existing.paymentDay, referenceDate);
+
+    await db
+      .update(branchMonthlyBilling)
+      .set({
+        lastPaymentDate: effectivePaidDate,
+        nextPaymentDate,
+        paymentStatus: "paid",
+        updatedAt: new Date(),
+      })
+      .where(eq(branchMonthlyBilling.branchId, branchId));
+
+    return this.getBranchMonthlyBillingByBranchId(branchId);
   }
 
   private mapBranchFinanceEntryRow(row: any): BranchFinanceEntryRow {

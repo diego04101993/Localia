@@ -1,6 +1,6 @@
-import fs from "fs";
 import admin from "firebase-admin";
 import { storage } from "./storage";
+import { getFirebaseAdminApp } from "./firebase-admin";
 
 type PushData = Record<string, string | number | boolean | null | undefined>;
 
@@ -19,73 +19,7 @@ type PushSendResult = {
   reason?: string;
 };
 
-let firebaseResolved = false;
-let firebaseApp: admin.app.App | null = null;
 const PUSH_BATCH_SIZE = 500;
-
-function normalizeServiceAccount(serviceAccount: Record<string, any>): admin.ServiceAccount {
-  const normalized: admin.ServiceAccount = {
-    projectId: serviceAccount.projectId ?? serviceAccount.project_id,
-    clientEmail: serviceAccount.clientEmail ?? serviceAccount.client_email,
-    privateKey: serviceAccount.privateKey ?? serviceAccount.private_key,
-  };
-
-  if (typeof normalized.privateKey === "string") {
-    normalized.privateKey = normalized.privateKey.replace(/\\n/g, "\n");
-  }
-
-  return normalized;
-}
-
-function loadServiceAccountFromEnv(): admin.ServiceAccount | null {
-  const inlineJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim();
-  if (inlineJson) {
-    try {
-      return normalizeServiceAccount(JSON.parse(inlineJson));
-    } catch (err: any) {
-      console.error("[PUSH] FIREBASE_SERVICE_ACCOUNT_JSON invalido:", err?.message || err);
-      return null;
-    }
-  }
-
-  const filePath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH?.trim();
-  if (filePath) {
-    try {
-      const raw = fs.readFileSync(filePath, "utf8");
-      return normalizeServiceAccount(JSON.parse(raw));
-    } catch (err: any) {
-      console.error("[PUSH] FIREBASE_SERVICE_ACCOUNT_PATH invalido:", err?.message || err);
-      return null;
-    }
-  }
-
-  return null;
-}
-
-function getFirebaseAppInstance(): admin.app.App | null {
-  if (firebaseResolved) {
-    return firebaseApp;
-  }
-
-  firebaseResolved = true;
-  const serviceAccount = loadServiceAccountFromEnv();
-  if (!serviceAccount) {
-    return null;
-  }
-
-  try {
-    firebaseApp = admin.apps.length > 0
-      ? admin.app()
-      : admin.initializeApp({
-          credential: admin.credential.cert(serviceAccount),
-        });
-  } catch (err: any) {
-    console.error("[PUSH] Error inicializando Firebase Admin:", err?.message || err);
-    firebaseApp = null;
-  }
-
-  return firebaseApp;
-}
 
 function normalizePushData(data?: PushData): Record<string, string> | undefined {
   if (!data) return undefined;
@@ -145,7 +79,7 @@ async function sendPushToTokens(tokens: string[], title: string, body: string, d
     };
   }
 
-  const app = getFirebaseAppInstance();
+  const app = getFirebaseAdminApp();
   if (!app) {
     console.log("Firebase no configurado, push omitido");
     return {

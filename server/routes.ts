@@ -30,6 +30,12 @@ import {
   getConfiguredGoogleAudiences,
   verifyGoogleMobileIdToken,
 } from "./google-auth";
+import {
+  FirebaseAdminConfigurationError,
+  FirebaseAdminTokenError,
+  deleteFirebaseUserByUid,
+  verifyFirebaseIdToken,
+} from "./firebase-admin";
 import { seedDatabase } from "./seed";
 import {
   loginSchema,
@@ -62,6 +68,7 @@ import {
   updateReviewVisibilitySchema,
   createBranchFinanceEntrySchema,
   updateBranchFinanceEntrySchema,
+  upsertBranchMonthlyBillingSchema,
 } from "@shared/schema";
 import { z } from "zod";
 import { normalizeSearchText } from "./search-utils";
@@ -86,6 +93,53 @@ function addCalendarMonths(from: Date, months: number): Date {
 const uploadsDir = path.join(process.cwd(), "uploads");
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+function resolveLocalUploadPath(fileUrl: string | null | undefined): string | null {
+  if (typeof fileUrl !== "string") return null;
+
+  const trimmed = fileUrl.trim();
+  if (!trimmed.startsWith("/uploads/")) {
+    return null;
+  }
+
+  const relativePath = trimmed.replace(/^\/+/, "");
+  const resolvedPath = path.resolve(process.cwd(), relativePath);
+  const uploadsRoot = path.resolve(uploadsDir);
+  const relativeToUploads = path.relative(uploadsRoot, resolvedPath);
+
+  if (relativeToUploads.startsWith("..") || path.isAbsolute(relativeToUploads)) {
+    return null;
+  }
+
+  return resolvedPath;
+}
+
+function deleteLocalUploadFiles(fileUrls: Array<string | null | undefined>): number {
+  const uniqueUrls = Array.from(
+    new Set(
+      fileUrls
+        .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        .map((value) => value.trim()),
+    ),
+  );
+
+  let deletedCount = 0;
+  for (const fileUrl of uniqueUrls) {
+    const localPath = resolveLocalUploadPath(fileUrl);
+    if (!localPath) continue;
+
+    try {
+      if (fs.existsSync(localPath)) {
+        fs.unlinkSync(localPath);
+        deletedCount += 1;
+      }
+    } catch (err: any) {
+      console.error(`[UPLOAD_DELETE] Failed to delete ${localPath}:`, err?.stack || err);
+    }
+  }
+
+  return deletedCount;
 }
 
 const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
@@ -183,6 +237,84 @@ function buildAuthSuccessResponse(user: any, message?: string) {
     role: safeUser.role,
     acceptedTerms: !!safeUser.acceptedTerms,
     user: safeUser,
+  };
+}
+
+function normalizeEmailValue(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  return normalized.length === 0 ? null : normalized;
+}
+
+function buildFallbackCustomerName(email: string): string {
+  const emailPrefix = email.split("@")[0]?.trim();
+  return emailPrefix && emailPrefix.length > 0 ? emailPrefix : "Cliente";
+}
+
+function splitFullName(fullName: string): { firstName: string; lastName: string | null } {
+  const normalized = fullName.trim().replace(/\s+/g, " ");
+  if (normalized.length === 0) {
+    return { firstName: "", lastName: null };
+  }
+
+  const segments = normalized.split(" ");
+  if (segments.length === 1) {
+    return { firstName: normalized, lastName: null };
+  }
+
+  return {
+    firstName: segments[0] || normalized,
+    lastName: segments.slice(1).join(" ") || null,
+  };
+}
+
+function resolveAppleLinkedAuthProvider(currentProvider: unknown): string {
+  const normalized = normalizeOptionalText(currentProvider) ?? "email";
+  if (normalized === "apple" || normalized === "email_apple") {
+    return normalized;
+  }
+  if (normalized === "email") {
+    return "email_apple";
+  }
+  return normalized;
+}
+
+async function verifyAppleMobileFirebaseIdentity(
+  firebaseIdToken: string,
+  hints?: {
+    email?: string;
+    firstName?: string;
+    lastName?: string;
+    fullName?: string;
+  },
+) {
+  const decoded = await verifyFirebaseIdToken(firebaseIdToken);
+  const provider = (decoded.firebase as any)?.sign_in_provider?.toString().trim() ?? "";
+  if (provider !== "apple.com") {
+    throw new FirebaseAdminTokenError("El token no corresponde a Sign in with Apple");
+  }
+
+  const email =
+    normalizeEmailValue(decoded.email) ??
+    normalizeEmailValue(hints?.email);
+  const fullName =
+    normalizeOptionalText((decoded as any).name) ??
+    normalizeOptionalText(hints?.fullName);
+  const nameParts = fullName ? splitFullName(fullName) : { firstName: "", lastName: null };
+  const firstName =
+    normalizeOptionalText(hints?.firstName) ??
+    normalizeOptionalText(nameParts.firstName);
+  const lastName =
+    normalizeOptionalText(hints?.lastName) ??
+    normalizeOptionalText(nameParts.lastName);
+
+  return {
+    firebaseUid: decoded.uid.trim(),
+    email,
+    emailVerified: decoded.email_verified === true,
+    firstName,
+    lastName,
+    fullName: normalizeOptionalText(fullName),
   };
 }
 
@@ -384,6 +516,22 @@ const updateSuperAdminBranchSchema = z.object({
 
 const googleMobileLoginSchema = z.object({
   idToken: z.string().min(1, "El idToken es obligatorio"),
+});
+
+const appleMobileLoginSchema = z.object({
+  firebaseIdToken: z.string().min(1, "El token de Firebase es obligatorio"),
+  email: z.string().email("Correo invalido").optional(),
+  firstName: z.string().min(1).optional(),
+  lastName: z.string().min(1).optional(),
+  fullName: z.string().min(1).optional(),
+});
+
+const deleteCurrentUserSchema = z.object({
+  firebaseIdToken: z.string().min(1).optional(),
+});
+
+const destructiveDeleteConfirmationSchema = z.object({
+  confirmationText: z.string().min(1, "La confirmación es obligatoria"),
 });
 
 export async function registerRoutes(
@@ -599,6 +747,164 @@ if (!user) {
           message: "No fue posible validar el token de Google",
           code: "INVALID_GOOGLE_TOKEN",
         });
+      }
+      next(err);
+    }
+  });
+
+  app.post("/api/auth/apple-mobile", async (req, res, next) => {
+    const result = appleMobileLoginSchema.safeParse(req.body);
+    if (!result.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: result.error.flatten() });
+    }
+
+    try {
+      const identity = await verifyAppleMobileFirebaseIdentity(
+        result.data.firebaseIdToken,
+        {
+          email: result.data.email,
+          firstName: result.data.firstName,
+          lastName: result.data.lastName,
+          fullName: result.data.fullName,
+        },
+      );
+      const verifiedAt = identity.emailVerified ? new Date().toISOString() : null;
+      let user = await storage.getUserByFirebaseUid(identity.firebaseUid);
+      let createdNewUser = false;
+
+      if (user) {
+        if (user.role !== "CUSTOMER") {
+          return res.status(403).json({
+            message: "Esta cuenta pertenece a un administrador. Usa el acceso web correspondiente.",
+            code: "WRONG_ROLE",
+          });
+        }
+        if ((user as any).isBlocked) {
+          return res.status(403).json({ message: CUSTOMER_BLOCKED_MESSAGE });
+        }
+
+        const updates: Record<string, any> = {};
+        if (!user.name && (identity.firstName || identity.fullName)) {
+          updates.name = identity.firstName || identity.fullName;
+        }
+        if (!user.lastName && identity.lastName) {
+          updates.lastName = identity.lastName;
+        }
+        if (!user.emailVerified && identity.emailVerified) {
+          updates.emailVerified = true;
+          updates.emailVerifiedAt = verifiedAt;
+        }
+        if (!user.firebaseUid) {
+          updates.firebaseUid = identity.firebaseUid;
+        }
+        if (user.authProvider !== "apple" && user.authProvider !== "email_apple") {
+          updates.authProvider = resolveAppleLinkedAuthProvider(user.authProvider);
+        }
+
+        if (Object.keys(updates).length > 0) {
+          user = (await storage.updateUser(user.id, updates)) || user;
+        }
+      } else {
+        const resolvedEmail = identity.email;
+        if (!resolvedEmail) {
+          return res.status(400).json({
+            message:
+              "No fue posible recuperar tu correo de Apple. Quita el acceso de esta app desde tu Apple ID y vuelve a intentarlo.",
+            code: "APPLE_EMAIL_REQUIRED",
+          });
+        }
+
+        const existingByEmail = await storage.getUserByEmail(resolvedEmail);
+        if (existingByEmail) {
+          if (existingByEmail.role !== "CUSTOMER") {
+            return res.status(403).json({
+              message: "Este correo pertenece a una cuenta de administrador. Usa el acceso web correspondiente.",
+              code: "WRONG_ROLE",
+            });
+          }
+          if ((existingByEmail as any).isBlocked) {
+            return res.status(403).json({ message: CUSTOMER_BLOCKED_MESSAGE });
+          }
+          if (
+            existingByEmail.firebaseUid &&
+            existingByEmail.firebaseUid !== identity.firebaseUid
+          ) {
+            return res.status(409).json({
+              message:
+                "Este correo ya esta vinculado a otra cuenta de Apple. Inicia sesion con el metodo original o contacta soporte.",
+              code: "APPLE_ACCOUNT_MISMATCH",
+            });
+          }
+
+          user = (await storage.updateUser(existingByEmail.id, {
+            firebaseUid: identity.firebaseUid,
+            authProvider: resolveAppleLinkedAuthProvider(existingByEmail.authProvider),
+            ...(existingByEmail.name ? {} : { name: identity.firstName || identity.fullName || existingByEmail.name }),
+            ...(existingByEmail.lastName ? {} : { lastName: identity.lastName || existingByEmail.lastName || null }),
+            ...(!existingByEmail.emailVerified && identity.emailVerified
+              ? { emailVerified: true, emailVerifiedAt: verifiedAt }
+              : {}),
+          })) || existingByEmail;
+        } else {
+          const generatedPassword = generateSecurePassword(24);
+          const passwordHash = await bcrypt.hash(generatedPassword, 10);
+          const resolvedName =
+            identity.firstName ||
+            identity.fullName ||
+            buildFallbackCustomerName(resolvedEmail);
+
+          const createdUser = await storage.createUser({
+            email: resolvedEmail,
+            passwordHash,
+            role: "CUSTOMER",
+            name: resolvedName,
+            lastName: identity.lastName,
+            firebaseUid: identity.firebaseUid,
+            authProvider: "apple",
+            emailVerified: identity.emailVerified,
+            emailVerifiedAt: verifiedAt,
+            acceptedTerms: false,
+          } as any);
+
+          user = createdUser;
+          createdNewUser = true;
+
+          await createSystemEventSafe({
+            eventType: "customer_registered",
+            userId: createdUser.id,
+            payload: {
+              source: "apple_mobile",
+              activatedExisting: false,
+              provider: "apple",
+            },
+          });
+        }
+      }
+
+      if (!user) {
+        return res.status(500).json({ message: "No fue posible iniciar sesion con Apple" });
+      }
+
+      return completeLoginSession(
+        req,
+        res,
+        next,
+        user,
+        buildAuthSuccessResponse(
+          user,
+          createdNewUser ? "Cuenta creada con Apple" : "Inicio de sesion con Apple correcto",
+        ),
+        200,
+        "apple",
+      );
+    } catch (err) {
+      if (err instanceof FirebaseAdminConfigurationError) {
+        console.error("[APPLE_AUTH] configuration error:", err.message);
+        return res.status(503).json({ message: err.message, code: "FIREBASE_AUTH_NOT_CONFIGURED" });
+      }
+      if (err instanceof FirebaseAdminTokenError) {
+        console.warn("[APPLE_AUTH] token rejected:", err.message);
+        return res.status(401).json({ message: err.message, code: "INVALID_APPLE_TOKEN" });
       }
       next(err);
     }
@@ -884,6 +1190,85 @@ if (!user) {
       impersonatedBranchName: impersonating ? sess.impersonatedBranchName : null,
       originalUserId: impersonating ? sess.originalUserId : null,
     });
+  });
+
+  app.delete("/api/users/me", requireAuth, async (req, res) => {
+    const actor = req.user as any;
+    if (actor.role !== "CUSTOMER") {
+      return res.status(403).json({ message: "Solo disponible para clientes" });
+    }
+    if (actor.isBlocked) {
+      return res.status(403).json({ message: CUSTOMER_BLOCKED_MESSAGE });
+    }
+
+    const result = deleteCurrentUserSchema.safeParse(req.body ?? {});
+    if (!result.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: result.error.flatten() });
+    }
+
+    try {
+      let firebaseUid = normalizeOptionalText(actor.firebaseUid) ?? null;
+      const firebaseIdToken = normalizeOptionalText(result.data.firebaseIdToken) ?? null;
+
+      if (firebaseIdToken) {
+        const decoded = await verifyFirebaseIdToken(firebaseIdToken);
+        const tokenUid = normalizeOptionalText(decoded.uid);
+        const tokenEmail = normalizeEmailValue(decoded.email);
+        const actorEmail = normalizeEmailValue(actor.email);
+
+        if (!tokenUid) {
+          return res.status(401).json({ message: "No fue posible validar la sesion de Firebase" });
+        }
+        if (firebaseUid && tokenUid !== firebaseUid) {
+          return res.status(403).json({ message: "La credencial de Firebase no coincide con tu cuenta" });
+        }
+        if (!firebaseUid && actorEmail && tokenEmail && actorEmail !== tokenEmail) {
+          return res.status(403).json({ message: "La credencial de Firebase no coincide con tu correo" });
+        }
+
+        firebaseUid = tokenUid;
+      }
+
+      await storage.deleteCustomerAccount(actor.id);
+
+      if (firebaseUid) {
+        try {
+          const firebaseDeleteResult = await deleteFirebaseUserByUid(firebaseUid);
+          console.log(`[ACCOUNT_DELETE] firebase_user=${firebaseDeleteResult} userId=${actor.id}`);
+        } catch (firebaseErr: any) {
+          console.error(
+            `[ACCOUNT_DELETE] Firebase delete failed userId=${actor.id}:`,
+            firebaseErr?.message || firebaseErr,
+          );
+        }
+      }
+
+      await new Promise<void>((resolve, reject) => {
+        req.logout((logoutErr) => {
+          if (logoutErr) return reject(logoutErr);
+          resolve();
+        });
+      });
+
+      await new Promise<void>((resolve, reject) => {
+        req.session.destroy((sessionErr) => {
+          if (sessionErr) return reject(sessionErr);
+          resolve();
+        });
+      });
+
+      res.clearCookie("connect.sid");
+      return res.json({ success: true, message: "Account deleted" });
+    } catch (err) {
+      if (err instanceof FirebaseAdminConfigurationError) {
+        return res.status(503).json({ message: err.message, code: "FIREBASE_AUTH_NOT_CONFIGURED" });
+      }
+      if (err instanceof FirebaseAdminTokenError) {
+        return res.status(401).json({ message: err.message, code: "INVALID_FIREBASE_TOKEN" });
+      }
+      console.error("[DELETE /api/users/me]", (err as any)?.stack || err);
+      return res.status(500).json({ message: "No fue posible eliminar tu cuenta en este momento." });
+    }
   });
 
   app.post("/api/push/register-token", requireAuth, async (req, res) => {
@@ -1400,6 +1785,51 @@ if (!user) {
     res.json(deleted);
   });
 
+  app.delete("/api/superadmin/branches/:id/hard", requireRole("SUPER_ADMIN"), async (req, res) => {
+    const actor = req.user as any;
+    const branchId = getStringParam(req.params.id);
+    const parsed = destructiveDeleteConfirmationSchema.safeParse(req.body ?? {});
+
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    if (parsed.data.confirmationText.trim() !== "ELIMINAR SUCURSAL") {
+      return res.status(400).json({ message: "Escribe ELIMINAR SUCURSAL para confirmar" });
+    }
+
+    try {
+      const result = await storage.hardDeleteBranch(branchId);
+      if (!result.deleted) {
+        return res.status(404).json({ message: result.reason || "Sucursal no encontrada" });
+      }
+
+      const deletedUploadCount = deleteLocalUploadFiles(result.uploadUrls);
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "DELETE_BRANCH_HARD",
+        branchId,
+        metadata: {
+          branchName: result.branchName,
+          deletedAdminCount: result.deletedAdminCount,
+          deletedUploadCount,
+        },
+      });
+
+      res.json({
+        success: true,
+        branchId,
+        branchName: result.branchName,
+        deletedAdminCount: result.deletedAdminCount,
+        deletedUploadCount,
+      });
+    } catch (err: any) {
+      console.error("[SUPERADMIN_HARD_DELETE_BRANCH]", err.stack || err);
+      res.status(500).json({ message: "Error al eliminar definitivamente la sucursal" });
+    }
+  });
+
   // Get branch admin
   app.get("/api/superadmin/branches/:id/admin", requireRole("SUPER_ADMIN"), async (req, res) => {
     const id = req.params.id as string;
@@ -1656,6 +2086,115 @@ if (!user) {
     } catch (err: any) {
       console.error(`[BRANCH_STATS] Error:`, err.stack || err);
       res.status(500).json({ message: "Error al obtener estadísticas" });
+    }
+  });
+
+  app.get("/api/superadmin/monthly-billing", requireRole("SUPER_ADMIN"), async (_req, res) => {
+    try {
+      const rows = await storage.getSuperAdminMonthlyBilling();
+      res.json(rows);
+    } catch (err: any) {
+      console.error("[SUPERADMIN_MONTHLY_BILLING_LIST]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener las igualas mensuales" });
+    }
+  });
+
+  app.put("/api/superadmin/monthly-billing/:branchId", requireRole("SUPER_ADMIN"), async (req, res) => {
+    const actor = req.user as any;
+    const branchId = getStringParam(req.params.branchId);
+    const result = upsertBranchMonthlyBillingSchema.safeParse({
+      monthlyFeeAmount: req.body.monthlyFeeAmount,
+      paymentDay: req.body.paymentDay,
+      lastPaymentDate: req.body.lastPaymentDate === undefined ? undefined : normalizeOptionalText(req.body.lastPaymentDate) ?? null,
+      nextPaymentDate: req.body.nextPaymentDate === undefined ? undefined : normalizeOptionalText(req.body.nextPaymentDate) ?? null,
+      paymentStatus: req.body.paymentStatus === undefined ? undefined : normalizeOptionalText(req.body.paymentStatus) ?? undefined,
+      sellerName: req.body.sellerName === undefined ? undefined : normalizeOptionalText(req.body.sellerName) ?? null,
+      sellerCommissionAmount: req.body.sellerCommissionAmount,
+      notes: req.body.notes === undefined ? undefined : normalizeOptionalText(req.body.notes) ?? null,
+    });
+
+    if (!result.success) {
+      return res.status(400).json({ message: "Datos invÃ¡lidos", errors: result.error.flatten() });
+    }
+
+    try {
+      const branch = await storage.getBranch(branchId);
+      if (!branch || branch.deletedAt) {
+        return res.status(404).json({ message: "Sucursal no encontrada" });
+      }
+
+      const updated = await storage.upsertBranchMonthlyBilling(branchId, result.data);
+      if (!updated) {
+        return res.status(404).json({ message: "No se pudo guardar la iguala" });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "superadmin.monthly_billing.updated",
+        branchId,
+        metadata: {
+          monthlyFeeAmount: updated.monthlyFeeAmount,
+          paymentDay: updated.paymentDay,
+          lastPaymentDate: updated.lastPaymentDate,
+          nextPaymentDate: updated.nextPaymentDate,
+          paymentStatus: updated.paymentStatus,
+          sellerName: updated.sellerName,
+          sellerCommissionAmount: updated.sellerCommissionAmount,
+        },
+      });
+
+      res.json(updated);
+    } catch (err: any) {
+      console.error("[SUPERADMIN_MONTHLY_BILLING_UPDATE]", err.stack || err);
+      res.status(500).json({ message: "Error al guardar la iguala mensual" });
+    }
+  });
+
+  app.post("/api/superadmin/monthly-billing/:branchId/mark-paid", requireRole("SUPER_ADMIN"), async (req, res) => {
+    const actor = req.user as any;
+    const branchId = getStringParam(req.params.branchId);
+
+    try {
+      const branch = await storage.getBranch(branchId);
+      if (!branch || branch.deletedAt) {
+        return res.status(404).json({ message: "Sucursal no encontrada" });
+      }
+
+      const updated = await storage.markBranchMonthlyBillingPaid(branchId);
+      if (!updated) {
+        return res.status(400).json({ message: "Primero configura la iguala mensual de esta sucursal" });
+      }
+
+      await storage.createNotification({
+        branchId,
+        roleTarget: "SUPER_ADMIN",
+        type: "monthly_billing_paid",
+        title: "Iguala marcada como pagada",
+        message: `${branch.name} fue marcada como pagada.`,
+        data: {
+          branchId,
+          branchName: branch.name,
+          lastPaymentDate: updated.lastPaymentDate,
+          nextPaymentDate: updated.nextPaymentDate,
+          monthlyFeeAmount: updated.monthlyFeeAmount,
+        },
+      });
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "superadmin.monthly_billing.mark_paid",
+        branchId,
+        metadata: {
+          lastPaymentDate: updated.lastPaymentDate,
+          nextPaymentDate: updated.nextPaymentDate,
+          monthlyFeeAmount: updated.monthlyFeeAmount,
+        },
+      });
+
+      res.json(updated);
+    } catch (err: any) {
+      console.error("[SUPERADMIN_MONTHLY_BILLING_MARK_PAID]", err.stack || err);
+      res.status(500).json({ message: "Error al marcar la iguala como pagada" });
     }
   });
 
@@ -2391,6 +2930,74 @@ if (!user) {
     } catch (err: any) {
       console.error("[SUPERADMIN_DELETE_CUSTOMER]", err.stack || err);
       res.status(500).json({ message: "Error al eliminar cliente app" });
+    }
+  });
+
+  app.delete("/api/superadmin/app-customers/:id/hard", requireRole("SUPER_ADMIN"), async (req, res) => {
+    const actor = req.user as any;
+    const customerId = getStringParam(req.params.id);
+    const parsed = destructiveDeleteConfirmationSchema.safeParse(req.body ?? {});
+
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    if (parsed.data.confirmationText.trim() !== "ELIMINAR CLIENTE") {
+      return res.status(400).json({ message: "Escribe ELIMINAR CLIENTE para confirmar" });
+    }
+
+    try {
+      const user = await storage.getUser(customerId);
+      if (!user || user.role !== "CUSTOMER") {
+        return res.status(404).json({ message: "Cliente app no encontrado" });
+      }
+
+      const firebaseUid = normalizeOptionalText(user.firebaseUid) ?? null;
+      const avatarUrl = normalizeOptionalText(user.avatarUrl) ?? null;
+
+      await storage.deleteCustomerAccount(customerId);
+
+      let firebaseDeleted = false;
+      let firebaseDeleteWarning: string | null = null;
+
+      if (firebaseUid) {
+        try {
+          firebaseDeleted = (await deleteFirebaseUserByUid(firebaseUid)) === "deleted";
+        } catch (firebaseErr: any) {
+          firebaseDeleteWarning = firebaseErr?.message || "No se pudo eliminar el usuario en Firebase";
+          console.error(
+            `[SUPERADMIN_HARD_DELETE_CUSTOMER] Firebase delete failed for user ${customerId}:`,
+            firebaseErr?.stack || firebaseErr,
+          );
+        }
+      }
+
+      const deletedUploadCount = deleteLocalUploadFiles([avatarUrl]);
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "DELETE_CUSTOMER_HARD",
+        metadata: {
+          customerId,
+          customerEmail: user.email,
+          customerName: user.name,
+          firebaseUid,
+          firebaseDeleted,
+          firebaseDeleteWarning,
+          deletedUploadCount,
+        },
+      });
+
+      res.json({
+        success: true,
+        customerId,
+        firebaseDeleted,
+        firebaseDeleteWarning,
+        deletedUploadCount,
+      });
+    } catch (err: any) {
+      console.error("[SUPERADMIN_HARD_DELETE_CUSTOMER]", err.stack || err);
+      res.status(500).json({ message: "Error al eliminar definitivamente el cliente app" });
     }
   });
 

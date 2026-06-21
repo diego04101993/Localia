@@ -83,8 +83,16 @@ app.use((req, res, next) => {
 (async () => {
   const { registerRoutes } = await import("./routes");
   const { createNotificationCleanupJob } = await import("./notifications");
+  const { storage } = await import("./storage");
   await registerRoutes(httpServer, app);
   createNotificationCleanupJob();
+
+  try {
+    const deletedFinanceEntries = await storage.cleanupOldBranchFinanceEntries(90);
+    log(`finance cleanup removed ${deletedFinanceEntries} entries older than 90 days`, "finance-cleanup");
+  } catch (err: any) {
+    console.error("[FINANCE_CLEANUP]", err?.stack || err);
+  }
 
   app.use("/api", (_req, res) => {
     return res.status(404).json({ message: "API endpoint no encontrado" });
