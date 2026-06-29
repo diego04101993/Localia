@@ -23,7 +23,16 @@ import {
   sendPasswordResetEmail,
   sendEmailVerificationEmail,
 } from "./email";
-import { setupAuth, requireAuth, requireRole, isImpersonating, getOriginalUserId, CUSTOMER_BLOCKED_MESSAGE, applySessionLifetimeForRequest } from "./auth";
+import {
+  setupAuth,
+  requireAuth,
+  requireRole,
+  isImpersonating,
+  getOriginalUserId,
+  CUSTOMER_BLOCKED_MESSAGE,
+  applySessionLifetimeForRequest,
+  getBranchAdminAccessIssue,
+} from "./auth";
 import {
   GoogleAuthConfigurationError,
   GoogleAuthTokenError,
@@ -47,7 +56,7 @@ import {
   joinBranchSchema,
   favoriteBranchSchema,
   createClientSchema,
-  updateClientSchema,
+  updateBranchClientPrivateSchema,
   updateCatalogCategorySchema,
   updateCatalogSubcategorySchema,
   updateBranchClientCrmSchema,
@@ -1571,8 +1580,7 @@ if (!user) {
       try {
         const existingUser = await storage.getUser(actor.id);
         if (existingUser?.avatarUrl) {
-          const oldPath = path.join(process.cwd(), existingUser.avatarUrl);
-          if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+          deleteLocalUploadFiles([existingUser.avatarUrl]);
         }
 
         const avatarUrl = `/uploads/${req.file.filename}`;
@@ -2721,8 +2729,11 @@ if (!user) {
   });
 
   // Impersonate: end
-  app.post("/api/superadmin/impersonate/end", requireAuth, async (req, res) => {
+  app.post("/api/superadmin/impersonate/end", async (req, res) => {
     const sess = req.session as any;
+    if (!req.isAuthenticated() && !(sess?.impersonating && sess?.originalUserId)) {
+      return res.status(401).json({ message: "No autenticado" });
+    }
     if (!sess.impersonating || !sess.originalUserId) {
       return res.status(400).json({ message: "No hay impersonation activa" });
     }
@@ -3002,13 +3013,17 @@ if (!user) {
   });
 
   // --- Branch Admin: Client Management ---
-  function requireBranchAdmin(req: any, res: any, next: any) {
+  async function requireBranchAdmin(req: any, res: any, next: any) {
     if (!req.isAuthenticated()) return res.status(401).json({ message: "No autenticado" });
     const user = req.user as any;
     if (user.role !== "BRANCH_ADMIN" && user.role !== "SUPER_ADMIN") {
       return res.status(403).json({ message: "Acceso denegado" });
     }
     if (!user.branchId) return res.status(400).json({ message: "No hay sucursal asignada" });
+    const branchAccessIssue = await getBranchAdminAccessIssue(user);
+    if (branchAccessIssue) {
+      return res.status(403).json({ message: branchAccessIssue });
+    }
     next();
   }
 
@@ -3291,9 +3306,7 @@ if (!user) {
 
     try {
       const membership = await storage.getMembership(clientId, actor.branchId);
-      if (!membership) {
-        return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
-      }
+      if (!membership) return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
 
       const updated = await storage.updateBranchClientCrm(actor.branchId, clientId, {
         ...(result.data.clientStatus !== undefined && { clientStatus: result.data.clientStatus }),
@@ -3329,7 +3342,7 @@ if (!user) {
 
     try {
       const membership = await storage.getMembership(clientId, actor.branchId);
-      if (!membership) {
+      if (!membership || membership.status !== "active") {
         return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
       }
 
@@ -3404,7 +3417,7 @@ if (!user) {
 
     try {
       const membership = await storage.getMembership(clientId, actor.branchId);
-      if (!membership) {
+      if (!membership || membership.status !== "active") {
         return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
       }
 
@@ -3475,7 +3488,13 @@ if (!user) {
             return res.status(409).json({ message: "Este cliente ya está registrado en tu sucursal" });
           }
           await storage.updateMembership(existingMembership.id, { status: "active", source: "admin_created" });
-          if (result.data.phone) await storage.updateUserPhone(existing.id, result.data.phone);
+          if (result.data.emergencyContactName || result.data.emergencyContactPhone || result.data.medicalNotes) {
+            await storage.updateBranchClientPrivateProfile(actor.branchId, existing.id, {
+              emergencyContactName: result.data.emergencyContactName || null,
+              emergencyContactPhone: result.data.emergencyContactPhone || null,
+              medicalNotes: result.data.medicalNotes || null,
+            });
+          }
           await storage.createAuditLog({
             actorUserId: actor.id,
             action: "REACTIVATE_CLIENT",
@@ -3492,7 +3511,13 @@ if (!user) {
           isFavorite: false,
           source: "admin_created",
         });
-        if (result.data.phone) await storage.updateUserPhone(existing.id, result.data.phone);
+        if (result.data.emergencyContactName || result.data.emergencyContactPhone || result.data.medicalNotes) {
+          await storage.updateBranchClientPrivateProfile(actor.branchId, existing.id, {
+            emergencyContactName: result.data.emergencyContactName || null,
+            emergencyContactPhone: result.data.emergencyContactPhone || null,
+            medicalNotes: result.data.medicalNotes || null,
+          });
+        }
         await storage.createAuditLog({
           actorUserId: actor.id,
           action: "ADD_EXISTING_CLIENT",
@@ -3514,11 +3539,16 @@ if (!user) {
         phone: result.data.phone || null,
       });
 
-      if (result.data.lastName || result.data.birthDate || result.data.gender || result.data.emergencyContactName || result.data.emergencyContactPhone || result.data.medicalNotes) {
+      if (result.data.lastName || result.data.birthDate || result.data.gender) {
         await storage.updateClient(newUser.id, {
           lastName: result.data.lastName || null,
           birthDate: result.data.birthDate || null,
           gender: result.data.gender || null,
+        });
+      }
+
+      if (result.data.emergencyContactName || result.data.emergencyContactPhone || result.data.medicalNotes) {
+        await storage.updateBranchClientPrivateProfile(actor.branchId, newUser.id, {
           emergencyContactName: result.data.emergencyContactName || null,
           emergencyContactPhone: result.data.emergencyContactPhone || null,
           medicalNotes: result.data.medicalNotes || null,
@@ -3556,24 +3586,26 @@ if (!user) {
   app.patch("/api/branch/clients/:id", requireBranchAdmin, async (req, res) => {
     const actor = req.user as any;
     const clientId = req.params.id as string;
-    const result = updateClientSchema.safeParse(req.body);
+    const result = updateBranchClientPrivateSchema.safeParse(req.body);
     if (!result.success) {
       return res.status(400).json({ message: "Datos inválidos", errors: result.error.flatten() });
     }
 
     try {
       const membership = await storage.getMembership(clientId, actor.branchId);
-      if (!membership) return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+      if (!membership || membership.status !== "active") {
+        return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+      }
 
-      if (result.data.email) {
-        const existing = await storage.getUserByEmail(result.data.email);
-        if (existing && existing.id !== clientId) {
+      const updated = await storage.updateBranchClientPrivateProfile(actor.branchId, clientId, result.data);
+      /*
           return res.status(409).json({ message: "Ese email ya está registrado por otro usuario" });
         }
       }
 
       const updated = await storage.updateClient(clientId, result.data);
 
+      */
       await storage.createAuditLog({
         actorUserId: actor.id,
         action: "UPDATE_CLIENT",
@@ -3629,7 +3661,9 @@ if (!user) {
 
     try {
       const membership = await storage.getMembership(clientId, actor.branchId);
-      if (!membership) return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+      if (!membership || membership.status !== "active") {
+        return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+      }
 
       const note = await storage.createClientNote({
         branchId: actor.branchId,
@@ -3652,7 +3686,9 @@ if (!user) {
 
     try {
       const membership = await storage.getMembership(clientId, actor.branchId);
-      if (!membership) return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+      if (!membership || membership.status !== "active") {
+        return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+      }
       if (membership.status !== "active") {
         return res.status(400).json({ message: "El cliente no tiene una membresía activa" });
       }
@@ -3692,6 +3728,10 @@ if (!user) {
     const actor = req.user as any;
     const clientId = req.params.id as string;
 
+    if (actor.role !== "SUPER_ADMIN") {
+      return res.status(403).json({ message: "La foto global del cliente solo puede administrarla el propio usuario" });
+    }
+
     upload.single("file")(req, res, async (err) => {
       if (err) {
         if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
@@ -3705,15 +3745,14 @@ if (!user) {
 
       try {
         const membership = await storage.getMembership(clientId, actor.branchId);
-        if (!membership) {
+        if (!membership || membership.status !== "active") {
           fs.unlinkSync(req.file.path);
           return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
         }
 
         const existingUser = await storage.getUser(clientId);
         if (existingUser?.avatarUrl) {
-          const oldPath = path.join(process.cwd(), existingUser.avatarUrl);
-          if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+          deleteLocalUploadFiles([existingUser.avatarUrl]);
         }
 
         const avatarUrl = `/uploads/${req.file.filename}`;
@@ -3732,14 +3771,19 @@ if (!user) {
     const actor = req.user as any;
     const clientId = req.params.id as string;
 
+    if (actor.role !== "SUPER_ADMIN") {
+      return res.status(403).json({ message: "La foto global del cliente solo puede administrarla el propio usuario" });
+    }
+
     try {
       const membership = await storage.getMembership(clientId, actor.branchId);
-      if (!membership) return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+      if (!membership || membership.status !== "active") {
+        return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+      }
 
       const existingUser = await storage.getUser(clientId);
       if (existingUser?.avatarUrl) {
-        const oldPath = path.join(process.cwd(), existingUser.avatarUrl);
-        if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+        deleteLocalUploadFiles([existingUser.avatarUrl]);
       }
 
       await storage.updateClient(clientId, { avatarUrl: null });
@@ -3763,7 +3807,9 @@ if (!user) {
 
     try {
       const membership = await storage.getMembership(clientId, actor.branchId);
-      if (!membership) return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+      if (!membership || membership.status !== "active") {
+        return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+      }
 
       await storage.updateClientStatus(membership.id, clientStatus);
 
@@ -3793,7 +3839,9 @@ if (!user) {
 
     try {
       const membership = await storage.getMembership(clientId, actor.branchId);
-      if (!membership) return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+      if (!membership || membership.status !== "active") {
+        return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+      }
 
       const amount = hasDebt ? Math.max(0, Math.round(Number(debtAmount) || 0)) : 0;
       await storage.updateClientDebt(membership.id, hasDebt, amount);
@@ -4452,7 +4500,6 @@ if (!user) {
         status: "confirmed",
         source: "dashboard",
       });
-
       await storage.createAuditLog({
         actorUserId: actor.id,
         action: "CREATE_BOOKING",

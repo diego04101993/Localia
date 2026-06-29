@@ -572,6 +572,19 @@ export interface IStorage {
   getBranchClients(branchId: string, includeLeft?: boolean): Promise<any[]>;
   getClientProfile(userId: string, branchId: string): Promise<any>;
   updateBranchClientCrm(branchId: string, userId: string, data: { clientStatus?: string | null; tags?: string | null; lastVisit?: Date | null }): Promise<any>;
+  updateBranchClientPrivateProfile(
+    branchId: string,
+    userId: string,
+    data: {
+      emergencyContactName?: string | null;
+      emergencyContactPhone?: string | null;
+      medicalNotes?: string | null;
+      injuriesNotes?: string | null;
+      medicalWarnings?: string | null;
+      parqAccepted?: boolean;
+      parqAcceptedDate?: string | null;
+    },
+  ): Promise<any>;
   getActiveBranchCustomerBlock(branchId: string, userId: string): Promise<BranchCustomerBlock | null>;
   setBranchCustomerBlock(branchId: string, userId: string, data: { blockedByUserId: string; reason?: string | null; note?: string | null }): Promise<BranchCustomerBlock>;
   unblockBranchCustomer(branchId: string, userId: string): Promise<number>;
@@ -2227,7 +2240,23 @@ export class DatabaseStorage implements IStorage {
     return rows.length;
   }
 
-  async upsertBranchClientCrm(branchId: string, userId: string, data: { clientStatus?: string | null; tags?: string | null; lastVisit?: Date | null }): Promise<BranchClientCrm> {
+  async upsertBranchClientCrm(
+    branchId: string,
+    userId: string,
+    data: {
+      clientStatus?: string | null;
+      tags?: string | null;
+      lastVisit?: Date | null;
+      emergencyContactName?: string | null;
+      emergencyContactPhone?: string | null;
+      medicalNotes?: string | null;
+      injuriesNotes?: string | null;
+      medicalWarnings?: string | null;
+      parqAccepted?: boolean;
+      parqAcceptedDate?: string | null;
+      privateProfileInitialized?: boolean;
+    },
+  ): Promise<BranchClientCrm> {
     const now = new Date();
     const setData: Record<string, any> = {
       updatedAt: now,
@@ -2236,6 +2265,14 @@ export class DatabaseStorage implements IStorage {
     if (data.clientStatus !== undefined) setData.clientStatus = data.clientStatus;
     if (data.tags !== undefined) setData.tags = data.tags;
     if (data.lastVisit !== undefined) setData.lastVisit = data.lastVisit;
+    if (data.emergencyContactName !== undefined) setData.emergencyContactName = data.emergencyContactName;
+    if (data.emergencyContactPhone !== undefined) setData.emergencyContactPhone = data.emergencyContactPhone;
+    if (data.medicalNotes !== undefined) setData.medicalNotes = data.medicalNotes;
+    if (data.injuriesNotes !== undefined) setData.injuriesNotes = data.injuriesNotes;
+    if (data.medicalWarnings !== undefined) setData.medicalWarnings = data.medicalWarnings;
+    if (data.parqAccepted !== undefined) setData.parqAccepted = data.parqAccepted;
+    if (data.parqAcceptedDate !== undefined) setData.parqAcceptedDate = data.parqAcceptedDate;
+    if (data.privateProfileInitialized !== undefined) setData.privateProfileInitialized = data.privateProfileInitialized;
 
     const [row] = await db
       .insert(branchClientCrm)
@@ -2245,6 +2282,14 @@ export class DatabaseStorage implements IStorage {
         clientStatus: data.clientStatus ?? null,
         tags: data.tags ?? null,
         lastVisit: data.lastVisit ?? null,
+        emergencyContactName: data.emergencyContactName ?? null,
+        emergencyContactPhone: data.emergencyContactPhone ?? null,
+        medicalNotes: data.medicalNotes ?? null,
+        injuriesNotes: data.injuriesNotes ?? null,
+        medicalWarnings: data.medicalWarnings ?? null,
+        parqAccepted: data.parqAccepted ?? false,
+        parqAcceptedDate: data.parqAcceptedDate ?? null,
+        privateProfileInitialized: data.privateProfileInitialized ?? false,
         updatedAt: now,
       })
       .onConflictDoUpdate({
@@ -2588,6 +2633,10 @@ export class DatabaseStorage implements IStorage {
       .from(branchClientCrm)
       .where(and(eq(branchClientCrm.branchId, branchId), eq(branchClientCrm.userId, userId)))
       .limit(1);
+    const [activeMembershipCountRow] = await db
+      .select({ count: sql<number>`COUNT(*)`.as("count") })
+      .from(memberships)
+      .where(and(eq(memberships.userId, userId), eq(memberships.status, "active")));
     const localBlock = await this.getActiveBranchCustomerBlock(branchId, userId);
     const reports = await this.getCustomerReports({ branchId, userId });
 
@@ -2639,6 +2688,9 @@ export class DatabaseStorage implements IStorage {
       recentAttendances[0]?.checkedInAt,
       latestBookingActivity?.lastBookingAt,
     );
+    const shouldUseGlobalPrivateFallback =
+      (crmEntry?.privateProfileInitialized ?? false) !== true &&
+      (Number(activeMembershipCountRow?.count) || 0) <= 1;
 
     return {
       user: {
@@ -2649,13 +2701,27 @@ export class DatabaseStorage implements IStorage {
         phone: user.phone,
         birthDate: user.birthDate,
         gender: user.gender,
-        emergencyContactName: user.emergencyContactName,
-        emergencyContactPhone: user.emergencyContactPhone,
-        medicalNotes: user.medicalNotes,
-        injuriesNotes: user.injuriesNotes,
-        medicalWarnings: user.medicalWarnings,
-        parqAccepted: user.parqAccepted,
-        parqAcceptedDate: user.parqAcceptedDate,
+        emergencyContactName: shouldUseGlobalPrivateFallback
+          ? user.emergencyContactName
+          : (crmEntry?.emergencyContactName ?? null),
+        emergencyContactPhone: shouldUseGlobalPrivateFallback
+          ? user.emergencyContactPhone
+          : (crmEntry?.emergencyContactPhone ?? null),
+        medicalNotes: shouldUseGlobalPrivateFallback
+          ? user.medicalNotes
+          : (crmEntry?.medicalNotes ?? null),
+        injuriesNotes: shouldUseGlobalPrivateFallback
+          ? user.injuriesNotes
+          : (crmEntry?.injuriesNotes ?? null),
+        medicalWarnings: shouldUseGlobalPrivateFallback
+          ? user.medicalWarnings
+          : (crmEntry?.medicalWarnings ?? null),
+        parqAccepted: shouldUseGlobalPrivateFallback
+          ? user.parqAccepted
+          : (crmEntry?.parqAccepted ?? false),
+        parqAcceptedDate: shouldUseGlobalPrivateFallback
+          ? user.parqAcceptedDate
+          : (crmEntry?.parqAcceptedDate ?? null),
         avatarUrl: user.avatarUrl,
         createdAt: user.createdAt,
       },
@@ -3656,6 +3722,35 @@ export class DatabaseStorage implements IStorage {
       crmClientStatus: resolveCrmClientStatus(crmEntry.clientStatus, lastVisit, membership?.joinedAt || null),
       lastVisit,
       tags: crmEntry.tags,
+    };
+  }
+
+  async updateBranchClientPrivateProfile(
+    branchId: string,
+    userId: string,
+    data: {
+      emergencyContactName?: string | null;
+      emergencyContactPhone?: string | null;
+      medicalNotes?: string | null;
+      injuriesNotes?: string | null;
+      medicalWarnings?: string | null;
+      parqAccepted?: boolean;
+      parqAcceptedDate?: string | null;
+    },
+  ): Promise<any> {
+    const crmEntry = await this.upsertBranchClientCrm(branchId, userId, {
+      ...data,
+      privateProfileInitialized: true,
+    });
+
+    return {
+      emergencyContactName: crmEntry.emergencyContactName,
+      emergencyContactPhone: crmEntry.emergencyContactPhone,
+      medicalNotes: crmEntry.medicalNotes,
+      injuriesNotes: crmEntry.injuriesNotes,
+      medicalWarnings: crmEntry.medicalWarnings,
+      parqAccepted: crmEntry.parqAccepted,
+      parqAcceptedDate: crmEntry.parqAcceptedDate,
     };
   }
 

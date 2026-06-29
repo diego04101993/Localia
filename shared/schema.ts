@@ -324,6 +324,14 @@ export const branchClientCrm = pgTable("branch_client_crm", {
   clientStatus: text("client_status"),
   lastVisit: timestamp("last_visit", { withTimezone: true }),
   tags: text("tags"),
+  emergencyContactName: text("emergency_contact_name"),
+  emergencyContactPhone: text("emergency_contact_phone"),
+  medicalNotes: text("medical_notes"),
+  injuriesNotes: text("injuries_notes"),
+  medicalWarnings: text("medical_warnings"),
+  parqAccepted: boolean("parq_accepted").notNull().default(false),
+  parqAcceptedDate: text("parq_accepted_date"),
+  privateProfileInitialized: boolean("private_profile_initialized").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
@@ -715,6 +723,16 @@ export const updateClientSchema = z.object({
   parqAccepted: z.boolean().optional(),
   parqAcceptedDate: z.string().nullable().optional(),
   avatarUrl: z.string().nullable().optional(),
+});
+
+export const updateBranchClientPrivateSchema = z.object({
+  emergencyContactName: z.string().nullable().optional(),
+  emergencyContactPhone: z.string().nullable().optional(),
+  medicalNotes: z.string().nullable().optional(),
+  injuriesNotes: z.string().nullable().optional(),
+  medicalWarnings: z.string().nullable().optional(),
+  parqAccepted: z.boolean().optional(),
+  parqAcceptedDate: z.string().nullable().optional(),
 });
 
 export const branchClientCrmStatusValues = ["nuevo", "activo", "inactivo", "vip"] as const;

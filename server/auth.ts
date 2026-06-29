@@ -23,6 +23,28 @@ function isBlockedCustomer(user: any): boolean {
   return user?.role === "CUSTOMER" && !!user?.isBlocked;
 }
 
+export async function getBranchAdminAccessIssue(user: any): Promise<string | null> {
+  if (user?.role !== "BRANCH_ADMIN") {
+    return null;
+  }
+
+  const branchId = typeof user?.branchId === "string" ? user.branchId.trim() : "";
+  if (!branchId) {
+    return "No tienes una sucursal activa asignada";
+  }
+
+  const branch = await storage.getBranch(branchId);
+  if (!branch || branch.deletedAt) {
+    return "Tu sucursal ya no está disponible";
+  }
+
+  if (branch.status !== "active") {
+    return "Tu sucursal no está activa";
+  }
+
+  return null;
+}
+
 function resolveSessionMaxAgeDays(): number {
   const rawValue = Number.parseInt(process.env.SESSION_MAX_AGE_DAYS || "", 10);
   if (!Number.isFinite(rawValue) || rawValue <= 0) {
@@ -140,6 +162,10 @@ export function setupAuth(app: Express) {
           if (isBlockedCustomer(user)) {
             return done(null, false, { message: CUSTOMER_BLOCKED_MESSAGE });
           }
+          const branchAccessIssue = await getBranchAdminAccessIssue(user);
+          if (branchAccessIssue) {
+            return done(null, false, { message: branchAccessIssue });
+          }
           authDebugLog(`Autenticacion local exitosa para ${user.email} (${user.role})`);
           return done(null, user);
         } catch (err) {
@@ -166,7 +192,7 @@ export function setupAuth(app: Express) {
   });
 }
 
-export function requireAuth(req: Request, res: Response, next: NextFunction) {
+export async function requireAuth(req: Request, res: Response, next: NextFunction) {
   if (!req.isAuthenticated()) {
     authDebugLog(`Sesion no encontrada para ${req.method} ${req.path}`);
     return res.status(401).json({ message: "No autenticado" });
@@ -175,11 +201,15 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
   if (isBlockedCustomer(user)) {
     return res.status(403).json({ message: CUSTOMER_BLOCKED_MESSAGE });
   }
+  const branchAccessIssue = await getBranchAdminAccessIssue(user);
+  if (branchAccessIssue) {
+    return res.status(403).json({ message: branchAccessIssue });
+  }
   next();
 }
 
 export function requireRole(...roles: string[]) {
-  return (req: Request, res: Response, next: NextFunction) => {
+  return async (req: Request, res: Response, next: NextFunction) => {
     if (!req.isAuthenticated()) {
       authDebugLog(`Sesion no encontrada para ${req.method} ${req.path}`);
       return res.status(401).json({ message: "No autenticado" });
@@ -187,6 +217,10 @@ export function requireRole(...roles: string[]) {
     const user = req.user as any;
     if (isBlockedCustomer(user)) {
       return res.status(403).json({ message: CUSTOMER_BLOCKED_MESSAGE });
+    }
+    const branchAccessIssue = await getBranchAdminAccessIssue(user);
+    if (branchAccessIssue) {
+      return res.status(403).json({ message: branchAccessIssue });
     }
     const sess = req.session as any;
     const impersonating = !!(sess.impersonating && sess.originalUserId);
