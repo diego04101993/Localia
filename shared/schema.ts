@@ -1013,7 +1013,7 @@ export const branchFinanceEntries = pgTable("branch_finance_entries", {
   notes: text("notes"),
   entryDate: date("entry_date").notNull(),
   source: text("source"),
-  sourceId: varchar("source_id", { length: 36 }),
+  sourceId: varchar("source_id", { length: 120 }),
   metadata: jsonb("metadata"),
   createdBy: varchar("created_by", { length: 36 }).references(() => users.id),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -1025,6 +1025,77 @@ export const branchFinanceEntries = pgTable("branch_finance_entries", {
   index("branch_finance_entries_type_idx").on(table.type),
   index("branch_finance_entries_deleted_at_idx").on(table.deletedAt),
   index("branch_finance_entries_client_user_idx").on(table.clientUserId),
+]);
+
+export const branchRecurringExpenses = pgTable("branch_recurring_expenses", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  name: text("name").notNull(),
+  category: text("category").notNull().default("otro"),
+  amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
+  frequency: text("frequency").notNull().default("monthly"),
+  paymentDay: integer("payment_day"),
+  notes: text("notes"),
+  isActive: boolean("is_active").notNull().default(true),
+  lastRegisteredAt: timestamp("last_registered_at", { withTimezone: true }),
+  createdBy: varchar("created_by", { length: 36 }).references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+}, (table) => [
+  index("branch_recurring_expenses_branch_idx").on(table.branchId),
+  index("branch_recurring_expenses_active_idx").on(table.isActive),
+  index("branch_recurring_expenses_deleted_at_idx").on(table.deletedAt),
+]);
+
+export const branchStaffMembers = pgTable("branch_staff_members", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  name: text("name").notNull(),
+  phone: text("phone"),
+  payPerClass: numeric("pay_per_class", { precision: 12, scale: 2 }).notNull(),
+  notes: text("notes"),
+  isActive: boolean("is_active").notNull().default(true),
+  createdBy: varchar("created_by", { length: 36 }).references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+}, (table) => [
+  index("branch_staff_members_branch_idx").on(table.branchId),
+  index("branch_staff_members_active_idx").on(table.isActive),
+  index("branch_staff_members_deleted_at_idx").on(table.deletedAt),
+]);
+
+export const branchStaffClassLogs = pgTable("branch_staff_class_logs", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  staffId: varchar("staff_id", { length: 36 })
+    .notNull()
+    .references(() => branchStaffMembers.id),
+  classesCount: integer("classes_count").notNull(),
+  paymentTotal: numeric("payment_total", { precision: 12, scale: 2 }).notNull(),
+  classDate: date("class_date").notNull(),
+  notes: text("notes"),
+  financeEntryId: varchar("finance_entry_id", { length: 36 }).references(() => branchFinanceEntries.id),
+  createdBy: varchar("created_by", { length: 36 }).references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("branch_staff_class_logs_branch_idx").on(table.branchId),
+  index("branch_staff_class_logs_staff_idx").on(table.staffId),
+  index("branch_staff_class_logs_class_date_idx").on(table.classDate),
 ]);
 
 export const branchMonthlyBilling = pgTable("branch_monthly_billing", {
@@ -1080,6 +1151,27 @@ export const insertBranchFinanceEntrySchema = createInsertSchema(branchFinanceEn
   deletedAt: true,
 });
 
+export const insertBranchRecurringExpenseSchema = createInsertSchema(branchRecurringExpenses).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  deletedAt: true,
+  lastRegisteredAt: true,
+});
+
+export const insertBranchStaffMemberSchema = createInsertSchema(branchStaffMembers).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  deletedAt: true,
+});
+
+export const insertBranchStaffClassLogSchema = createInsertSchema(branchStaffClassLogs).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
 export const insertBranchMonthlyBillingSchema = createInsertSchema(branchMonthlyBilling).omit({
   id: true,
   createdAt: true,
@@ -1096,6 +1188,12 @@ export type NotificationJob = typeof notificationJobs.$inferSelect;
 export type InsertNotificationJob = z.infer<typeof insertNotificationJobSchema>;
 export type BranchFinanceEntry = typeof branchFinanceEntries.$inferSelect;
 export type InsertBranchFinanceEntry = z.infer<typeof insertBranchFinanceEntrySchema>;
+export type BranchRecurringExpense = typeof branchRecurringExpenses.$inferSelect;
+export type InsertBranchRecurringExpense = z.infer<typeof insertBranchRecurringExpenseSchema>;
+export type BranchStaffMember = typeof branchStaffMembers.$inferSelect;
+export type InsertBranchStaffMember = z.infer<typeof insertBranchStaffMemberSchema>;
+export type BranchStaffClassLog = typeof branchStaffClassLogs.$inferSelect;
+export type InsertBranchStaffClassLog = z.infer<typeof insertBranchStaffClassLogSchema>;
 export type BranchMonthlyBilling = typeof branchMonthlyBilling.$inferSelect;
 export type InsertBranchMonthlyBilling = z.infer<typeof insertBranchMonthlyBillingSchema>;
 
@@ -1170,8 +1268,16 @@ export const branchFinanceIncomeCategories = [
 ] as const;
 export const branchFinanceExpenseCategories = [
   "renta",
+  "luz",
+  "agua",
+  "internet",
   "productos",
+  "insumos",
   "sueldos",
+  "secretaria",
+  "enfermera",
+  "limpieza",
+  "profesor",
   "mantenimiento",
   "publicidad",
   "otro",
@@ -1188,6 +1294,25 @@ export const monthlyBillingStatusValues = [
   "paid",
   "overdue",
 ] as const;
+export const branchRecurringExpenseFrequencyValues = [
+  "monthly",
+  "weekly",
+  "biweekly",
+  "one_time",
+] as const;
+export const branchRecurringExpenseCategoryValues = [
+  "renta",
+  "luz",
+  "agua",
+  "internet",
+  "nomina",
+  "insumos",
+  "secretaria",
+  "enfermera",
+  "limpieza",
+  "publicidad",
+  "otro",
+] as const;
 
 export const createBranchFinanceEntrySchema = z.object({
   type: z.enum(branchFinanceEntryTypeValues),
@@ -1200,7 +1325,7 @@ export const createBranchFinanceEntrySchema = z.object({
   notes: z.string().max(500).nullable().optional(),
   entryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Formato YYYY-MM-DD"),
   source: z.string().max(40).nullable().optional(),
-  sourceId: z.string().max(36).nullable().optional(),
+  sourceId: z.string().max(120).nullable().optional(),
   metadata: z.any().optional(),
 });
 
@@ -1208,6 +1333,48 @@ export const updateBranchFinanceEntrySchema = createBranchFinanceEntrySchema.par
   (data) => Object.keys(data).length > 0,
   { message: "Debes enviar al menos un campo para actualizar" },
 );
+
+export const createBranchRecurringExpenseSchema = z.object({
+  name: z.string().min(1, "El nombre es obligatorio").max(160, "Maximo 160 caracteres"),
+  category: z.enum(branchRecurringExpenseCategoryValues),
+  amount: z.coerce.number().positive("El monto debe ser mayor a 0"),
+  frequency: z.enum(branchRecurringExpenseFrequencyValues),
+  paymentDay: z.coerce.number().int().min(1, "Debe ser del 1 al 31").max(31, "Debe ser del 1 al 31").nullable().optional(),
+  notes: z.string().max(500, "Maximo 500 caracteres").nullable().optional(),
+  isActive: z.boolean().optional(),
+});
+
+export const updateBranchRecurringExpenseSchema = createBranchRecurringExpenseSchema.partial().refine(
+  (data) => Object.keys(data).length > 0,
+  { message: "Debes enviar al menos un campo para actualizar" },
+);
+
+export const registerBranchRecurringExpenseChargeSchema = z.object({
+  entryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Formato YYYY-MM-DD"),
+  paymentMethod: z.enum(branchFinancePaymentMethodValues).nullable().optional(),
+  notes: z.string().max(500, "Maximo 500 caracteres").nullable().optional(),
+});
+
+export const createBranchStaffMemberSchema = z.object({
+  name: z.string().min(1, "El nombre es obligatorio").max(160, "Maximo 160 caracteres"),
+  phone: z.string().max(40, "Maximo 40 caracteres").nullable().optional(),
+  payPerClass: z.coerce.number().positive("El pago por clase debe ser mayor a 0"),
+  notes: z.string().max(500, "Maximo 500 caracteres").nullable().optional(),
+  isActive: z.boolean().optional(),
+});
+
+export const updateBranchStaffMemberSchema = createBranchStaffMemberSchema.partial().refine(
+  (data) => Object.keys(data).length > 0,
+  { message: "Debes enviar al menos un campo para actualizar" },
+);
+
+export const createBranchStaffClassLogSchema = z.object({
+  staffId: z.string().min(1, "El profesor o empleado es obligatorio"),
+  classesCount: z.coerce.number().int().min(1, "Debes registrar al menos una clase"),
+  classDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Formato YYYY-MM-DD"),
+  paymentMethod: z.enum(branchFinancePaymentMethodValues).nullable().optional(),
+  notes: z.string().max(500, "Maximo 500 caracteres").nullable().optional(),
+});
 
 export const upsertBranchMonthlyBillingSchema = z.object({
   monthlyFeeAmount: z.coerce.number().min(0, "El monto no puede ser negativo"),

@@ -289,6 +289,14 @@ const REPORT_REASON_OPTIONS = [
   { value: "otro", label: "Otro" },
 ] as const;
 
+const FINANCE_PAYMENT_METHOD_OPTIONS = [
+  { value: "efectivo", label: "Efectivo" },
+  { value: "tarjeta", label: "Tarjeta" },
+  { value: "transferencia", label: "Transferencia" },
+  { value: "mercado_pago", label: "Mercado Pago" },
+  { value: "otro", label: "Otro" },
+] as const;
+
 function reportReasonLabel(reason: string): string {
   return REPORT_REASON_OPTIONS.find((option) => option.value === reason)?.label || reason;
 }
@@ -1160,6 +1168,8 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
   const [noteContent, setNoteContent] = useState("");
   const [showAllNotes, setShowAllNotes] = useState(false);
   const [showPlanSelect, setShowPlanSelect] = useState(false);
+  const [membershipPaymentMethod, setMembershipPaymentMethod] =
+    useState<(typeof FINANCE_PAYMENT_METHOD_OPTIONS)[number]["value"]>("efectivo");
   const [reportReason, setReportReason] = useState<(typeof REPORT_REASON_OPTIONS)[number]["value"]>("mal_comportamiento");
   const [reportNote, setReportNote] = useState("");
   const [blockLocally, setBlockLocally] = useState(false);
@@ -1175,6 +1185,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
       setBlockLocally(false);
       setShowAllNotes(false);
       setShowPlanSelect(false);
+      setMembershipPaymentMethod("efectivo");
     }
   }, [open]);
 
@@ -1214,8 +1225,11 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
   });
 
   const assignPlanMutation = useMutation({
-    mutationFn: async (planId: string) => {
-      const resp = await apiRequest("POST", `/api/branch/memberships/${profile!.membership.id}/assign-plan`, { planId });
+    mutationFn: async ({ planId, paymentMethod }: { planId: string; paymentMethod: string }) => {
+      const resp = await apiRequest("POST", `/api/branch/memberships/${profile!.membership.id}/assign-plan`, {
+        planId,
+        paymentMethod,
+      });
       return resp.json();
     },
     onSuccess: () => {
@@ -1246,7 +1260,9 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
 
   const renewMutation = useMutation({
     mutationFn: async () => {
-      const resp = await apiRequest("POST", `/api/branch/memberships/${profile!.membership.id}/renew`);
+      const resp = await apiRequest("POST", `/api/branch/memberships/${profile!.membership.id}/renew`, {
+        paymentMethod: membershipPaymentMethod,
+      });
       return resp.json();
     },
     onSuccess: () => {
@@ -1691,7 +1707,18 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                   </div>
 
                   {profile.planStatus === "expired" && (
-                    <div className="pt-1">
+                    <div className="space-y-2 pt-1">
+                      <div className="space-y-1">
+                        <Label className="text-xs">Método de pago</Label>
+                        <Select value={membershipPaymentMethod} onValueChange={(value) => setMembershipPaymentMethod(value as (typeof FINANCE_PAYMENT_METHOD_OPTIONS)[number]["value"])}>
+                          <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            {FINANCE_PAYMENT_METHOD_OPTIONS.map((option) => (
+                              <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
                       <Button
                         size="sm"
                         className="w-full"
@@ -1739,13 +1766,35 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                     </Button>
                   ) : (
                     <div className="space-y-2">
+                      <div className="space-y-1">
+                        <Label className="text-xs">Método de pago</Label>
+                        <Select value={membershipPaymentMethod} onValueChange={(value) => setMembershipPaymentMethod(value as (typeof FINANCE_PAYMENT_METHOD_OPTIONS)[number]["value"])}>
+                          <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            {FINANCE_PAYMENT_METHOD_OPTIONS.map((option) => (
+                              <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Método de pago</Label>
+                        <Select value={membershipPaymentMethod} onValueChange={(value) => setMembershipPaymentMethod(value as (typeof FINANCE_PAYMENT_METHOD_OPTIONS)[number]["value"])}>
+                          <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            {FINANCE_PAYMENT_METHOD_OPTIONS.map((option) => (
+                              <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
                       {activePlans.length === 0 ? (
                         <p className="text-xs text-muted-foreground">No hay planes activos. Crea uno en la pestaña Membresías.</p>
                       ) : (
                         activePlans.map((plan) => (
                           <button
                             key={plan.id}
-                            onClick={() => assignPlanMutation.mutate(plan.id)}
+                            onClick={() => assignPlanMutation.mutate({ planId: plan.id, paymentMethod: membershipPaymentMethod })}
                             disabled={assignPlanMutation.isPending}
                             className="w-full text-left p-2 rounded-md border bg-background hover:bg-muted/50 transition-colors text-sm"
                             data-testid={`button-select-plan-${plan.id}`}
@@ -1779,7 +1828,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                         activePlans.map((plan) => (
                           <button
                             key={plan.id}
-                            onClick={() => assignPlanMutation.mutate(plan.id)}
+                            onClick={() => assignPlanMutation.mutate({ planId: plan.id, paymentMethod: membershipPaymentMethod })}
                             disabled={assignPlanMutation.isPending}
                             className="w-full text-left p-2 rounded-md border bg-background hover:bg-muted/50 transition-colors text-sm"
                             data-testid={`button-select-plan-${plan.id}`}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   ArrowDownRight,
@@ -10,15 +10,19 @@ import {
   Pencil,
   PiggyBank,
   Plus,
+  Repeat,
   ReceiptText,
   Search,
   Trash2,
+  Users,
   Wallet,
 } from "lucide-react";
 import {
   branchFinanceExpenseCategories,
   branchFinanceIncomeCategories,
   branchFinancePaymentMethodValues,
+  branchRecurringExpenseCategoryValues,
+  branchRecurringExpenseFrequencyValues,
 } from "@shared/schema";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -50,7 +54,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { CartesianGrid, Cell, Line, LineChart, Pie, PieChart, XAxis, YAxis } from "recharts";
 
 type FinanceEntryType = "income" | "expense";
-type RangePreset = "today" | "week" | "month" | "three_months" | "custom";
+type RangePreset = "thirty_days" | "ninety_days" | "six_months" | "twelve_months" | "all" | "custom";
 
 interface BranchFinanceSummary {
   totalIncome: number;
@@ -115,6 +119,68 @@ interface FinanceFormState {
   entryDate: string;
 }
 
+interface BranchRecurringExpense {
+  id: string;
+  branchId: string;
+  name: string;
+  category: string;
+  amount: number;
+  frequency: string;
+  paymentDay: number | null;
+  notes: string | null;
+  isActive: boolean;
+  lastRegisteredAt: string | null;
+}
+
+interface RecurringExpenseFormState {
+  name: string;
+  category: string;
+  amount: string;
+  frequency: string;
+  paymentDay: string;
+  notes: string;
+  isActive: boolean;
+}
+
+interface BranchStaffMember {
+  id: string;
+  branchId: string;
+  name: string;
+  phone: string | null;
+  payPerClass: number;
+  notes: string | null;
+  isActive: boolean;
+}
+
+interface StaffFormState {
+  name: string;
+  phone: string;
+  payPerClass: string;
+  notes: string;
+  isActive: boolean;
+}
+
+interface BranchStaffClassLog {
+  id: string;
+  branchId: string;
+  staffId: string;
+  staffName: string;
+  classesCount: number;
+  paymentTotal: number;
+  classDate: string;
+  notes: string | null;
+  financeEntryId: string | null;
+  paymentMethod: string | null;
+}
+
+interface StaffClassLogFormState {
+  staffId: string;
+  classesCount: string;
+  classDate: string;
+  paymentMethod: string;
+  notes: string;
+}
+
 const PAYMENT_LABELS: Record<string, string> = {
   efectivo: "Efectivo",
   tarjeta: "Tarjeta",
@@ -130,11 +196,34 @@ const CATEGORY_LABELS: Record<string, string> = {
   producto: "Producto",
   clase: "Clase",
   renta: "Renta",
+  luz: "Luz",
+  agua: "Agua",
+  internet: "Internet",
   productos: "Productos",
+  insumos: "Insumos",
   sueldos: "Sueldos",
+  secretaria: "Secretaria",
+  enfermera: "Enfermera",
+  limpieza: "Limpieza",
+  profesor: "Profesor",
+  nomina: "Nómina",
   mantenimiento: "Mantenimiento",
   publicidad: "Publicidad",
   otro: "Otro",
+};
+
+const FREQUENCY_LABELS: Record<string, string> = {
+  monthly: "Mensual",
+  weekly: "Semanal",
+  biweekly: "Quincenal",
+  one_time: "Único",
+};
+
+const SOURCE_LABELS: Record<string, string> = {
+  fixed_expense: "Gasto fijo",
+  membership_assign: "Membresía",
+  membership_renew: "Renovación",
+  staff_class_log: "Clases impartidas",
 };
 
 const ALL_CATEGORY_OPTIONS = Array.from(
@@ -162,24 +251,29 @@ function getTodayDateString() {
 }
 
 function getQuickRange(preset: Exclude<RangePreset, "custom">) {
+  if (preset === "all") {
+    return { from: "", to: "" };
+  }
+
+  if (preset === "thirty_days") {
+    return getLastNDaysRange(30);
+  }
+
+  if (preset === "ninety_days") {
+    return getLastNDaysRange(90);
+  }
+
   const today = new Date(`${getTodayDateString()}T12:00:00`);
   const to = today.toLocaleDateString("en-CA");
   const fromDate = new Date(today);
 
-  if (preset === "today") {
-    return { from: to, to };
-  }
-
-  if (preset === "week") {
-    fromDate.setDate(fromDate.getDate() - 6);
+  if (preset === "six_months") {
+    fromDate.setMonth(fromDate.getMonth() - 6);
+    fromDate.setDate(fromDate.getDate() + 1);
     return { from: fromDate.toLocaleDateString("en-CA"), to };
   }
 
-  if (preset === "month") {
-    return { from: `${to.slice(0, 7)}-01`, to };
-  }
-
-  fromDate.setMonth(fromDate.getMonth() - 3);
+  fromDate.setMonth(fromDate.getMonth() - 12);
   fromDate.setDate(fromDate.getDate() + 1);
   return { from: fromDate.toLocaleDateString("en-CA"), to };
 }
@@ -249,6 +343,13 @@ function buildExportUrl(from: string, to: string, typeFilter: string) {
   return `/api/branch/finance/export.csv?${params.toString()}`;
 }
 
+function scrollSectionIntoView(ref: RefObject<HTMLDivElement | null>) {
+  if (typeof window === "undefined") return;
+  window.requestAnimationFrame(() => {
+    ref.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+}
+
 function getFormCategories(type: FinanceEntryType) {
   return type === "income" ? branchFinanceIncomeCategories : branchFinanceExpenseCategories;
 }
@@ -267,6 +368,38 @@ function createInitialFormState(): FinanceFormState {
   };
 }
 
+function createInitialRecurringExpenseFormState(): RecurringExpenseFormState {
+  return {
+    name: "",
+    category: "renta",
+    amount: "",
+    frequency: "monthly",
+    paymentDay: "",
+    notes: "",
+    isActive: true,
+  };
+}
+
+function createInitialStaffFormState(): StaffFormState {
+  return {
+    name: "",
+    phone: "",
+    payPerClass: "",
+    notes: "",
+    isActive: true,
+  };
+}
+
+function createInitialStaffClassLogFormState(): StaffClassLogFormState {
+  return {
+    staffId: "",
+    classesCount: "",
+    classDate: getTodayDateString(),
+    paymentMethod: "efectivo",
+    notes: "",
+  };
+}
+
 function getCategoryLabel(category: string | null) {
   if (!category) return "Sin categoría";
   return CATEGORY_LABELS[category] || category;
@@ -275,6 +408,15 @@ function getCategoryLabel(category: string | null) {
 function getPaymentMethodLabel(paymentMethod: string | null) {
   if (!paymentMethod) return "Sin definir";
   return PAYMENT_LABELS[paymentMethod] || paymentMethod;
+}
+
+function getFrequencyLabel(value: string) {
+  return FREQUENCY_LABELS[value] || value;
+}
+
+function getFinanceSourceLabel(source: string | null) {
+  if (!source) return "Manual";
+  return SOURCE_LABELS[source] || source;
 }
 
 function invalidateFinanceQueries() {
@@ -303,9 +445,9 @@ function getExpenseBucketLabel(category: string) {
 export default function CajaTab() {
   const { user } = useAuth();
   const { toast } = useToast();
-  const [rangePreset, setRangePreset] = useState<RangePreset>("month");
-  const [from, setFrom] = useState(getQuickRange("month").from);
-  const [to, setTo] = useState(getQuickRange("month").to);
+  const [rangePreset, setRangePreset] = useState<RangePreset>("ninety_days");
+  const [from, setFrom] = useState(getQuickRange("ninety_days").from);
+  const [to, setTo] = useState(getQuickRange("ninety_days").to);
   const [typeFilter, setTypeFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [clientFilter, setClientFilter] = useState("all");
@@ -317,6 +459,14 @@ export default function CajaTab() {
   const [monthlyGoal, setMonthlyGoal] = useState<number | null>(null);
   const [goalDraft, setGoalDraft] = useState("");
   const [goalEditing, setGoalEditing] = useState(false);
+  const [recurringExpenseForm, setRecurringExpenseForm] = useState<RecurringExpenseFormState>(createInitialRecurringExpenseFormState());
+  const [editingRecurringExpense, setEditingRecurringExpense] = useState<BranchRecurringExpense | null>(null);
+  const [staffForm, setStaffForm] = useState<StaffFormState>(createInitialStaffFormState());
+  const [editingStaffMember, setEditingStaffMember] = useState<BranchStaffMember | null>(null);
+  const [staffClassLogForm, setStaffClassLogForm] = useState<StaffClassLogFormState>(createInitialStaffClassLogFormState());
+  const recurringExpenseFormRef = useRef<HTMLDivElement | null>(null);
+  const staffFormRef = useRef<HTMLDivElement | null>(null);
+  const financeFormRef = useRef<HTMLDivElement | null>(null);
 
   const summaryUrl = buildSummaryUrl(from, to);
   const entriesUrl = buildEntriesUrl({
@@ -341,15 +491,15 @@ export default function CajaTab() {
   });
 
   const { data: last30Summary, isLoading: last30Loading } = useQuery<BranchFinanceSummary>({
-    queryKey: [buildSummaryUrl(last30Range.from, last30Range.to), "last30"],
+    queryKey: [buildSummaryUrl(last30Range.from, last30Range.to)],
   });
 
   const { data: currentMonthSummary } = useQuery<BranchFinanceSummary>({
-    queryKey: [buildSummaryUrl(currentMonthRange.from, currentMonthRange.to), "current-month"],
+    queryKey: [buildSummaryUrl(currentMonthRange.from, currentMonthRange.to)],
   });
 
   const { data: previousMonthSummary } = useQuery<BranchFinanceSummary>({
-    queryKey: [buildSummaryUrl(previousMonthRange.from, previousMonthRange.to), "previous-month"],
+    queryKey: [buildSummaryUrl(previousMonthRange.from, previousMonthRange.to)],
   });
 
   const { data: entriesData, isLoading: entriesLoading } = useQuery<FinanceEntriesResponse>({
@@ -358,6 +508,18 @@ export default function CajaTab() {
 
   const { data: clients = [] } = useQuery<BranchClient[]>({
     queryKey: ["/api/branch/clients"],
+  });
+
+  const { data: recurringExpenses = [], isLoading: recurringExpensesLoading } = useQuery<BranchRecurringExpense[]>({
+    queryKey: ["/api/branch/finance/fixed-expenses"],
+  });
+
+  const { data: staffMembers = [], isLoading: staffMembersLoading } = useQuery<BranchStaffMember[]>({
+    queryKey: ["/api/branch/finance/staff"],
+  });
+
+  const { data: staffClassLogs = [], isLoading: staffClassLogsLoading } = useQuery<BranchStaffClassLog[]>({
+    queryKey: ["/api/branch/finance/staff/class-logs?limit=8"],
   });
 
   useEffect(() => {
@@ -393,6 +555,8 @@ export default function CajaTab() {
       (client.phone || "").toLowerCase().includes(needle)
     );
   });
+
+  const activeStaffMembers = staffMembers.filter((member) => member.isActive);
 
   const saveMutation = useMutation({
     mutationFn: async () => {
@@ -441,18 +605,192 @@ export default function CajaTab() {
     mutationFn: async (entryId: string) => {
       await apiRequest("DELETE", `/api/branch/finance/entries/${entryId}`);
     },
-    onSuccess: () => {
+    onSuccess: (_data, entryId) => {
       invalidateFinanceQueries();
       toast({ title: "Movimiento eliminado" });
-      if (editingEntry) {
+      if (editingEntry?.id === entryId) {
         setEditingEntry(null);
         setForm(createInitialFormState());
+        setClientSearch("");
       }
     },
     onError: (error: any) => {
       toast({
         title: "Error",
         description: error.message || "No se pudo eliminar el movimiento",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const recurringExpenseMutation = useMutation({
+    mutationFn: async () => {
+      const amount = Number(recurringExpenseForm.amount);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        throw new Error("Captura un monto válido para el gasto fijo");
+      }
+
+      const payload = {
+        name: recurringExpenseForm.name.trim(),
+        category: recurringExpenseForm.category,
+        amount,
+        frequency: recurringExpenseForm.frequency,
+        paymentDay: recurringExpenseForm.paymentDay ? Number(recurringExpenseForm.paymentDay) : null,
+        notes: recurringExpenseForm.notes.trim() || null,
+        isActive: recurringExpenseForm.isActive,
+      };
+
+      if (editingRecurringExpense) {
+        const response = await apiRequest("PATCH", `/api/branch/finance/fixed-expenses/${editingRecurringExpense.id}`, payload);
+        return response.json();
+      }
+
+      const response = await apiRequest("POST", "/api/branch/finance/fixed-expenses", payload);
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/finance/fixed-expenses"] });
+      toast({ title: editingRecurringExpense ? "Gasto fijo actualizado" : "Gasto fijo creado" });
+      setEditingRecurringExpense(null);
+      setRecurringExpenseForm(createInitialRecurringExpenseFormState());
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Error",
+        description: error.message || "No se pudo guardar el gasto fijo",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const recurringExpenseDeleteMutation = useMutation({
+    mutationFn: async (expenseId: string) => {
+      await apiRequest("DELETE", `/api/branch/finance/fixed-expenses/${expenseId}`);
+    },
+    onSuccess: (_data, expenseId) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/finance/fixed-expenses"] });
+      toast({ title: "Gasto fijo eliminado" });
+      if (editingRecurringExpense?.id === expenseId) {
+        setEditingRecurringExpense(null);
+        setRecurringExpenseForm(createInitialRecurringExpenseFormState());
+      }
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Error",
+        description: error.message || "No se pudo eliminar el gasto fijo",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const recurringExpenseRegisterMutation = useMutation({
+    mutationFn: async (expenseId: string) => {
+      const response = await apiRequest("POST", `/api/branch/finance/fixed-expenses/${expenseId}/register-expense`, {
+        entryDate: getTodayDateString(),
+        paymentMethod: null,
+      });
+      return response.json();
+    },
+    onSuccess: () => {
+      invalidateFinanceQueries();
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/finance/fixed-expenses"] });
+      toast({ title: "Gasto fijo registrado en Caja" });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Error",
+        description: error.message || "No se pudo registrar el gasto fijo en Caja",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const staffMutation = useMutation({
+    mutationFn: async () => {
+      const payPerClass = Number(staffForm.payPerClass);
+      if (!Number.isFinite(payPerClass) || payPerClass <= 0) {
+        throw new Error("Captura un pago por clase válido");
+      }
+
+      const payload = {
+        name: staffForm.name.trim(),
+        phone: staffForm.phone.trim() || null,
+        payPerClass,
+        notes: staffForm.notes.trim() || null,
+        isActive: staffForm.isActive,
+      };
+
+      if (editingStaffMember) {
+        const response = await apiRequest("PATCH", `/api/branch/finance/staff/${editingStaffMember.id}`, payload);
+        return response.json();
+      }
+
+      const response = await apiRequest("POST", "/api/branch/finance/staff", payload);
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/finance/staff"] });
+      toast({ title: editingStaffMember ? "Profesor o empleado actualizado" : "Profesor o empleado creado" });
+      setEditingStaffMember(null);
+      setStaffForm(createInitialStaffFormState());
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Error",
+        description: error.message || "No se pudo guardar el profesor o empleado",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const staffDeleteMutation = useMutation({
+    mutationFn: async (staffId: string) => {
+      await apiRequest("DELETE", `/api/branch/finance/staff/${staffId}`);
+    },
+    onSuccess: (_data, staffId) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/finance/staff"] });
+      toast({ title: "Profesor o empleado eliminado" });
+      if (editingStaffMember?.id === staffId) {
+        setEditingStaffMember(null);
+        setStaffForm(createInitialStaffFormState());
+      }
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Error",
+        description: error.message || "No se pudo eliminar el profesor o empleado",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const staffClassLogMutation = useMutation({
+    mutationFn: async () => {
+      const classesCount = Number(staffClassLogForm.classesCount);
+      if (!Number.isFinite(classesCount) || classesCount <= 0) {
+        throw new Error("Captura un número de clases válido");
+      }
+
+      const response = await apiRequest("POST", "/api/branch/finance/staff/class-logs", {
+        staffId: staffClassLogForm.staffId,
+        classesCount,
+        classDate: staffClassLogForm.classDate,
+        paymentMethod: staffClassLogForm.paymentMethod || null,
+        notes: staffClassLogForm.notes.trim() || null,
+      });
+      return response.json();
+    },
+    onSuccess: () => {
+      invalidateFinanceQueries();
+      queryClient.invalidateQueries({ queryKey: ["/api/branch/finance/staff/class-logs?limit=8"] });
+      toast({ title: "Clases registradas en Caja" });
+      setStaffClassLogForm(createInitialStaffClassLogFormState());
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Error",
+        description: error.message || "No se pudo registrar la clase impartida",
         variant: "destructive",
       });
     },
@@ -488,13 +826,49 @@ export default function CajaTab() {
       entryDate: entry.entryDate,
     });
     setClientSearch(entry.clientDisplayName || "");
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    scrollSectionIntoView(financeFormRef);
   }
 
   function handleCancelEdit() {
     setEditingEntry(null);
     setForm(createInitialFormState());
     setClientSearch("");
+  }
+
+  function handleEditRecurringExpense(expense: BranchRecurringExpense) {
+    setEditingRecurringExpense(expense);
+    setRecurringExpenseForm({
+      name: expense.name,
+      category: expense.category,
+      amount: expense.amount.toFixed(2),
+      frequency: expense.frequency,
+      paymentDay: expense.paymentDay ? String(expense.paymentDay) : "",
+      notes: expense.notes || "",
+      isActive: expense.isActive,
+    });
+    scrollSectionIntoView(recurringExpenseFormRef);
+  }
+
+  function handleCancelRecurringExpenseEdit() {
+    setEditingRecurringExpense(null);
+    setRecurringExpenseForm(createInitialRecurringExpenseFormState());
+  }
+
+  function handleEditStaffMember(member: BranchStaffMember) {
+    setEditingStaffMember(member);
+    setStaffForm({
+      name: member.name,
+      phone: member.phone || "",
+      payPerClass: member.payPerClass.toFixed(2),
+      notes: member.notes || "",
+      isActive: member.isActive,
+    });
+    scrollSectionIntoView(staffFormRef);
+  }
+
+  function handleCancelStaffEdit() {
+    setEditingStaffMember(null);
+    setStaffForm(createInitialStaffFormState());
   }
 
   function handleExport() {
@@ -578,6 +952,10 @@ export default function CajaTab() {
     ? null
     : ((currentMonthNet - previousMonthNet) / Math.abs(previousMonthNet)) * 100;
   const goalProgress = monthlyGoal ? Math.min(100, ((currentMonthSummary?.monthIncome || 0) / monthlyGoal) * 100) : 0;
+  const selectedStaffForLog = activeStaffMembers.find((member) => member.id === staffClassLogForm.staffId) || null;
+  const staffLogPreviewTotal = selectedStaffForLog
+    ? Number(staffClassLogForm.classesCount || 0) * selectedStaffForLog.payPerClass
+    : 0;
 
   return (
     <div className="space-y-6">
@@ -884,15 +1262,16 @@ export default function CajaTab() {
             <CalendarRange className="h-4 w-4" />
             Resumen y filtros
           </CardTitle>
-          <CardDescription>Filtra los movimientos para analizar periodos concretos.</CardDescription>
+          <CardDescription>Por defecto se muestran los últimos 90 días. Puedes cambiar el rango sin borrar historial.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex flex-wrap gap-2">
-            <Button variant={rangePreset === "today" ? "default" : "outline"} size="sm" onClick={() => handleQuickRangeChange("today")}>Hoy</Button>
-            <Button variant={rangePreset === "week" ? "default" : "outline"} size="sm" onClick={() => handleQuickRangeChange("week")}>Esta semana</Button>
-            <Button variant={rangePreset === "month" ? "default" : "outline"} size="sm" onClick={() => handleQuickRangeChange("month")}>Este mes</Button>
-            <Button variant={rangePreset === "three_months" ? "default" : "outline"} size="sm" onClick={() => handleQuickRangeChange("three_months")}>Últimos 3 meses</Button>
-            <Button variant={rangePreset === "custom" ? "default" : "outline"} size="sm" onClick={() => setRangePreset("custom")}>Rango personalizado</Button>
+            <Button variant={rangePreset === "thirty_days" ? "default" : "outline"} size="sm" onClick={() => handleQuickRangeChange("thirty_days")}>Últimos 30 días</Button>
+            <Button variant={rangePreset === "ninety_days" ? "default" : "outline"} size="sm" onClick={() => handleQuickRangeChange("ninety_days")}>Últimos 90 días</Button>
+            <Button variant={rangePreset === "six_months" ? "default" : "outline"} size="sm" onClick={() => handleQuickRangeChange("six_months")}>Últimos 6 meses</Button>
+            <Button variant={rangePreset === "twelve_months" ? "default" : "outline"} size="sm" onClick={() => handleQuickRangeChange("twelve_months")}>Últimos 12 meses</Button>
+            <Button variant={rangePreset === "all" ? "default" : "outline"} size="sm" onClick={() => handleQuickRangeChange("all")}>Todo</Button>
+            <Button variant={rangePreset === "custom" ? "default" : "outline"} size="sm" onClick={() => setRangePreset("custom")}>Personalizado</Button>
           </div>
 
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
@@ -992,17 +1371,432 @@ export default function CajaTab() {
         </CardContent>
       </Card>
 
-      <Card>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card ref={recurringExpenseFormRef} className={`scroll-mt-28 ${editingRecurringExpense ? "ring-1 ring-primary/20 shadow-md" : ""}`}>
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Repeat className="h-4 w-4 text-primary" />
+              {editingRecurringExpense ? "Editando gasto fijo" : "Gastos fijos"}
+            </CardTitle>
+            <CardDescription>
+              Registra renta, servicios, nómina e insumos recurrentes y conviértelos en gasto real dentro de Caja cuando corresponda.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="space-y-2 md:col-span-2">
+                <Label>Nombre</Label>
+                <Input
+                  value={recurringExpenseForm.name}
+                  onChange={(event) => setRecurringExpenseForm((current) => ({ ...current, name: event.target.value }))}
+                  placeholder="Ej. Renta del local"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Categoría</Label>
+                <Select
+                  value={recurringExpenseForm.category}
+                  onValueChange={(value) => setRecurringExpenseForm((current) => ({ ...current, category: value }))}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {branchRecurringExpenseCategoryValues.map((category) => (
+                      <SelectItem key={category} value={category}>{getCategoryLabel(category)}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Monto</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={recurringExpenseForm.amount}
+                  onChange={(event) => setRecurringExpenseForm((current) => ({ ...current, amount: event.target.value }))}
+                  placeholder="0.00"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Frecuencia</Label>
+                <Select
+                  value={recurringExpenseForm.frequency}
+                  onValueChange={(value) => setRecurringExpenseForm((current) => ({ ...current, frequency: value }))}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {branchRecurringExpenseFrequencyValues.map((frequency) => (
+                      <SelectItem key={frequency} value={frequency}>{getFrequencyLabel(frequency)}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Día de pago opcional</Label>
+                <Input
+                  type="number"
+                  min="1"
+                  max="31"
+                  value={recurringExpenseForm.paymentDay}
+                  onChange={(event) => setRecurringExpenseForm((current) => ({ ...current, paymentDay: event.target.value }))}
+                  placeholder="Ej. 5"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Estatus</Label>
+                <Select
+                  value={recurringExpenseForm.isActive ? "active" : "inactive"}
+                  onValueChange={(value) => setRecurringExpenseForm((current) => ({ ...current, isActive: value === "active" }))}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="active">Activo</SelectItem>
+                    <SelectItem value="inactive">Inactivo</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2 md:col-span-2">
+                <Label>Notas</Label>
+                <Textarea
+                  rows={2}
+                  value={recurringExpenseForm.notes}
+                  onChange={(event) => setRecurringExpenseForm((current) => ({ ...current, notes: event.target.value }))}
+                  placeholder="Opcional"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <Button
+                onClick={() => recurringExpenseMutation.mutate()}
+                disabled={recurringExpenseMutation.isPending || !recurringExpenseForm.name.trim() || !recurringExpenseForm.amount}
+              >
+                {recurringExpenseMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : editingRecurringExpense ? <Pencil className="mr-2 h-4 w-4" /> : <Plus className="mr-2 h-4 w-4" />}
+                {editingRecurringExpense ? "Guardar cambios" : "Crear gasto fijo"}
+              </Button>
+              {editingRecurringExpense ? (
+                <Button variant="outline" onClick={handleCancelRecurringExpenseEdit}>
+                  Cancelar edición
+                </Button>
+              ) : null}
+            </div>
+            {editingRecurringExpense ? (
+              <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-sm text-foreground">
+                Editando: <span className="font-medium">{editingRecurringExpense.name}</span>
+              </div>
+            ) : null}
+
+            <div className="space-y-3">
+              {recurringExpensesLoading ? (
+                Array.from({ length: 3 }).map((_, index) => <Skeleton key={index} className="h-20 w-full" />)
+              ) : recurringExpenses.length === 0 ? (
+                <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">
+                  Aún no tienes gastos fijos registrados.
+                </div>
+              ) : (
+                recurringExpenses.map((expense) => (
+                  <div key={expense.id} className={`rounded-xl border p-4 transition-colors ${editingRecurringExpense?.id === expense.id ? "border-primary/40 bg-primary/5" : ""}`}>
+                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                      <div className="space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="font-medium">{expense.name}</p>
+                          <Badge variant={expense.isActive ? "default" : "secondary"}>
+                            {expense.isActive ? "Activo" : "Inactivo"}
+                          </Badge>
+                          <Badge variant="outline">{getFrequencyLabel(expense.frequency)}</Badge>
+                        </div>
+                        <p className="text-sm text-muted-foreground">
+                          {getCategoryLabel(expense.category)} · {formatCurrency(expense.amount)}
+                          {expense.paymentDay ? ` · Día ${expense.paymentDay}` : ""}
+                        </p>
+                        {expense.notes ? <p className="text-sm text-muted-foreground">{expense.notes}</p> : null}
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => recurringExpenseRegisterMutation.mutate(expense.id)}
+                          disabled={recurringExpenseRegisterMutation.isPending}
+                        >
+                          Registrar en Caja
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => handleEditRecurringExpense(expense)}>
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="text-rose-600"
+                          onClick={() => recurringExpenseDeleteMutation.mutate(expense.id)}
+                          disabled={recurringExpenseDeleteMutation.isPending}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card ref={staffFormRef} className={`scroll-mt-28 ${editingStaffMember ? "ring-1 ring-primary/20 shadow-md" : ""}`}>
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Users className="h-4 w-4 text-primary" />
+              {editingStaffMember ? "Editando profesor / empleado" : "Profesores / empleados"}
+            </CardTitle>
+            <CardDescription>
+              Controla pago por clase y registra automáticamente el gasto correspondiente en Caja.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Nombre</Label>
+                <Input
+                  value={staffForm.name}
+                  onChange={(event) => setStaffForm((current) => ({ ...current, name: event.target.value }))}
+                  placeholder="Ej. Juan Pérez"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Teléfono / WhatsApp</Label>
+                <Input
+                  value={staffForm.phone}
+                  onChange={(event) => setStaffForm((current) => ({ ...current, phone: event.target.value }))}
+                  placeholder="Opcional"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Pago por clase</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={staffForm.payPerClass}
+                  onChange={(event) => setStaffForm((current) => ({ ...current, payPerClass: event.target.value }))}
+                  placeholder="150.00"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Estatus</Label>
+                <Select
+                  value={staffForm.isActive ? "active" : "inactive"}
+                  onValueChange={(value) => setStaffForm((current) => ({ ...current, isActive: value === "active" }))}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="active">Activo</SelectItem>
+                    <SelectItem value="inactive">Inactivo</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2 md:col-span-2">
+                <Label>Notas</Label>
+                <Textarea
+                  rows={2}
+                  value={staffForm.notes}
+                  onChange={(event) => setStaffForm((current) => ({ ...current, notes: event.target.value }))}
+                  placeholder="Opcional"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <Button
+                onClick={() => staffMutation.mutate()}
+                disabled={staffMutation.isPending || !staffForm.name.trim() || !staffForm.payPerClass}
+              >
+                {staffMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : editingStaffMember ? <Pencil className="mr-2 h-4 w-4" /> : <Plus className="mr-2 h-4 w-4" />}
+                {editingStaffMember ? "Guardar cambios" : "Crear colaborador"}
+              </Button>
+              {editingStaffMember ? (
+                <Button variant="outline" onClick={handleCancelStaffEdit}>
+                  Cancelar edición
+                </Button>
+              ) : null}
+            </div>
+            {editingStaffMember ? (
+              <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-sm text-foreground">
+                Editando: <span className="font-medium">{editingStaffMember.name}</span>
+              </div>
+            ) : null}
+
+            <div className="space-y-3">
+              {staffMembersLoading ? (
+                Array.from({ length: 3 }).map((_, index) => <Skeleton key={index} className="h-20 w-full" />)
+              ) : staffMembers.length === 0 ? (
+                <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">
+                  Aún no tienes profesores o empleados registrados.
+                </div>
+              ) : (
+                staffMembers.map((member) => (
+                  <div key={member.id} className={`rounded-xl border p-4 transition-colors ${editingStaffMember?.id === member.id ? "border-primary/40 bg-primary/5" : ""}`}>
+                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                      <div className="space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="font-medium">{member.name}</p>
+                          <Badge variant={member.isActive ? "default" : "secondary"}>
+                            {member.isActive ? "Activo" : "Inactivo"}
+                          </Badge>
+                        </div>
+                        <p className="text-sm text-muted-foreground">
+                          Pago por clase: {formatCurrency(member.payPerClass)}
+                          {member.phone ? ` · ${member.phone}` : ""}
+                        </p>
+                        {member.notes ? <p className="text-sm text-muted-foreground">{member.notes}</p> : null}
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Button size="sm" variant="outline" onClick={() => handleEditStaffMember(member)}>
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="text-rose-600"
+                          onClick={() => staffDeleteMutation.mutate(member.id)}
+                          disabled={staffDeleteMutation.isPending}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="rounded-2xl border border-dashed p-4">
+              <div className="mb-3">
+                <p className="font-medium">Registrar clases impartidas</p>
+                <p className="text-sm text-muted-foreground">
+                  Calcula el total y lo registra como gasto automático en Caja.
+                </p>
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>Profesor / empleado</Label>
+                  <Select
+                    value={staffClassLogForm.staffId}
+                    onValueChange={(value) => setStaffClassLogForm((current) => ({ ...current, staffId: value }))}
+                  >
+                    <SelectTrigger><SelectValue placeholder="Selecciona colaborador" /></SelectTrigger>
+                    <SelectContent>
+                      {activeStaffMembers.map((member) => (
+                        <SelectItem key={member.id} value={member.id}>
+                          {member.name} · {formatCurrency(member.payPerClass)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Número de clases</Label>
+                  <Input
+                    type="number"
+                    min="1"
+                    value={staffClassLogForm.classesCount}
+                    onChange={(event) => setStaffClassLogForm((current) => ({ ...current, classesCount: event.target.value }))}
+                    placeholder="Ej. 8"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Fecha</Label>
+                  <Input
+                    type="date"
+                    value={staffClassLogForm.classDate}
+                    onChange={(event) => setStaffClassLogForm((current) => ({ ...current, classDate: event.target.value }))}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Método de pago</Label>
+                  <Select
+                    value={staffClassLogForm.paymentMethod}
+                    onValueChange={(value) => setStaffClassLogForm((current) => ({ ...current, paymentMethod: value }))}
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {branchFinancePaymentMethodValues.map((method) => (
+                        <SelectItem key={method} value={method}>{getPaymentMethodLabel(method)}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2 md:col-span-2">
+                  <Label>Notas</Label>
+                  <Textarea
+                    rows={2}
+                    value={staffClassLogForm.notes}
+                    onChange={(event) => setStaffClassLogForm((current) => ({ ...current, notes: event.target.value }))}
+                    placeholder="Opcional"
+                  />
+                </div>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                <p className="text-sm text-muted-foreground">
+                  Total estimado: <span className="font-medium text-foreground">{formatCurrency(staffLogPreviewTotal)}</span>
+                </p>
+                <Button
+                  onClick={() => staffClassLogMutation.mutate()}
+                  disabled={staffClassLogMutation.isPending || !staffClassLogForm.staffId || !staffClassLogForm.classesCount}
+                >
+                  {staffClassLogMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ReceiptText className="mr-2 h-4 w-4" />}
+                  Registrar clases
+                </Button>
+              </div>
+
+              <div className="mt-4 space-y-2">
+                <p className="text-sm font-medium">Últimos registros</p>
+                {staffClassLogsLoading ? (
+                  Array.from({ length: 3 }).map((_, index) => <Skeleton key={index} className="h-14 w-full" />)
+                ) : staffClassLogs.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">Aún no has registrado clases impartidas.</p>
+                ) : (
+                  staffClassLogs.map((log) => (
+                    <div key={log.id} className="flex flex-col gap-1 rounded-lg border p-3 text-sm md:flex-row md:items-center md:justify-between">
+                      <div>
+                        <p className="font-medium">{log.staffName}</p>
+                        <p className="text-muted-foreground">
+                          {log.classesCount} clase{log.classesCount === 1 ? "" : "s"} · {formatDateLabel(log.classDate)}
+                          {log.paymentMethod ? ` · ${getPaymentMethodLabel(log.paymentMethod)}` : ""}
+                        </p>
+                      </div>
+                      <p className="font-medium">{formatCurrency(log.paymentTotal)}</p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card ref={financeFormRef} className={`scroll-mt-28 ${editingEntry ? "ring-1 ring-primary/20 shadow-md" : ""}`}>
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-2 text-base">
             <Plus className="h-4 w-4" />
             {editingEntry ? "Editar movimiento" : "Nuevo movimiento"}
           </CardTitle>
           <CardDescription>
-            Registra ingresos y gastos manuales. Puedes ligarlos a un cliente o capturar el nombre manualmente.
+            {editingEntry
+              ? editingEntry.source
+                ? `Editando movimiento ${getFinanceSourceLabel(editingEntry.source).toLowerCase()}. Se actualizará este registro, no se creará uno nuevo.`
+                : "Editando movimiento manual. Guarda cambios o cancela para volver al modo de registro."
+              : "Registra ingresos y gastos manuales. Puedes ligarlos a un cliente o capturar el nombre manualmente."}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          {editingEntry ? (
+            <div className="flex flex-wrap items-center gap-2 rounded-xl border border-primary/20 bg-primary/5 px-3 py-2 text-sm text-foreground">
+              <Badge variant="outline">Editando movimiento</Badge>
+              <span>{editingEntry.concept}</span>
+              {editingEntry.source ? (
+                <Badge variant="secondary">{getFinanceSourceLabel(editingEntry.source)}</Badge>
+              ) : null}
+            </div>
+          ) : null}
           <div className="grid gap-4 lg:grid-cols-2">
             <div className="space-y-2">
               <Label>Tipo</Label>
@@ -1192,7 +1986,7 @@ export default function CajaTab() {
                   </TableHeader>
                   <TableBody>
                     {entriesData.items.map((entry) => (
-                      <TableRow key={entry.id}>
+                      <TableRow key={entry.id} className={editingEntry?.id === entry.id ? "bg-primary/5" : undefined}>
                         <TableCell>{formatDateLabel(entry.entryDate)}</TableCell>
                         <TableCell>
                           <Badge variant={entry.type === "income" ? "default" : "destructive"} className={entry.type === "income" ? "bg-emerald-600" : ""}>
@@ -1202,7 +1996,12 @@ export default function CajaTab() {
                         <TableCell>{getCategoryLabel(entry.category)}</TableCell>
                         <TableCell>
                           <div>
-                            <p className="font-medium">{entry.concept}</p>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="font-medium">{entry.concept}</p>
+                              <Badge variant="outline" className="text-[10px]">
+                                {getFinanceSourceLabel(entry.source)}
+                              </Badge>
+                            </div>
                             {entry.notes ? <p className="text-xs text-muted-foreground">{entry.notes}</p> : null}
                           </div>
                         </TableCell>

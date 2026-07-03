@@ -77,12 +77,25 @@ import {
   updateReviewVisibilitySchema,
   createBranchFinanceEntrySchema,
   updateBranchFinanceEntrySchema,
+  createBranchRecurringExpenseSchema,
+  updateBranchRecurringExpenseSchema,
+  registerBranchRecurringExpenseChargeSchema,
+  createBranchStaffMemberSchema,
+  updateBranchStaffMemberSchema,
+  createBranchStaffClassLogSchema,
+  branchFinancePaymentMethodValues,
   upsertBranchMonthlyBillingSchema,
 } from "@shared/schema";
 import { z } from "zod";
 import { normalizeSearchText } from "./search-utils";
 
 const DEFAULT_CANCEL_CUTOFF_MINUTES = 180;
+const membershipFinancePayloadSchema = z.object({
+  paymentMethod: z.enum(branchFinancePaymentMethodValues).nullable().optional(),
+});
+const assignPlanWithFinanceSchema = assignPlanSchema.extend({
+  paymentMethod: z.enum(branchFinancePaymentMethodValues).nullable().optional(),
+});
 
 function addCalendarMonths(from: Date, months: number): Date {
   if (months === 0) {
@@ -3229,6 +3242,298 @@ if (!user) {
     }
   });
 
+  app.get("/api/branch/finance/fixed-expenses", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    try {
+      const items = await storage.getBranchRecurringExpenses(user.branchId);
+      res.json(items);
+    } catch (err: any) {
+      console.error("[BRANCH_FINANCE_FIXED_EXPENSES]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener gastos fijos" });
+    }
+  });
+
+  app.post("/api/branch/finance/fixed-expenses", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    const parsed = createBranchRecurringExpenseSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const data = parsed.data;
+      const created = await storage.createBranchRecurringExpense({
+        branchId: user.branchId,
+        name: data.name.trim(),
+        category: data.category,
+        amount: data.amount.toFixed(2),
+        frequency: data.frequency,
+        paymentDay: data.paymentDay ?? null,
+        notes: normalizeOptionalText(data.notes) ?? null,
+        isActive: data.isActive ?? true,
+        createdBy: user.id,
+      } as any);
+
+      await storage.createAuditLog({
+        actorUserId: user.id,
+        action: "CREATE_FIXED_EXPENSE",
+        branchId: user.branchId,
+        metadata: { recurringExpenseId: created.id, category: created.category, amount: created.amount },
+      });
+
+      res.status(201).json(created);
+    } catch (err: any) {
+      console.error("[BRANCH_FINANCE_FIXED_EXPENSE_CREATE]", err.stack || err);
+      res.status(500).json({ message: "Error al crear gasto fijo" });
+    }
+  });
+
+  app.patch("/api/branch/finance/fixed-expenses/:id", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    const recurringExpenseId = getStringParam(req.params.id);
+    const parsed = updateBranchRecurringExpenseSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const data = parsed.data;
+      const updated = await storage.updateBranchRecurringExpense(user.branchId, recurringExpenseId, {
+        ...(data.name !== undefined ? { name: data.name.trim() } : {}),
+        ...(data.category !== undefined ? { category: data.category } : {}),
+        ...(data.amount !== undefined ? { amount: data.amount.toFixed(2) } : {}),
+        ...(data.frequency !== undefined ? { frequency: data.frequency } : {}),
+        ...(data.paymentDay !== undefined ? { paymentDay: data.paymentDay ?? null } : {}),
+        ...(data.notes !== undefined ? { notes: normalizeOptionalText(data.notes) ?? null } : {}),
+        ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
+      } as any);
+
+      if (!updated) {
+        return res.status(404).json({ message: "Gasto fijo no encontrado" });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: user.id,
+        action: "UPDATE_FIXED_EXPENSE",
+        branchId: user.branchId,
+        metadata: { recurringExpenseId: updated.id },
+      });
+
+      res.json(updated);
+    } catch (err: any) {
+      console.error("[BRANCH_FINANCE_FIXED_EXPENSE_UPDATE]", err.stack || err);
+      res.status(500).json({ message: "Error al actualizar gasto fijo" });
+    }
+  });
+
+  app.delete("/api/branch/finance/fixed-expenses/:id", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    try {
+      const deleted = await storage.softDeleteBranchRecurringExpense(user.branchId, getStringParam(req.params.id));
+      if (!deleted) {
+        return res.status(404).json({ message: "Gasto fijo no encontrado" });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: user.id,
+        action: "DELETE_FIXED_EXPENSE",
+        branchId: user.branchId,
+        metadata: { recurringExpenseId: getStringParam(req.params.id) },
+      });
+
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("[BRANCH_FINANCE_FIXED_EXPENSE_DELETE]", err.stack || err);
+      res.status(500).json({ message: "Error al eliminar gasto fijo" });
+    }
+  });
+
+  app.post("/api/branch/finance/fixed-expenses/:id/register-expense", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    const recurringExpenseId = getStringParam(req.params.id);
+    const parsed = registerBranchRecurringExpenseChargeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const created = await storage.registerBranchRecurringExpenseInFinance(user.branchId, recurringExpenseId, {
+        entryDate: parsed.data.entryDate,
+        paymentMethod: normalizeOptionalText(parsed.data.paymentMethod) ?? null,
+        notes: normalizeOptionalText(parsed.data.notes) ?? null,
+        createdBy: user.id,
+      });
+
+      if (!created) {
+        return res.status(404).json({ message: "Gasto fijo no encontrado" });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: user.id,
+        action: "REGISTER_FIXED_EXPENSE_IN_FINANCE",
+        branchId: user.branchId,
+        metadata: { recurringExpenseId, financeEntryId: created.id, entryDate: created.entryDate },
+      });
+
+      res.status(201).json(created);
+    } catch (err: any) {
+      console.error("[BRANCH_FINANCE_FIXED_EXPENSE_REGISTER]", err.stack || err);
+      res.status(500).json({ message: "Error al registrar gasto fijo en Caja" });
+    }
+  });
+
+  app.get("/api/branch/finance/staff", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    try {
+      const items = await storage.getBranchStaffMembers(user.branchId);
+      res.json(items);
+    } catch (err: any) {
+      console.error("[BRANCH_FINANCE_STAFF]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener profesores y empleados" });
+    }
+  });
+
+  app.post("/api/branch/finance/staff", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    const parsed = createBranchStaffMemberSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const data = parsed.data;
+      const created = await storage.createBranchStaffMember({
+        branchId: user.branchId,
+        name: data.name.trim(),
+        phone: normalizeOptionalText(data.phone) ?? null,
+        payPerClass: data.payPerClass.toFixed(2),
+        notes: normalizeOptionalText(data.notes) ?? null,
+        isActive: data.isActive ?? true,
+        createdBy: user.id,
+      } as any);
+
+      await storage.createAuditLog({
+        actorUserId: user.id,
+        action: "CREATE_BRANCH_STAFF",
+        branchId: user.branchId,
+        metadata: { staffId: created.id, name: created.name, payPerClass: created.payPerClass },
+      });
+
+      res.status(201).json(created);
+    } catch (err: any) {
+      console.error("[BRANCH_FINANCE_STAFF_CREATE]", err.stack || err);
+      res.status(500).json({ message: "Error al crear profesor o empleado" });
+    }
+  });
+
+  app.patch("/api/branch/finance/staff/:id", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    const staffId = getStringParam(req.params.id);
+    const parsed = updateBranchStaffMemberSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const data = parsed.data;
+      const updated = await storage.updateBranchStaffMember(user.branchId, staffId, {
+        ...(data.name !== undefined ? { name: data.name.trim() } : {}),
+        ...(data.phone !== undefined ? { phone: normalizeOptionalText(data.phone) ?? null } : {}),
+        ...(data.payPerClass !== undefined ? { payPerClass: data.payPerClass.toFixed(2) } : {}),
+        ...(data.notes !== undefined ? { notes: normalizeOptionalText(data.notes) ?? null } : {}),
+        ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
+      } as any);
+
+      if (!updated) {
+        return res.status(404).json({ message: "Profesor o empleado no encontrado" });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: user.id,
+        action: "UPDATE_BRANCH_STAFF",
+        branchId: user.branchId,
+        metadata: { staffId: updated.id },
+      });
+
+      res.json(updated);
+    } catch (err: any) {
+      console.error("[BRANCH_FINANCE_STAFF_UPDATE]", err.stack || err);
+      res.status(500).json({ message: "Error al actualizar profesor o empleado" });
+    }
+  });
+
+  app.delete("/api/branch/finance/staff/:id", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    try {
+      const deleted = await storage.softDeleteBranchStaffMember(user.branchId, getStringParam(req.params.id));
+      if (!deleted) {
+        return res.status(404).json({ message: "Profesor o empleado no encontrado" });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: user.id,
+        action: "DELETE_BRANCH_STAFF",
+        branchId: user.branchId,
+        metadata: { staffId: getStringParam(req.params.id) },
+      });
+
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("[BRANCH_FINANCE_STAFF_DELETE]", err.stack || err);
+      res.status(500).json({ message: "Error al eliminar profesor o empleado" });
+    }
+  });
+
+  app.get("/api/branch/finance/staff/class-logs", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    try {
+      const from = parseDateQueryValue(req.query.from);
+      const to = parseDateQueryValue(req.query.to);
+      const staffId = typeof req.query.staffId === "string" ? req.query.staffId.trim() || undefined : undefined;
+      const limit = Math.min(Math.max(parseInt(String(req.query.limit || "20"), 10) || 20, 1), 200);
+      const logs = await storage.getBranchStaffClassLogs(user.branchId, { from, to, staffId, limit });
+      res.json(logs);
+    } catch (err: any) {
+      console.error("[BRANCH_FINANCE_STAFF_CLASS_LOGS]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener clases registradas" });
+    }
+  });
+
+  app.post("/api/branch/finance/staff/class-logs", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    const parsed = createBranchStaffClassLogSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const log = await storage.createBranchStaffClassLogAndFinanceEntry({
+        branchId: user.branchId,
+        staffId: parsed.data.staffId,
+        classesCount: parsed.data.classesCount,
+        classDate: parsed.data.classDate,
+        paymentMethod: normalizeOptionalText(parsed.data.paymentMethod) ?? null,
+        notes: normalizeOptionalText(parsed.data.notes) ?? null,
+        createdBy: user.id,
+      });
+
+      await storage.createAuditLog({
+        actorUserId: user.id,
+        action: "REGISTER_STAFF_CLASSES_IN_FINANCE",
+        branchId: user.branchId,
+        metadata: { staffId: log.staffId, classLogId: log.id, paymentTotal: log.paymentTotal },
+      });
+
+      res.status(201).json(log);
+    } catch (err: any) {
+      if (err instanceof Error && err.message === "PROFESSOR_NOT_FOUND") {
+        return res.status(404).json({ message: "Profesor o empleado no encontrado" });
+      }
+      console.error("[BRANCH_FINANCE_STAFF_CLASS_LOG_CREATE]", err.stack || err);
+      res.status(500).json({ message: "Error al registrar clases impartidas" });
+    }
+  });
+
   app.get("/api/branch/clients", requireBranchAdmin, async (req, res) => {
     const user = req.user as any;
     try {
@@ -4021,7 +4326,7 @@ if (!user) {
     const actor = req.user as any;
     const membershipId = req.params.id as string;
     try {
-      const { planId } = assignPlanSchema.parse(req.body);
+      const { planId, paymentMethod } = assignPlanWithFinanceSchema.parse(req.body);
 
       const plan = await storage.getPlan(planId);
       if (!plan || plan.branchId !== actor.branchId) {
@@ -4057,6 +4362,26 @@ if (!user) {
         branchId: actor.branchId,
         metadata: { membershipId, planId, planName: plan.name, cancelledBookings: cancelled },
       });
+
+      if (plan.price > 0) {
+        try {
+          await storage.createMembershipFinanceEntry({
+            branchId: actor.branchId,
+            membershipId: membership.id,
+            userId: membership.userId,
+            planId: plan.id,
+            planName: plan.name,
+            amount: plan.price / 100,
+            paidAt: membership.paidAt,
+            expiresAt: membership.expiresAt,
+            paymentMethod: normalizeOptionalText(paymentMethod) ?? null,
+            createdBy: actor.id,
+            eventType: "assign",
+          });
+        } catch (financeErr: any) {
+          console.error("[PLAN_FINANCE_ASSIGN]", financeErr?.stack || financeErr);
+        }
+      }
 
       console.log(`[PLAN] Assigned "${plan.name}" to membership ${membershipId} by ${actor.email}`);
       res.json(membership);
@@ -4102,6 +4427,7 @@ if (!user) {
     const actor = req.user as any;
     const membershipId = req.params.id as string;
     try {
+      const { paymentMethod } = membershipFinancePayloadSchema.parse(req.body ?? {});
       const targetMembership = await storage.getMembershipById(membershipId);
       if (!targetMembership || targetMembership.branchId !== actor.branchId) {
         return res.status(404).json({ message: "Membresía no encontrada" });
@@ -4133,9 +4459,32 @@ if (!user) {
         metadata: { membershipId: targetMembership.id, planId: plan.id, planName: plan.name, paidAt: now.toISOString(), expiresAt: expiresAt.toISOString() },
       });
 
+      if (plan.price > 0 && renewed) {
+        try {
+          await storage.createMembershipFinanceEntry({
+            branchId: actor.branchId,
+            membershipId: renewed.id,
+            userId: renewed.userId,
+            planId: plan.id,
+            planName: plan.name,
+            amount: plan.price / 100,
+            paidAt: renewed.paidAt,
+            expiresAt: renewed.expiresAt,
+            paymentMethod: normalizeOptionalText(paymentMethod) ?? null,
+            createdBy: actor.id,
+            eventType: "renew",
+          });
+        } catch (financeErr: any) {
+          console.error("[PLAN_FINANCE_RENEW]", financeErr?.stack || financeErr);
+        }
+      }
+
       console.log(`[RENEW] Renewed "${plan.name}" for membership ${targetMembership.id} by ${actor.email}`);
       res.json(renewed);
     } catch (err: any) {
+      if (err.name === "ZodError") {
+        return res.status(400).json({ message: err.errors[0]?.message || "Datos invÃ¡lidos" });
+      }
       console.error(`[RENEW] Error:`, err.stack || err);
       res.status(500).json({ message: "Error al renovar membresía" });
     }

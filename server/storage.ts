@@ -84,6 +84,15 @@ import {
   branchFinanceEntries,
   type BranchFinanceEntry,
   type InsertBranchFinanceEntry,
+  branchRecurringExpenses,
+  type BranchRecurringExpense,
+  type InsertBranchRecurringExpense,
+  branchStaffMembers,
+  type BranchStaffMember,
+  type InsertBranchStaffMember,
+  branchStaffClassLogs,
+  type BranchStaffClassLog,
+  type InsertBranchStaffClassLog,
   branchMonthlyBilling,
   type BranchMonthlyBilling,
   type InsertBranchMonthlyBilling,
@@ -141,6 +150,27 @@ function getCurrentMonthRange() {
 function toFinanceAmount(value: unknown): number {
   const amount = Number(value);
   return Number.isFinite(amount) ? amount : 0;
+}
+
+function mapRecurringCategoryToFinanceCategory(category: string): string {
+  if (category === "nomina") return "sueldos";
+  return category;
+}
+
+function getMembershipFinanceEventKey(params: {
+  eventType: "assign" | "renew";
+  membershipId: string;
+  planId: string;
+  expiresAt?: Date | string | null;
+  paidAt?: Date | string | null;
+}): string {
+  const expiresAtValue = params.expiresAt
+    ? formatDateOnly(new Date(params.expiresAt))
+    : "sin-expiracion";
+  const paidAtValue = params.paidAt
+    ? formatDateOnly(new Date(params.paidAt))
+    : getMxLocalDate();
+  return `${params.eventType}:${params.membershipId}:${params.planId}:${expiresAtValue}:${paidAtValue}`;
 }
 
 function getClampedMonthDate(year: number, monthIndex: number, day: number): Date {
@@ -409,6 +439,51 @@ export interface BranchFinanceEntriesResult {
   pageCount: number;
 }
 
+export interface BranchRecurringExpenseRow {
+  id: string;
+  branchId: string;
+  name: string;
+  category: string;
+  amount: number;
+  frequency: string;
+  paymentDay: number | null;
+  notes: string | null;
+  isActive: boolean;
+  lastRegisteredAt: Date | string | null;
+  createdBy: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}
+
+export interface BranchStaffMemberRow {
+  id: string;
+  branchId: string;
+  name: string;
+  phone: string | null;
+  payPerClass: number;
+  notes: string | null;
+  isActive: boolean;
+  createdBy: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}
+
+export interface BranchStaffClassLogRow {
+  id: string;
+  branchId: string;
+  staffId: string;
+  staffName: string;
+  classesCount: number;
+  paymentTotal: number;
+  classDate: string;
+  notes: string | null;
+  financeEntryId: string | null;
+  paymentMethod: string | null;
+  createdBy: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}
+
 export interface BranchHardDeleteResult {
   deleted: boolean;
   reason?: string;
@@ -569,6 +644,29 @@ export interface IStorage {
   deleteAllNotifications(actor: { id: string; role: string; branchId?: string | null }): Promise<number>;
   cleanupOldNotifications(maxAgeDays?: number): Promise<number>;
   cleanupOldBranchFinanceEntries(maxAgeDays?: number): Promise<number>;
+  getBranchRecurringExpenses(branchId: string): Promise<BranchRecurringExpenseRow[]>;
+  createBranchRecurringExpense(data: InsertBranchRecurringExpense): Promise<BranchRecurringExpenseRow>;
+  updateBranchRecurringExpense(branchId: string, recurringExpenseId: string, data: Partial<InsertBranchRecurringExpense>): Promise<BranchRecurringExpenseRow | undefined>;
+  softDeleteBranchRecurringExpense(branchId: string, recurringExpenseId: string): Promise<boolean>;
+  registerBranchRecurringExpenseInFinance(
+    branchId: string,
+    recurringExpenseId: string,
+    data: { entryDate: string; paymentMethod?: string | null; notes?: string | null; createdBy?: string | null },
+  ): Promise<BranchFinanceEntryRow | undefined>;
+  getBranchStaffMembers(branchId: string): Promise<BranchStaffMemberRow[]>;
+  createBranchStaffMember(data: InsertBranchStaffMember): Promise<BranchStaffMemberRow>;
+  updateBranchStaffMember(branchId: string, staffId: string, data: Partial<InsertBranchStaffMember>): Promise<BranchStaffMemberRow | undefined>;
+  softDeleteBranchStaffMember(branchId: string, staffId: string): Promise<boolean>;
+  getBranchStaffClassLogs(branchId: string, filters?: { from?: string; to?: string; staffId?: string; limit?: number }): Promise<BranchStaffClassLogRow[]>;
+  createBranchStaffClassLogAndFinanceEntry(data: {
+    branchId: string;
+    staffId: string;
+    classesCount: number;
+    classDate: string;
+    paymentMethod?: string | null;
+    notes?: string | null;
+    createdBy?: string | null;
+  }): Promise<BranchStaffClassLogRow>;
   getBranchClients(branchId: string, includeLeft?: boolean): Promise<any[]>;
   getClientProfile(userId: string, branchId: string): Promise<any>;
   updateBranchClientCrm(branchId: string, userId: string, data: { clientStatus?: string | null; tags?: string | null; lastVisit?: Date | null }): Promise<any>;
@@ -604,6 +702,19 @@ export interface IStorage {
   getPlan(id: string): Promise<MembershipPlan | undefined>;
   assignPlanToMembership(membershipId: string, planId: string, classesRemaining: number | null, classesTotal: number | null, expiresAt: Date | null): Promise<Membership | undefined>;
   removePlanFromMembership(membershipId: string): Promise<Membership | undefined>;
+  createMembershipFinanceEntry(data: {
+    branchId: string;
+    membershipId: string;
+    userId: string;
+    planId: string;
+    planName: string;
+    amount: number;
+    paidAt: Date | string | null | undefined;
+    expiresAt?: Date | string | null;
+    paymentMethod?: string | null;
+    createdBy?: string | null;
+    eventType: "assign" | "renew";
+  }): Promise<BranchFinanceEntryRow | null>;
   getMembershipByUserAndBranch(userId: string, branchId: string): Promise<Membership | undefined>;
   reconcilePastBookings(branchId: string): Promise<number>;
   autoMarkAttendedBookings(branchId: string): Promise<number>;
@@ -4539,6 +4650,125 @@ export class DatabaseStorage implements IStorage {
     return row ? this.mapBranchFinanceEntryRow(row) : undefined;
   }
 
+  private async getBranchFinanceEntryBySource(
+    branchId: string,
+    source: string,
+    sourceId: string,
+  ): Promise<BranchFinanceEntryRow | undefined> {
+    const [row] = await db
+      .select({
+        id: branchFinanceEntries.id,
+        branchId: branchFinanceEntries.branchId,
+        type: branchFinanceEntries.type,
+        category: branchFinanceEntries.category,
+        concept: branchFinanceEntries.concept,
+        amount: branchFinanceEntries.amount,
+        paymentMethod: branchFinanceEntries.paymentMethod,
+        clientUserId: branchFinanceEntries.clientUserId,
+        clientName: branchFinanceEntries.clientName,
+        notes: branchFinanceEntries.notes,
+        entryDate: branchFinanceEntries.entryDate,
+        source: branchFinanceEntries.source,
+        sourceId: branchFinanceEntries.sourceId,
+        metadata: branchFinanceEntries.metadata,
+        createdBy: branchFinanceEntries.createdBy,
+        createdAt: branchFinanceEntries.createdAt,
+        updatedAt: branchFinanceEntries.updatedAt,
+        linkedClientName: users.name,
+        linkedClientLastName: users.lastName,
+        linkedClientEmail: users.email,
+      })
+      .from(branchFinanceEntries)
+      .leftJoin(users, eq(branchFinanceEntries.clientUserId, users.id))
+      .where(and(
+        eq(branchFinanceEntries.branchId, branchId),
+        eq(branchFinanceEntries.source, source),
+        eq(branchFinanceEntries.sourceId, sourceId),
+        isNull(branchFinanceEntries.deletedAt),
+      ))
+      .limit(1);
+
+    return row ? this.mapBranchFinanceEntryRow(row) : undefined;
+  }
+
+  private mapBranchRecurringExpenseRow(row: BranchRecurringExpense): BranchRecurringExpenseRow {
+    return {
+      id: row.id,
+      branchId: row.branchId,
+      name: row.name,
+      category: row.category,
+      amount: toFinanceAmount(row.amount),
+      frequency: row.frequency,
+      paymentDay: row.paymentDay ?? null,
+      notes: row.notes ?? null,
+      isActive: row.isActive,
+      lastRegisteredAt: row.lastRegisteredAt ?? null,
+      createdBy: row.createdBy ?? null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  }
+
+  private mapBranchStaffMemberRow(row: BranchStaffMember): BranchStaffMemberRow {
+    return {
+      id: row.id,
+      branchId: row.branchId,
+      name: row.name,
+      phone: row.phone ?? null,
+      payPerClass: toFinanceAmount(row.payPerClass),
+      notes: row.notes ?? null,
+      isActive: row.isActive,
+      createdBy: row.createdBy ?? null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  }
+
+  private async getBranchStaffClassLogById(branchId: string, classLogId: string): Promise<BranchStaffClassLogRow | undefined> {
+    const [row] = await db
+      .select({
+        id: branchStaffClassLogs.id,
+        branchId: branchStaffClassLogs.branchId,
+        staffId: branchStaffClassLogs.staffId,
+        staffName: branchStaffMembers.name,
+        classesCount: branchStaffClassLogs.classesCount,
+        paymentTotal: branchStaffClassLogs.paymentTotal,
+        classDate: branchStaffClassLogs.classDate,
+        notes: branchStaffClassLogs.notes,
+        financeEntryId: branchStaffClassLogs.financeEntryId,
+        paymentMethod: branchFinanceEntries.paymentMethod,
+        createdBy: branchStaffClassLogs.createdBy,
+        createdAt: branchStaffClassLogs.createdAt,
+        updatedAt: branchStaffClassLogs.updatedAt,
+      })
+      .from(branchStaffClassLogs)
+      .innerJoin(branchStaffMembers, eq(branchStaffClassLogs.staffId, branchStaffMembers.id))
+      .leftJoin(branchFinanceEntries, eq(branchStaffClassLogs.financeEntryId, branchFinanceEntries.id))
+      .where(and(
+        eq(branchStaffClassLogs.branchId, branchId),
+        eq(branchStaffClassLogs.id, classLogId),
+      ))
+      .limit(1);
+
+    if (!row) return undefined;
+
+    return {
+      id: row.id,
+      branchId: row.branchId,
+      staffId: row.staffId,
+      staffName: row.staffName,
+      classesCount: row.classesCount,
+      paymentTotal: toFinanceAmount(row.paymentTotal),
+      classDate: row.classDate,
+      notes: row.notes ?? null,
+      financeEntryId: row.financeEntryId ?? null,
+      paymentMethod: row.paymentMethod ?? null,
+      createdBy: row.createdBy ?? null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  }
+
   async getBranchFinanceSummary(branchId: string, filters?: { from?: string; to?: string }): Promise<BranchFinanceSummary> {
     const today = getMxLocalDate();
     const monthRange = getCurrentMonthRange();
@@ -4875,6 +5105,390 @@ export class DatabaseStorage implements IStorage {
       });
 
     return !!deleted;
+  }
+
+  async getBranchRecurringExpenses(branchId: string): Promise<BranchRecurringExpenseRow[]> {
+    const rows = await db
+      .select()
+      .from(branchRecurringExpenses)
+      .where(and(
+        eq(branchRecurringExpenses.branchId, branchId),
+        isNull(branchRecurringExpenses.deletedAt),
+      ))
+      .orderBy(asc(branchRecurringExpenses.isActive), asc(branchRecurringExpenses.name));
+
+    return rows
+      .map((row) => this.mapBranchRecurringExpenseRow(row))
+      .sort((a, b) => Number(b.isActive) - Number(a.isActive) || a.name.localeCompare(b.name, "es-MX"));
+  }
+
+  async createBranchRecurringExpense(data: InsertBranchRecurringExpense): Promise<BranchRecurringExpenseRow> {
+    const [created] = await db
+      .insert(branchRecurringExpenses)
+      .values({
+        ...data,
+        amount: String(data.amount),
+      })
+      .returning();
+
+    return this.mapBranchRecurringExpenseRow(created);
+  }
+
+  async updateBranchRecurringExpense(
+    branchId: string,
+    recurringExpenseId: string,
+    data: Partial<InsertBranchRecurringExpense>,
+  ): Promise<BranchRecurringExpenseRow | undefined> {
+    const updateData: Record<string, any> = { updatedAt: new Date() };
+    if (data.name !== undefined) updateData.name = data.name;
+    if (data.category !== undefined) updateData.category = data.category;
+    if (data.amount !== undefined) updateData.amount = String(data.amount);
+    if (data.frequency !== undefined) updateData.frequency = data.frequency;
+    if (data.paymentDay !== undefined) updateData.paymentDay = data.paymentDay;
+    if (data.notes !== undefined) updateData.notes = data.notes;
+    if (data.isActive !== undefined) updateData.isActive = data.isActive;
+    if (data.createdBy !== undefined) updateData.createdBy = data.createdBy;
+
+    const [updated] = await db
+      .update(branchRecurringExpenses)
+      .set(updateData)
+      .where(and(
+        eq(branchRecurringExpenses.id, recurringExpenseId),
+        eq(branchRecurringExpenses.branchId, branchId),
+        isNull(branchRecurringExpenses.deletedAt),
+      ))
+      .returning();
+
+    return updated ? this.mapBranchRecurringExpenseRow(updated) : undefined;
+  }
+
+  async softDeleteBranchRecurringExpense(branchId: string, recurringExpenseId: string): Promise<boolean> {
+    const [updated] = await db
+      .update(branchRecurringExpenses)
+      .set({
+        deletedAt: new Date(),
+        updatedAt: new Date(),
+        isActive: false,
+      })
+      .where(and(
+        eq(branchRecurringExpenses.id, recurringExpenseId),
+        eq(branchRecurringExpenses.branchId, branchId),
+        isNull(branchRecurringExpenses.deletedAt),
+      ))
+      .returning({ id: branchRecurringExpenses.id });
+
+    return !!updated;
+  }
+
+  async registerBranchRecurringExpenseInFinance(
+    branchId: string,
+    recurringExpenseId: string,
+    data: { entryDate: string; paymentMethod?: string | null; notes?: string | null; createdBy?: string | null },
+  ): Promise<BranchFinanceEntryRow | undefined> {
+    const [expense] = await db
+      .select()
+      .from(branchRecurringExpenses)
+      .where(and(
+        eq(branchRecurringExpenses.id, recurringExpenseId),
+        eq(branchRecurringExpenses.branchId, branchId),
+        isNull(branchRecurringExpenses.deletedAt),
+      ))
+      .limit(1);
+
+    if (!expense) return undefined;
+
+    const sourceId = `${expense.id}:${data.entryDate}`;
+    const existing = await this.getBranchFinanceEntryBySource(branchId, "fixed_expense", sourceId);
+    if (existing) {
+      return existing;
+    }
+
+    const financeEntry = await this.createBranchFinanceEntry({
+      branchId,
+      type: "expense",
+      category: mapRecurringCategoryToFinanceCategory(expense.category),
+      concept: expense.name,
+      amount: toFinanceAmount(expense.amount),
+      paymentMethod: data.paymentMethod ?? null,
+      clientUserId: null,
+      clientName: null,
+      notes: data.notes ?? expense.notes ?? null,
+      entryDate: data.entryDate,
+      source: "fixed_expense",
+      sourceId,
+      metadata: {
+        recurringExpenseId: expense.id,
+        frequency: expense.frequency,
+        paymentDay: expense.paymentDay ?? null,
+      },
+      createdBy: data.createdBy ?? null,
+    } as any);
+
+    await db
+      .update(branchRecurringExpenses)
+      .set({
+        lastRegisteredAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(branchRecurringExpenses.id, expense.id));
+
+    return financeEntry;
+  }
+
+  async getBranchStaffMembers(branchId: string): Promise<BranchStaffMemberRow[]> {
+    const rows = await db
+      .select()
+      .from(branchStaffMembers)
+      .where(and(
+        eq(branchStaffMembers.branchId, branchId),
+        isNull(branchStaffMembers.deletedAt),
+      ))
+      .orderBy(asc(branchStaffMembers.name));
+
+    return rows
+      .map((row) => this.mapBranchStaffMemberRow(row))
+      .sort((a, b) => Number(b.isActive) - Number(a.isActive) || a.name.localeCompare(b.name, "es-MX"));
+  }
+
+  async createBranchStaffMember(data: InsertBranchStaffMember): Promise<BranchStaffMemberRow> {
+    const [created] = await db
+      .insert(branchStaffMembers)
+      .values({
+        ...data,
+        payPerClass: String(data.payPerClass),
+      })
+      .returning();
+
+    return this.mapBranchStaffMemberRow(created);
+  }
+
+  async updateBranchStaffMember(
+    branchId: string,
+    staffId: string,
+    data: Partial<InsertBranchStaffMember>,
+  ): Promise<BranchStaffMemberRow | undefined> {
+    const updateData: Record<string, any> = { updatedAt: new Date() };
+    if (data.name !== undefined) updateData.name = data.name;
+    if (data.phone !== undefined) updateData.phone = data.phone;
+    if (data.payPerClass !== undefined) updateData.payPerClass = String(data.payPerClass);
+    if (data.notes !== undefined) updateData.notes = data.notes;
+    if (data.isActive !== undefined) updateData.isActive = data.isActive;
+    if (data.createdBy !== undefined) updateData.createdBy = data.createdBy;
+
+    const [updated] = await db
+      .update(branchStaffMembers)
+      .set(updateData)
+      .where(and(
+        eq(branchStaffMembers.id, staffId),
+        eq(branchStaffMembers.branchId, branchId),
+        isNull(branchStaffMembers.deletedAt),
+      ))
+      .returning();
+
+    return updated ? this.mapBranchStaffMemberRow(updated) : undefined;
+  }
+
+  async softDeleteBranchStaffMember(branchId: string, staffId: string): Promise<boolean> {
+    const [updated] = await db
+      .update(branchStaffMembers)
+      .set({
+        deletedAt: new Date(),
+        updatedAt: new Date(),
+        isActive: false,
+      })
+      .where(and(
+        eq(branchStaffMembers.id, staffId),
+        eq(branchStaffMembers.branchId, branchId),
+        isNull(branchStaffMembers.deletedAt),
+      ))
+      .returning({ id: branchStaffMembers.id });
+
+    return !!updated;
+  }
+
+  async getBranchStaffClassLogs(
+    branchId: string,
+    filters?: { from?: string; to?: string; staffId?: string; limit?: number },
+  ): Promise<BranchStaffClassLogRow[]> {
+    const conditions: any[] = [eq(branchStaffClassLogs.branchId, branchId)];
+    if (filters?.staffId) conditions.push(eq(branchStaffClassLogs.staffId, filters.staffId));
+    if (filters?.from) conditions.push(gte(branchStaffClassLogs.classDate, filters.from));
+    if (filters?.to) conditions.push(lte(branchStaffClassLogs.classDate, filters.to));
+
+    const rows = await db
+      .select({
+        id: branchStaffClassLogs.id,
+        branchId: branchStaffClassLogs.branchId,
+        staffId: branchStaffClassLogs.staffId,
+        staffName: branchStaffMembers.name,
+        classesCount: branchStaffClassLogs.classesCount,
+        paymentTotal: branchStaffClassLogs.paymentTotal,
+        classDate: branchStaffClassLogs.classDate,
+        notes: branchStaffClassLogs.notes,
+        financeEntryId: branchStaffClassLogs.financeEntryId,
+        paymentMethod: branchFinanceEntries.paymentMethod,
+        createdBy: branchStaffClassLogs.createdBy,
+        createdAt: branchStaffClassLogs.createdAt,
+        updatedAt: branchStaffClassLogs.updatedAt,
+      })
+      .from(branchStaffClassLogs)
+      .innerJoin(branchStaffMembers, eq(branchStaffClassLogs.staffId, branchStaffMembers.id))
+      .leftJoin(branchFinanceEntries, eq(branchStaffClassLogs.financeEntryId, branchFinanceEntries.id))
+      .where(and(...conditions))
+      .orderBy(desc(branchStaffClassLogs.classDate), desc(branchStaffClassLogs.createdAt))
+      .limit(Math.min(filters?.limit || 20, 200));
+
+    return rows.map((row) => ({
+      id: row.id,
+      branchId: row.branchId,
+      staffId: row.staffId,
+      staffName: row.staffName,
+      classesCount: row.classesCount,
+      paymentTotal: toFinanceAmount(row.paymentTotal),
+      classDate: row.classDate,
+      notes: row.notes ?? null,
+      financeEntryId: row.financeEntryId ?? null,
+      paymentMethod: row.paymentMethod ?? null,
+      createdBy: row.createdBy ?? null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }));
+  }
+
+  async createBranchStaffClassLogAndFinanceEntry(data: {
+    branchId: string;
+    staffId: string;
+    classesCount: number;
+    classDate: string;
+    paymentMethod?: string | null;
+    notes?: string | null;
+    createdBy?: string | null;
+  }): Promise<BranchStaffClassLogRow> {
+    const [staff] = await db
+      .select()
+      .from(branchStaffMembers)
+      .where(and(
+        eq(branchStaffMembers.id, data.staffId),
+        eq(branchStaffMembers.branchId, data.branchId),
+        isNull(branchStaffMembers.deletedAt),
+      ))
+      .limit(1);
+
+    if (!staff) {
+      throw new Error("PROFESSOR_NOT_FOUND");
+    }
+
+    const payPerClass = toFinanceAmount(staff.payPerClass);
+    const paymentTotal = Number((payPerClass * data.classesCount).toFixed(2));
+
+    const financeEntry = await this.createBranchFinanceEntry({
+      branchId: data.branchId,
+      type: "expense",
+      category: "profesor",
+      concept: `${staff.name} · ${data.classesCount} clase${data.classesCount === 1 ? "" : "s"}`,
+      amount: paymentTotal,
+      paymentMethod: data.paymentMethod ?? null,
+      clientUserId: null,
+      clientName: null,
+      notes: data.notes ?? null,
+      entryDate: data.classDate,
+      source: "staff_class_log",
+      sourceId: null,
+      metadata: {
+        staffId: staff.id,
+        staffName: staff.name,
+        payPerClass,
+        classesCount: data.classesCount,
+      },
+      createdBy: data.createdBy ?? null,
+    } as any);
+
+    const [created] = await db
+      .insert(branchStaffClassLogs)
+      .values({
+        branchId: data.branchId,
+        staffId: staff.id,
+        classesCount: data.classesCount,
+        paymentTotal: String(paymentTotal),
+        classDate: data.classDate,
+        notes: data.notes ?? null,
+        financeEntryId: financeEntry.id,
+        createdBy: data.createdBy ?? null,
+      })
+      .returning({ id: branchStaffClassLogs.id });
+
+    await db
+      .update(branchFinanceEntries)
+      .set({
+        sourceId: created.id,
+        updatedAt: new Date(),
+      })
+      .where(eq(branchFinanceEntries.id, financeEntry.id));
+
+    return (await this.getBranchStaffClassLogById(data.branchId, created.id))!;
+  }
+
+  async createMembershipFinanceEntry(data: {
+    branchId: string;
+    membershipId: string;
+    userId: string;
+    planId: string;
+    planName: string;
+    amount: number;
+    paidAt: Date | string | null | undefined;
+    expiresAt?: Date | string | null;
+    paymentMethod?: string | null;
+    createdBy?: string | null;
+    eventType: "assign" | "renew";
+  }): Promise<BranchFinanceEntryRow | null> {
+    const eventKey = getMembershipFinanceEventKey({
+      eventType: data.eventType,
+      membershipId: data.membershipId,
+      planId: data.planId,
+      expiresAt: data.expiresAt,
+      paidAt: data.paidAt,
+    });
+
+    const existing = await this.getBranchFinanceEntryBySource(data.branchId, `membership_${data.eventType}`, eventKey);
+    if (existing) {
+      return existing;
+    }
+
+    const [user] = await db
+      .select({
+        name: users.name,
+        lastName: users.lastName,
+      })
+      .from(users)
+      .where(eq(users.id, data.userId))
+      .limit(1);
+
+    const clientDisplayName = [user?.name, user?.lastName].filter(Boolean).join(" ").trim() || "Cliente";
+    const paidAtDate = data.paidAt ? formatDateOnly(new Date(data.paidAt)) : getMxLocalDate();
+
+    return this.createBranchFinanceEntry({
+      branchId: data.branchId,
+      type: "income",
+      category: "membresia",
+      concept: data.planName,
+      amount: data.amount,
+      paymentMethod: data.paymentMethod ?? null,
+      clientUserId: data.userId,
+      clientName: null,
+      notes: data.eventType === "renew" ? "Ingreso automático por renovación de membresía" : "Ingreso automático por asignación de membresía",
+      entryDate: paidAtDate,
+      source: `membership_${data.eventType}`,
+      sourceId: eventKey,
+      metadata: {
+        membershipId: data.membershipId,
+        planId: data.planId,
+        planName: data.planName,
+        eventType: data.eventType,
+        expiresAt: data.expiresAt ? new Date(data.expiresAt).toISOString() : null,
+        clientDisplayName,
+      },
+      createdBy: data.createdBy ?? null,
+    } as any);
   }
 
   async getCustomerAppOverview(): Promise<{ total: number; active: number; blocked: number; recent: number; pendingReports: number }> {
