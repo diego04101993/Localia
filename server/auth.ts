@@ -11,6 +11,7 @@ const PgSession = connectPgSimple(session);
 export const CUSTOMER_BLOCKED_MESSAGE = "Tu cuenta ha sido bloqueada. Contacta a soporte.";
 const DEFAULT_CUSTOMER_SESSION_MAX_AGE_DAYS = 365;
 const DEFAULT_ADMIN_SESSION_MAX_AGE_DAYS = 30;
+const DEFAULT_IMPERSONATION_MAX_AGE_MINUTES = 30;
 const MAX_ALLOWED_SESSION_DAYS = 365;
 const ADMIN_ROLES = new Set(["SUPER_ADMIN", "BRANCH_ADMIN"]);
 
@@ -61,6 +62,14 @@ function resolveAdminSessionMaxAgeDays(customerMaxAgeDays: number): number {
   return Math.min(Math.max(rawValue, 1), customerMaxAgeDays, MAX_ALLOWED_SESSION_DAYS);
 }
 
+function resolveImpersonationMaxAgeMinutes(): number {
+  const rawValue = Number.parseInt(process.env.IMPERSONATION_MAX_AGE_MINUTES || "", 10);
+  if (!Number.isFinite(rawValue) || rawValue <= 0) {
+    return DEFAULT_IMPERSONATION_MAX_AGE_MINUTES;
+  }
+  return Math.min(rawValue, 120);
+}
+
 function shouldLogSessionDebug(): boolean {
   return process.env.SESSION_DEBUG_LOGS === "true";
 }
@@ -88,6 +97,72 @@ export function applySessionLifetimeForRequest(req: Request, user?: { role?: str
   if (sess.cookie.maxAge !== targetMaxAgeMs) {
     sess.cookie.maxAge = targetMaxAgeMs;
   }
+}
+
+export function getImpersonationMaxAgeMs(): number {
+  return resolveImpersonationMaxAgeMinutes() * 60 * 1000;
+}
+
+async function restoreOriginalUserSession(req: Request, originalUserId: string): Promise<boolean> {
+  const originalUser = await storage.getUser(originalUserId);
+  if (!originalUser) {
+    return false;
+  }
+
+  const sess = req.session as any;
+  delete sess.impersonating;
+  delete sess.originalUserId;
+  delete sess.impersonatedBranchName;
+  delete sess.impersonateExpires;
+
+  await new Promise<void>((resolve, reject) => {
+    req.logIn(originalUser, (err) => {
+      if (err) return reject(err);
+      applySessionLifetimeForRequest(req, originalUser);
+      resolve();
+    });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    req.session.save((err: any) => {
+      if (err) return reject(err);
+      resolve();
+    });
+  });
+
+  authDebugLog(`Impersonacion expirada; sesion restaurada a ${originalUser.email}`);
+  return true;
+}
+
+async function clearExpiredImpersonationIfNeeded(req: Request): Promise<void> {
+  const sess = req.session as any;
+  if (!sess?.impersonating || !sess?.originalUserId) {
+    return;
+  }
+
+  const expiresAt = Number(sess.impersonateExpires ?? 0);
+  if (!Number.isFinite(expiresAt) || expiresAt > Date.now()) {
+    return;
+  }
+
+  const restored = await restoreOriginalUserSession(req, sess.originalUserId);
+  if (restored) {
+    return;
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    req.logout((err) => {
+      if (err) return reject(err);
+      resolve();
+    });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    req.session.destroy((err) => {
+      if (err) return reject(err);
+      resolve();
+    });
+  });
 }
 
 export function setupAuth(app: Express) {
@@ -143,11 +218,18 @@ export function setupAuth(app: Express) {
 
   app.use(passport.initialize());
   app.use(passport.session());
-  app.use((req, _res, next) => {
-    if (req.session && (req.isAuthenticated?.() || (req.session as any)?.impersonating)) {
-      applySessionLifetimeForRequest(req);
+  app.use(async (req, _res, next) => {
+    try {
+      if ((req.session as any)?.impersonating) {
+        await clearExpiredImpersonationIfNeeded(req);
+      }
+      if (req.session && (req.isAuthenticated?.() || (req.session as any)?.impersonating)) {
+        applySessionLifetimeForRequest(req);
+      }
+      next();
+    } catch (err) {
+      next(err);
     }
-    next();
   });
 
   passport.use(

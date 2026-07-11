@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import {
   Building2,
@@ -44,6 +44,8 @@ import {
   EyeOff,
   Sparkles,
   Wallet,
+  Settings2,
+  UserCircle,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -67,6 +69,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { invalidateBranchMembershipQueries } from "@/lib/branch-dashboard-cache";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
 import { Area, AreaChart, CartesianGrid, Line, XAxis, YAxis } from "recharts";
@@ -76,7 +79,7 @@ import ReservasTab from "@/components/reservas-tab";
 import ContenidoTab from "@/components/contenido-tab";
 import TvModeTab from "@/components/tv-mode-tab";
 import PerfilPublicoTab from "@/components/perfil-publico-tab";
-import NotificationsPanel from "@/components/notifications-panel";
+import NotificationsPanel, { type NotificationItem } from "@/components/notifications-panel";
 import CajaTab from "@/components/caja-tab";
 
 const DASHBOARD_TABS = [
@@ -87,11 +90,47 @@ const DASHBOARD_TABS = [
   { value: "reservas", label: "Reservas", icon: Calendar },
   { value: "contenido", label: "Contenido", icon: FileText },
   { value: "perfil", label: "Perfil Público", icon: Building2 },
+  { value: "configuracion", label: "Configuración", icon: Settings2 },
   { value: "promociones", label: "Promociones", icon: Tag },
   { value: "tv", label: "TV Mode", icon: Monitor },
 ] as const;
 
 type TabValue = typeof DASHBOARD_TABS[number]["value"];
+
+type BranchClientSummary = {
+  userId: string;
+  planStatus: "active" | "expired" | "deleted" | null;
+  individualPurchaseCount?: number;
+};
+
+type ReservationNotificationTarget = {
+  bookingId?: string | null;
+  clientUserId?: string | null;
+  classScheduleId: string;
+  bookingDate: string;
+  nonce: number;
+};
+
+type ClientNotificationTarget = {
+  userId: string;
+  nonce: number;
+};
+
+const DASHBOARD_NAV_TABS = DASHBOARD_TABS.map((tab) => {
+    if (tab.value === "membresias") {
+      return { ...tab, label: "Servicios y planes" };
+    }
+
+    if (tab.value === "perfil") {
+      return { ...tab, label: "Perfil Público" };
+    }
+
+    if (tab.value === "configuracion") {
+      return { ...tab, label: "Configuración" };
+    }
+
+    return tab;
+  });
 
 function StatusBadge({ status, testId = "badge-branch-status" }: { status: string; testId?: string }) {
   if (status === "active") {
@@ -372,9 +411,8 @@ function AlertsSection({ alerts, isLoading, onViewClient, branchName, whatsappTe
       const resp = await apiRequest("POST", `/api/branch/memberships/${membershipId}/renew`);
       return resp.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/alerts"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
+    onSuccess: async () => {
+      await invalidateBranchMembershipQueries();
       toast({ title: "Membresía renovada" });
     },
     onError: (err: any) => {
@@ -1361,7 +1399,6 @@ function ResumenTabPremium({ branchStats, branchStatus, branchSlug, branchId, br
   const { data: whatsappTemplates } = useQuery<WhatsAppTemplates>({
     queryKey: ["/api/branch/whatsapp-templates"],
   });
-
   const financeFrom = getIsoDateDaysAgo(29);
   const financeTo = getIsoDateDaysAgo(0);
   const { data: financeSummary, isLoading: financeLoading } = useQuery<BranchFinanceSummary>({
@@ -1895,7 +1932,6 @@ function ResumenTabPremiumCompact({ branchStats, branchStatus, branchSlug, branc
   const { data: whatsappTemplates } = useQuery<WhatsAppTemplates>({
     queryKey: ["/api/branch/whatsapp-templates"],
   });
-
   const financeFrom = getIsoDateDaysAgo(29);
   const financeTo = getIsoDateDaysAgo(0);
   const { data: financeSummary, isLoading: financeLoading } = useQuery<BranchFinanceSummary>({
@@ -2403,6 +2439,11 @@ function ResumenTabDesktopSaaS({ branchStats, branchStatus, branchSlug, branchId
   const { data: whatsappTemplates } = useQuery<WhatsAppTemplates>({
     queryKey: ["/api/branch/whatsapp-templates"],
   });
+  const { data: branchClients = [], isLoading: branchClientsLoading } = useQuery<BranchClientSummary[]>({
+    queryKey: ["/api/branch/clients"],
+    enabled: !!branchId,
+    staleTime: 60_000,
+  });
 
   const financeFrom = getIsoDateDaysAgo(29);
   const financeTo = getIsoDateDaysAgo(0);
@@ -2456,6 +2497,16 @@ function ResumenTabDesktopSaaS({ branchStats, branchStatus, branchSlug, branchId
     expense: { label: "Gastos", color: "#f97316" },
     net: { label: "Ganancia", color: "#2563eb" },
   } as const;
+  const clientKpis = useMemo(() => {
+    const totalClients = branchClients.length;
+    const withActivePlan = branchClients.filter((client) => client.planStatus === "active").length;
+    return {
+      totalClients,
+      withActivePlan,
+      withoutActivePlan: Math.max(totalClients - withActivePlan, 0),
+    };
+  }, [branchClients]);
+  const topCardsLoading = isLoading || reservationLoading || financeLoading || branchClientsLoading;
 
   const topCards = [
     {
@@ -2512,6 +2563,32 @@ function ResumenTabDesktopSaaS({ branchStats, branchStatus, branchSlug, branchId
       iconClassName: "text-sky-600 dark:text-sky-400",
       tint: "from-sky-500/15 via-sky-500/5 to-transparent",
     },
+  ];
+  const summaryTopCards = [
+    {
+      ...topCards[0],
+      title: "Clientes totales",
+      value: clientKpis.totalClients,
+      helper: "Registrados en tu sucursal",
+      testId: "text-clients-total-overview",
+    },
+    {
+      ...topCards[1],
+      title: "Con servicio o plan",
+      value: clientKpis.withActivePlan,
+      helper: "Con plan activo hoy",
+      testId: "text-clients-with-plan-overview",
+    },
+    {
+      title: "Sin servicio o plan",
+      value: clientKpis.withoutActivePlan,
+      helper: "Sin plan activo",
+      icon: UserCircle,
+      iconClassName: "text-amber-600 dark:text-amber-400",
+      tint: "from-amber-500/15 via-amber-500/5 to-transparent",
+      testId: "text-clients-without-plan-overview",
+    },
+    ...topCards.slice(2),
   ];
 
   const commercialHighlights = [
@@ -2581,8 +2658,8 @@ function ResumenTabDesktopSaaS({ branchStats, branchStatus, branchSlug, branchId
           </div>
         </div>
 
-        <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
-          {topCards.map((item) => (
+        <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-7">
+          {summaryTopCards.map((item) => (
             <div
               key={item.title}
               className={`min-h-[102px] rounded-2xl border border-white/70 bg-gradient-to-br ${item.tint} p-3.5 shadow-sm backdrop-blur-sm dark:border-white/10 dark:bg-white/5`}
@@ -2590,7 +2667,7 @@ function ResumenTabDesktopSaaS({ branchStats, branchStatus, branchSlug, branchId
               <div className="mb-3 flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">{item.title}</p>
-                  {isLoading || reservationLoading ? (
+                  {topCardsLoading ? (
                     <Skeleton className="mt-2.5 h-7 w-20 rounded-lg" />
                   ) : (
                     <p className="mt-2.5 truncate text-xl font-semibold tracking-tight md:text-2xl" data-testid={item.testId}>
@@ -2626,9 +2703,9 @@ function ResumenTabDesktopSaaS({ branchStats, branchStatus, branchSlug, branchId
           </CardHeader>
           <CardContent className="pt-3">
             {financeLoading ? (
-              <Skeleton className="h-[240px] w-full rounded-2xl" />
+              <Skeleton className="h-[190px] w-full rounded-2xl" />
             ) : hasChartData ? (
-              <ChartContainer config={financeChartConfig} className="h-[240px] w-full">
+              <ChartContainer config={financeChartConfig} className="h-[190px] w-full">
                 <AreaChart data={chartData} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
                   <defs>
                     <linearGradient id="incomeFillDesktop" x1="0" y1="0" x2="0" y2="1">
@@ -2681,7 +2758,7 @@ function ResumenTabDesktopSaaS({ branchStats, branchStatus, branchSlug, branchId
                 </AreaChart>
               </ChartContainer>
             ) : (
-              <div className="flex h-[210px] flex-col items-center justify-center rounded-3xl border border-dashed border-border/70 bg-muted/20 px-6 text-center">
+              <div className="flex h-[150px] flex-col items-center justify-center rounded-3xl border border-dashed border-border/70 bg-muted/20 px-6 text-center">
                 <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10">
                   <BarChart3 className="h-5 w-5 text-primary" />
                 </div>
@@ -2822,33 +2899,11 @@ function ResumenTabDesktopSaaS({ branchStats, branchStatus, branchSlug, branchId
           </div>
         </div>
 
-        <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-4">
-          <NotificationsPanel
-            title="Notificaciones"
-            limit={3}
-            emptyMessage="Sin notificaciones recientes para tu sucursal."
-            testIdPrefix="branch-notifications"
-          />
-
-          <TodayBirthdaysSection
-            alerts={alerts}
-            branchName={branchName}
-            whatsappTemplates={whatsappTemplates || {}}
-            onViewClient={onViewClient}
-          />
-
+        <div className="grid gap-3 lg:grid-cols-2">
           <AnnouncementsSection branchId={branchId} />
           <WhatsAppConfigCard />
         </div>
       </section>
-
-      <AlertsSection
-        alerts={alerts}
-        isLoading={alertsLoading}
-        branchName={branchName}
-        whatsappTemplates={whatsappTemplates || {}}
-        onViewClient={onViewClient}
-      />
     </div>
   );
 }
@@ -3194,12 +3249,159 @@ function PromocionesTab() {
   );
 }
 
+function ConfigurationTab({
+  branchName,
+  branchSlug,
+  refetchAuth,
+  onOpenPublicProfileSettings,
+  onOpenMyProfile,
+}: {
+  branchName: string;
+  branchSlug: string;
+  refetchAuth: () => void | Promise<unknown>;
+  onOpenPublicProfileSettings: () => void;
+  onOpenMyProfile: () => void;
+}) {
+  const { toast } = useToast();
+  const [draftName, setDraftName] = useState(branchName);
+
+  useEffect(() => {
+    setDraftName(branchName);
+  }, [branchName]);
+
+  const renameBranchMutation = useMutation({
+    mutationFn: async (nextName: string) => {
+      const resp = await apiRequest("PATCH", "/api/branch/profile", {
+        name: nextName,
+      });
+      return resp.json();
+    },
+    onSuccess: async () => {
+      await Promise.resolve(refetchAuth());
+      await queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
+      toast({ title: "Nombre de sucursal actualizado" });
+    },
+    onError: (err: any) => {
+      toast({
+        title: "Error",
+        description: err.message || "No se pudo actualizar el nombre de la sucursal",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const hasNameChanged = draftName.trim() !== branchName.trim();
+
+  return (
+    <div className="space-y-4" data-testid="branch-settings-tab">
+      <Card className="border-border/70 shadow-sm">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-lg flex items-center gap-2">
+            <Settings2 className="h-5 w-5" />
+            Configuración
+          </CardTitle>
+          <p className="text-sm text-muted-foreground">
+            Administra los datos visibles de tu sucursal y accede rápidamente a tu perfil y seguridad.
+          </p>
+        </CardHeader>
+      </Card>
+
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
+        <Card className="border-border/70 shadow-sm" data-testid="card-branch-settings">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <Building2 className="h-4 w-4" />
+              Información de la sucursal
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="branch-official-name">Nombre oficial</Label>
+              <Input
+                id="branch-official-name"
+                value={draftName}
+                onChange={(event) => setDraftName(event.target.value)}
+                placeholder="Nombre visible de tu sucursal"
+                data-testid="input-branch-official-name"
+              />
+              <p className="text-xs text-muted-foreground">
+                Este nombre se reflejará en tu dashboard, perfil público, app móvil y vista de Super Admin.
+              </p>
+            </div>
+
+            <div className="rounded-xl border bg-muted/30 p-3 text-sm">
+              <p className="font-medium text-foreground">Perfil público</p>
+              <p className="mt-1 text-muted-foreground">
+                {branchSlug ? `/app/${branchSlug}` : "Tu enlace público estará disponible cuando exista un slug"}
+              </p>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Aquí solo puedes cambiar el nombre oficial. El slug, estado y permisos administrativos siguen protegidos.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <Button
+                onClick={() => renameBranchMutation.mutate(draftName.trim())}
+                disabled={!draftName.trim() || !hasNameChanged || renameBranchMutation.isPending}
+                data-testid="button-save-branch-official-name"
+              >
+                {renameBranchMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                ) : (
+                  <Save className="h-4 w-4 mr-2" />
+                )}
+                Guardar nombre
+              </Button>
+              <Button
+                variant="outline"
+                onClick={onOpenPublicProfileSettings}
+                data-testid="button-open-public-profile-settings"
+              >
+                <ExternalLink className="h-4 w-4 mr-2" />
+                Abrir perfil público
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-border/70 shadow-sm" data-testid="card-profile-security-shortcut">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <UserCircle className="h-4 w-4" />
+              Mi perfil y seguridad
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Reutiliza las funciones existentes para actualizar tu nombre, apellido, teléfono personal, correo de acceso y contraseña.
+            </p>
+            <div className="rounded-xl border bg-muted/30 p-3 text-sm text-muted-foreground">
+              <p>Incluye:</p>
+              <ul className="mt-2 space-y-1 list-disc pl-4">
+                <li>Editar nombre, apellido y teléfono personal</li>
+                <li>Cambiar correo de acceso</li>
+                <li>Cambiar contraseña</li>
+              </ul>
+            </div>
+            <Button onClick={onOpenMyProfile} data-testid="button-open-my-profile-security">
+              <ExternalLink className="h-4 w-4 mr-2" />
+              Ir a mi perfil y seguridad
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
 export default function DashboardPage() {
   const { user, logout, refetch } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   const [activeTab, setActiveTab] = useState<TabValue>("resumen");
+  const [reservationFocus, setReservationFocus] = useState<ReservationNotificationTarget | null>(null);
+  const [clientFocus, setClientFocus] = useState<ClientNotificationTarget | null>(null);
 
   const branchName = user?.branch?.name || "Tu Sucursal";
   const branchSlug = user?.branch?.slug || "";
@@ -3243,6 +3445,109 @@ export default function DashboardPage() {
       toast({ title: "Error", description: "No se pudo salir del modo soporte", variant: "destructive" });
     },
   });
+
+  function handleViewClient(userId: string) {
+    if (!userId) {
+      return;
+    }
+
+    setClientFocus({
+      userId,
+      nonce: Date.now(),
+    });
+    setActiveTab("clientes");
+  }
+
+  function handleOpenNotificationClient(notification: NotificationItem) {
+    const data = notification.data && typeof notification.data === "object" ? notification.data : {};
+    const clientUserId =
+      typeof data.clientUserId === "string" && data.clientUserId
+        ? data.clientUserId
+        : typeof data.userId === "string" && data.userId
+        ? data.userId
+        : null;
+
+    if (!clientUserId) {
+      toast({
+        title: "Cliente no localizado",
+        description: "No pudimos localizar este cliente.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    handleViewClient(clientUserId);
+  }
+
+  function handleOpenBranchNotification(notification: NotificationItem) {
+    const data = notification.data && typeof notification.data === "object" ? notification.data : {};
+    const reservationId =
+      typeof data.reservationId === "string" && data.reservationId
+        ? data.reservationId
+        : typeof data.bookingId === "string" && data.bookingId
+        ? data.bookingId
+        : null;
+    const classScheduleId =
+      typeof data.classScheduleId === "string" && data.classScheduleId
+        ? data.classScheduleId
+        : typeof data.classId === "string" && data.classId
+        ? data.classId
+        : null;
+    const reservationDate =
+      typeof data.reservationDate === "string" && data.reservationDate
+        ? data.reservationDate
+        : typeof data.bookingDate === "string" && data.bookingDate
+        ? data.bookingDate
+        : typeof data.date === "string" && data.date
+        ? data.date
+        : null;
+    const clientUserId =
+      typeof data.clientUserId === "string" && data.clientUserId
+        ? data.clientUserId
+        : typeof data.userId === "string" && data.userId
+        ? data.userId
+        : null;
+    const isReservationNotification =
+      data.notificationAction === "open_reservation" ||
+      notification.type === "booking_created" ||
+      notification.type === "booking_cancelled";
+
+    if (isReservationNotification) {
+      if (!classScheduleId || !reservationDate || (!reservationId && !clientUserId)) {
+        toast({
+          title: "Reserva no localizada",
+          description: "No pudimos localizar esta reserva.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      setReservationFocus({
+        bookingId: reservationId,
+        clientUserId,
+        classScheduleId,
+        bookingDate: reservationDate,
+        nonce: Date.now(),
+      });
+      setActiveTab("reservas");
+      return;
+    }
+
+    if (clientUserId || data.notificationAction === "open_client") {
+      if (clientUserId) {
+        handleViewClient(clientUserId);
+        return;
+      }
+
+      setActiveTab("clientes");
+      return;
+    }
+
+    toast({
+      title: notification.title,
+      description: notification.message,
+    });
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -3300,6 +3605,15 @@ export default function DashboardPage() {
               <p className="text-xs text-muted-foreground">{user?.email || "Sucursal"}</p>
             </div>
             <StatusBadge status={branchStatus} />
+            <NotificationsPanel
+              title="Alertas operativas"
+              limit={5}
+              testIdPrefix="branch-notifications"
+              variant="bell"
+              pollingMs={30000}
+              onOpenNotification={handleOpenBranchNotification}
+              onOpenClientNotification={handleOpenNotificationClient}
+            />
             <Button size="icon" variant="ghost" onClick={toggleTheme} data-testid="button-theme-dashboard">
               {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </Button>
@@ -3317,7 +3631,7 @@ export default function DashboardPage() {
         <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as TabValue)}>
           <div className="overflow-x-auto pb-1 lg:hidden">
             <TabsList className="w-full sm:w-auto" data-testid="tabs-dashboard-nav">
-              {DASHBOARD_TABS.map((tab) => (
+              {DASHBOARD_NAV_TABS.map((tab) => (
                 <TabsTrigger
                   key={tab.value}
                   value={tab.value}
@@ -3352,7 +3666,7 @@ export default function DashboardPage() {
                 </div>
 
                 <TabsList className="mt-4 flex h-auto w-full flex-col items-stretch gap-1 bg-transparent p-0" data-testid="tabs-dashboard-nav-desktop">
-                  {DASHBOARD_TABS.map((tab) => (
+                  {DASHBOARD_NAV_TABS.map((tab) => (
                     <TabsTrigger
                       key={tab.value}
                       value={tab.value}
@@ -3392,12 +3706,12 @@ export default function DashboardPage() {
                   dashboardMetrics={dashboardMetrics}
                   alerts={alerts}
                   alertsLoading={alertsLoading}
-                  onViewClient={() => setActiveTab("clientes")}
+                  onViewClient={handleViewClient}
                 />
               </TabsContent>
 
               <TabsContent value="clientes" className="mt-0">
-                <ClientesTab />
+                <ClientesTab focusRequest={clientFocus} />
               </TabsContent>
 
               <TabsContent value="membresias" className="mt-0">
@@ -3409,7 +3723,7 @@ export default function DashboardPage() {
               </TabsContent>
 
               <TabsContent value="reservas" className="mt-0">
-                <ReservasTab />
+                <ReservasTab focusRequest={reservationFocus} />
               </TabsContent>
 
               <TabsContent value="contenido" className="mt-0">
@@ -3418,6 +3732,16 @@ export default function DashboardPage() {
 
               <TabsContent value="perfil" className="mt-0">
                 <PerfilPublicoTab />
+              </TabsContent>
+
+              <TabsContent value="configuracion" className="mt-0">
+                <ConfigurationTab
+                  branchName={branchName}
+                  branchSlug={branchSlug}
+                  refetchAuth={refetch}
+                  onOpenPublicProfileSettings={() => setActiveTab("perfil")}
+                  onOpenMyProfile={() => setLocation("/profile")}
+                />
               </TabsContent>
 
               <TabsContent value="promociones" className="mt-0">

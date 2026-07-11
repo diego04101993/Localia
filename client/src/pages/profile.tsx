@@ -162,6 +162,12 @@ export default function ProfilePage() {
     );
   }
 
+  const isAdminUser = user.role === "BRANCH_ADMIN" || user.role === "SUPER_ADMIN";
+  const backDestination = user.role === "SUPER_ADMIN"
+    ? "/superadmin"
+    : user.role === "BRANCH_ADMIN"
+      ? "/dashboard"
+      : "/explore";
   const fullName = [user.name, (user as any).lastName].filter(Boolean).join(" ");
   const initials = [user.name?.charAt(0), ((user as any).lastName || "")?.charAt(0)]
     .filter(Boolean)
@@ -174,13 +180,13 @@ export default function ProfilePage() {
         <div className="max-w-3xl mx-auto px-3 py-3 flex items-center gap-2">
           <button
             className="h-8 w-8 flex items-center justify-center rounded-full hover:bg-muted transition-colors"
-            onClick={() => navigate("/explore")}
+            onClick={() => navigate(backDestination)}
             data-testid="button-profile-back"
           >
             <ArrowLeft className="h-4 w-4" />
           </button>
           <h1 className="font-bold text-base flex-1" data-testid="text-profile-title">
-            Mi Perfil
+            {isAdminUser ? "Mi perfil y seguridad" : "Mi Perfil"}
           </h1>
           {!editing && (
             <button
@@ -522,7 +528,7 @@ export default function ProfilePage() {
         )}
 
         {/* Accesos rápidos */}
-        {!editing && (
+        {!editing && !isAdminUser && (
           <div className="space-y-2">
             <p className="text-xs font-semibold text-muted-foreground px-1">Accesos rápidos</p>
             <Card className="border-border/50 shadow-sm">

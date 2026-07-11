@@ -24,7 +24,13 @@ import {
   branchRecurringExpenseCategoryValues,
   branchRecurringExpenseFrequencyValues,
 } from "@shared/schema";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest } from "@/lib/queryClient";
+import {
+  invalidateBranchFinanceQueries,
+  invalidateBranchRecurringExpenseQueries,
+  invalidateBranchStaffFinanceQueries,
+  invalidateBranchStaffQueries,
+} from "@/lib/branch-dashboard-cache";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
 import { Badge } from "@/components/ui/badge";
@@ -54,7 +60,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { CartesianGrid, Cell, Line, LineChart, Pie, PieChart, XAxis, YAxis } from "recharts";
 
 type FinanceEntryType = "income" | "expense";
-type RangePreset = "thirty_days" | "ninety_days" | "six_months" | "twelve_months" | "all" | "custom";
+type RangePreset = "thirty_days" | "ninety_days" | "six_months" | "twelve_months" | "all" | "custom" | "calendar_month";
+type CalendarMonthOffset = 0 | 1 | 2;
+type CalendarComparisonSpan = 1 | 2 | 3;
 
 interface BranchFinanceSummary {
   totalIncome: number;
@@ -306,6 +314,17 @@ function getPreviousMonthRange() {
   };
 }
 
+function getCalendarMonthRange(offset: CalendarMonthOffset, span: CalendarComparisonSpan) {
+  const today = new Date(`${getTodayDateString()}T12:00:00`);
+  const endMonthDate = new Date(today.getFullYear(), today.getMonth() - offset, 1);
+  const startMonthDate = new Date(endMonthDate.getFullYear(), endMonthDate.getMonth() - (span - 1), 1);
+  const endDate = new Date(endMonthDate.getFullYear(), endMonthDate.getMonth() + 1, 0);
+  return {
+    from: startMonthDate.toLocaleDateString("en-CA"),
+    to: endDate.toLocaleDateString("en-CA"),
+  };
+}
+
 function buildSummaryUrl(from: string, to: string) {
   const params = new URLSearchParams();
   if (from) params.set("from", from);
@@ -419,14 +438,6 @@ function getFinanceSourceLabel(source: string | null) {
   return SOURCE_LABELS[source] || source;
 }
 
-function invalidateFinanceQueries() {
-  queryClient.invalidateQueries({
-    predicate: (query) =>
-      typeof query.queryKey[0] === "string" &&
-      query.queryKey[0].startsWith("/api/branch/finance/"),
-  });
-}
-
 function getExpenseBucketLabel(category: string) {
   switch (category) {
     case "renta":
@@ -446,6 +457,8 @@ export default function CajaTab() {
   const { user } = useAuth();
   const { toast } = useToast();
   const [rangePreset, setRangePreset] = useState<RangePreset>("ninety_days");
+  const [calendarMonthOffset, setCalendarMonthOffset] = useState<CalendarMonthOffset>(0);
+  const [calendarComparisonSpan, setCalendarComparisonSpan] = useState<CalendarComparisonSpan>(1);
   const [from, setFrom] = useState(getQuickRange("ninety_days").from);
   const [to, setTo] = useState(getQuickRange("ninety_days").to);
   const [typeFilter, setTypeFilter] = useState("all");
@@ -585,8 +598,8 @@ export default function CajaTab() {
       const response = await apiRequest("POST", "/api/branch/finance/entries", payload);
       return response.json();
     },
-    onSuccess: () => {
-      invalidateFinanceQueries();
+    onSuccess: async () => {
+      await invalidateBranchFinanceQueries();
       toast({ title: editingEntry ? "Movimiento actualizado" : "Movimiento registrado" });
       setEditingEntry(null);
       setForm(createInitialFormState());
@@ -605,8 +618,8 @@ export default function CajaTab() {
     mutationFn: async (entryId: string) => {
       await apiRequest("DELETE", `/api/branch/finance/entries/${entryId}`);
     },
-    onSuccess: (_data, entryId) => {
-      invalidateFinanceQueries();
+    onSuccess: async (_data, entryId) => {
+      await invalidateBranchFinanceQueries();
       toast({ title: "Movimiento eliminado" });
       if (editingEntry?.id === entryId) {
         setEditingEntry(null);
@@ -648,8 +661,8 @@ export default function CajaTab() {
       const response = await apiRequest("POST", "/api/branch/finance/fixed-expenses", payload);
       return response.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/finance/fixed-expenses"] });
+    onSuccess: async () => {
+      await invalidateBranchRecurringExpenseQueries();
       toast({ title: editingRecurringExpense ? "Gasto fijo actualizado" : "Gasto fijo creado" });
       setEditingRecurringExpense(null);
       setRecurringExpenseForm(createInitialRecurringExpenseFormState());
@@ -667,8 +680,8 @@ export default function CajaTab() {
     mutationFn: async (expenseId: string) => {
       await apiRequest("DELETE", `/api/branch/finance/fixed-expenses/${expenseId}`);
     },
-    onSuccess: (_data, expenseId) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/finance/fixed-expenses"] });
+    onSuccess: async (_data, expenseId) => {
+      await invalidateBranchRecurringExpenseQueries();
       toast({ title: "Gasto fijo eliminado" });
       if (editingRecurringExpense?.id === expenseId) {
         setEditingRecurringExpense(null);
@@ -692,9 +705,8 @@ export default function CajaTab() {
       });
       return response.json();
     },
-    onSuccess: () => {
-      invalidateFinanceQueries();
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/finance/fixed-expenses"] });
+    onSuccess: async () => {
+      await invalidateBranchRecurringExpenseQueries();
       toast({ title: "Gasto fijo registrado en Caja" });
     },
     onError: (error: any) => {
@@ -729,8 +741,8 @@ export default function CajaTab() {
       const response = await apiRequest("POST", "/api/branch/finance/staff", payload);
       return response.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/finance/staff"] });
+    onSuccess: async () => {
+      await invalidateBranchStaffQueries();
       toast({ title: editingStaffMember ? "Profesor o empleado actualizado" : "Profesor o empleado creado" });
       setEditingStaffMember(null);
       setStaffForm(createInitialStaffFormState());
@@ -748,8 +760,8 @@ export default function CajaTab() {
     mutationFn: async (staffId: string) => {
       await apiRequest("DELETE", `/api/branch/finance/staff/${staffId}`);
     },
-    onSuccess: (_data, staffId) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/finance/staff"] });
+    onSuccess: async (_data, staffId) => {
+      await invalidateBranchStaffQueries();
       toast({ title: "Profesor o empleado eliminado" });
       if (editingStaffMember?.id === staffId) {
         setEditingStaffMember(null);
@@ -781,9 +793,8 @@ export default function CajaTab() {
       });
       return response.json();
     },
-    onSuccess: () => {
-      invalidateFinanceQueries();
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/finance/staff/class-logs?limit=8"] });
+    onSuccess: async () => {
+      await invalidateBranchStaffFinanceQueries();
       toast({ title: "Clases registradas en Caja" });
       setStaffClassLogForm(createInitialStaffClassLogFormState());
     },
@@ -796,9 +807,18 @@ export default function CajaTab() {
     },
   });
 
-  function handleQuickRangeChange(preset: Exclude<RangePreset, "custom">) {
+  function handleQuickRangeChange(preset: Exclude<RangePreset, "custom" | "calendar_month">) {
     const range = getQuickRange(preset);
     setRangePreset(preset);
+    setFrom(range.from);
+    setTo(range.to);
+  }
+
+  function applyCalendarMonthRange(offset: CalendarMonthOffset, span: CalendarComparisonSpan) {
+    const range = getCalendarMonthRange(offset, span);
+    setCalendarMonthOffset(offset);
+    setCalendarComparisonSpan(span);
+    setRangePreset("calendar_month");
     setFrom(range.from);
     setTo(range.to);
   }
@@ -1265,6 +1285,57 @@ export default function CajaTab() {
           <CardDescription>Por defecto se muestran los últimos 90 días. Puedes cambiar el rango sin borrar historial.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div className="rounded-2xl border border-border/70 bg-muted/20 p-3">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+              <div className="space-y-2">
+                <div>
+                  <p className="text-sm font-medium">Mes calendario</p>
+                  <p className="text-xs text-muted-foreground">Revisa el mes actual, el anterior o hace 2 meses con opción de comparar hasta 3 meses acumulados.</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant={rangePreset === "calendar_month" && calendarMonthOffset === 0 ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => applyCalendarMonthRange(0, calendarComparisonSpan)}
+                  >
+                    Mes actual
+                  </Button>
+                  <Button
+                    variant={rangePreset === "calendar_month" && calendarMonthOffset === 1 ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => applyCalendarMonthRange(1, calendarComparisonSpan)}
+                  >
+                    Mes anterior
+                  </Button>
+                  <Button
+                    variant={rangePreset === "calendar_month" && calendarMonthOffset === 2 ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => applyCalendarMonthRange(2, calendarComparisonSpan)}
+                  >
+                    Hace 2 meses
+                  </Button>
+                </div>
+              </div>
+
+              <div className="w-full max-w-[220px] space-y-2">
+                <Label>Comparar periodo</Label>
+                <Select
+                  value={String(calendarComparisonSpan)}
+                  onValueChange={(value) => applyCalendarMonthRange(calendarMonthOffset, Number(value) as CalendarComparisonSpan)}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecciona" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="1">1 mes</SelectItem>
+                    <SelectItem value="2">2 meses</SelectItem>
+                    <SelectItem value="3">3 meses</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          </div>
+
           <div className="flex flex-wrap gap-2">
             <Button variant={rangePreset === "thirty_days" ? "default" : "outline"} size="sm" onClick={() => handleQuickRangeChange("thirty_days")}>Últimos 30 días</Button>
             <Button variant={rangePreset === "ninety_days" ? "default" : "outline"} size="sm" onClick={() => handleQuickRangeChange("ninety_days")}>Últimos 90 días</Button>

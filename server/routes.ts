@@ -8,12 +8,19 @@ import fs from "fs";
 import multer from "multer";
 import { storage } from "./storage";
 import {
+  getBranchClientIdentityControl,
+  isCrmPlaceholderEmail,
+} from "./branch-client-identity";
+import {
   deleteAllNotifications,
   deleteNotification,
   deleteReadNotifications,
   dispatchNotificationFromSystemEvent,
+  enrichNotificationForDisplay,
   getNotificationSummary,
   markNotificationRead,
+  notifyBranchCustomerJoinedFromApp,
+  syncBirthdayTodayNotifications,
 } from "./notifications";
 import { dispatchPushFromSystemEvent } from "./push";
 import {
@@ -32,6 +39,7 @@ import {
   CUSTOMER_BLOCKED_MESSAGE,
   applySessionLifetimeForRequest,
   getBranchAdminAccessIssue,
+  getImpersonationMaxAgeMs,
 } from "./auth";
 import {
   GoogleAuthConfigurationError,
@@ -69,6 +77,7 @@ import {
   unregisterPushTokenSchema,
   createPlanSchema,
   assignPlanSchema,
+  quickChargeSingleSessionSchema,
   createClassScheduleSchema,
   createBookingSchema,
   createReviewReportSchema,
@@ -83,6 +92,10 @@ import {
   createBranchStaffMemberSchema,
   updateBranchStaffMemberSchema,
   createBranchStaffClassLogSchema,
+  createBranchServiceSchema,
+  updateBranchServiceSchema,
+  createBranchServiceSaleOptionSchema,
+  updateBranchServiceSaleOptionSchema,
   branchFinancePaymentMethodValues,
   upsertBranchMonthlyBillingSchema,
 } from "@shared/schema";
@@ -95,6 +108,14 @@ const membershipFinancePayloadSchema = z.object({
 });
 const assignPlanWithFinanceSchema = assignPlanSchema.extend({
   paymentMethod: z.enum(branchFinancePaymentMethodValues).nullable().optional(),
+});
+const updateBranchClientGlobalSchema = z.object({
+  name: z.string().min(1, "El nombre es obligatorio").max(120, "Maximo 120 caracteres").optional(),
+  email: z.string().email("Correo invalido").optional(),
+  lastName: z.string().nullable().optional(),
+  phone: z.string().nullable().optional(),
+  birthDate: z.string().nullable().optional(),
+  gender: z.string().nullable().optional(),
 });
 
 function addCalendarMonths(from: Date, months: number): Date {
@@ -222,6 +243,347 @@ function normalizeOptionalText(value: unknown): string | null | undefined {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeMxPhone(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const digits = value.replace(/\D/g, "");
+  if (!digits) return null;
+  if (digits.startsWith("521") && digits.length === 13) return `52${digits.slice(3)}`;
+  if (digits.startsWith("52")) return digits;
+  if (digits.startsWith("1") && digits.length === 11) return `52${digits.slice(1)}`;
+  if (digits.length === 10) return `52${digits}`;
+  return digits.length >= 10 && digits.length <= 15 ? digits : null;
+}
+
+const normalizeMxPhoneLike = normalizeMxPhone;
+
+function normalizeComparableName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim().toLowerCase();
+  if (!trimmed) return null;
+
+  return trimmed
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ");
+}
+
+function normalizeComparableFullName(name: unknown, lastName?: unknown): string | null {
+  const fullName = [name, lastName]
+    .filter((value) => typeof value === "string" && value.trim().length > 0)
+    .join(" ");
+
+  return normalizeComparableName(fullName);
+}
+
+function normalizeComparableEmail(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeComparableBirthDate(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ? trimmed : null;
+}
+
+function buildBranchClientDuplicateSummary(client: any) {
+  return {
+    userId: client.userId,
+    membershipId: client.membershipId,
+    membershipStatus: client.membershipStatus,
+    name: client.name,
+    lastName: client.lastName ?? null,
+    email: isCrmPlaceholderEmail(client.email) ? null : client.email,
+    phone: client.phone ?? null,
+    birthDate: client.birthDate ?? null,
+    source: client.source,
+    identityControl: client.identityControl ?? null,
+  };
+}
+
+function buildIncomingClientIdentity(data: {
+  name?: string | null;
+  lastName?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  birthDate?: string | null;
+  firebaseUid?: string | null;
+}) {
+  return {
+    fullName: normalizeComparableFullName(data.name ?? null, data.lastName ?? null),
+    email: normalizeComparableEmail(data.email ?? null),
+    phone: normalizeMxPhone(data.phone ?? null),
+    birthDate: normalizeComparableBirthDate(data.birthDate ?? null),
+    firebaseUid: normalizeOptionalText(data.firebaseUid) ?? null,
+  };
+}
+
+function evaluateBranchClientDuplicateMatch(client: any, incoming: ReturnType<typeof buildIncomingClientIdentity>) {
+  const candidate = {
+    fullName: normalizeComparableFullName(client.name, client.lastName),
+    email: normalizeComparableEmail(client.email),
+    phone: normalizeMxPhone(client.phone),
+    birthDate: normalizeComparableBirthDate(client.birthDate),
+    firebaseUid: normalizeOptionalText(client.firebaseUid) ?? null,
+  };
+
+  const matches = {
+    phone: !!incoming.phone && incoming.phone === candidate.phone,
+    email: !!incoming.email && incoming.email === candidate.email,
+    firebaseUid: !!incoming.firebaseUid && incoming.firebaseUid === candidate.firebaseUid,
+    fullName: !!incoming.fullName && incoming.fullName === candidate.fullName,
+    birthDate: !!incoming.birthDate && incoming.birthDate === candidate.birthDate,
+  };
+
+  const conflictingFields: string[] = [];
+  const hasPrimarySignal = matches.phone || matches.email || matches.firebaseUid;
+
+  if (hasPrimarySignal && incoming.fullName && candidate.fullName && incoming.fullName !== candidate.fullName) {
+    conflictingFields.push("name");
+  }
+  if (hasPrimarySignal && incoming.birthDate && candidate.birthDate && incoming.birthDate !== candidate.birthDate) {
+    conflictingFields.push("birthDate");
+  }
+
+  const strongReasons: string[] = [];
+  if (matches.phone) strongReasons.push("phone");
+  if (matches.email) strongReasons.push("email");
+  if (matches.firebaseUid) strongReasons.push("firebaseUid");
+  if (matches.fullName && matches.birthDate && matches.phone) strongReasons.push("nameBirthPhone");
+  if (matches.fullName && matches.birthDate && matches.email) strongReasons.push("nameBirthEmail");
+
+  const isStrong = strongReasons.length > 0 && conflictingFields.length === 0;
+  const isPossible =
+    !isStrong &&
+    (
+      (matches.fullName && matches.birthDate) ||
+      (hasPrimarySignal && conflictingFields.length > 0)
+    );
+
+  return {
+    candidate: buildBranchClientDuplicateSummary(client),
+    isStrong,
+    isPossible,
+    strongReasons,
+    conflictingFields,
+  };
+}
+
+function chooseBestBranchClientMatch(matches: Array<ReturnType<typeof evaluateBranchClientDuplicateMatch>>) {
+  return [...matches].sort((left, right) => {
+    const leftStatusScore = left.candidate.membershipStatus === "active" ? 2 : left.candidate.membershipStatus === "left" ? 1 : 0;
+    const rightStatusScore = right.candidate.membershipStatus === "active" ? 2 : right.candidate.membershipStatus === "left" ? 1 : 0;
+
+    if (leftStatusScore !== rightStatusScore) return rightStatusScore - leftStatusScore;
+    return left.candidate.name.localeCompare(right.candidate.name);
+  })[0];
+}
+
+function collectBranchClientDuplicateMatches(branchClients: any[], incoming: ReturnType<typeof buildIncomingClientIdentity>) {
+  const matches = branchClients
+    .map((client) => evaluateBranchClientDuplicateMatch(client, incoming))
+    .filter((match) => match.isStrong || match.isPossible);
+
+  const strongMatches = matches.filter((match) => match.isStrong);
+  const possibleMatches = matches.filter((match) => match.isPossible);
+
+  return {
+    strongMatches,
+    possibleMatches,
+    bestStrongMatch: strongMatches.length > 0 ? chooseBestBranchClientMatch(strongMatches) : null,
+    bestPossibleMatch: possibleMatches.length > 0 ? chooseBestBranchClientMatch(possibleMatches) : null,
+  };
+}
+
+function getMissingClientFieldUpdates(existingUser: any, incoming: {
+  name?: string | null;
+  lastName?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  birthDate?: string | null;
+  gender?: string | null;
+}) {
+  const updates: Record<string, any> = {};
+
+  if ((!existingUser.name || !existingUser.name.trim()) && incoming.name?.trim()) {
+    updates.name = incoming.name.trim();
+  }
+  if ((!existingUser.lastName || !existingUser.lastName.trim()) && incoming.lastName?.trim()) {
+    updates.lastName = incoming.lastName.trim();
+  }
+  if ((!existingUser.phone || !existingUser.phone.trim()) && incoming.phone?.trim()) {
+    updates.phone = incoming.phone.trim();
+  }
+  if ((!existingUser.birthDate || !existingUser.birthDate.trim()) && incoming.birthDate?.trim()) {
+    updates.birthDate = incoming.birthDate.trim();
+  }
+  if ((!existingUser.gender || !existingUser.gender.trim()) && incoming.gender?.trim()) {
+    updates.gender = incoming.gender.trim();
+  }
+  if (isCrmPlaceholderEmail(existingUser.email) && incoming.email && !isCrmPlaceholderEmail(incoming.email)) {
+    updates.email = incoming.email.trim().toLowerCase();
+  }
+
+  return updates;
+}
+
+function getBranchClientPhoneMatches(branchClients: any[], normalizedPhone: string | null, excludeUserId?: string | null) {
+  if (!normalizedPhone) return [];
+
+  return branchClients.filter((client) => {
+    if (excludeUserId && client.userId === excludeUserId) return false;
+    return normalizeMxPhone(client.phone) === normalizedPhone;
+  });
+}
+
+function buildBranchClientPrivateProfilePayload(data: {
+  emergencyContactName?: string | null;
+  emergencyContactPhone?: string | null;
+  medicalNotes?: string | null;
+  injuriesNotes?: string | null;
+  medicalWarnings?: string | null;
+  parqAccepted?: boolean;
+  parqAcceptedDate?: string | null;
+}) {
+  const payload: Record<string, any> = {};
+
+  if (data.emergencyContactName !== undefined) payload.emergencyContactName = data.emergencyContactName || null;
+  if (data.emergencyContactPhone !== undefined) payload.emergencyContactPhone = data.emergencyContactPhone || null;
+  if (data.medicalNotes !== undefined) payload.medicalNotes = data.medicalNotes || null;
+  if (data.injuriesNotes !== undefined) payload.injuriesNotes = data.injuriesNotes || null;
+  if (data.medicalWarnings !== undefined) payload.medicalWarnings = data.medicalWarnings || null;
+  if (data.parqAccepted !== undefined) payload.parqAccepted = data.parqAccepted;
+  if (data.parqAcceptedDate !== undefined) payload.parqAcceptedDate = data.parqAcceptedDate || null;
+
+  return payload;
+}
+
+async function maybeLinkExistingBranchClientToAuthenticatedUser(
+  user: any,
+  branchId: string,
+  source: "join" | "favorite",
+) {
+  const branchClients = await storage.getBranchClients(branchId, true);
+  const incomingIdentity = buildIncomingClientIdentity({
+    name: user.name,
+    lastName: user.lastName,
+    email: user.email,
+    phone: user.phone,
+    birthDate: user.birthDate,
+    firebaseUid: user.firebaseUid,
+  });
+  const phoneMatches = getBranchClientPhoneMatches(branchClients, incomingIdentity.phone, user.id).filter(
+    (match) => match.membershipStatus !== "banned",
+  );
+
+  if (phoneMatches.length === 1) {
+    const selectedMatch = buildBranchClientDuplicateSummary(phoneMatches[0]);
+    await storage.linkBranchClientToAppUser(branchId, selectedMatch.userId, user.id);
+    await storage.createAuditLog({
+      actorUserId: user.id,
+      action: "LINK_APP_USER_TO_BRANCH_CLIENT",
+      branchId,
+      metadata: {
+        source,
+        sourceUserId: selectedMatch.userId,
+        targetUserId: user.id,
+        strongReasons: ["phone"],
+      },
+    });
+
+    return { membership: await storage.getMembership(user.id, branchId), blocked: null };
+  }
+
+  if (phoneMatches.length > 1) {
+    await storage.createAuditLog({
+      actorUserId: user.id,
+      action: "APP_USER_DUPLICATE_MATCH_REVIEW_REQUIRED",
+      branchId,
+      metadata: {
+        source,
+        duplicateType: "ambiguous_phone",
+        normalizedPhone: incomingIdentity.phone,
+        candidateUserIds: phoneMatches.map((client) => client.userId),
+      },
+    });
+
+    return {
+      membership: null,
+      blocked: {
+        code: "AMBIGUOUS_DUPLICATE",
+        message: "Ya existen varios clientes con ese telefono en esta sucursal. Revisa la base antes de vincular la cuenta.",
+      },
+    };
+  }
+
+  const duplicateMatches = collectBranchClientDuplicateMatches(branchClients, incomingIdentity);
+  const strongMatches = duplicateMatches.strongMatches.filter(
+    (match) =>
+      match.candidate.userId !== user.id &&
+      match.candidate.membershipStatus !== "banned",
+  );
+
+  if (strongMatches.length === 1) {
+    const selectedMatch = chooseBestBranchClientMatch(strongMatches);
+    await storage.linkBranchClientToAppUser(branchId, selectedMatch.candidate.userId, user.id);
+    await storage.createAuditLog({
+      actorUserId: user.id,
+      action: "LINK_APP_USER_TO_BRANCH_CLIENT",
+      branchId,
+      metadata: {
+        source,
+        sourceUserId: selectedMatch.candidate.userId,
+        targetUserId: user.id,
+        strongReasons: selectedMatch.strongReasons,
+      },
+    });
+
+    return { membership: await storage.getMembership(user.id, branchId), blocked: null };
+  }
+
+  if (strongMatches.length > 1 || duplicateMatches.possibleMatches.length > 0) {
+    const bestCandidate =
+      (strongMatches.length > 0 ? chooseBestBranchClientMatch(strongMatches) : null) ||
+      duplicateMatches.bestPossibleMatch;
+
+    await storage.createAuditLog({
+      actorUserId: user.id,
+      action: "APP_USER_DUPLICATE_MATCH_REVIEW_REQUIRED",
+      branchId,
+      metadata: {
+        source,
+        candidateUserId: bestCandidate?.candidate.userId ?? null,
+        strongMatchCount: strongMatches.length,
+        possibleMatchCount: duplicateMatches.possibleMatches.length,
+      },
+    });
+  }
+
+  return { membership: null, blocked: null };
+}
+
+function buildCrmPlaceholderEmail(branchId: string, normalizedPhone: string | null): string {
+  const branchToken = branchId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12) || "branch";
+  const phoneToken = normalizedPhone?.slice(-10) || crypto.randomBytes(4).toString("hex");
+  const uniqueToken = crypto.randomBytes(3).toString("hex");
+  return `crm+${branchToken}.${phoneToken}.${uniqueToken}@crm.webcool.local`;
+}
+
+function getMxIsoDate(date = new Date()): string {
+  return date.toLocaleDateString("en-CA", { timeZone: "America/Mexico_City" });
+}
+
+function calculatePlanExpirationDate(plan: { cycleMonths: number | null; durationDays?: number | null }, from = new Date()): Date {
+  if ((plan.cycleMonths ?? 1) === 0) {
+    const result = new Date(from);
+    result.setDate(result.getDate() + Math.max(plan.durationDays ?? 1, 1));
+    return result;
+  }
+
+  return addCalendarMonths(from, plan.cycleMonths ?? 1);
 }
 
 function normalizeSearchKeywords(value: unknown): string | null | undefined {
@@ -613,7 +975,9 @@ export async function registerRoutes(
   app.post("/api/auth/google-mobile", async (req, res, next) => {
     const result = googleMobileLoginSchema.safeParse(req.body);
     if (!result.success) {
-      return res.status(400).json({ message: "Datos invÃ¡lidos", errors: result.error.flatten() });
+      return res.status(400).json({
+        message: "Datos inválidos",
+      });
     }
 
     if (getConfiguredGoogleAudiences().length === 0) {
@@ -1306,7 +1670,9 @@ if (!user) {
     });
 
     if (!result.success) {
-      return res.status(400).json({ message: "Datos invÃ¡lidos", errors: result.error.flatten() });
+      return res.status(400).json({
+        message: "Datos inválidos",
+      });
     }
 
     try {
@@ -1338,9 +1704,17 @@ if (!user) {
     const result = unregisterPushTokenSchema.safeParse({
       token: req.body.token,
     });
+    const privateResult = result;
+    const globalResult = result;
 
     if (!result.success) {
-      return res.status(400).json({ message: "Datos invÃ¡lidos", errors: result.error.flatten() });
+      return res.status(400).json({
+        message: "Datos inválidos",
+        errors: {
+          private: privateResult.success ? null : privateResult.error.flatten(),
+          global: globalResult.success ? null : globalResult.error.flatten(),
+        },
+      });
     }
 
     try {
@@ -1366,7 +1740,10 @@ if (!user) {
         role: actor.role,
         branchId: actor.branchId ?? null,
       }, { limit, page, status });
-      res.json(notifications);
+      const hydratedNotifications = await Promise.all(
+        notifications.map((notification) => enrichNotificationForDisplay(notification)),
+      );
+      res.json(hydratedNotifications);
     } catch (err: any) {
       console.error("[NOTIFICATIONS_LIST]", err.stack || err);
       res.status(500).json({ message: "Error al obtener notificaciones" });
@@ -1377,6 +1754,17 @@ if (!user) {
     const actor = req.user as any;
 
     try {
+      if (
+        actor?.id &&
+        actor?.branchId &&
+        (actor.role === "BRANCH_ADMIN" || actor.role === "SUPER_ADMIN")
+      ) {
+        await syncBirthdayTodayNotifications({
+          branchId: actor.branchId,
+          actorUserId: actor.id,
+        });
+      }
+
       const summary = await getNotificationSummary({
         id: actor.id,
         role: actor.role,
@@ -1695,9 +2083,17 @@ if (!user) {
       subcategory: normalizeOptionalText(req.body.subcategory),
       searchKeywords: req.body.searchKeywords,
     });
+    const privateResult = result;
+    const globalResult = result;
 
     if (!result.success) {
-      return res.status(400).json({ message: "Datos invÃ¡lidos", errors: result.error.flatten() });
+      return res.status(400).json({
+        message: "Datos inválidos",
+        errors: {
+          private: privateResult.success ? null : privateResult.error.flatten(),
+          global: globalResult.success ? null : globalResult.error.flatten(),
+        },
+      });
     }
 
     try {
@@ -2133,9 +2529,17 @@ if (!user) {
       sellerCommissionAmount: req.body.sellerCommissionAmount,
       notes: req.body.notes === undefined ? undefined : normalizeOptionalText(req.body.notes) ?? null,
     });
+    const privateResult = result;
+    const globalResult = result;
 
     if (!result.success) {
-      return res.status(400).json({ message: "Datos invÃ¡lidos", errors: result.error.flatten() });
+      return res.status(400).json({
+        message: "Datos inválidos",
+        errors: {
+          private: privateResult.success ? null : privateResult.error.flatten(),
+          global: globalResult.success ? null : globalResult.error.flatten(),
+        },
+      });
     }
 
     try {
@@ -2644,7 +3048,6 @@ if (!user) {
     }
     if (!user.branchId) return res.status(400).json({ message: "No hay sucursal asignada" });
     try {
-      await storage.reconcilePastBookings(user.branchId);
       const daysAhead = parseInt(req.query.daysAhead as string) || 3;
       const daysSince = parseInt(req.query.daysSince as string) || 30;
       const [expiringMemberships, expiredMemberships, inactiveClients, clientsWithoutClasses, upcomingBirthdays] = await Promise.all([
@@ -2717,7 +3120,7 @@ if (!user) {
       sess.originalUserId = actorId;
       sess.impersonating = true;
       sess.impersonatedBranchName = branch.name;
-      sess.impersonateExpires = Date.now() + 15 * 60 * 1000;
+      sess.impersonateExpires = Date.now() + getImpersonationMaxAgeMs();
 
       await new Promise<void>((resolve, reject) => {
         req.session.save((err: any) => {
@@ -3537,7 +3940,6 @@ if (!user) {
   app.get("/api/branch/clients", requireBranchAdmin, async (req, res) => {
     const user = req.user as any;
     try {
-      await storage.reconcilePastBookings(user.branchId);
       const includeLeft = req.query.include_left === "true";
       const clients = await storage.getBranchClients(user.branchId, includeLeft);
       res.json(clients);
@@ -3589,7 +3991,12 @@ if (!user) {
     try {
       const profile = await storage.getClientProfile(clientId, user.branchId);
       if (!profile) return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
-      res.json(profile);
+      const rawUser = await storage.getUser(clientId);
+      if (!rawUser) return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+      res.json({
+        ...profile,
+        identityControl: getBranchClientIdentityControl(rawUser, profile.membership),
+      });
     } catch (err: any) {
       console.error(`[CLIENT_PROFILE] Error:`, err.stack || err);
       res.status(500).json({ message: "Error al obtener perfil del cliente" });
@@ -3785,20 +4192,323 @@ if (!user) {
     }
 
     try {
-      const existing = await storage.getUserByEmail(result.data.email);
+      const privateProfilePayload = buildBranchClientPrivateProfilePayload({
+        emergencyContactName: result.data.emergencyContactName,
+        emergencyContactPhone: result.data.emergencyContactPhone,
+        medicalNotes: result.data.medicalNotes,
+      });
+      const hasPrivateProfilePayload = Object.keys(privateProfilePayload).length > 0;
+      const incomingIdentity = buildIncomingClientIdentity({
+        name: result.data.name,
+        lastName: result.data.lastName,
+        email: result.data.email,
+        phone: result.data.phone,
+        birthDate: result.data.birthDate,
+      });
+      const branchClients = await storage.getBranchClients(actor.branchId, true);
+      const phoneMatches = getBranchClientPhoneMatches(branchClients, incomingIdentity.phone);
+      const duplicateMatches = collectBranchClientDuplicateMatches(branchClients, incomingIdentity);
+      const forcePhoneDuplicateCreate = phoneMatches.length === 1 && !!result.data.confirmPotentialDuplicate;
+      const filteredStrongMatches = forcePhoneDuplicateCreate
+        ? duplicateMatches.strongMatches.filter((match) => match.candidate.userId !== phoneMatches[0].userId)
+        : duplicateMatches.strongMatches;
+      const filteredPossibleMatches = forcePhoneDuplicateCreate
+        ? duplicateMatches.possibleMatches.filter((match) => match.candidate.userId !== phoneMatches[0].userId)
+        : duplicateMatches.possibleMatches;
+      const strongMatch = filteredStrongMatches.length > 0 ? chooseBestBranchClientMatch(filteredStrongMatches) : null;
+      const possibleMatch = filteredPossibleMatches.length > 0 ? chooseBestBranchClientMatch(filteredPossibleMatches) : null;
+      const existingByEmail = await storage.getUserByEmail(result.data.email);
+      if (existingByEmail && existingByEmail.role !== "CUSTOMER") {
+        return res.status(409).json({
+          message: "Ese correo ya esta vinculado a una cuenta administrativa",
+          code: "WRONG_ROLE",
+        });
+      }
+      if ((existingByEmail as any)?.isBlocked) {
+        return res.status(403).json({ message: CUSTOMER_BLOCKED_MESSAGE });
+      }
+
+      if (phoneMatches.length > 1) {
+        if (!forcePhoneDuplicateCreate) {
+          await storage.createAuditLog({
+          actorUserId: actor.id,
+          action: "DUPLICATE_CLIENT_PREVENTED",
+          branchId: actor.branchId,
+          metadata: {
+            incomingEmail: result.data.email,
+            normalizedPhone: incomingIdentity.phone,
+            candidateUserIds: phoneMatches.map((client) => client.userId),
+            duplicateType: "phone",
+          },
+        });
+
+        return res.status(409).json({
+          code: "AMBIGUOUS_DUPLICATE",
+          duplicateType: "phone",
+          candidateCount: phoneMatches.length,
+          candidates: phoneMatches.map((client) => buildBranchClientDuplicateSummary(client)),
+          message: "Ya existen varios clientes con ese telÃ©fono en esta sucursal. RevÃ­salo manualmente antes de crear otro.",
+        });
+      }
+      }
+
+      if (phoneMatches.length === 1) {
+        const phoneMatch = evaluateBranchClientDuplicateMatch(phoneMatches[0], incomingIdentity);
+        const matchedMembership = await storage.getMembership(phoneMatch.candidate.userId, actor.branchId);
+        const matchedUser = await storage.getUser(phoneMatch.candidate.userId);
+
+        if (!matchedMembership || !matchedUser) {
+          return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+        }
+
+        if (forcePhoneDuplicateCreate) {
+          await storage.createAuditLog({
+            actorUserId: actor.id,
+            action: "CREATE_CLIENT_CONFIRMED_PHONE_DUPLICATE",
+            branchId: actor.branchId,
+            metadata: {
+              incomingEmail: result.data.email,
+              candidateUserId: phoneMatch.candidate.userId,
+              normalizedPhone: incomingIdentity.phone,
+            },
+          });
+        } else if (
+          result.data.reuseExistingClientId === phoneMatch.candidate.userId &&
+          phoneMatch.candidate.membershipStatus !== "banned"
+        ) {
+          if (existingByEmail && existingByEmail.id !== matchedUser.id) {
+            return res.status(409).json({
+              code: "DUPLICATE_CLIENT",
+              duplicateType: "phone",
+              candidate: phoneMatch.candidate,
+              candidateCount: 1,
+              canReuseExisting: false,
+              message: "Ese telÃ©fono ya pertenece a un cliente existente y el correo ingresado ya estÃ¡ ligado a otra cuenta. RevÃ­salo manualmente antes de continuar.",
+            });
+          }
+
+          const identityControl = getBranchClientIdentityControl(matchedUser, matchedMembership);
+          const missingUpdates = identityControl.canEditIdentity
+            ? getMissingClientFieldUpdates(matchedUser, {
+                name: result.data.name,
+                lastName: result.data.lastName,
+                email: result.data.email,
+                phone: result.data.phone,
+                birthDate: result.data.birthDate,
+                gender: result.data.gender,
+              })
+            : {};
+
+          if (Object.keys(missingUpdates).length > 0) {
+            await storage.updateUser(matchedUser.id, missingUpdates);
+          }
+
+          if (matchedMembership.status === "left") {
+            await storage.updateMembership(matchedMembership.id, { status: "active", source: "admin_created" });
+          }
+
+          if (hasPrivateProfilePayload) {
+            await storage.updateBranchClientPrivateProfile(actor.branchId, matchedUser.id, privateProfilePayload);
+          }
+
+          await storage.createAuditLog({
+            actorUserId: actor.id,
+            action: "DUPLICATE_CLIENT_REUSED",
+            branchId: actor.branchId,
+            metadata: {
+              incomingEmail: result.data.email,
+              candidateUserId: phoneMatch.candidate.userId,
+              targetUserId: matchedUser.id,
+              strongReasons: ["phone"],
+              updatedIdentityFields: Object.keys(missingUpdates),
+            },
+          });
+
+          return res.json({
+            message: "Cliente existente actualizado",
+            userId: matchedUser.id,
+            reusedExisting: true,
+          });
+        }
+
+        if (!forcePhoneDuplicateCreate) {
+          await storage.createAuditLog({
+          actorUserId: actor.id,
+          action: "DUPLICATE_CLIENT_PREVENTED",
+          branchId: actor.branchId,
+          metadata: {
+            incomingEmail: result.data.email,
+            candidateUserId: phoneMatch.candidate.userId,
+            candidateCount: 1,
+            strongReasons: ["phone"],
+          },
+        });
+
+        return res.status(409).json({
+          code: "DUPLICATE_CLIENT",
+          duplicateType: "phone",
+          candidate: phoneMatch.candidate,
+          candidateCount: 1,
+          canReuseExisting: false,
+          canCreateAnyway: true,
+          message: "Este telÃ©fono ya parece estar registrado en tu sucursal.",
+        });
+      }
+      }
+
+      if (strongMatch) {
+        if (
+          result.data.reuseExistingClientId === strongMatch.candidate.userId &&
+          duplicateMatches.strongMatches.length === 1 &&
+          strongMatch.candidate.membershipStatus !== "banned"
+        ) {
+          if (existingByEmail && existingByEmail.id !== strongMatch.candidate.userId) {
+            return res.status(409).json({
+              code: "DUPLICATE_CLIENT",
+              duplicateType: "strong",
+              candidate: strongMatch.candidate,
+              candidateCount: duplicateMatches.strongMatches.length,
+              canReuseExisting: false,
+              message: "Ya existe un cliente coincidente en tu sucursal y el correo pertenece a otra cuenta ya vinculada. Revisa manualmente antes de continuar.",
+            });
+          }
+
+          const currentUser = await storage.getUser(strongMatch.candidate.userId);
+          if (!currentUser) {
+            return res.status(404).json({ message: "Cliente no encontrado" });
+          }
+
+          const membership = await storage.getMembership(strongMatch.candidate.userId, actor.branchId);
+          if (!membership) {
+            return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+          }
+
+          const identityControl = getBranchClientIdentityControl(currentUser, membership);
+          const missingUpdates = identityControl.canEditIdentity
+            ? getMissingClientFieldUpdates(currentUser, {
+                name: result.data.name,
+                lastName: result.data.lastName,
+                email: result.data.email,
+                phone: result.data.phone,
+                birthDate: result.data.birthDate,
+                gender: result.data.gender,
+              })
+            : {};
+
+          if (Object.keys(missingUpdates).length > 0) {
+            await storage.updateUser(currentUser.id, missingUpdates);
+          }
+
+          if (membership.status === "left") {
+            await storage.updateMembership(membership.id, { status: "active", source: "admin_created" });
+          }
+
+          if (hasPrivateProfilePayload) {
+            await storage.updateBranchClientPrivateProfile(actor.branchId, currentUser.id, privateProfilePayload);
+          }
+
+          await storage.createAuditLog({
+            actorUserId: actor.id,
+            action: "DUPLICATE_CLIENT_REUSED",
+            branchId: actor.branchId,
+            metadata: {
+              incomingEmail: result.data.email,
+              candidateUserId: strongMatch.candidate.userId,
+              targetUserId: currentUser.id,
+              strongReasons: strongMatch.strongReasons,
+              updatedIdentityFields: Object.keys(missingUpdates),
+            },
+          });
+
+          return res.json({
+            message: "Cliente existente actualizado",
+            userId: currentUser.id,
+            reusedExisting: true,
+          });
+        }
+
+        await storage.createAuditLog({
+          actorUserId: actor.id,
+          action: "DUPLICATE_CLIENT_PREVENTED",
+          branchId: actor.branchId,
+          metadata: {
+            incomingEmail: result.data.email,
+            candidateUserId: strongMatch.candidate.userId,
+            candidateCount: duplicateMatches.strongMatches.length,
+            strongReasons: strongMatch.strongReasons,
+          },
+        });
+
+        return res.status(409).json({
+          code: duplicateMatches.strongMatches.length > 1 ? "AMBIGUOUS_DUPLICATE" : "DUPLICATE_CLIENT",
+          duplicateType: duplicateMatches.strongMatches.length > 1 ? "ambiguous" : "strong",
+          candidate: duplicateMatches.strongMatches.length === 1 ? strongMatch.candidate : null,
+          candidateCount: duplicateMatches.strongMatches.length,
+          canReuseExisting:
+            duplicateMatches.strongMatches.length === 1 &&
+            strongMatch.candidate.membershipStatus !== "banned",
+          message:
+            duplicateMatches.strongMatches.length > 1
+              ? "Encontramos varios clientes con coincidencia fuerte en esta sucursal. Revisa el existente antes de crear otro."
+              : "Este cliente ya parece estar registrado en tu sucursal.",
+        });
+      }
+      if (possibleMatch && !result.data.confirmPotentialDuplicate) {
+        await storage.createAuditLog({
+          actorUserId: actor.id,
+          action: "DUPLICATE_CLIENT_PREVENTED",
+          branchId: actor.branchId,
+          metadata: {
+            incomingEmail: result.data.email,
+            candidateUserId: possibleMatch.candidate.userId,
+            duplicateType: "possible",
+            conflictingFields: possibleMatch.conflictingFields,
+          },
+        });
+        return res.status(409).json({
+          code: "POSSIBLE_DUPLICATE_CLIENT",
+          duplicateType: "possible",
+          candidate: possibleMatch.candidate,
+          canCreateAnyway: true,
+          message: "Encontramos una persona con datos similares en esta sucursal. Confirma si deseas crear otro cliente.",
+        });
+      }
+      if (possibleMatch && result.data.confirmPotentialDuplicate) {
+        await storage.createAuditLog({
+          actorUserId: actor.id,
+          action: "CREATE_CLIENT_CONFIRMED_POSSIBLE_DUPLICATE",
+          branchId: actor.branchId,
+          metadata: {
+            incomingEmail: result.data.email,
+            candidateUserId: possibleMatch.candidate.userId,
+            conflictingFields: possibleMatch.conflictingFields,
+          },
+        });
+      }
+      const existing = existingByEmail;
       if (existing) {
         const existingMembership = await storage.getMembership(existing.id, actor.branchId);
+        const identityControl = getBranchClientIdentityControl(existing, existingMembership);
+        const missingUpdates = identityControl.canEditIdentity
+          ? getMissingClientFieldUpdates(existing, {
+              name: result.data.name,
+              lastName: result.data.lastName,
+              email: result.data.email,
+              phone: result.data.phone,
+              birthDate: result.data.birthDate,
+              gender: result.data.gender,
+            })
+          : {};
+        if (Object.keys(missingUpdates).length > 0) {
+          await storage.updateUser(existing.id, missingUpdates);
+        }
         if (existingMembership) {
           if (existingMembership.status === "active") {
             return res.status(409).json({ message: "Este cliente ya está registrado en tu sucursal" });
           }
           await storage.updateMembership(existingMembership.id, { status: "active", source: "admin_created" });
-          if (result.data.emergencyContactName || result.data.emergencyContactPhone || result.data.medicalNotes) {
-            await storage.updateBranchClientPrivateProfile(actor.branchId, existing.id, {
-              emergencyContactName: result.data.emergencyContactName || null,
-              emergencyContactPhone: result.data.emergencyContactPhone || null,
-              medicalNotes: result.data.medicalNotes || null,
-            });
+          if (hasPrivateProfilePayload) {
+            await storage.updateBranchClientPrivateProfile(actor.branchId, existing.id, privateProfilePayload);
           }
           await storage.createAuditLog({
             actorUserId: actor.id,
@@ -3816,12 +4526,8 @@ if (!user) {
           isFavorite: false,
           source: "admin_created",
         });
-        if (result.data.emergencyContactName || result.data.emergencyContactPhone || result.data.medicalNotes) {
-          await storage.updateBranchClientPrivateProfile(actor.branchId, existing.id, {
-            emergencyContactName: result.data.emergencyContactName || null,
-            emergencyContactPhone: result.data.emergencyContactPhone || null,
-            medicalNotes: result.data.medicalNotes || null,
-          });
+        if (hasPrivateProfilePayload) {
+          await storage.updateBranchClientPrivateProfile(actor.branchId, existing.id, privateProfilePayload);
         }
         await storage.createAuditLog({
           actorUserId: actor.id,
@@ -3841,24 +4547,11 @@ if (!user) {
         passwordHash: hash,
         role: "CUSTOMER",
         name: result.data.name,
+        lastName: result.data.lastName || null,
         phone: result.data.phone || null,
-      });
-
-      if (result.data.lastName || result.data.birthDate || result.data.gender) {
-        await storage.updateClient(newUser.id, {
-          lastName: result.data.lastName || null,
-          birthDate: result.data.birthDate || null,
-          gender: result.data.gender || null,
-        });
-      }
-
-      if (result.data.emergencyContactName || result.data.emergencyContactPhone || result.data.medicalNotes) {
-        await storage.updateBranchClientPrivateProfile(actor.branchId, newUser.id, {
-          emergencyContactName: result.data.emergencyContactName || null,
-          emergencyContactPhone: result.data.emergencyContactPhone || null,
-          medicalNotes: result.data.medicalNotes || null,
-        });
-      }
+        birthDate: result.data.birthDate || null,
+        gender: result.data.gender || null,
+      } as any);
 
       await storage.createMembership({
         userId: newUser.id,
@@ -3868,11 +4561,20 @@ if (!user) {
         source: "admin_created",
       });
 
+      if (hasPrivateProfilePayload) {
+        await storage.updateBranchClientPrivateProfile(actor.branchId, newUser.id, privateProfilePayload);
+      }
+
       await storage.createAuditLog({
         actorUserId: actor.id,
         action: "CREATE_CLIENT",
         branchId: actor.branchId,
-        metadata: { clientEmail: newUser.email, clientName: newUser.name },
+        metadata: {
+          clientEmail: newUser.email,
+          clientName: newUser.name,
+          confirmedPossibleDuplicate: !!result.data.confirmPotentialDuplicate,
+          confirmedPhoneDuplicate: forcePhoneDuplicateCreate,
+        },
       });
 
       console.log(`[CREATE_CLIENT] Created new client ${newUser.email} for branch ${actor.branchId}`);
@@ -3891,8 +4593,17 @@ if (!user) {
   app.patch("/api/branch/clients/:id", requireBranchAdmin, async (req, res) => {
     const actor = req.user as any;
     const clientId = req.params.id as string;
-    const result = updateBranchClientPrivateSchema.safeParse(req.body);
-    if (!result.success) {
+    const privateResult = updateBranchClientPrivateSchema.safeParse(req.body);
+    const globalResult = updateBranchClientGlobalSchema.safeParse(req.body);
+    const result = {
+      error: {
+        flatten: () => ({
+          private: privateResult.success ? null : privateResult.error.flatten(),
+          global: globalResult.success ? null : globalResult.error.flatten(),
+        }),
+      },
+    };
+    if (!privateResult.success || !globalResult.success) {
       return res.status(400).json({ message: "Datos inválidos", errors: result.error.flatten() });
     }
 
@@ -3902,24 +4613,105 @@ if (!user) {
         return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
       }
 
-      const updated = await storage.updateBranchClientPrivateProfile(actor.branchId, clientId, result.data);
+      const currentUser = await storage.getUser(clientId);
+      if (!currentUser) {
+        return res.status(404).json({ message: "Cliente no encontrado" });
+      }
+
+      const globalPayload = globalResult.data;
+      const privatePayload = privateResult.data;
+      const hasGlobalChanges = Object.keys(globalPayload).length > 0;
+      const hasPrivateChanges = Object.keys(privatePayload).length > 0;
+
+      if (!hasGlobalChanges && !hasPrivateChanges) {
+        return res.status(400).json({ message: "No hay cambios válidos para guardar" });
+      }
+
+      let updatedUser = null;
+      let updatedPrivateProfile = null;
+
+      if (hasGlobalChanges) {
+        const identityControl = getBranchClientIdentityControl(currentUser, membership);
+        if (!identityControl.canEditIdentity) {
+          return res.status(409).json({
+            code: "IDENTITY_MANAGED_BY_APP",
+            message: identityControl.reason,
+          });
+        }
+
+        if (
+          globalPayload.email !== undefined &&
+          normalizeComparableEmail(globalPayload.email) !== normalizeComparableEmail(currentUser.email)
+        ) {
+          const existingByEmail = await storage.getUserByEmail(globalPayload.email);
+          if (existingByEmail && existingByEmail.id !== clientId) {
+            return res.status(409).json({
+              code: "DUPLICATE_CLIENT",
+              message: "Ese correo ya estÃ¡ registrado por otro usuario",
+            });
+          }
+        }
+
+        if (globalPayload.phone !== undefined) {
+          const normalizedPhone = normalizeMxPhone(globalPayload.phone);
+          if (globalPayload.phone && !normalizedPhone) {
+            return res.status(400).json({ message: "El telÃ©fono no tiene un formato vÃ¡lido" });
+          }
+
+          const branchClients = await storage.getBranchClients(actor.branchId, true);
+          const phoneMatches = getBranchClientPhoneMatches(branchClients, normalizedPhone, clientId);
+          if (phoneMatches.length > 1) {
+            return res.status(409).json({
+              code: "AMBIGUOUS_DUPLICATE",
+              message: "Ya existen varios clientes con ese telÃ©fono en esta sucursal. Revisa la base antes de guardarlo.",
+            });
+          }
+          if (phoneMatches.length === 1) {
+            return res.status(409).json({
+              code: "DUPLICATE_CLIENT",
+              candidate: buildBranchClientDuplicateSummary(phoneMatches[0]),
+              message: "Ese telÃ©fono ya estÃ¡ registrado por otro cliente de esta sucursal.",
+            });
+          }
+        }
+
+        updatedUser = await storage.updateClient(clientId, {
+          ...(globalPayload.name !== undefined && { name: globalPayload.name }),
+          ...(globalPayload.email !== undefined && { email: globalPayload.email.trim().toLowerCase() }),
+          ...(globalPayload.lastName !== undefined && { lastName: globalPayload.lastName }),
+          ...(globalPayload.phone !== undefined && { phone: globalPayload.phone }),
+          ...(globalPayload.birthDate !== undefined && { birthDate: globalPayload.birthDate }),
+          ...(globalPayload.gender !== undefined && { gender: globalPayload.gender }),
+        });
+      }
+
+      if (hasPrivateChanges) {
+        updatedPrivateProfile = await storage.updateBranchClientPrivateProfile(actor.branchId, clientId, privatePayload);
+      }
       /*
           return res.status(409).json({ message: "Ese email ya está registrado por otro usuario" });
         }
       }
 
-      const updated = await storage.updateClient(clientId, result.data);
 
       */
       await storage.createAuditLog({
         actorUserId: actor.id,
         action: "UPDATE_CLIENT",
         branchId: actor.branchId,
-        metadata: { clientId, fields: Object.keys(result.data) },
+        metadata: {
+          clientId,
+          globalFields: Object.keys(globalPayload),
+          privateFields: Object.keys(privatePayload),
+        },
       });
 
       console.log(`[UPDATE_CLIENT] Updated client ${clientId} by ${actor.email}`);
-      res.json(updated);
+      res.json({
+        success: true,
+        user: updatedUser,
+        privateProfile: updatedPrivateProfile,
+      });
     } catch (err: any) {
       console.error(`[UPDATE_CLIENT] Error:`, err.stack || err);
       res.status(500).json({ message: "Error al actualizar cliente" });
@@ -4322,6 +5114,179 @@ if (!user) {
     }
   });
 
+  app.post("/api/branch/plans/:id/quick-charge", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const planId = req.params.id as string;
+    const result = quickChargeSingleSessionSchema.safeParse(req.body);
+
+    if (!result.success) {
+      return res.status(400).json({ message: "Datos inválidos", errors: result.error.flatten() });
+    }
+
+    try {
+      const plan = await storage.getPlan(planId);
+      if (!plan || plan.branchId !== actor.branchId) {
+        return res.status(404).json({ message: "Servicio o plan no encontrado" });
+      }
+      if (!plan.isActive) {
+        return res.status(400).json({ message: "Este servicio o plan está desactivado" });
+      }
+      if ((plan.cycleMonths ?? 1) !== 0) {
+        return res.status(400).json({ message: "El cobro rápido solo está disponible para clase suelta o sesión única" });
+      }
+      if (plan.price <= 0) {
+        return res.status(400).json({ message: "El servicio debe tener precio mayor a 0 para registrarlo en Caja" });
+      }
+
+      const customerName = normalizeOptionalText(result.data.customerName);
+      if (!customerName) {
+        return res.status(400).json({ message: "El nombre del cliente es obligatorio" });
+      }
+
+      const normalizedPhone = normalizeMxPhoneLike(result.data.whatsapp ?? "");
+      if (result.data.whatsapp && !normalizedPhone) {
+        return res.status(400).json({ message: "El WhatsApp no tiene un formato válido" });
+      }
+
+      if (result.data.requestId) {
+        const existingEntry = await storage.findBranchFinanceEntryBySource(actor.branchId, "service_sale", result.data.requestId);
+        if (existingEntry) {
+          return res.status(200).json({ success: true, duplicate: true, financeEntry: existingEntry });
+        }
+      }
+
+      const existingClients = await storage.getBranchClients(actor.branchId, true);
+      const phoneMatches = normalizedPhone
+        ? existingClients.filter((client: any) => normalizeMxPhoneLike(client.phone) === normalizedPhone)
+        : [];
+      if (phoneMatches.length > 1) {
+        await storage.createAuditLog({
+          actorUserId: actor.id,
+          action: "QUICK_CHARGE_DUPLICATE_PHONE_CONFLICT",
+          branchId: actor.branchId,
+          metadata: {
+            planId,
+            normalizedPhone,
+            candidateUserIds: phoneMatches.map((client: any) => client.userId),
+          },
+        });
+        return res.status(409).json({
+          code: "AMBIGUOUS_DUPLICATE",
+          message: "Ya existen varios clientes con ese telefono en esta sucursal. Revisa la base de clientes antes de cobrar.",
+        });
+      }
+      const matchedClient = phoneMatches[0];
+
+      let clientUserId = matchedClient?.userId as string | undefined;
+      let membershipId = matchedClient?.membershipId as string | undefined;
+      let clientDisplayName = matchedClient
+        ? `${matchedClient.name}${matchedClient.lastName ? ` ${matchedClient.lastName}` : ""}`.trim()
+        : customerName;
+      let clientAction: "matched" | "reactivated" | "created" = matchedClient ? "matched" : "created";
+
+      if (matchedClient && matchedClient.membershipStatus === "left" && membershipId) {
+        await storage.updateMembership(membershipId, {
+          status: "active",
+          source: "admin_created",
+        });
+        clientAction = "reactivated";
+      }
+
+      if (!clientUserId || !membershipId) {
+        const generatedPassword = generateSecurePassword(24);
+        const passwordHash = await bcrypt.hash(generatedPassword, 10);
+        const { firstName, lastName } = splitFullName(customerName);
+
+        let generatedEmail = buildCrmPlaceholderEmail(actor.branchId, normalizedPhone);
+        while (await storage.getUserByEmail(generatedEmail)) {
+          generatedEmail = buildCrmPlaceholderEmail(actor.branchId, normalizedPhone);
+        }
+
+        const newUser = await storage.createUser({
+          email: generatedEmail,
+          passwordHash,
+          role: "CUSTOMER",
+          name: firstName || customerName,
+          lastName: lastName ?? null,
+          phone: normalizedPhone,
+          authProvider: "crm",
+        } as any);
+
+        const membership = await storage.createMembership({
+          userId: newUser.id,
+          branchId: actor.branchId,
+          status: "active",
+          isFavorite: false,
+          source: "admin_created",
+        });
+
+        clientUserId = newUser.id;
+        membershipId = membership.id;
+        clientDisplayName = `${newUser.name}${newUser.lastName ? ` ${newUser.lastName}` : ""}`.trim();
+        clientAction = "created";
+      }
+
+      await storage.updateBranchClientCrm(actor.branchId, clientUserId, { lastVisit: new Date() });
+
+      const requestSourceId = result.data.requestId || crypto.randomUUID();
+      const financeEntry = await storage.createBranchFinanceEntry({
+        branchId: actor.branchId,
+        type: "income",
+        category: "servicio",
+        concept: plan.name,
+        amount: plan.price / 100,
+        paymentMethod: result.data.paymentMethod,
+        clientUserId,
+        clientName: clientDisplayName,
+        notes: normalizeOptionalText(result.data.note) ?? "Ingreso automático por cobro rápido de servicio individual",
+        entryDate: result.data.entryDate || getMxIsoDate(),
+        source: "service_sale",
+        sourceId: requestSourceId,
+        metadata: {
+          planId: plan.id,
+          planName: plan.name,
+          cycleMonths: plan.cycleMonths,
+          durationDays: plan.durationDays,
+          classLimit: plan.classLimit,
+          quickCharge: true,
+          saleKind: "single_session",
+          matchedByPhone: !!matchedClient,
+          clientAction,
+          normalizedPhone,
+        },
+        createdBy: actor.id,
+      } as any);
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "QUICK_CHARGE_SINGLE_SESSION",
+        branchId: actor.branchId,
+        metadata: {
+          planId: plan.id,
+          membershipId,
+          userId: clientUserId,
+          amount: plan.price,
+          financeEntryId: financeEntry.id,
+          clientAction,
+        },
+      });
+
+      res.status(201).json({
+        success: true,
+        client: {
+          userId: clientUserId,
+          membershipId,
+          displayName: clientDisplayName,
+          action: clientAction,
+        },
+        financeEntry,
+      });
+    } catch (err: any) {
+      console.error("[PLAN_QUICK_CHARGE]", err.stack || err);
+      res.status(500).json({ message: "Error al registrar el cobro rápido" });
+    }
+  });
+
   app.post("/api/branch/memberships/:id/assign-plan", requireBranchAdmin, async (req, res) => {
     const actor = req.user as any;
     const membershipId = req.params.id as string;
@@ -4344,7 +5309,7 @@ if (!user) {
 
       const classesRemaining = plan.classLimit ?? null;
       const classesTotal = plan.classLimit ?? null;
-      const expiresAt = addCalendarMonths(new Date(), plan.cycleMonths || 1);
+      const expiresAt = calculatePlanExpirationDate(plan, new Date());
 
       const membership = await storage.assignPlanToMembership(membershipId, planId, classesRemaining, classesTotal, expiresAt);
       if (!membership) {
@@ -4443,7 +5408,7 @@ if (!user) {
       }
 
       const now = new Date();
-      const expiresAt = addCalendarMonths(now, plan.cycleMonths || 1);
+      const expiresAt = calculatePlanExpirationDate(plan, now);
 
       const classesRemaining = plan.classLimit ?? null;
       const classesTotal = plan.classLimit ?? null;
@@ -4775,10 +5740,6 @@ if (!user) {
     const actor = req.user as any;
     const date = (req.query.date as string) || new Date().toLocaleDateString("en-CA", { timeZone: "America/Mexico_City" });
     try {
-      const reconciled = await storage.reconcilePastBookings(actor.branchId);
-      if (reconciled > 0) {
-        console.log(`[RECONCILE] Marked ${reconciled} no-show bookings for branch ${actor.branchId}`);
-      }
       const bookings = await storage.getBookingsForDate(actor.branchId, date);
       res.json(bookings);
     } catch (err: any) {
@@ -4830,25 +5791,25 @@ if (!user) {
         return res.status(400).json({ message: "Sin clases disponibles. Renueva para reservar." });
       }
 
-      const existingBookings = await storage.getBookingsForClassOnDate(data.classScheduleId, data.bookingDate);
-      const activeBookings = existingBookings.filter(b => b.status !== "cancelled");
-      if (activeBookings.length >= schedule.capacity) {
-        return res.status(400).json({ message: "Clase llena, no hay lugares disponibles" });
-      }
-
-      const alreadyBooked = activeBookings.find(b => b.userId === data.userId);
-      if (alreadyBooked) {
-        return res.status(400).json({ message: "El cliente ya tiene reserva en esta clase" });
-      }
-
-      const booking = await storage.createBooking({
+      const bookingAttempt = await storage.createBookingAtomically({
         classScheduleId: data.classScheduleId,
         branchId: actor.branchId,
         userId: data.userId,
         bookingDate: data.bookingDate,
-        status: "confirmed",
         source: "dashboard",
       });
+
+      if (bookingAttempt.error === "CLASS_NOT_FOUND") {
+        return res.status(404).json({ message: "Clase no encontrada" });
+      }
+      if (bookingAttempt.error === "CLASS_FULL") {
+        return res.status(400).json({ message: "Clase llena, no hay lugares disponibles" });
+      }
+      if (bookingAttempt.error === "ALREADY_BOOKED") {
+        return res.status(400).json({ message: "El cliente ya tiene reserva en esta clase" });
+      }
+
+      const booking = bookingAttempt.booking!;
       await storage.createAuditLog({
         actorUserId: actor.id,
         action: "CREATE_BOOKING",
@@ -5327,6 +6288,252 @@ if (!user) {
     }
   });
 
+  // Services
+  app.get("/api/branch/services", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    try {
+      const services = await storage.getBranchServices(user.branchId);
+      res.json(services);
+    } catch (err: any) {
+      console.error("[BRANCH_SERVICES_LIST]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener servicios" });
+    }
+  });
+
+  app.post("/api/branch/services", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    const parsed = createBranchServiceSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const data = parsed.data;
+      const existing = await storage.getBranchServices(user.branchId);
+      const created = await storage.createBranchService({
+        branchId: user.branchId,
+        name: data.name.trim(),
+        category: data.category.trim(),
+        description: normalizeOptionalText(data.description) ?? null,
+        baseDurationMinutes: data.baseDurationMinutes ?? null,
+        capacity: data.capacity ?? null,
+        requiresAgenda: data.requiresAgenda ?? false,
+        visibility: data.visibility ?? "public",
+        isActive: data.isActive ?? true,
+        displayOrder: data.displayOrder ?? existing.length,
+        createdBy: user.id,
+      } as any);
+
+      await storage.createAuditLog({
+        actorUserId: user.id,
+        action: "CREATE_BRANCH_SERVICE",
+        branchId: user.branchId,
+        metadata: { serviceId: created.id, name: created.name },
+      });
+
+      res.status(201).json(created);
+    } catch (err: any) {
+      console.error("[BRANCH_SERVICES_CREATE]", err.stack || err);
+      res.status(500).json({ message: "Error al crear servicio" });
+    }
+  });
+
+  app.patch("/api/branch/services/:id", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    const serviceId = getStringParam(req.params.id);
+    const parsed = updateBranchServiceSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const data = parsed.data;
+      const updated = await storage.updateBranchService(user.branchId, serviceId, {
+        ...(data.name !== undefined ? { name: data.name.trim() } : {}),
+        ...(data.category !== undefined ? { category: data.category.trim() } : {}),
+        ...(data.description !== undefined ? { description: normalizeOptionalText(data.description) ?? null } : {}),
+        ...(data.baseDurationMinutes !== undefined ? { baseDurationMinutes: data.baseDurationMinutes ?? null } : {}),
+        ...(data.capacity !== undefined ? { capacity: data.capacity ?? null } : {}),
+        ...(data.requiresAgenda !== undefined ? { requiresAgenda: data.requiresAgenda } : {}),
+        ...(data.visibility !== undefined ? { visibility: data.visibility } : {}),
+        ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
+        ...(data.displayOrder !== undefined ? { displayOrder: data.displayOrder } : {}),
+      } as any);
+
+      if (!updated) {
+        return res.status(404).json({ message: "Servicio no encontrado" });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: user.id,
+        action: "UPDATE_BRANCH_SERVICE",
+        branchId: user.branchId,
+        metadata: { serviceId: updated.id, name: updated.name },
+      });
+
+      res.json(updated);
+    } catch (err: any) {
+      console.error("[BRANCH_SERVICES_UPDATE]", err.stack || err);
+      res.status(500).json({ message: "Error al actualizar servicio" });
+    }
+  });
+
+  app.delete("/api/branch/services/:id", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    const serviceId = getStringParam(req.params.id);
+
+    try {
+      const deleted = await storage.softDeleteBranchService(user.branchId, serviceId);
+      if (!deleted) {
+        return res.status(404).json({ message: "Servicio no encontrado" });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: user.id,
+        action: "DELETE_BRANCH_SERVICE",
+        branchId: user.branchId,
+        metadata: { serviceId },
+      });
+
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("[BRANCH_SERVICES_DELETE]", err.stack || err);
+      res.status(500).json({ message: "Error al eliminar servicio" });
+    }
+  });
+
+  app.post("/api/branch/services/:id/options", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    const serviceId = getStringParam(req.params.id);
+    const parsed = createBranchServiceSaleOptionSchema.safeParse({
+      ...req.body,
+      serviceId,
+    });
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const services = await storage.getBranchServices(user.branchId);
+      const service = services.find((item) => item.id === serviceId);
+      if (!service) {
+        return res.status(404).json({ message: "Servicio no encontrado" });
+      }
+
+      const data = parsed.data;
+      const created = await storage.createBranchServiceSaleOption({
+        branchId: user.branchId,
+        serviceId,
+        name: data.name.trim(),
+        type: data.type,
+        price: data.price.toFixed(2),
+        includedUses: data.isUnlimited ? null : (data.includedUses ?? null),
+        isUnlimited: data.isUnlimited ?? false,
+        validityDays: data.validityDays ?? null,
+        requiresRegisteredClient: data.type === "membresia" ? true : (data.requiresRegisteredClient ?? false),
+        allowsWalkIn: data.type === "membresia" ? false : (data.allowsWalkIn ?? true),
+        isPosFavorite: data.isPosFavorite ?? false,
+        isActive: data.isActive ?? true,
+        internalNotes: normalizeOptionalText(data.internalNotes) ?? null,
+        displayOrder: data.displayOrder ?? service.options.length,
+        createdBy: user.id,
+      } as any);
+
+      await storage.createAuditLog({
+        actorUserId: user.id,
+        action: "CREATE_SERVICE_SALE_OPTION",
+        branchId: user.branchId,
+        metadata: { optionId: created.id, serviceId, name: created.name, type: created.type },
+      });
+
+      res.status(201).json(created);
+    } catch (err: any) {
+      console.error("[BRANCH_SERVICE_OPTIONS_CREATE]", err.stack || err);
+      res.status(500).json({ message: "Error al crear opcion de venta" });
+    }
+  });
+
+  app.patch("/api/branch/service-options/:id", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    const optionId = getStringParam(req.params.id);
+    const parsed = updateBranchServiceSaleOptionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const data = parsed.data;
+      let nextServiceId: string | undefined;
+      if (data.serviceId !== undefined) {
+        nextServiceId = data.serviceId;
+        const services = await storage.getBranchServices(user.branchId);
+        if (!services.some((item) => item.id === nextServiceId)) {
+          return res.status(400).json({ message: "Servicio destino no encontrado" });
+        }
+      }
+
+      const nextType = data.type;
+      const updated = await storage.updateBranchServiceSaleOption(user.branchId, optionId, {
+        ...(nextServiceId !== undefined ? { serviceId: nextServiceId } : {}),
+        ...(data.name !== undefined ? { name: data.name.trim() } : {}),
+        ...(data.type !== undefined ? { type: data.type } : {}),
+        ...(data.price !== undefined ? { price: data.price.toFixed(2) } : {}),
+        ...(data.includedUses !== undefined ? { includedUses: data.includedUses ?? null } : {}),
+        ...(data.isUnlimited !== undefined ? { isUnlimited: data.isUnlimited } : {}),
+        ...(data.validityDays !== undefined ? { validityDays: data.validityDays ?? null } : {}),
+        ...(data.requiresRegisteredClient !== undefined || nextType === "membresia"
+          ? { requiresRegisteredClient: nextType === "membresia" ? true : (data.requiresRegisteredClient ?? false) }
+          : {}),
+        ...(data.allowsWalkIn !== undefined || nextType === "membresia"
+          ? { allowsWalkIn: nextType === "membresia" ? false : (data.allowsWalkIn ?? true) }
+          : {}),
+        ...(data.isPosFavorite !== undefined ? { isPosFavorite: data.isPosFavorite } : {}),
+        ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
+        ...(data.internalNotes !== undefined ? { internalNotes: normalizeOptionalText(data.internalNotes) ?? null } : {}),
+        ...(data.displayOrder !== undefined ? { displayOrder: data.displayOrder } : {}),
+      } as any);
+
+      if (!updated) {
+        return res.status(404).json({ message: "Opcion de venta no encontrada" });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: user.id,
+        action: "UPDATE_SERVICE_SALE_OPTION",
+        branchId: user.branchId,
+        metadata: { optionId: updated.id, serviceId: updated.serviceId, name: updated.name, type: updated.type },
+      });
+
+      res.json(updated);
+    } catch (err: any) {
+      console.error("[BRANCH_SERVICE_OPTIONS_UPDATE]", err.stack || err);
+      res.status(500).json({ message: "Error al actualizar opcion de venta" });
+    }
+  });
+
+  app.delete("/api/branch/service-options/:id", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    const optionId = getStringParam(req.params.id);
+    try {
+      const deleted = await storage.softDeleteBranchServiceSaleOption(user.branchId, optionId);
+      if (!deleted) {
+        return res.status(404).json({ message: "Opcion de venta no encontrada" });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: user.id,
+        action: "DELETE_SERVICE_SALE_OPTION",
+        branchId: user.branchId,
+        metadata: { optionId },
+      });
+
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("[BRANCH_SERVICE_OPTIONS_DELETE]", err.stack || err);
+      res.status(500).json({ message: "Error al eliminar opcion de venta" });
+    }
+  });
+
   // Products
   app.get("/api/branch/products", requireBranchAdmin, async (req, res) => {
     const user = req.user as any;
@@ -5613,7 +6820,19 @@ if (!user) {
   app.patch("/api/branch/profile", requireBranchAdmin, async (req, res) => {
     const actor = req.user as any;
     try {
-      const { description, address, city, googleMapsUrl, operatingHours, locations, summaryHours, category, subcategory, searchKeywords, latitude, longitude, whatsappNumber } = req.body;
+      const { name, description, address, city, googleMapsUrl, operatingHours, locations, summaryHours, category, subcategory, searchKeywords, latitude, longitude, whatsappNumber } = req.body;
+      const normalizedName = normalizeOptionalText(name);
+
+      if (name !== undefined) {
+        if (!normalizedName) {
+          return res.status(400).json({ message: "Nombre de sucursal inválido" });
+        }
+
+        if (normalizedName.length > 160) {
+          return res.status(400).json({ message: "El nombre de la sucursal es demasiado largo" });
+        }
+      }
+
       // Normalize whatsappNumber: keep only digits, validate length
       let normalizedWhatsapp: string | null | undefined = undefined;
       const normalizedSubcategory = normalizeOptionalText(subcategory);
@@ -5630,6 +6849,7 @@ if (!user) {
         }
       }
       const updated = await storage.updateBranchProfile(actor.branchId, {
+        ...(name !== undefined && { name: normalizedName }),
         ...(description !== undefined && { description }),
         ...(address !== undefined && { address }),
         ...(city !== undefined && { city }),
@@ -6039,7 +7259,6 @@ if (!user) {
       if (!branch || branch.deletedAt || branch.status !== "active") {
         return res.status(404).json({ message: "Sucursal no encontrada" });
       }
-      await storage.reconcilePastBookings(branch.id);
       const schedules = await storage.getBranchClassSchedules(branch.id);
       const activeSchedules = schedules.filter(s => s.isActive);
 
@@ -6075,7 +7294,6 @@ if (!user) {
       if (!mem || mem.status !== "active") {
         return res.json({ bookings: [], membership: null });
       }
-      await storage.reconcilePastBookings(branch.id);
       const allBookings = await storage.getBookingsForDate(branch.id, req.query.date as string || new Date().toLocaleDateString("en-CA", { timeZone: "America/Mexico_City" }));
       const myBookings = allBookings.filter((b: any) => b.userId === user.id);
       res.json({
@@ -6108,7 +7326,6 @@ if (!user) {
       if (!mem || mem.status !== "active") {
         return res.json([]);
       }
-      await storage.reconcilePastBookings(branch.id);
       const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Mexico_City" });
       const bookings = await storage.getUpcomingBookingsForUser(branch.id, user.id, today, 5);
       res.json(bookings);
@@ -6153,22 +7370,27 @@ if (!user) {
         return res.status(404).json({ message: "Clase no encontrada" });
       }
 
-      const existing = await storage.getBookingsForClassOnDate(classScheduleId, bookingDate);
-      const activeBookings = existing.filter((b: any) => b.status !== "cancelled" && b.status !== "no_show");
-      if (activeBookings.length >= schedule.capacity) {
-        return res.status(400).json({ message: "Clase llena" });
-      }
-      if (activeBookings.some((b: any) => b.userId === user.id)) {
-        return res.status(400).json({ message: "Ya tienes reserva en esta clase" });
-      }
-
-      const booking = await storage.createBooking({
+      const bookingAttempt = await storage.createBookingAtomically({
         classScheduleId,
         branchId: branch.id,
         userId: user.id,
         bookingDate,
         source: "app",
+        requireActiveSchedule: true,
+        excludeNoShowFromCapacity: true,
       });
+
+      if (bookingAttempt.error === "CLASS_NOT_FOUND") {
+        return res.status(404).json({ message: "Clase no encontrada" });
+      }
+      if (bookingAttempt.error === "CLASS_FULL") {
+        return res.status(400).json({ message: "Clase llena" });
+      }
+      if (bookingAttempt.error === "ALREADY_BOOKED") {
+        return res.status(400).json({ message: "Ya tienes reserva en esta clase" });
+      }
+
+      const booking = bookingAttempt.booking!;
 
       await createSystemEventSafe({
         eventType: "booking_created",
@@ -6439,16 +7661,26 @@ if (!user) {
       return res.status(403).json({ message: localBlockMessage });
     }
 
-    const existing = await storage.getMembership(user.id, branch.id);
-    if (existing) {
-      if (existing.status === "banned") {
-        return res.status(403).json({ message: "No puedes unirte a esta sucursal" });
+      const existing = await storage.getMembership(user.id, branch.id);
+      if (existing) {
+        if (existing.status === "banned") {
+          return res.status(403).json({ message: "No puedes unirte a esta sucursal" });
+        }
+        if (existing.status === "left") {
+          const updated = await storage.updateMembership(existing.id, { status: "active", source: "self_join" });
+          await notifyBranchCustomerJoinedFromApp(branch.id, user.id);
+          return res.json(updated);
+        }
+        return res.json(existing);
       }
-      if (existing.status === "left") {
-        const updated = await storage.updateMembership(existing.id, { status: "active", source: "self_join" });
-        return res.json(updated);
-      }
-      return res.json(existing);
+
+    const joinLinkResult = await maybeLinkExistingBranchClientToAuthenticatedUser(user, branch.id, "join");
+    if (joinLinkResult.blocked) {
+      return res.status(409).json(joinLinkResult.blocked);
+    }
+    if (joinLinkResult.membership) {
+      await notifyBranchCustomerJoinedFromApp(branch.id, user.id);
+      return res.status(201).json(joinLinkResult.membership);
     }
 
     const membership = await storage.createMembership({
@@ -6458,6 +7690,7 @@ if (!user) {
       isFavorite: false,
       source: "self_join",
     });
+    await notifyBranchCustomerJoinedFromApp(branch.id, user.id);
     res.status(201).json(membership);
   });
 
@@ -6511,6 +7744,22 @@ if (!user) {
     }
 
     if (result.data.isFavorite) {
+      const favoriteLinkResult = await maybeLinkExistingBranchClientToAuthenticatedUser(user, branch.id, "favorite");
+      if (favoriteLinkResult.blocked) {
+        return res.status(409).json(favoriteLinkResult.blocked);
+      }
+      if (favoriteLinkResult.membership) {
+        const updatedLinkedMembership = await storage.updateMembership(favoriteLinkResult.membership.id, {
+          isFavorite: true,
+          status:
+            favoriteLinkResult.membership.status === "left"
+              ? "active"
+              : favoriteLinkResult.membership.status,
+        });
+        await notifyBranchCustomerJoinedFromApp(branch.id, user.id);
+        return res.status(201).json(updatedLinkedMembership || favoriteLinkResult.membership);
+      }
+
       const membership = await storage.createMembership({
         userId: user.id,
         branchId: branch.id,
@@ -6518,6 +7767,7 @@ if (!user) {
         isFavorite: true,
         source: "self_join",
       });
+      await notifyBranchCustomerJoinedFromApp(branch.id, user.id);
       return res.status(201).json(membership);
     }
 
@@ -6679,13 +7929,13 @@ if (!user) {
     try {
       const branchIds = await storage.getAllActiveBranchIds();
       for (const branchId of branchIds) {
-        const count = await storage.autoMarkAttendedBookings(branchId);
+        const count = await storage.reconcilePastBookings(branchId);
         if (count > 0) {
-          console.log(`[AUTO-ATTEND] Processed ${count} booking(s) for branch ${branchId}`);
+          console.log(`[RECONCILE] Marked ${count} booking(s) as no_show for branch ${branchId}`);
         }
       }
     } catch (err: any) {
-      console.error("[AUTO-ATTEND] Background job error:", err.message);
+      console.error("[RECONCILE] Background job error:", err.message);
     }
   }, 60_000);
 

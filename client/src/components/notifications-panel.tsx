@@ -1,11 +1,25 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Bell, ChevronLeft, ChevronRight, Loader2, Trash2 } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowUpRight,
+  Bell,
+  Calendar,
+  Cake,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
+  Loader2,
+  MessageCircle,
+  Trash2,
+  UserPlus,
+  XCircle,
+} from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -13,8 +27,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Skeleton } from "@/components/ui/skeleton";
 
-type NotificationItem = {
+export type NotificationItem = {
   id: string;
   recipientUserId: string | null;
   branchId: string | null;
@@ -35,8 +51,10 @@ type NotificationSummary = {
 };
 
 type NotificationFilter = "all" | "unread" | "read";
+type NotificationsPanelVariant = "card" | "bell";
 
 const FULL_PAGE_SIZE = 10;
+const DEFAULT_POLLING_MS = 30000;
 
 function invalidateNotifications() {
   queryClient.invalidateQueries({
@@ -51,6 +69,262 @@ function formatNotificationDate(date: string) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function formatRelativeNotificationDate(date: string) {
+  const now = Date.now();
+  const then = new Date(date).getTime();
+  const diffMs = then - now;
+  const diffMinutes = Math.round(diffMs / 60000);
+  const diffHours = Math.round(diffMinutes / 60);
+  const diffDays = Math.round(diffHours / 24);
+  const formatter = new Intl.RelativeTimeFormat("es-MX", { numeric: "auto" });
+
+  if (Math.abs(diffMinutes) < 60) {
+    return formatter.format(diffMinutes, "minute");
+  }
+  if (Math.abs(diffHours) < 24) {
+    return formatter.format(diffHours, "hour");
+  }
+  return formatter.format(diffDays, "day");
+}
+
+function normalizePhoneMX(phone: string | null | undefined) {
+  const digits = String(phone ?? "").replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.startsWith("521") && digits.length === 13) return `52${digits.slice(3)}`;
+  if (digits.startsWith("52") && digits.length >= 12) return digits;
+  if (digits.length === 10) return `52${digits}`;
+  if (digits.startsWith("1") && digits.length === 11) return `52${digits.slice(1)}`;
+  return digits;
+}
+
+function buildWhatsAppUrl(phone: string | null | undefined, message: string) {
+  const normalized = normalizePhoneMX(phone);
+  if (!normalized || !message.trim()) return null;
+  return `https://wa.me/${normalized}?text=${encodeURIComponent(message)}`;
+}
+
+function getNotificationData(notification: NotificationItem) {
+  return notification.data && typeof notification.data === "object" ? notification.data : {};
+}
+
+function formatReservationNotificationDate(date: string | null | undefined) {
+  if (!date) return null;
+  return new Date(`${date}T12:00:00`).toLocaleDateString("es-MX", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: "America/Mexico_City",
+  });
+}
+
+function formatReservationNotificationTime(time: string | null | undefined) {
+  if (!time) return null;
+
+  const [hours = "00", minutes = "00"] = String(time).split(":");
+  return new Date(`2000-01-01T${hours}:${minutes}:00`).toLocaleTimeString("es-MX", {
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: "America/Mexico_City",
+  });
+}
+
+function buildReservationNotificationCopy(notification: NotificationItem) {
+  const data = getNotificationData(notification);
+  const displayTitle = typeof data.displayTitle === "string" ? data.displayTitle.trim() : "";
+  const displayCancelTitle = typeof data.displayCancelTitle === "string" ? data.displayCancelTitle.trim() : "";
+  const displayLine1 = typeof data.displayLine1 === "string" ? data.displayLine1.trim() : "";
+  const displayLine2 = typeof data.displayLine2 === "string" ? data.displayLine2.trim() : "";
+
+  if ((displayTitle || displayCancelTitle) && (displayLine1 || displayLine2)) {
+    return {
+      title: notification.type === "booking_cancelled" ? (displayCancelTitle || displayTitle) : (displayTitle || notification.title),
+      lines: [displayLine1, displayLine2].filter((line) => line.length > 0),
+    };
+  }
+
+  const clientName = typeof data.clientName === "string" ? data.clientName.trim() : "";
+  const serviceName =
+    typeof data.serviceName === "string" && data.serviceName.trim().length > 0
+      ? data.serviceName.trim()
+      : typeof data.className === "string"
+      ? data.className.trim()
+      : "";
+  const reservationDate =
+    typeof data.reservationDate === "string" && data.reservationDate
+      ? data.reservationDate
+      : typeof data.bookingDate === "string"
+      ? data.bookingDate
+      : null;
+  const reservationTime =
+    typeof data.reservationTime === "string" && data.reservationTime
+      ? data.reservationTime
+      : typeof data.startTime === "string"
+      ? data.startTime
+      : null;
+  const planLabel =
+    typeof data.planStatusLabel === "string" && data.planStatusLabel.trim().length > 0
+      ? data.planStatusLabel.trim()
+      : data.hasActivePlan
+      ? typeof data.planName === "string" && data.planName.trim().length > 0
+        ? data.planName.trim()
+        : "Con servicio o plan activo"
+      : "Sin servicio o plan";
+  const originLabel =
+    typeof data.clientOriginLabel === "string" && data.clientOriginLabel.trim().length > 0
+      ? data.clientOriginLabel.trim()
+      : data.clientOrigin === "app"
+      ? "Se uni\u00F3 desde la app"
+      : data.clientOrigin === "counter"
+      ? "Cliente de mostrador"
+      : data.clientOrigin === "manual"
+      ? "Agregado manualmente"
+      : null;
+  const dateLabel = formatReservationNotificationDate(reservationDate);
+  const timeLabel = formatReservationNotificationTime(reservationTime);
+
+  const title =
+    clientName && serviceName
+      ? `${clientName} ${notification.type === "booking_cancelled" ? "cancel\u00F3" : "reserv\u00F3"} ${serviceName}`
+      : notification.title;
+
+  const lines = [
+    [dateLabel, timeLabel].filter(Boolean).join(" · "),
+    [planLabel, originLabel].filter(Boolean).join(" · "),
+  ].filter((line) => line.length > 0);
+
+  return {
+    title,
+    lines: lines.length > 0 ? lines : [notification.message],
+  };
+}
+
+function getNotificationCopy(notification: NotificationItem) {
+  if (notification.type === "booking_created" || notification.type === "booking_cancelled") {
+    return buildReservationNotificationCopy(notification);
+  }
+
+  if (notification.type === "birthday_today") {
+    const data = getNotificationData(notification);
+    const title =
+      typeof data.clientName === "string" && data.clientName.trim().length > 0
+        ? `🎂 Hoy cumple ${data.clientName.trim()}`
+        : notification.title;
+    const age = typeof data.birthdayAge === "number" ? data.birthdayAge : null;
+    const originLabel =
+      typeof data.clientOriginLabel === "string" && data.clientOriginLabel.trim().length > 0
+        ? data.clientOriginLabel.trim()
+        : "Origen no disponible";
+    const phoneLine =
+      normalizePhoneMX(typeof data.phone === "string" ? data.phone : null).length >= 12
+        ? "WhatsApp disponible"
+        : "Sin teléfono registrado";
+
+    return {
+      title,
+      lines: [
+        [age !== null ? `Cumple ${age} años` : "Cumple hoy", originLabel].filter(Boolean).join(" · "),
+        phoneLine,
+      ],
+    };
+  }
+
+  return {
+    title: notification.title,
+    lines: notification.message ? [notification.message] : [],
+  };
+}
+
+function getNotificationMeta(notification: NotificationItem) {
+  const data = getNotificationData(notification);
+
+  if (notification.type === "booking_created") {
+    return {
+      icon: Calendar,
+      iconClassName: "text-sky-500",
+      accentClassName: "border-sky-200 bg-sky-50/70 dark:border-sky-900/50 dark:bg-sky-950/25",
+      actionLabel: "Abrir reserva",
+      eyebrow: data.planStatusLabel || data.clientOriginLabel || "Nueva reserva",
+    };
+  }
+
+  if (notification.type === "booking_cancelled") {
+    return {
+      icon: XCircle,
+      iconClassName: "text-rose-500",
+      accentClassName: "border-rose-200 bg-rose-50/70 dark:border-rose-900/50 dark:bg-rose-950/25",
+      actionLabel: "Abrir reserva",
+      eyebrow: data.planStatusLabel || data.clientOriginLabel || "Reserva cancelada",
+    };
+  }
+
+  if (notification.type === "customer_joined_app") {
+    return {
+      icon: UserPlus,
+      iconClassName: "text-emerald-500",
+      accentClassName: "border-emerald-200 bg-emerald-50/70 dark:border-emerald-900/50 dark:bg-emerald-950/25",
+      actionLabel: "Abrir cliente",
+      eyebrow: "Nuevo cliente desde la app",
+    };
+  }
+
+  if (
+    notification.type === "plan_expiring" ||
+    notification.type === "plan_expired" ||
+    notification.type === "plan_no_uses"
+  ) {
+    return {
+      icon: AlertTriangle,
+      iconClassName: "text-amber-500",
+      accentClassName: "border-amber-200 bg-amber-50/70 dark:border-amber-900/50 dark:bg-amber-950/25",
+      actionLabel: "Abrir cliente",
+      eyebrow:
+        notification.type === "plan_expired"
+          ? "Plan vencido"
+          : notification.type === "plan_no_uses"
+          ? "Sin usos disponibles"
+          : "Plan por vencer",
+    };
+  }
+
+  if (notification.type === "birthday_upcoming") {
+    return {
+      icon: Calendar,
+      iconClassName: "text-fuchsia-500",
+      accentClassName: "border-fuchsia-200 bg-fuchsia-50/70 dark:border-fuchsia-900/50 dark:bg-fuchsia-950/25",
+      actionLabel: "Abrir cliente",
+      eyebrow: "Cumpleaños próximo",
+    };
+  }
+
+  if (notification.type === "birthday_today") {
+    return {
+      icon: Cake,
+      iconClassName: "text-pink-500",
+      accentClassName: "border-pink-200 bg-pink-50/70 dark:border-pink-900/50 dark:bg-pink-950/25",
+      actionLabel: "Ver cliente",
+      eyebrow: "Cumpleaños de hoy",
+    };
+  }
+
+  if (notification.type === "monthly_billing_paid") {
+    return {
+      icon: CheckCircle2,
+      iconClassName: "text-emerald-500",
+      accentClassName: "border-emerald-200 bg-emerald-50/70 dark:border-emerald-900/50 dark:bg-emerald-950/25",
+      actionLabel: "Abrir",
+      eyebrow: "Movimiento confirmado",
+    };
+  }
+
+  return {
+    icon: Bell,
+    iconClassName: "text-slate-500",
+    accentClassName: "border-border bg-background",
+    actionLabel: "Abrir",
+    eyebrow: "Notificación",
+  };
 }
 
 async function fetchNotifications(params: { limit: number; page?: number; status?: NotificationFilter }) {
@@ -82,18 +356,26 @@ function NotificationList({
   notifications,
   testIdPrefix,
   emptyMessage,
+  onOpen,
+  onOpenClient,
   onMarkRead,
   onDelete,
   markReadPending,
   deletePending,
+  compact = false,
+  onWhatsApp,
 }: {
   notifications: NotificationItem[];
   testIdPrefix: string;
   emptyMessage: string;
+  onOpen?: (notification: NotificationItem) => void;
+  onOpenClient?: (notification: NotificationItem) => void;
   onMarkRead: (notificationId: string) => void;
   onDelete: (notificationId: string) => void;
+  onWhatsApp?: (notification: NotificationItem) => void;
   markReadPending: boolean;
   deletePending: boolean;
+  compact?: boolean;
 }) {
   if (notifications.length === 0) {
     return (
@@ -105,46 +387,155 @@ function NotificationList({
 
   return (
     <div className="space-y-3">
-      {notifications.map((notification) => (
-        <div
-          key={notification.id}
-          className={`rounded-md border p-3 space-y-2 ${notification.isRead ? "opacity-80" : "bg-muted/30"}`}
-          data-testid={`${testIdPrefix}-item-${notification.id}`}
-        >
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <p className="text-sm font-medium">{notification.title}</p>
-                {!notification.isRead && <Badge variant="secondary">Nueva</Badge>}
+      {notifications.map((notification) => {
+        const data = getNotificationData(notification);
+        const meta = getNotificationMeta(notification);
+        const Icon = meta.icon;
+        const actionLabel = meta.actionLabel;
+        const copy = getNotificationCopy(notification);
+        const canWhatsApp = Boolean(
+          onWhatsApp &&
+          notification.type === "birthday_today" &&
+          normalizePhoneMX(getNotificationData(notification).phone).length >= 12,
+        );
+        const canOpenClient = Boolean(
+          onOpenClient &&
+          (notification.type === "booking_created" || notification.type === "booking_cancelled") &&
+          (
+            (typeof data.clientUserId === "string" && data.clientUserId.trim().length > 0) ||
+            (typeof data.userId === "string" && data.userId.trim().length > 0)
+          ),
+        );
+
+        return (
+          <div
+            key={notification.id}
+            className={`rounded-2xl border p-3 transition-colors ${meta.accentClassName} ${
+              notification.isRead ? "opacity-90" : "shadow-sm"
+            }`}
+            data-testid={`${testIdPrefix}-item-${notification.id}`}
+          >
+            <div className="flex items-start gap-3">
+              <div className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-white/80 dark:bg-slate-900/60`}>
+                <Icon className={`h-4 w-4 ${meta.iconClassName}`} />
               </div>
-              <p className="text-sm text-muted-foreground mt-1">{notification.message}</p>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              {!notification.isRead && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => onMarkRead(notification.id)}
-                  disabled={markReadPending}
-                  data-testid={`${testIdPrefix}-read-${notification.id}`}
+
+              <div className="min-w-0 flex-1 space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                    {meta.eyebrow}
+                  </span>
+                  {!notification.isRead && <Badge variant="destructive">Nueva</Badge>}
+                </div>
+
+                <div
+                  role={onOpen ? "button" : undefined}
+                  tabIndex={onOpen ? 0 : undefined}
+                  onClick={() => onOpen?.(notification)}
+                  onKeyDown={(event) => {
+                    if (!onOpen) return;
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      onOpen(notification);
+                    }
+                  }}
+                  className={onOpen ? "cursor-pointer" : undefined}
                 >
-                  Marcar leída
-                </Button>
-              )}
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => onDelete(notification.id)}
-                disabled={deletePending}
-                data-testid={`${testIdPrefix}-delete-${notification.id}`}
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
+                  <p className="text-sm font-semibold leading-snug text-foreground">{copy.title}</p>
+                  <div className="mt-1 space-y-1">
+                    {copy.lines.map((line, index) => (
+                      <p key={`${notification.id}-line-${index}`} className="text-sm text-muted-foreground">
+                        {line}
+                      </p>
+                    ))}
+                  </div>
+                </div>
+
+                <div className={`flex flex-wrap items-center justify-between gap-2 ${compact ? "pt-0.5" : "pt-1"}`}>
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                    <span className="flex items-center gap-1">
+                      <Clock className="h-3 w-3" />
+                      {formatRelativeNotificationDate(notification.createdAt)}
+                    </span>
+                    {!compact && <span>{formatNotificationDate(notification.createdAt)}</span>}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {onOpen && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onOpen(notification);
+                        }}
+                        data-testid={`${testIdPrefix}-open-${notification.id}`}
+                      >
+                        <ArrowUpRight className="mr-1 h-3.5 w-3.5" />
+                        {actionLabel}
+                      </Button>
+                    )}
+                    {canOpenClient && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onOpenClient?.(notification);
+                        }}
+                        data-testid={`${testIdPrefix}-open-client-${notification.id}`}
+                      >
+                        Ver cliente
+                      </Button>
+                    )}
+                    {canWhatsApp && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="border-green-200 text-green-700 hover:bg-green-50 dark:border-green-900/50 dark:text-green-300 dark:hover:bg-green-950/20"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onWhatsApp?.(notification);
+                        }}
+                        data-testid={`${testIdPrefix}-whatsapp-${notification.id}`}
+                      >
+                        <MessageCircle className="mr-1 h-3.5 w-3.5" />
+                        WhatsApp
+                      </Button>
+                    )}
+                    {!notification.isRead && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onMarkRead(notification.id);
+                        }}
+                        disabled={markReadPending}
+                        data-testid={`${testIdPrefix}-read-${notification.id}`}
+                      >
+                        Marcar leída
+                      </Button>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onDelete(notification.id);
+                      }}
+                      disabled={deletePending}
+                      data-testid={`${testIdPrefix}-delete-${notification.id}`}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
-          <p className="text-xs text-muted-foreground">{formatNotificationDate(notification.createdAt)}</p>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -154,33 +545,43 @@ export default function NotificationsPanel({
   limit = 5,
   emptyMessage = "Sin notificaciones por ahora.",
   testIdPrefix = "notifications",
+  variant = "card",
+  onOpenNotification,
+  onOpenClientNotification,
+  pollingMs = DEFAULT_POLLING_MS,
 }: {
   title?: string;
   limit?: number;
   emptyMessage?: string;
   testIdPrefix?: string;
+  variant?: NotificationsPanelVariant;
+  onOpenNotification?: (notification: NotificationItem) => void;
+  onOpenClientNotification?: (notification: NotificationItem) => void;
+  pollingMs?: number;
 }) {
+  const [isPopoverOpen, setIsPopoverOpen] = useState(false);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [filter, setFilter] = useState<NotificationFilter>("all");
   const [page, setPage] = useState(1);
 
-  const { data: summary, isLoading: summaryLoading } = useQuery<NotificationSummary>({
+  const summaryQuery = useQuery<NotificationSummary>({
     queryKey: ["/api/notifications/summary"],
     queryFn: fetchNotificationSummary,
-    refetchInterval: 30000,
+    refetchInterval: pollingMs,
   });
 
-  const { data: notifications, isLoading } = useQuery<NotificationItem[]>({
-    queryKey: ["/api/notifications", limit, "preview"],
+  const previewQuery = useQuery<NotificationItem[]>({
+    queryKey: ["/api/notifications", limit, variant === "bell" ? "popover" : "preview"],
     queryFn: async () => fetchNotifications({ limit, page: 1, status: "all" }),
-    refetchInterval: 30000,
+    enabled: variant === "card" || isPopoverOpen || isDialogOpen,
+    refetchInterval: variant === "card" || isPopoverOpen ? pollingMs : false,
   });
 
-  const { data: fullNotifications, isLoading: fullLoading } = useQuery<NotificationItem[]>({
+  const fullNotificationsQuery = useQuery<NotificationItem[]>({
     queryKey: ["/api/notifications", "full", filter, page, FULL_PAGE_SIZE],
     queryFn: async () => fetchNotifications({ limit: FULL_PAGE_SIZE, page, status: filter }),
     enabled: isDialogOpen,
-    refetchInterval: 30000,
+    refetchInterval: isDialogOpen ? pollingMs : false,
   });
 
   useEffect(() => {
@@ -188,10 +589,10 @@ export default function NotificationsPanel({
   }, [filter]);
 
   useEffect(() => {
-    if (isDialogOpen && page > 1 && fullNotifications && fullNotifications.length === 0) {
+    if (isDialogOpen && page > 1 && fullNotificationsQuery.data && fullNotificationsQuery.data.length === 0) {
       setPage((current) => Math.max(current - 1, 1));
     }
-  }, [isDialogOpen, page, fullNotifications]);
+  }, [isDialogOpen, page, fullNotificationsQuery.data]);
 
   const markReadMutation = useMutation({
     mutationFn: async (notificationId: string) => {
@@ -244,70 +645,232 @@ export default function NotificationsPanel({
     },
   });
 
-  const unreadCount = summary?.unreadCount ?? notifications?.filter((notification) => !notification.isRead).length ?? 0;
-  const totalCount = summary?.totalCount ?? notifications?.length ?? 0;
-  const readCount = summary?.readCount ?? Math.max(totalCount - unreadCount, 0);
-  const hasNextPage = (fullNotifications?.length ?? 0) === FULL_PAGE_SIZE;
-  const activeNotifications = useMemo(() => fullNotifications ?? [], [fullNotifications]);
+  const unreadCount =
+    summaryQuery.data?.unreadCount ??
+    previewQuery.data?.filter((notification) => !notification.isRead).length ??
+    0;
+  const totalCount = summaryQuery.data?.totalCount ?? previewQuery.data?.length ?? 0;
+  const readCount = summaryQuery.data?.readCount ?? Math.max(totalCount - unreadCount, 0);
+  const hasNextPage = (fullNotificationsQuery.data?.length ?? 0) === FULL_PAGE_SIZE;
+  const activeNotifications = useMemo(() => fullNotificationsQuery.data ?? [], [fullNotificationsQuery.data]);
+
+  async function handleOpenNotification(notification: NotificationItem) {
+    if (!notification.isRead) {
+      try {
+        await markReadMutation.mutateAsync(notification.id);
+      } catch {
+        // ignore and continue opening
+      }
+    }
+
+    setIsPopoverOpen(false);
+    window.requestAnimationFrame(() => {
+      onOpenNotification?.(notification);
+    });
+  }
+
+  async function handleOpenClientNotification(notification: NotificationItem) {
+    if (!notification.isRead) {
+      try {
+        await markReadMutation.mutateAsync(notification.id);
+      } catch {
+        // ignore and continue opening
+      }
+    }
+
+    setIsPopoverOpen(false);
+    window.requestAnimationFrame(() => {
+      onOpenClientNotification?.(notification);
+    });
+  }
+
+  function handleBirthdayWhatsApp(notification: NotificationItem) {
+    const data = getNotificationData(notification);
+    const clientName =
+      typeof data.clientName === "string" && data.clientName.trim().length > 0
+        ? data.clientName.trim()
+        : "cliente";
+    const firstName = clientName.split(" ")[0] || clientName;
+    const branchName =
+      typeof data.branchName === "string" && data.branchName.trim().length > 0
+        ? data.branchName.trim()
+        : "tu sucursal";
+    const url = buildWhatsAppUrl(
+      typeof data.phone === "string" ? data.phone : null,
+      `¡Hola ${firstName}! 🎉 De parte de ${branchName} queremos desearte un feliz cumpleaños. Esperamos que tengas un excelente día 🎂`,
+    );
+
+    if (!url) {
+      return;
+    }
+
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+
+  function renderActions(showViewAll = true) {
+    return (
+      <div className="flex items-center gap-2 flex-wrap">
+        {showViewAll && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setIsPopoverOpen(false);
+              setIsDialogOpen(true);
+            }}
+            data-testid={`${testIdPrefix}-view-all`}
+          >
+            Ver todas
+          </Button>
+        )}
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => readAllMutation.mutate()}
+          disabled={readAllMutation.isPending || unreadCount === 0}
+          data-testid={`${testIdPrefix}-read-all`}
+        >
+          {readAllMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          Marcar todas como leídas
+        </Button>
+      </div>
+    );
+  }
+
+  const panelList = (
+    <NotificationList
+      notifications={previewQuery.data ?? []}
+      testIdPrefix={testIdPrefix}
+      emptyMessage={emptyMessage}
+      onOpen={onOpenNotification ? handleOpenNotification : undefined}
+      onOpenClient={onOpenClientNotification ? handleOpenClientNotification : undefined}
+      onMarkRead={(notificationId) => markReadMutation.mutate(notificationId)}
+      onDelete={(notificationId) => deleteMutation.mutate(notificationId)}
+      onWhatsApp={handleBirthdayWhatsApp}
+      markReadPending={markReadMutation.isPending}
+      deletePending={deleteMutation.isPending}
+      compact={variant === "bell"}
+    />
+  );
 
   return (
     <>
-      <Card data-testid={`${testIdPrefix}-panel`}>
-        <CardHeader className="pb-2">
-          <div className="flex items-center justify-between gap-3 flex-wrap">
-            <CardTitle className="text-base flex items-center gap-2">
+      {variant === "card" ? (
+        <Card data-testid={`${testIdPrefix}-panel`}>
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Bell className="h-4 w-4" />
+                {title}
+                {!summaryQuery.isLoading && unreadCount > 0 && <Badge variant="destructive">{unreadCount}</Badge>}
+              </CardTitle>
+              {renderActions()}
+            </div>
+          </CardHeader>
+          <CardContent className="p-4 pt-0">
+            {previewQuery.isLoading ? (
+              <div className="space-y-3">
+                {[1, 2, 3].map((item) => (
+                  <div key={item} className="rounded-2xl border p-3 space-y-2">
+                    <Skeleton className="h-4 w-40" />
+                    <Skeleton className="h-3 w-full" />
+                    <Skeleton className="h-3 w-28" />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              panelList
+            )}
+          </CardContent>
+        </Card>
+      ) : (
+        <Popover
+          open={isPopoverOpen}
+          onOpenChange={(open) => {
+            setIsPopoverOpen(open);
+            if (open) {
+              void summaryQuery.refetch().finally(() => {
+                void previewQuery.refetch();
+              });
+            }
+          }}
+        >
+          <PopoverTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="relative rounded-full border border-border/60 bg-background/80 shadow-sm"
+              data-testid={`${testIdPrefix}-bell-trigger`}
+            >
               <Bell className="h-4 w-4" />
-              {title}
-              {!summaryLoading && unreadCount > 0 && <Badge variant="destructive">{unreadCount}</Badge>}
-            </CardTitle>
-            <div className="flex items-center gap-2 flex-wrap">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setIsDialogOpen(true)}
-                data-testid={`${testIdPrefix}-view-all`}
-              >
-                Ver todas
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => readAllMutation.mutate()}
-                disabled={readAllMutation.isPending || unreadCount === 0}
-                data-testid={`${testIdPrefix}-read-all`}
-              >
-                {readAllMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
-                Marcar todas como leídas
-              </Button>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="p-4 pt-0">
-          {isLoading ? (
-            <div className="space-y-3">
-              {[1, 2, 3].map((item) => (
-                <div key={item} className="rounded-md border p-3 space-y-2">
-                  <Skeleton className="h-4 w-40" />
-                  <Skeleton className="h-3 w-full" />
-                  <Skeleton className="h-3 w-28" />
+              {unreadCount > 0 && (
+                <span className="absolute -right-1.5 -top-1.5 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-destructive px-1.5 text-[10px] font-semibold text-destructive-foreground">
+                  {unreadCount > 99 ? "99+" : unreadCount}
+                </span>
+              )}
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent
+            align="end"
+            className="w-[420px] max-w-[calc(100vw-1.5rem)] rounded-3xl border border-border/70 p-0 shadow-2xl"
+          >
+            <div className="space-y-4 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Centro de alertas</p>
+                  <div className="mt-1 flex items-center gap-2">
+                    <h3 className="text-base font-semibold">{title}</h3>
+                    {unreadCount > 0 && <Badge variant="destructive">{unreadCount}</Badge>}
+                  </div>
                 </div>
-              ))}
-            </div>
-          ) : (
-            <NotificationList
-              notifications={notifications ?? []}
-              testIdPrefix={testIdPrefix}
-              emptyMessage={emptyMessage}
-              onMarkRead={(notificationId) => markReadMutation.mutate(notificationId)}
-              onDelete={(notificationId) => deleteMutation.mutate(notificationId)}
-              markReadPending={markReadMutation.isPending}
-              deletePending={deleteMutation.isPending}
-            />
-          )}
-        </CardContent>
-      </Card>
+                {renderActions(false)}
+              </div>
 
-      <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+              {previewQuery.isLoading ? (
+                <div className="space-y-3">
+                  {[1, 2, 3].map((item) => (
+                    <div key={item} className="rounded-2xl border p-3 space-y-2">
+                      <Skeleton className="h-4 w-40" />
+                      <Skeleton className="h-3 w-full" />
+                      <Skeleton className="h-3 w-28" />
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                panelList
+              )}
+
+              <div className="flex items-center justify-between gap-2 border-t pt-3">
+                <p className="text-xs text-muted-foreground">
+                  {unreadCount > 0 ? `${unreadCount} sin leer` : "Todo al día"}
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setIsPopoverOpen(false);
+                    setIsDialogOpen(true);
+                  }}
+                  data-testid={`${testIdPrefix}-popover-view-all`}
+                >
+                  Ver todas
+                </Button>
+              </div>
+            </div>
+          </PopoverContent>
+        </Popover>
+      )}
+
+      <Dialog
+        open={isDialogOpen}
+        onOpenChange={(open) => {
+          setIsDialogOpen(open);
+          if (open) {
+            void summaryQuery.refetch();
+            void fullNotificationsQuery.refetch();
+          }
+        }}
+      >
         <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
@@ -316,7 +879,7 @@ export default function NotificationsPanel({
               {unreadCount > 0 && <Badge variant="destructive">{unreadCount}</Badge>}
             </DialogTitle>
             <DialogDescription>
-              Administra tus notificaciones internas. Se muestran un máximo de {FULL_PAGE_SIZE} por página.
+              Administra tus alertas internas. Se muestran un máximo de {FULL_PAGE_SIZE} por página.
             </DialogDescription>
           </DialogHeader>
 
@@ -368,7 +931,7 @@ export default function NotificationsPanel({
                 disabled={deleteReadMutation.isPending || readCount === 0}
                 data-testid={`${testIdPrefix}-delete-read`}
               >
-                {deleteReadMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+                {deleteReadMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Eliminar leídas
               </Button>
               <Button
@@ -378,17 +941,17 @@ export default function NotificationsPanel({
                 disabled={deleteAllMutation.isPending || totalCount === 0}
                 data-testid={`${testIdPrefix}-delete-all`}
               >
-                {deleteAllMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+                {deleteAllMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Eliminar todas
               </Button>
             </div>
           </div>
 
           <div className="flex-1 overflow-y-auto pr-1">
-            {fullLoading ? (
+            {fullNotificationsQuery.isLoading ? (
               <div className="space-y-3">
                 {[1, 2, 3, 4].map((item) => (
-                  <div key={item} className="rounded-md border p-3 space-y-2">
+                  <div key={item} className="rounded-2xl border p-3 space-y-2">
                     <Skeleton className="h-4 w-40" />
                     <Skeleton className="h-3 w-full" />
                     <Skeleton className="h-3 w-28" />
@@ -400,8 +963,11 @@ export default function NotificationsPanel({
                 notifications={activeNotifications}
                 testIdPrefix={`${testIdPrefix}-dialog`}
                 emptyMessage="No hay notificaciones para este filtro."
+                onOpen={onOpenNotification ? handleOpenNotification : undefined}
+                onOpenClient={onOpenClientNotification ? handleOpenClientNotification : undefined}
                 onMarkRead={(notificationId) => markReadMutation.mutate(notificationId)}
                 onDelete={(notificationId) => deleteMutation.mutate(notificationId)}
+                onWhatsApp={handleBirthdayWhatsApp}
                 markReadPending={markReadMutation.isPending}
                 deletePending={deleteMutation.isPending}
               />

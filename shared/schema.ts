@@ -705,6 +705,8 @@ export const createClientSchema = z.object({
   emergencyContactName: z.string().optional(),
   emergencyContactPhone: z.string().optional(),
   medicalNotes: z.string().optional(),
+  confirmPotentialDuplicate: z.boolean().optional(),
+  reuseExistingClientId: z.string().optional(),
   password: z.string().min(6, "La contraseña debe tener al menos 6 caracteres").optional(),
 });
 
@@ -846,6 +848,67 @@ export const branchProducts = pgTable("branch_products", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
+export const branchServices = pgTable("branch_services", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  name: text("name").notNull(),
+  category: text("category").notNull(),
+  description: text("description"),
+  baseDurationMinutes: integer("base_duration_minutes"),
+  capacity: integer("capacity"),
+  requiresAgenda: boolean("requires_agenda").notNull().default(false),
+  visibility: text("visibility").notNull().default("public"),
+  isActive: boolean("is_active").notNull().default(true),
+  displayOrder: integer("display_order").notNull().default(0),
+  createdBy: varchar("created_by", { length: 36 }).references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+}, (table) => [
+  index("branch_services_branch_idx").on(table.branchId),
+  index("branch_services_active_idx").on(table.isActive),
+  index("branch_services_deleted_at_idx").on(table.deletedAt),
+  index("branch_services_category_idx").on(table.category),
+]);
+
+export const branchServiceSaleOptions = pgTable("branch_service_sale_options", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  serviceId: varchar("service_id", { length: 36 })
+    .notNull()
+    .references(() => branchServices.id),
+  name: text("name").notNull(),
+  type: text("type").notNull().default("individual"),
+  price: numeric("price", { precision: 12, scale: 2 }).notNull(),
+  includedUses: integer("included_uses"),
+  isUnlimited: boolean("is_unlimited").notNull().default(false),
+  validityDays: integer("validity_days"),
+  requiresRegisteredClient: boolean("requires_registered_client").notNull().default(false),
+  allowsWalkIn: boolean("allows_walk_in").notNull().default(true),
+  isPosFavorite: boolean("is_pos_favorite").notNull().default(false),
+  isActive: boolean("is_active").notNull().default(true),
+  internalNotes: text("internal_notes"),
+  displayOrder: integer("display_order").notNull().default(0),
+  createdBy: varchar("created_by", { length: 36 }).references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+}, (table) => [
+  index("branch_service_sale_options_branch_idx").on(table.branchId),
+  index("branch_service_sale_options_service_idx").on(table.serviceId),
+  index("branch_service_sale_options_type_idx").on(table.type),
+  index("branch_service_sale_options_active_idx").on(table.isActive),
+  index("branch_service_sale_options_deleted_at_idx").on(table.deletedAt),
+]);
+
 export const branchVideos = pgTable("branch_videos", {
   id: varchar("id", { length: 36 })
     .primaryKey()
@@ -875,6 +938,20 @@ export const insertBranchProductSchema = createInsertSchema(branchProducts).omit
   createdAt: true,
 });
 
+export const insertBranchServiceSchema = createInsertSchema(branchServices).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  deletedAt: true,
+});
+
+export const insertBranchServiceSaleOptionSchema = createInsertSchema(branchServiceSaleOptions).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  deletedAt: true,
+});
+
 export const insertBranchVideoSchema = createInsertSchema(branchVideos).omit({
   id: true,
   createdAt: true,
@@ -886,6 +963,10 @@ export type BranchPost = typeof branchPosts.$inferSelect;
 export type InsertBranchPost = z.infer<typeof insertBranchPostSchema>;
 export type BranchProduct = typeof branchProducts.$inferSelect;
 export type InsertBranchProduct = z.infer<typeof insertBranchProductSchema>;
+export type BranchService = typeof branchServices.$inferSelect;
+export type InsertBranchService = z.infer<typeof insertBranchServiceSchema>;
+export type BranchServiceSaleOption = typeof branchServiceSaleOptions.$inferSelect;
+export type InsertBranchServiceSaleOption = z.infer<typeof insertBranchServiceSaleOptionSchema>;
 export type BranchVideo = typeof branchVideos.$inferSelect;
 export type InsertBranchVideo = z.infer<typeof insertBranchVideoSchema>;
 
@@ -1289,6 +1370,14 @@ export const branchFinancePaymentMethodValues = [
   "mercado_pago",
   "otro",
 ] as const;
+export const quickChargeSingleSessionSchema = z.object({
+  customerName: z.string().min(1, "El nombre del cliente es obligatorio").max(160, "Maximo 160 caracteres"),
+  whatsapp: z.string().max(40, "Maximo 40 caracteres").nullable().optional(),
+  paymentMethod: z.enum(branchFinancePaymentMethodValues),
+  note: z.string().max(500, "Maximo 500 caracteres").nullable().optional(),
+  entryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Formato YYYY-MM-DD").optional(),
+  requestId: z.string().max(120, "Maximo 120 caracteres").optional(),
+});
 export const monthlyBillingStatusValues = [
   "pending",
   "paid",
@@ -1312,6 +1401,19 @@ export const branchRecurringExpenseCategoryValues = [
   "limpieza",
   "publicidad",
   "otro",
+] as const;
+export const branchServiceVisibilityValues = [
+  "public",
+  "internal",
+] as const;
+export const branchServiceSaleOptionTypeValues = [
+  "individual",
+  "prueba",
+  "paquete",
+  "membresia",
+  "day_pass",
+  "gift_card",
+  "especial",
 ] as const;
 
 export const createBranchFinanceEntrySchema = z.object({
@@ -1375,6 +1477,57 @@ export const createBranchStaffClassLogSchema = z.object({
   paymentMethod: z.enum(branchFinancePaymentMethodValues).nullable().optional(),
   notes: z.string().max(500, "Maximo 500 caracteres").nullable().optional(),
 });
+
+export const createBranchServiceSchema = z.object({
+  name: z.string().min(1, "El nombre es obligatorio").max(160, "Maximo 160 caracteres"),
+  category: z.string().min(1, "La categoria es obligatoria").max(120, "Maximo 120 caracteres"),
+  description: z.string().max(1000, "Maximo 1000 caracteres").nullable().optional(),
+  baseDurationMinutes: z.coerce.number().int().min(1, "La duracion debe ser mayor a 0").max(1440, "Duracion demasiado grande").nullable().optional(),
+  capacity: z.coerce.number().int().min(1, "La capacidad debe ser mayor a 0").max(10000, "Capacidad demasiado grande").nullable().optional(),
+  requiresAgenda: z.boolean().optional(),
+  visibility: z.enum(branchServiceVisibilityValues).optional(),
+  isActive: z.boolean().optional(),
+  displayOrder: z.coerce.number().int().min(0).optional(),
+});
+
+export const updateBranchServiceSchema = createBranchServiceSchema.partial().refine(
+  (data) => Object.keys(data).length > 0,
+  { message: "Debes enviar al menos un campo para actualizar" },
+);
+
+const branchServiceSaleOptionBaseSchema = z.object({
+  serviceId: z.string().min(1, "El servicio es obligatorio"),
+  name: z.string().min(1, "El nombre es obligatorio").max(160, "Maximo 160 caracteres"),
+  type: z.enum(branchServiceSaleOptionTypeValues),
+  price: z.coerce.number().min(0, "El precio no puede ser negativo"),
+  includedUses: z.coerce.number().int().min(1, "Los usos deben ser mayores a 0").max(10000, "Demasiados usos").nullable().optional(),
+  isUnlimited: z.boolean().optional(),
+  validityDays: z.coerce.number().int().min(1, "La vigencia debe ser mayor a 0").max(3650, "Vigencia demasiado grande").nullable().optional(),
+  requiresRegisteredClient: z.boolean().optional(),
+  allowsWalkIn: z.boolean().optional(),
+  isPosFavorite: z.boolean().optional(),
+  isActive: z.boolean().optional(),
+  internalNotes: z.string().max(1000, "Maximo 1000 caracteres").nullable().optional(),
+  displayOrder: z.coerce.number().int().min(0).optional(),
+});
+
+export const createBranchServiceSaleOptionSchema = branchServiceSaleOptionBaseSchema.refine(
+  (data) => !(data.isUnlimited && data.includedUses != null),
+  { message: "No puedes combinar usos incluidos con ilimitado" },
+).refine(
+  (data) => data.type !== "membresia" || (data.requiresRegisteredClient ?? true),
+  { message: "Las opciones tipo membresia requieren cliente registrado" },
+);
+
+export const updateBranchServiceSaleOptionSchema = branchServiceSaleOptionBaseSchema.partial()
+  .refine(
+    (data) => !(data.isUnlimited && data.includedUses != null),
+    { message: "No puedes combinar usos incluidos con ilimitado" },
+  )
+  .refine(
+    (data) => Object.keys(data).length > 0,
+    { message: "Debes enviar al menos un campo para actualizar" },
+  );
 
 export const upsertBranchMonthlyBillingSchema = z.object({
   monthlyFeeAmount: z.coerce.number().min(0, "El monto no puede ser negativo"),

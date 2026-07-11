@@ -1,5 +1,6 @@
 import { eq, and, sql, or, ne, isNull, count, desc, asc, gte, inArray, lte } from "drizzle-orm";
 import { db } from "./db";
+import { getBranchClientIdentityControl } from "./branch-client-identity";
 import {
   users,
   branches,
@@ -25,6 +26,8 @@ import {
   branchPhotos,
   branchPosts,
   branchProducts,
+  branchServices,
+  branchServiceSaleOptions,
   branchVideos,
   type User,
   type InsertUser,
@@ -65,6 +68,10 @@ import {
   type InsertBranchPost,
   type BranchProduct,
   type InsertBranchProduct,
+  type BranchService,
+  type InsertBranchService,
+  type BranchServiceSaleOption,
+  type InsertBranchServiceSaleOption,
   type BranchVideo,
   type InsertBranchVideo,
   branchAnnouncements,
@@ -484,6 +491,45 @@ export interface BranchStaffClassLogRow {
   updatedAt: Date | string;
 }
 
+export interface BranchServiceSaleOptionRow {
+  id: string;
+  branchId: string;
+  serviceId: string;
+  name: string;
+  type: string;
+  price: number;
+  includedUses: number | null;
+  isUnlimited: boolean;
+  validityDays: number | null;
+  requiresRegisteredClient: boolean;
+  allowsWalkIn: boolean;
+  isPosFavorite: boolean;
+  isActive: boolean;
+  internalNotes: string | null;
+  displayOrder: number;
+  createdBy: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}
+
+export interface BranchServiceRow {
+  id: string;
+  branchId: string;
+  name: string;
+  category: string;
+  description: string | null;
+  baseDurationMinutes: number | null;
+  capacity: number | null;
+  requiresAgenda: boolean;
+  visibility: "public" | "internal";
+  isActive: boolean;
+  displayOrder: number;
+  createdBy: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+  options: BranchServiceSaleOptionRow[];
+}
+
 export interface BranchHardDeleteResult {
   deleted: boolean;
   reason?: string;
@@ -581,6 +627,7 @@ export interface IStorage {
     type?: string;
   }): Promise<BranchFinanceEntryRow[]>;
   createBranchFinanceEntry(data: InsertBranchFinanceEntry): Promise<BranchFinanceEntryRow>;
+  findBranchFinanceEntryBySource(branchId: string, source: string, sourceId: string): Promise<BranchFinanceEntryRow | undefined>;
   updateBranchFinanceEntry(branchId: string, entryId: string, data: Partial<InsertBranchFinanceEntry>): Promise<BranchFinanceEntryRow | undefined>;
   softDeleteBranchFinanceEntry(branchId: string, entryId: string): Promise<boolean>;
   getSuperAdminMonthlyBilling(): Promise<BranchMonthlyBillingRow[]>;
@@ -626,6 +673,7 @@ export interface IStorage {
   createMembership(data: InsertMembership): Promise<Membership>;
   updateMembership(id: string, data: Partial<InsertMembership>): Promise<Membership | undefined>;
   createAuditLog(data: { actorUserId: string; action: string; branchId?: string; metadata?: any }): Promise<AuditLog>;
+  findAuditLogByReference(params: { action: string; branchId?: string | null; referenceId: string }): Promise<AuditLog | undefined>;
   getAuditLogs(limit?: number): Promise<(AuditLog & { actorEmail?: string | null })[]>;
   createSystemEvent(data: { eventType: string; branchId?: string | null; userId?: string | null; payload?: any; status?: string }): Promise<SystemEvent>;
   getSystemEvents(limit?: number): Promise<(SystemEvent & { branchName?: string | null; userEmail?: string | null; userName?: string | null })[]>;
@@ -635,6 +683,7 @@ export interface IStorage {
   getActivePushTokensByUsers(userIds: string[]): Promise<PushToken[]>;
   getActivePushTokensByBranch(branchId: string): Promise<PushToken[]>;
   createNotification(data: { recipientUserId?: string | null; branchId?: string | null; roleTarget?: string | null; type: string; title: string; message: string; data?: any; isRead?: boolean; readAt?: Date | null }): Promise<Notification>;
+  findNotificationByReference(params: { type: string; referenceId: string; branchId?: string | null; recipientUserId?: string | null; roleTarget?: string | null }): Promise<Notification | undefined>;
   getNotificationsForActor(actor: { id: string; role: string; branchId?: string | null }, options?: { limit?: number; page?: number; status?: "all" | "read" | "unread" }): Promise<Notification[]>;
   getNotificationSummary(actor: { id: string; role: string; branchId?: string | null }): Promise<{ totalCount: number; unreadCount: number; readCount: number }>;
   markNotificationRead(notificationId: string, actor: { id: string; role: string; branchId?: string | null }): Promise<Notification | undefined>;
@@ -668,6 +717,11 @@ export interface IStorage {
     createdBy?: string | null;
   }): Promise<BranchStaffClassLogRow>;
   getBranchClients(branchId: string, includeLeft?: boolean): Promise<any[]>;
+  linkBranchClientToAppUser(branchId: string, sourceUserId: string, targetUserId: string): Promise<{
+    membershipId: string | null;
+    updatedTargetFields: string[];
+    transferredCounts: Record<string, number>;
+  }>;
   getClientProfile(userId: string, branchId: string): Promise<any>;
   updateBranchClientCrm(branchId: string, userId: string, data: { clientStatus?: string | null; tags?: string | null; lastVisit?: Date | null }): Promise<any>;
   updateBranchClientPrivateProfile(
@@ -717,7 +771,6 @@ export interface IStorage {
   }): Promise<BranchFinanceEntryRow | null>;
   getMembershipByUserAndBranch(userId: string, branchId: string): Promise<Membership | undefined>;
   reconcilePastBookings(branchId: string): Promise<number>;
-  autoMarkAttendedBookings(branchId: string): Promise<number>;
   getAllActiveBranchIds(): Promise<string[]>;
   cancelFutureBookingsForUser(userId: string, branchId: string): Promise<number>;
   decrementClassesRemaining(membershipId: string): Promise<Membership | undefined>;
@@ -728,6 +781,15 @@ export interface IStorage {
   getBookingsForDate(branchId: string, date: string): Promise<any[]>;
   getBookingsForClassOnDate(classScheduleId: string, date: string): Promise<any[]>;
   createBooking(data: InsertClassBooking): Promise<ClassBooking>;
+  createBookingAtomically(params: {
+    classScheduleId: string;
+    branchId: string;
+    userId: string;
+    bookingDate: string;
+    source: InsertClassBooking["source"];
+    requireActiveSchedule?: boolean;
+    excludeNoShowFromCapacity?: boolean;
+  }): Promise<{ booking?: ClassBooking; error?: "CLASS_NOT_FOUND" | "CLASS_FULL" | "ALREADY_BOOKED" }>;
   updateBookingStatus(id: string, status: string): Promise<ClassBooking | undefined>;
   markBookingLateCancellation(id: string): Promise<void>;
   createReservationAuditLog(data: InsertReservationAuditLog): Promise<ReservationAuditLog>;
@@ -751,6 +813,13 @@ export interface IStorage {
   updateBranchProduct(id: string, data: Partial<InsertBranchProduct>): Promise<BranchProduct | undefined>;
   deleteBranchProduct(id: string): Promise<void>;
   reorderBranchProducts(branchId: string, ids: string[]): Promise<void>;
+  getBranchServices(branchId: string): Promise<BranchServiceRow[]>;
+  createBranchService(data: InsertBranchService): Promise<BranchServiceRow>;
+  updateBranchService(branchId: string, serviceId: string, data: Partial<InsertBranchService>): Promise<BranchServiceRow | undefined>;
+  softDeleteBranchService(branchId: string, serviceId: string): Promise<boolean>;
+  createBranchServiceSaleOption(data: InsertBranchServiceSaleOption): Promise<BranchServiceSaleOptionRow>;
+  updateBranchServiceSaleOption(branchId: string, optionId: string, data: Partial<InsertBranchServiceSaleOption>): Promise<BranchServiceSaleOptionRow | undefined>;
+  softDeleteBranchServiceSaleOption(branchId: string, optionId: string): Promise<boolean>;
   getBranchVideos(branchId: string): Promise<BranchVideo[]>;
   addBranchVideo(data: InsertBranchVideo): Promise<BranchVideo>;
   deleteBranchVideo(id: string): Promise<void>;
@@ -769,7 +838,7 @@ export interface IStorage {
   softDeleteMembership(membershipId: string): Promise<any>;
   getUpcomingBookingsForUser(branchId: string, userId: string, fromDate: string, limit?: number): Promise<any[]>;
   updateBranchWhatsappTemplates(branchId: string, templates: Record<string, string>): Promise<any>;
-  updateBranchProfile(branchId: string, data: { description?: string | null; address?: string | null; city?: string | null; googleMapsUrl?: string | null; operatingHours?: any; summaryHours?: string | null; category?: string | null; subcategory?: string | null; searchKeywords?: string | null; latitude?: number | null; longitude?: number | null; whatsappNumber?: string | null }): Promise<any>;
+  updateBranchProfile(branchId: string, data: { name?: string | null; description?: string | null; address?: string | null; city?: string | null; googleMapsUrl?: string | null; operatingHours?: any; summaryHours?: string | null; category?: string | null; subcategory?: string | null; searchKeywords?: string | null; latitude?: number | null; longitude?: number | null; whatsappNumber?: string | null }): Promise<any>;
   getUpcomingBirthdays(branchId: string, daysAhead?: number): Promise<any[]>;
   getBranchReviews(branchId: string): Promise<any[]>;
   getBranchReviewsSummary(branchId: string): Promise<{ averageRating: number; totalReviews: number }>;
@@ -2057,6 +2126,28 @@ export class DatabaseStorage implements IStorage {
     return log;
   }
 
+  async findAuditLogByReference(params: { action: string; branchId?: string | null; referenceId: string }): Promise<AuditLog | undefined> {
+    const conditions = [
+      eq(auditLogs.action, params.action),
+      sql`COALESCE(${auditLogs.metadata} ->> 'referenceId', '') = ${params.referenceId}`,
+    ];
+
+    if (params.branchId) {
+      conditions.push(eq(auditLogs.branchId, params.branchId));
+    } else {
+      conditions.push(isNull(auditLogs.branchId));
+    }
+
+    const [log] = await db
+      .select()
+      .from(auditLogs)
+      .where(and(...conditions))
+      .orderBy(desc(auditLogs.createdAt))
+      .limit(1);
+
+    return log;
+  }
+
   async getAuditLogs(limit = 50): Promise<(AuditLog & { actorEmail?: string | null })[]> {
     const results = await db
       .select({
@@ -2222,6 +2313,46 @@ export class DatabaseStorage implements IStorage {
         readAt: data.readAt ?? null,
       })
       .returning();
+
+    return notification;
+  }
+
+  async findNotificationByReference(params: {
+    type: string;
+    referenceId: string;
+    branchId?: string | null;
+    recipientUserId?: string | null;
+    roleTarget?: string | null;
+  }): Promise<Notification | undefined> {
+    const conditions = [
+      eq(notifications.type, params.type),
+      sql`COALESCE(${notifications.data} ->> 'referenceId', '') = ${params.referenceId}`,
+    ];
+
+    if (params.branchId) {
+      conditions.push(eq(notifications.branchId, params.branchId));
+    } else {
+      conditions.push(isNull(notifications.branchId));
+    }
+
+    if (params.recipientUserId) {
+      conditions.push(eq(notifications.recipientUserId, params.recipientUserId));
+    } else {
+      conditions.push(isNull(notifications.recipientUserId));
+    }
+
+    if (params.roleTarget) {
+      conditions.push(eq(notifications.roleTarget, params.roleTarget as any));
+    } else {
+      conditions.push(isNull(notifications.roleTarget));
+    }
+
+    const [notification] = await db
+      .select()
+      .from(notifications)
+      .where(and(...conditions))
+      .orderBy(desc(notifications.createdAt))
+      .limit(1);
 
     return notification;
   }
@@ -2574,6 +2705,9 @@ export class DatabaseStorage implements IStorage {
         lastName: users.lastName,
         email: users.email,
         phone: users.phone,
+        firebaseUid: users.firebaseUid,
+        authProvider: users.authProvider,
+        acceptedTerms: users.acceptedTerms,
         birthDate: users.birthDate,
         gender: users.gender,
         avatarUrl: users.avatarUrl,
@@ -2609,9 +2743,11 @@ export class DatabaseStorage implements IStorage {
     const crmMap: Record<string, BranchClientCrm> = {};
     const localBlockMap: Record<string, BranchCustomerBlock> = {};
     const reportCountMap: Record<string, number> = {};
+    const individualPurchaseCountMap: Record<string, number> = {};
+    const lastIndividualPurchaseAtMap: Record<string, string | null> = {};
 
     if (clientIds.length > 0) {
-      const [attResults, bookingResults, crmResults, blockResults, reportResults] = await Promise.all([
+      const [attResults, bookingResults, crmResults, blockResults, reportResults, purchaseResults] = await Promise.all([
         db
           .select({
             userId: attendances.userId,
@@ -2660,6 +2796,20 @@ export class DatabaseStorage implements IStorage {
             inArray(customerReports.userId, clientIds),
           ))
           .groupBy(customerReports.userId),
+        db
+          .select({
+            userId: branchFinanceEntries.clientUserId,
+            total: sql<number>`COUNT(*)`.as("total"),
+            lastEntryDate: sql<string>`MAX(${branchFinanceEntries.entryDate})`.as("last_entry_date"),
+          })
+          .from(branchFinanceEntries)
+          .where(and(
+            eq(branchFinanceEntries.branchId, branchId),
+            eq(branchFinanceEntries.source, "service_sale"),
+            inArray(branchFinanceEntries.clientUserId, clientIds),
+            isNull(branchFinanceEntries.deletedAt),
+          ))
+          .groupBy(branchFinanceEntries.clientUserId),
       ]);
 
       for (const attendance of attResults) {
@@ -2685,37 +2835,259 @@ export class DatabaseStorage implements IStorage {
       for (const report of reportResults) {
         reportCountMap[report.userId] = Number(report.total) || 0;
       }
+
+      for (const purchase of purchaseResults) {
+        if (!purchase.userId) continue;
+        individualPurchaseCountMap[purchase.userId] = Number(purchase.total) || 0;
+        lastIndividualPurchaseAtMap[purchase.userId] = purchase.lastEntryDate || null;
+      }
     }
 
     const now = new Date();
     return results.map(r => {
+      const {
+        authProvider,
+        acceptedTerms,
+        ...client
+      } = r;
       let planStatus: "active" | "expired" | "deleted" | null = null;
-      if (r.planId) {
-        planStatus = (r.expiresAt && new Date(r.expiresAt) < now) ? "expired" : "active";
-      } else if (r.planNameSnapshot) {
+      if (client.planId) {
+        planStatus = (client.expiresAt && new Date(client.expiresAt) < now) ? "expired" : "active";
+      } else if (client.planNameSnapshot) {
         planStatus = "deleted";
       }
-      const crm = crmMap[r.userId];
-      const lastAttendance = lastAttendanceMap[r.userId] || null;
+      const crm = crmMap[client.userId];
+      const lastAttendance = lastAttendanceMap[client.userId] || null;
       const lastVisit = getLatestDate(
         crm?.lastVisit,
         lastAttendance,
-        latestBookingMap[r.userId],
+        latestBookingMap[client.userId],
       );
-      const localBlock = localBlockMap[r.userId] || null;
+      const localBlock = localBlockMap[client.userId] || null;
+      const identityControl = getBranchClientIdentityControl(
+        {
+          email: client.email,
+          authProvider,
+          firebaseUid: client.firebaseUid,
+          acceptedTerms,
+        },
+        { source: client.source },
+      );
+
       return {
-        ...r,
-        planName: r.planName || r.planNameSnapshot || null,
+        ...client,
+        planName: client.planName || client.planNameSnapshot || null,
         planStatus,
+        identityControl,
         lastAttendance,
-        crmClientStatus: resolveCrmClientStatus(crm?.clientStatus, lastVisit, r.joinedAt),
+        crmClientStatus: resolveCrmClientStatus(crm?.clientStatus, lastVisit, client.joinedAt),
         crmManualStatus: crm?.clientStatus || null,
         lastVisit,
         tags: crm?.tags || null,
         isLocallyBlocked: !!localBlock,
         localBlockedAt: localBlock?.createdAt || null,
         localBlockReason: localBlock?.reason || null,
-        reportCount: reportCountMap[r.userId] || 0,
+        reportCount: reportCountMap[client.userId] || 0,
+        individualPurchaseCount: individualPurchaseCountMap[client.userId] || 0,
+        lastIndividualPurchaseAt: lastIndividualPurchaseAtMap[client.userId] || null,
+      };
+    });
+  }
+
+  async linkBranchClientToAppUser(
+    branchId: string,
+    sourceUserId: string,
+    targetUserId: string,
+  ): Promise<{
+    membershipId: string | null;
+    updatedTargetFields: string[];
+    transferredCounts: Record<string, number>;
+  }> {
+    if (sourceUserId === targetUserId) {
+      return {
+        membershipId: null,
+        updatedTargetFields: [],
+        transferredCounts: {},
+      };
+    }
+
+    return db.transaction(async (tx) => {
+      const [sourceUser] = await tx.select().from(users).where(eq(users.id, sourceUserId)).limit(1);
+      const [targetUser] = await tx.select().from(users).where(eq(users.id, targetUserId)).limit(1);
+      const [sourceMembership] = await tx
+        .select()
+        .from(memberships)
+        .where(and(eq(memberships.userId, sourceUserId), eq(memberships.branchId, branchId)))
+        .limit(1);
+      const [targetMembership] = await tx
+        .select()
+        .from(memberships)
+        .where(and(eq(memberships.userId, targetUserId), eq(memberships.branchId, branchId)))
+        .limit(1);
+
+      if (!sourceUser || !targetUser || !sourceMembership) {
+        throw new Error("No se pudo vincular el cliente de la sucursal");
+      }
+      if (targetMembership) {
+        throw new Error("El usuario app ya pertenece a esta sucursal");
+      }
+
+      const targetUpdates: Record<string, any> = {};
+      if ((!targetUser.name || !targetUser.name.trim()) && sourceUser.name?.trim()) {
+        targetUpdates.name = sourceUser.name.trim();
+      }
+      if ((!targetUser.lastName || !targetUser.lastName.trim()) && sourceUser.lastName?.trim()) {
+        targetUpdates.lastName = sourceUser.lastName.trim();
+      }
+      if ((!targetUser.phone || !targetUser.phone.trim()) && sourceUser.phone?.trim()) {
+        targetUpdates.phone = sourceUser.phone.trim();
+      }
+      if ((!targetUser.birthDate || !targetUser.birthDate.trim()) && sourceUser.birthDate?.trim()) {
+        targetUpdates.birthDate = sourceUser.birthDate.trim();
+      }
+      if ((!targetUser.gender || !targetUser.gender.trim()) && sourceUser.gender?.trim()) {
+        targetUpdates.gender = sourceUser.gender.trim();
+      }
+      if ((!targetUser.avatarUrl || !targetUser.avatarUrl.trim()) && sourceUser.avatarUrl?.trim()) {
+        targetUpdates.avatarUrl = sourceUser.avatarUrl.trim();
+      }
+
+      if (Object.keys(targetUpdates).length > 0) {
+        await tx.update(users).set(targetUpdates).where(eq(users.id, targetUserId));
+      }
+
+      const [sourceCrm] = await tx
+        .select()
+        .from(branchClientCrm)
+        .where(and(eq(branchClientCrm.branchId, branchId), eq(branchClientCrm.userId, sourceUserId)))
+        .limit(1);
+      const [targetCrm] = await tx
+        .select()
+        .from(branchClientCrm)
+        .where(and(eq(branchClientCrm.branchId, branchId), eq(branchClientCrm.userId, targetUserId)))
+        .limit(1);
+
+      if (sourceCrm && targetCrm) {
+        const mergedCrmUpdate: Record<string, any> = {};
+
+        if (!targetCrm.clientStatus && sourceCrm.clientStatus) mergedCrmUpdate.clientStatus = sourceCrm.clientStatus;
+        if (!targetCrm.tags && sourceCrm.tags) mergedCrmUpdate.tags = sourceCrm.tags;
+        if (!targetCrm.emergencyContactName && sourceCrm.emergencyContactName) mergedCrmUpdate.emergencyContactName = sourceCrm.emergencyContactName;
+        if (!targetCrm.emergencyContactPhone && sourceCrm.emergencyContactPhone) mergedCrmUpdate.emergencyContactPhone = sourceCrm.emergencyContactPhone;
+        if (!targetCrm.medicalNotes && sourceCrm.medicalNotes) mergedCrmUpdate.medicalNotes = sourceCrm.medicalNotes;
+        if (!targetCrm.injuriesNotes && sourceCrm.injuriesNotes) mergedCrmUpdate.injuriesNotes = sourceCrm.injuriesNotes;
+        if (!targetCrm.medicalWarnings && sourceCrm.medicalWarnings) mergedCrmUpdate.medicalWarnings = sourceCrm.medicalWarnings;
+        if (!targetCrm.parqAccepted && sourceCrm.parqAccepted) mergedCrmUpdate.parqAccepted = true;
+        if (!targetCrm.parqAcceptedDate && sourceCrm.parqAcceptedDate) mergedCrmUpdate.parqAcceptedDate = sourceCrm.parqAcceptedDate;
+        if (!targetCrm.privateProfileInitialized && sourceCrm.privateProfileInitialized) {
+          mergedCrmUpdate.privateProfileInitialized = true;
+        }
+        if (
+          sourceCrm.lastVisit &&
+          (!targetCrm.lastVisit || new Date(sourceCrm.lastVisit).getTime() > new Date(targetCrm.lastVisit).getTime())
+        ) {
+          mergedCrmUpdate.lastVisit = sourceCrm.lastVisit;
+        }
+
+        if (Object.keys(mergedCrmUpdate).length > 0) {
+          mergedCrmUpdate.updatedAt = new Date();
+          await tx.update(branchClientCrm).set(mergedCrmUpdate).where(eq(branchClientCrm.id, targetCrm.id));
+        }
+
+        await tx.delete(branchClientCrm).where(eq(branchClientCrm.id, sourceCrm.id));
+      } else if (sourceCrm) {
+        await tx
+          .update(branchClientCrm)
+          .set({ userId: targetUserId, updatedAt: new Date() })
+          .where(eq(branchClientCrm.id, sourceCrm.id));
+      }
+
+      const transferredCounts: Record<string, number> = {};
+
+      const noteRows = await tx
+        .update(clientNotes)
+        .set({ userId: targetUserId })
+        .where(and(eq(clientNotes.branchId, branchId), eq(clientNotes.userId, sourceUserId)))
+        .returning({ id: clientNotes.id });
+      transferredCounts.clientNotes = noteRows.length;
+
+      const attendanceRows = await tx
+        .update(attendances)
+        .set({ userId: targetUserId })
+        .where(and(eq(attendances.branchId, branchId), eq(attendances.userId, sourceUserId)))
+        .returning({ id: attendances.id });
+      transferredCounts.attendances = attendanceRows.length;
+
+      const bookingRows = await tx
+        .update(classBookings)
+        .set({ userId: targetUserId })
+        .where(and(eq(classBookings.branchId, branchId), eq(classBookings.userId, sourceUserId)))
+        .returning({ id: classBookings.id });
+      transferredCounts.classBookings = bookingRows.length;
+
+      const financeRows = await tx
+        .update(branchFinanceEntries)
+        .set({ clientUserId: targetUserId })
+        .where(and(eq(branchFinanceEntries.branchId, branchId), eq(branchFinanceEntries.clientUserId, sourceUserId)))
+        .returning({ id: branchFinanceEntries.id });
+      transferredCounts.financeEntries = financeRows.length;
+
+      const reviewRows = await tx
+        .update(branchReviews)
+        .set({ userId: targetUserId })
+        .where(and(eq(branchReviews.branchId, branchId), eq(branchReviews.userId, sourceUserId)))
+        .returning({ id: branchReviews.id });
+      transferredCounts.branchReviews = reviewRows.length;
+
+      const blockRows = await tx
+        .update(branchCustomerBlocks)
+        .set({ userId: targetUserId })
+        .where(and(eq(branchCustomerBlocks.branchId, branchId), eq(branchCustomerBlocks.userId, sourceUserId)))
+        .returning({ id: branchCustomerBlocks.id });
+      transferredCounts.branchBlocks = blockRows.length;
+
+      const reportRows = await tx
+        .update(customerReports)
+        .set({ userId: targetUserId })
+        .where(and(eq(customerReports.branchId, branchId), eq(customerReports.userId, sourceUserId)))
+        .returning({ id: customerReports.id });
+      transferredCounts.customerReports = reportRows.length;
+
+      const notificationRows = await tx
+        .update(notifications)
+        .set({ recipientUserId: targetUserId })
+        .where(and(eq(notifications.branchId, branchId), eq(notifications.recipientUserId, sourceUserId)))
+        .returning({ id: notifications.id });
+      transferredCounts.notifications = notificationRows.length;
+
+      const reservationAuditRows = await tx
+        .update(reservationAuditLogs)
+        .set({ customerUserId: targetUserId })
+        .where(and(eq(reservationAuditLogs.branchId, branchId), eq(reservationAuditLogs.customerUserId, sourceUserId)))
+        .returning({ id: reservationAuditLogs.id });
+      transferredCounts.reservationAuditLogs = reservationAuditRows.length;
+
+      const systemEventRows = await tx
+        .update(systemEvents)
+        .set({ userId: targetUserId })
+        .where(and(eq(systemEvents.branchId, branchId), eq(systemEvents.userId, sourceUserId)))
+        .returning({ id: systemEvents.id });
+      transferredCounts.systemEvents = systemEventRows.length;
+
+      const [movedMembership] = await tx
+        .update(memberships)
+        .set({
+          userId: targetUserId,
+          status: "active",
+          source: "self_join",
+        })
+        .where(eq(memberships.id, sourceMembership.id))
+        .returning();
+
+      return {
+        membershipId: movedMembership?.id ?? null,
+        updatedTargetFields: Object.keys(targetUpdates),
+        transferredCounts,
       };
     });
   }
@@ -2786,6 +3158,29 @@ export class DatabaseStorage implements IStorage {
     const nextBooking = nextBookingResults.length > 0
       ? { bookingDate: nextBookingResults[0].bookingDate, className: nextBookingResults[0].className, startTime: nextBookingResults[0].startTime }
       : null;
+
+    const purchaseHistoryRows = await db
+      .select({
+        id: branchFinanceEntries.id,
+        concept: branchFinanceEntries.concept,
+        amount: branchFinanceEntries.amount,
+        entryDate: branchFinanceEntries.entryDate,
+        paymentMethod: branchFinanceEntries.paymentMethod,
+        notes: branchFinanceEntries.notes,
+        source: branchFinanceEntries.source,
+        metadata: branchFinanceEntries.metadata,
+        createdAt: branchFinanceEntries.createdAt,
+      })
+      .from(branchFinanceEntries)
+      .where(and(
+        eq(branchFinanceEntries.branchId, branchId),
+        eq(branchFinanceEntries.clientUserId, userId),
+        eq(branchFinanceEntries.type, "income"),
+        eq(branchFinanceEntries.source, "service_sale"),
+        isNull(branchFinanceEntries.deletedAt),
+      ))
+      .orderBy(desc(branchFinanceEntries.entryDate), desc(branchFinanceEntries.createdAt))
+      .limit(12);
 
     let planStatus: "active" | "expired" | "deleted" | null = null;
     if (membership.planId) {
@@ -2858,6 +3253,17 @@ export class DatabaseStorage implements IStorage {
       planNameSnapshot: membership.planNameSnapshot,
       plan,
       notes,
+      purchaseHistory: purchaseHistoryRows.map((row) => ({
+        id: row.id,
+        concept: row.concept,
+        amount: toFinanceAmount(row.amount),
+        entryDate: row.entryDate,
+        paymentMethod: row.paymentMethod ?? null,
+        notes: row.notes ?? null,
+        source: row.source ?? null,
+        metadata: row.metadata ?? null,
+        createdAt: row.createdAt,
+      })),
       recentAttendances,
       totalAttendances: Number(attendanceCount?.count) || 0,
       nextBooking,
@@ -2998,9 +3404,6 @@ export class DatabaseStorage implements IStorage {
   // 2. Client cancels >3hrs before class → no deduction (classesRemaining stays same)
   // 3. Client cancels <3hrs before class → lateCancellation=true, classesRemaining decremented
   async reconcilePastBookings(branchId: string): Promise<number> {
-    // First: auto-mark attended for bookings whose class START has passed.
-    await this.autoMarkAttendedBookings(branchId);
-
     const { today, currentTime } = getMxLocalDateAndTime();
 
     // Fetch confirmed bookings up to and including today (local time).
@@ -3047,8 +3450,8 @@ export class DatabaseStorage implements IStorage {
       await db.update(classBookings).set({ status: "no_show" as any }).where(eq(classBookings.id, booking.bookingId));
 
       const mem = await this.getMembershipByUserAndBranch(booking.userId, branchId);
-      if (mem && mem.classesRemaining !== null && mem.classesRemaining > 0) {
-        await this.decrementClassesRemaining(mem.id);
+      if ((mem?.classesRemaining ?? 0) > 0) {
+        await this.decrementClassesRemaining(mem!.id);
       }
       count++;
     }
@@ -3060,6 +3463,9 @@ export class DatabaseStorage implements IStorage {
   // creating an attendance record and deducting 1 class — exactly the same as the manual "Asistió" button.
   // Guard: only processes status === "confirmed"; once attended or no_show, never re-processed.
   async autoMarkAttendedBookings(branchId: string): Promise<number> {
+    void branchId;
+    return 0;
+
     const { today, currentTime } = getMxLocalDateAndTime();
 
     const candidates = await db
@@ -3107,8 +3513,8 @@ export class DatabaseStorage implements IStorage {
 
       // Deduct 1 class from membership if applicable — same logic as manual button.
       const mem = await this.getMembershipByUserAndBranch(booking.userId, branchId);
-      if (mem && mem.classesRemaining !== null && mem.classesRemaining > 0) {
-        await this.decrementClassesRemaining(mem.id);
+      if ((mem?.classesRemaining ?? 0) > 0) {
+        await this.decrementClassesRemaining(mem!.id);
       }
 
       console.log(`[AUTO-ATTEND] Marked booking ${booking.bookingId} as attended for user ${booking.userId}`);
@@ -3214,9 +3620,30 @@ export class DatabaseStorage implements IStorage {
         createdAt: classBookings.createdAt,
         userName: users.name,
         userEmail: users.email,
+        userPhone: users.phone,
+        authProvider: users.authProvider,
+        firebaseUid: users.firebaseUid,
+        acceptedTerms: users.acceptedTerms,
+        source: memberships.source,
+        clientStatus: memberships.clientStatus,
+        planId: memberships.planId,
+        planNameSnapshot: memberships.planNameSnapshot,
+        classesRemaining: memberships.classesRemaining,
+        classesTotal: memberships.classesTotal,
+        expiresAt: memberships.expiresAt,
+        membershipPlanName: membershipPlans.name,
       })
       .from(classBookings)
       .innerJoin(users, eq(classBookings.userId, users.id))
+      .leftJoin(
+        memberships,
+        and(
+          eq(memberships.userId, classBookings.userId),
+          eq(memberships.branchId, classBookings.branchId),
+          eq(memberships.status, "active"),
+        ),
+      )
+      .leftJoin(membershipPlans, eq(memberships.planId, membershipPlans.id))
       .where(and(
         eq(classBookings.classScheduleId, classScheduleId),
         eq(classBookings.bookingDate, date)
@@ -3236,13 +3663,139 @@ export class DatabaseStorage implements IStorage {
         byUser.set(row.userId, row);
       }
     }
-    return Array.from(byUser.values()).sort((a, b) => a.userName.localeCompare(b.userName));
+    return Array.from(byUser.values())
+      .map((row) => {
+        const identityControl = getBranchClientIdentityControl(
+          {
+            email: row.userEmail,
+            authProvider: row.authProvider,
+            firebaseUid: row.firebaseUid,
+            acceptedTerms: row.acceptedTerms,
+          },
+          { source: row.source },
+        );
+        const clientOriginLabel =
+          identityControl.originType === "app"
+            ? "Se unió desde la app"
+            : identityControl.originType === "counter"
+            ? "Cliente de mostrador"
+            : "Agregado manualmente";
+        const planName = row.membershipPlanName || row.planNameSnapshot || null;
+        const hasActivePlan = Boolean(
+          row.planId ||
+          row.planNameSnapshot ||
+          row.membershipPlanName ||
+          row.expiresAt ||
+          row.classesRemaining !== null ||
+          row.classesTotal !== null,
+        );
+
+        return {
+          id: row.id,
+          userId: row.userId,
+          status: row.status,
+          createdAt: row.createdAt,
+          userName: row.userName,
+          userEmail: row.userEmail,
+          userPhone: row.userPhone,
+          clientOrigin: identityControl.originType,
+          clientOriginLabel,
+          hasActivePlan,
+          planName,
+          planStatusLabel: hasActivePlan ? (planName || "Con servicio o plan activo") : "Sin servicio o plan",
+          clientStatus: row.clientStatus,
+          classesRemaining: row.classesRemaining,
+          classesTotal: row.classesTotal,
+          expiresAt: row.expiresAt,
+        };
+      })
+      .sort((a, b) => a.userName.localeCompare(b.userName));
   }
 
   async createBooking(data: InsertClassBooking): Promise<ClassBooking> {
     const [booking] = await db.insert(classBookings).values(data).returning();
     await this.touchBranchClientLastVisit(data.branchId, data.userId);
     return booking;
+  }
+
+  async createBookingAtomically(params: {
+    classScheduleId: string;
+    branchId: string;
+    userId: string;
+    bookingDate: string;
+    source: InsertClassBooking["source"];
+    requireActiveSchedule?: boolean;
+    excludeNoShowFromCapacity?: boolean;
+  }): Promise<{ booking?: ClassBooking; error?: "CLASS_NOT_FOUND" | "CLASS_FULL" | "ALREADY_BOOKED" }> {
+    const result = await db.transaction(async (tx) => {
+      const scheduleResult = await tx.execute(sql<{
+        id: string;
+        branchId: string;
+        capacity: number;
+        isActive: boolean;
+      }>`
+        SELECT
+          id,
+          branch_id AS "branchId",
+          capacity,
+          is_active AS "isActive"
+        FROM class_schedules
+        WHERE id = ${params.classScheduleId}
+        FOR UPDATE
+      `);
+
+      const schedule = scheduleResult.rows[0];
+      if (!schedule || schedule.branchId !== params.branchId || (params.requireActiveSchedule && !schedule.isActive)) {
+        return { error: "CLASS_NOT_FOUND" as const };
+      }
+
+      const existingBookings = await tx
+        .select({
+          id: classBookings.id,
+          userId: classBookings.userId,
+          status: classBookings.status,
+        })
+        .from(classBookings)
+        .where(and(
+          eq(classBookings.classScheduleId, params.classScheduleId),
+          eq(classBookings.bookingDate, params.bookingDate),
+        ));
+
+      const activeBookings = existingBookings.filter((booking) => {
+        if (params.excludeNoShowFromCapacity) {
+          return booking.status !== "cancelled" && booking.status !== "no_show";
+        }
+        return booking.status !== "cancelled";
+      });
+
+      if (activeBookings.some((booking) => booking.userId === params.userId)) {
+        return { error: "ALREADY_BOOKED" as const };
+      }
+
+      if (activeBookings.length >= Number(schedule.capacity || 0)) {
+        return { error: "CLASS_FULL" as const };
+      }
+
+      const [booking] = await tx
+        .insert(classBookings)
+        .values({
+          classScheduleId: params.classScheduleId,
+          branchId: params.branchId,
+          userId: params.userId,
+          bookingDate: params.bookingDate,
+          status: "confirmed",
+          source: params.source,
+        })
+        .returning();
+
+      return { booking };
+    });
+
+    if (result.booking) {
+      await this.touchBranchClientLastVisit(params.branchId, params.userId);
+    }
+
+    return result;
   }
 
   async updateBookingStatus(id: string, status: string): Promise<ClassBooking | undefined> {
@@ -3529,6 +4082,195 @@ export class DatabaseStorage implements IStorage {
         .set({ displayOrder: i })
         .where(and(eq(branchProducts.id, ids[i]), eq(branchProducts.branchId, branchId)));
     }
+  }
+
+  async getBranchServices(branchId: string): Promise<BranchServiceRow[]> {
+    const services = await db
+      .select()
+      .from(branchServices)
+      .where(and(
+        eq(branchServices.branchId, branchId),
+        isNull(branchServices.deletedAt),
+      ))
+      .orderBy(desc(branchServices.isActive), asc(branchServices.displayOrder), asc(branchServices.name));
+
+    const optionRows = await db
+      .select()
+      .from(branchServiceSaleOptions)
+      .where(and(
+        eq(branchServiceSaleOptions.branchId, branchId),
+        isNull(branchServiceSaleOptions.deletedAt),
+      ))
+      .orderBy(
+        desc(branchServiceSaleOptions.isActive),
+        asc(branchServiceSaleOptions.displayOrder),
+        asc(branchServiceSaleOptions.name),
+      );
+
+    const optionsByServiceId = new Map<string, BranchServiceSaleOptionRow[]>();
+    for (const option of optionRows) {
+      const mapped = this.mapBranchServiceSaleOptionRow(option);
+      const current = optionsByServiceId.get(option.serviceId) || [];
+      current.push(mapped);
+      optionsByServiceId.set(option.serviceId, current);
+    }
+
+    return services.map((service) => ({
+      id: service.id,
+      branchId: service.branchId,
+      name: service.name,
+      category: service.category,
+      description: service.description ?? null,
+      baseDurationMinutes: service.baseDurationMinutes ?? null,
+      capacity: service.capacity ?? null,
+      requiresAgenda: service.requiresAgenda,
+      visibility: (service.visibility === "internal" ? "internal" : "public"),
+      isActive: service.isActive,
+      displayOrder: service.displayOrder,
+      createdBy: service.createdBy ?? null,
+      createdAt: service.createdAt,
+      updatedAt: service.updatedAt,
+      options: optionsByServiceId.get(service.id) || [],
+    }));
+  }
+
+  async createBranchService(data: InsertBranchService): Promise<BranchServiceRow> {
+    const [created] = await db
+      .insert(branchServices)
+      .values(data)
+      .returning({ id: branchServices.id, branchId: branchServices.branchId });
+
+    return (await this.getBranchServiceById(created.branchId, created.id))!;
+  }
+
+  async updateBranchService(
+    branchId: string,
+    serviceId: string,
+    data: Partial<InsertBranchService>,
+  ): Promise<BranchServiceRow | undefined> {
+    const updateData: Record<string, any> = { updatedAt: new Date() };
+    if (data.name !== undefined) updateData.name = data.name;
+    if (data.category !== undefined) updateData.category = data.category;
+    if (data.description !== undefined) updateData.description = data.description;
+    if (data.baseDurationMinutes !== undefined) updateData.baseDurationMinutes = data.baseDurationMinutes;
+    if (data.capacity !== undefined) updateData.capacity = data.capacity;
+    if (data.requiresAgenda !== undefined) updateData.requiresAgenda = data.requiresAgenda;
+    if (data.visibility !== undefined) updateData.visibility = data.visibility;
+    if (data.isActive !== undefined) updateData.isActive = data.isActive;
+    if (data.displayOrder !== undefined) updateData.displayOrder = data.displayOrder;
+    if (data.createdBy !== undefined) updateData.createdBy = data.createdBy;
+
+    const [updated] = await db
+      .update(branchServices)
+      .set(updateData)
+      .where(and(
+        eq(branchServices.id, serviceId),
+        eq(branchServices.branchId, branchId),
+        isNull(branchServices.deletedAt),
+      ))
+      .returning({ id: branchServices.id });
+
+    if (!updated) return undefined;
+    return this.getBranchServiceById(branchId, updated.id);
+  }
+
+  async softDeleteBranchService(branchId: string, serviceId: string): Promise<boolean> {
+    return db.transaction(async (tx) => {
+      const [deleted] = await tx
+        .update(branchServices)
+        .set({
+          deletedAt: new Date(),
+          updatedAt: new Date(),
+          isActive: false,
+        })
+        .where(and(
+          eq(branchServices.id, serviceId),
+          eq(branchServices.branchId, branchId),
+          isNull(branchServices.deletedAt),
+        ))
+        .returning({ id: branchServices.id });
+
+      if (!deleted) return false;
+
+      await tx
+        .update(branchServiceSaleOptions)
+        .set({
+          deletedAt: new Date(),
+          updatedAt: new Date(),
+          isActive: false,
+        })
+        .where(and(
+          eq(branchServiceSaleOptions.branchId, branchId),
+          eq(branchServiceSaleOptions.serviceId, serviceId),
+          isNull(branchServiceSaleOptions.deletedAt),
+        ));
+
+      return true;
+    });
+  }
+
+  async createBranchServiceSaleOption(data: InsertBranchServiceSaleOption): Promise<BranchServiceSaleOptionRow> {
+    const [created] = await db
+      .insert(branchServiceSaleOptions)
+      .values({
+        ...data,
+        price: String(data.price),
+      })
+      .returning();
+
+    return this.mapBranchServiceSaleOptionRow(created);
+  }
+
+  async updateBranchServiceSaleOption(
+    branchId: string,
+    optionId: string,
+    data: Partial<InsertBranchServiceSaleOption>,
+  ): Promise<BranchServiceSaleOptionRow | undefined> {
+    const updateData: Record<string, any> = { updatedAt: new Date() };
+    if (data.serviceId !== undefined) updateData.serviceId = data.serviceId;
+    if (data.name !== undefined) updateData.name = data.name;
+    if (data.type !== undefined) updateData.type = data.type;
+    if (data.price !== undefined) updateData.price = String(data.price);
+    if (data.includedUses !== undefined) updateData.includedUses = data.includedUses;
+    if (data.isUnlimited !== undefined) updateData.isUnlimited = data.isUnlimited;
+    if (data.validityDays !== undefined) updateData.validityDays = data.validityDays;
+    if (data.requiresRegisteredClient !== undefined) updateData.requiresRegisteredClient = data.requiresRegisteredClient;
+    if (data.allowsWalkIn !== undefined) updateData.allowsWalkIn = data.allowsWalkIn;
+    if (data.isPosFavorite !== undefined) updateData.isPosFavorite = data.isPosFavorite;
+    if (data.isActive !== undefined) updateData.isActive = data.isActive;
+    if (data.internalNotes !== undefined) updateData.internalNotes = data.internalNotes;
+    if (data.displayOrder !== undefined) updateData.displayOrder = data.displayOrder;
+    if (data.createdBy !== undefined) updateData.createdBy = data.createdBy;
+
+    const [updated] = await db
+      .update(branchServiceSaleOptions)
+      .set(updateData)
+      .where(and(
+        eq(branchServiceSaleOptions.id, optionId),
+        eq(branchServiceSaleOptions.branchId, branchId),
+        isNull(branchServiceSaleOptions.deletedAt),
+      ))
+      .returning();
+
+    return updated ? this.mapBranchServiceSaleOptionRow(updated) : undefined;
+  }
+
+  async softDeleteBranchServiceSaleOption(branchId: string, optionId: string): Promise<boolean> {
+    const [updated] = await db
+      .update(branchServiceSaleOptions)
+      .set({
+        deletedAt: new Date(),
+        updatedAt: new Date(),
+        isActive: false,
+      })
+      .where(and(
+        eq(branchServiceSaleOptions.id, optionId),
+        eq(branchServiceSaleOptions.branchId, branchId),
+        isNull(branchServiceSaleOptions.deletedAt),
+      ))
+      .returning({ id: branchServiceSaleOptions.id });
+
+    return !!updated;
   }
 
   async getBranchVideos(branchId: string): Promise<BranchVideo[]> {
@@ -3932,8 +4674,9 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(branchAnnouncements.branchId, branchId), eq(branchAnnouncements.isActive, true)));
   }
 
-  async updateBranchProfile(branchId: string, data: { description?: string | null; address?: string | null; city?: string | null; googleMapsUrl?: string | null; operatingHours?: any; locations?: any; summaryHours?: string | null; category?: string | null; subcategory?: string | null; searchKeywords?: string | null; latitude?: number | null; longitude?: number | null; whatsappNumber?: string | null }): Promise<any> {
+  async updateBranchProfile(branchId: string, data: { name?: string | null; description?: string | null; address?: string | null; city?: string | null; googleMapsUrl?: string | null; operatingHours?: any; locations?: any; summaryHours?: string | null; category?: string | null; subcategory?: string | null; searchKeywords?: string | null; latitude?: number | null; longitude?: number | null; whatsappNumber?: string | null }): Promise<any> {
     const setData: any = {};
+    if (data.name !== undefined) setData.name = data.name;
     if (data.description !== undefined) setData.description = data.description;
     if (data.address !== undefined) setData.address = data.address;
     if (data.city !== undefined) setData.city = data.city;
@@ -3960,10 +4703,14 @@ export class DatabaseStorage implements IStorage {
 
   async getUpcomingBirthdays(branchId: string, daysAhead: number = 7): Promise<any[]> {
     const results = await db.execute(sql`
+      WITH date_context AS (
+        SELECT (now() AT TIME ZONE 'America/Mexico_City')::date AS local_today
+      )
       SELECT u.id as "userId", u.name, u.last_name as "lastName", u.phone, u.birth_date as "birthDate",
              m.id as "membershipId"
       FROM users u
       INNER JOIN memberships m ON m.user_id = u.id
+      CROSS JOIN date_context ctx
       WHERE m.branch_id = ${branchId}
         AND m.status = 'active'
         AND u.birth_date IS NOT NULL
@@ -3971,13 +4718,13 @@ export class DatabaseStorage implements IStorage {
         AND (
           TO_DATE(u.birth_date, 'YYYY-MM-DD') IS NOT NULL
           AND (
-            (EXTRACT(MONTH FROM TO_DATE(u.birth_date, 'YYYY-MM-DD')) = EXTRACT(MONTH FROM CURRENT_DATE)
-             AND EXTRACT(DAY FROM TO_DATE(u.birth_date, 'YYYY-MM-DD')) >= EXTRACT(DAY FROM CURRENT_DATE)
-             AND EXTRACT(DAY FROM TO_DATE(u.birth_date, 'YYYY-MM-DD')) <= EXTRACT(DAY FROM (CURRENT_DATE + ${daysAhead}::int)))
+            (EXTRACT(MONTH FROM TO_DATE(u.birth_date, 'YYYY-MM-DD')) = EXTRACT(MONTH FROM ctx.local_today)
+             AND EXTRACT(DAY FROM TO_DATE(u.birth_date, 'YYYY-MM-DD')) >= EXTRACT(DAY FROM ctx.local_today)
+             AND EXTRACT(DAY FROM TO_DATE(u.birth_date, 'YYYY-MM-DD')) <= EXTRACT(DAY FROM (ctx.local_today + ${daysAhead}::int)))
             OR
-            (EXTRACT(MONTH FROM TO_DATE(u.birth_date, 'YYYY-MM-DD')) = EXTRACT(MONTH FROM (CURRENT_DATE + ${daysAhead}::int))
-             AND EXTRACT(MONTH FROM CURRENT_DATE) != EXTRACT(MONTH FROM (CURRENT_DATE + ${daysAhead}::int))
-             AND EXTRACT(DAY FROM TO_DATE(u.birth_date, 'YYYY-MM-DD')) <= EXTRACT(DAY FROM (CURRENT_DATE + ${daysAhead}::int)))
+            (EXTRACT(MONTH FROM TO_DATE(u.birth_date, 'YYYY-MM-DD')) = EXTRACT(MONTH FROM (ctx.local_today + ${daysAhead}::int))
+             AND EXTRACT(MONTH FROM ctx.local_today) != EXTRACT(MONTH FROM (ctx.local_today + ${daysAhead}::int))
+             AND EXTRACT(DAY FROM TO_DATE(u.birth_date, 'YYYY-MM-DD')) <= EXTRACT(DAY FROM (ctx.local_today + ${daysAhead}::int)))
           )
         )
       ORDER BY EXTRACT(MONTH FROM TO_DATE(u.birth_date, 'YYYY-MM-DD')), EXTRACT(DAY FROM TO_DATE(u.birth_date, 'YYYY-MM-DD'))
@@ -4691,6 +5438,75 @@ export class DatabaseStorage implements IStorage {
     return row ? this.mapBranchFinanceEntryRow(row) : undefined;
   }
 
+  private mapBranchServiceSaleOptionRow(row: BranchServiceSaleOption): BranchServiceSaleOptionRow {
+    return {
+      id: row.id,
+      branchId: row.branchId,
+      serviceId: row.serviceId,
+      name: row.name,
+      type: row.type,
+      price: toFinanceAmount(row.price),
+      includedUses: row.includedUses ?? null,
+      isUnlimited: row.isUnlimited,
+      validityDays: row.validityDays ?? null,
+      requiresRegisteredClient: row.requiresRegisteredClient,
+      allowsWalkIn: row.allowsWalkIn,
+      isPosFavorite: row.isPosFavorite,
+      isActive: row.isActive,
+      internalNotes: row.internalNotes ?? null,
+      displayOrder: row.displayOrder,
+      createdBy: row.createdBy ?? null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  }
+
+  private async getBranchServiceById(branchId: string, serviceId: string): Promise<BranchServiceRow | undefined> {
+    const [service] = await db
+      .select()
+      .from(branchServices)
+      .where(and(
+        eq(branchServices.branchId, branchId),
+        eq(branchServices.id, serviceId),
+        isNull(branchServices.deletedAt),
+      ))
+      .limit(1);
+
+    if (!service) return undefined;
+
+    const optionRows = await db
+      .select()
+      .from(branchServiceSaleOptions)
+      .where(and(
+        eq(branchServiceSaleOptions.branchId, branchId),
+        eq(branchServiceSaleOptions.serviceId, serviceId),
+        isNull(branchServiceSaleOptions.deletedAt),
+      ))
+      .orderBy(
+        desc(branchServiceSaleOptions.isActive),
+        asc(branchServiceSaleOptions.displayOrder),
+        asc(branchServiceSaleOptions.name),
+      );
+
+    return {
+      id: service.id,
+      branchId: service.branchId,
+      name: service.name,
+      category: service.category,
+      description: service.description ?? null,
+      baseDurationMinutes: service.baseDurationMinutes ?? null,
+      capacity: service.capacity ?? null,
+      requiresAgenda: service.requiresAgenda,
+      visibility: (service.visibility === "internal" ? "internal" : "public"),
+      isActive: service.isActive,
+      displayOrder: service.displayOrder,
+      createdBy: service.createdBy ?? null,
+      createdAt: service.createdAt,
+      updatedAt: service.updatedAt,
+      options: optionRows.map((row) => this.mapBranchServiceSaleOptionRow(row)),
+    };
+  }
+
   private mapBranchRecurringExpenseRow(row: BranchRecurringExpense): BranchRecurringExpenseRow {
     return {
       id: row.id,
@@ -5049,6 +5865,14 @@ export class DatabaseStorage implements IStorage {
       });
 
     return (await this.getBranchFinanceEntryById(created.branchId, created.id))!;
+  }
+
+  async findBranchFinanceEntryBySource(
+    branchId: string,
+    source: string,
+    sourceId: string,
+  ): Promise<BranchFinanceEntryRow | undefined> {
+    return this.getBranchFinanceEntryBySource(branchId, source, sourceId);
   }
 
   async updateBranchFinanceEntry(branchId: string, entryId: string, data: Partial<InsertBranchFinanceEntry>): Promise<BranchFinanceEntryRow | undefined> {
