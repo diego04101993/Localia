@@ -286,3 +286,9 @@
     inset: -1px;
   }
 }
+
+@media (max-width: 767px) {
+  body[data-client-profile-open="true"] [data-mobile-bottom-nav="true"] {
+    display: none !important;
+  }
+}

@@ -91,7 +91,7 @@ interface BranchClient {
   userId: string;
   name: string;
   lastName: string | null;
-  email: string | null;
+  email: string;
   phone: string | null;
   birthDate: string | null;
   gender: string | null;
@@ -143,7 +143,7 @@ interface ClientProfile {
     id: string;
     name: string;
     lastName: string | null;
-    email: string | null;
+    email: string;
     phone: string | null;
     birthDate: string | null;
     gender: string | null;
@@ -283,7 +283,7 @@ interface AlertsData {
     userId: string;
     name: string;
     lastName: string | null;
-    email: string | null;
+    email: string;
     phone: string | null;
     membershipId: string;
     planName: string | null;
@@ -295,7 +295,7 @@ interface AlertsData {
     userId: string;
     name: string;
     lastName: string | null;
-    email: string | null;
+    email: string;
     phone: string | null;
     membershipId: string;
     planName: string | null;
@@ -307,7 +307,7 @@ interface AlertsData {
     userId: string;
     name: string;
     lastName: string | null;
-    email: string | null;
+    email: string;
     phone: string | null;
     membershipId: string;
     joinedAt: string;
@@ -319,7 +319,7 @@ interface AlertsData {
     userId: string;
     name: string;
     lastName: string | null;
-    email: string | null;
+    email: string;
     phone: string | null;
     membershipId: string;
     planName: string | null;
@@ -348,7 +348,7 @@ function formatDate(dateStr: string | null) {
   if (!dateStr) return "—";
   const stableDate =
     /^\d{4}-\d{2}-\d{2}$/.test(dateStr)
-      ? parseIsoDateToStableDate(dateStr)
+       parseIsoDateToStableDate(dateStr)
       : new Date(dateStr);
   if (!stableDate || Number.isNaN(stableDate.getTime())) return "—";
   return stableDate.toLocaleDateString("es-MX", {
@@ -400,7 +400,7 @@ function genderLabel(g: string | null): string {
 }
 
 function displayName(name: string, lastName: string | null): string {
-  return lastName ? `${name} ${lastName}` : name;
+  return lastName  `${name} ${lastName}` : name;
 }
 
 function isCrmPlaceholderEmail(email: string | null | undefined): boolean {
@@ -409,17 +409,7 @@ function isCrmPlaceholderEmail(email: string | null | undefined): boolean {
 
 function displayClientEmail(email: string | null | undefined): string {
   if (!email) return "Sin correo registrado";
-  return isCrmPlaceholderEmail(email) ? "Sin correo registrado" : email;
-}
-
-function normalizeOptionalTextInput(value: string): string | null {
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-function normalizeOptionalEmailInput(value: string): string | null {
-  const trimmed = value.trim().toLowerCase();
-  return trimmed.length > 0 ? trimmed : null;
+  return isCrmPlaceholderEmail(email)  "Sin correo registrado" : email;
 }
 
 function formatCurrencyMx(value: number) {
@@ -543,13 +533,13 @@ function calculatePlanExpirationPreview(
   const parsed = parseIsoDateToStableDate(startDate);
   if (!parsed) return null;
 
-  if ((plan.cycleMonths ?? 1) === 0) {
+  if ((plan.cycleMonths  1) === 0) {
     const result = new Date(parsed.getTime());
-    result.setUTCDate(result.getUTCDate() + Math.max(plan.durationDays ?? 1, 1));
+    result.setUTCDate(result.getUTCDate() + Math.max(plan.durationDays  1, 1));
     return result;
   }
 
-  return addCalendarMonthsStable(parsed, plan.cycleMonths ?? 1);
+  return addCalendarMonthsStable(parsed, plan.cycleMonths  1);
 }
 
 function formatCalendarPreview(date: Date | null) {
@@ -563,7 +553,7 @@ function formatCalendarPreview(date: Date | null) {
 }
 
 function reportReasonLabel(reason: string): string {
-  return REPORT_REASON_OPTIONS.find((option) => option.value === reason)?.label || reason;
+  return REPORT_REASON_OPTIONS.find((option) => option.value === reason).label || reason;
 }
 
 function reportStatusLabel(status: string): string {
@@ -590,9 +580,9 @@ function normalizePhoneMX(phone: string): string {
 }
 
 function openWaLink(phone: string | null | undefined, message: string) {
-  const normalized = phone ? normalizePhoneMX(phone) : "";
+  const normalized = phone  normalizePhoneMX(phone) : "";
   if (!normalized || !message.trim()) return;
-  window.open(`https://wa.me/${normalized}?text=${encodeURIComponent(message)}`, "_blank");
+  window.open(`https://wa.me/${normalized}text=${encodeURIComponent(message)}`, "_blank");
 }
 
 function hasActiveServiceOrPlan(client: Pick<BranchClient, "planStatus">) {
@@ -607,7 +597,7 @@ const missingIdentityControlWarnings = new Set<string>();
 
 function warnMissingIdentityControl(context: string, clientId: string | null) {
   if (!import.meta.env.DEV) return;
-  const warningKey = `${context}:${clientId ?? "unknown"}`;
+  const warningKey = `${context}:${clientId  "unknown"}`;
   if (missingIdentityControlWarnings.has(warningKey)) return;
   missingIdentityControlWarnings.add(warningKey);
   console.warn("[clientes-tab] identityControl no disponible", { context, clientId });
@@ -698,10 +688,8 @@ function getSaleChannelLabel(channel: string | null | undefined) {
 
 function getSalePaymentMethodLabel(paymentMethod: string | null | undefined) {
   if (!paymentMethod) return "Pago no especificado";
-  return (
-    FINANCE_PAYMENT_METHOD_OPTIONS.find((option) => option.value === paymentMethod)?.label ??
-    paymentMethod.replace(/_/g, " ")
-  );
+  return FINANCE_PAYMENT_METHOD_OPTIONS.find((option) => option.value === paymentMethod).label
+     paymentMethod.replace(/_/g, " ");
 }
 
 function getCommercialItemKindLabel(items: ClientCommercialHistoryItem["items"]) {
@@ -742,7 +730,7 @@ function buildAlertMessage(kind: "app" | "birthday" | "inactive" | "expiring" | 
     return `Hola ${params.firstName}, hace tiempo que no te vemos en ${params.branchName}. Si quieres volver, te ayudamos con tu siguiente visita.`;
   }
   if (kind === "expiring") {
-    return `Hola ${params.firstName}, tu ${params.planName || "servicio o plan"} en ${params.branchName} está por vencer${params.expiresAt ? ` (${params.expiresAt})` : ""}.`;
+    return `Hola ${params.firstName}, tu ${params.planName || "servicio o plan"} en ${params.branchName} está por vencer${params.expiresAt  ` (${params.expiresAt})` : ""}.`;
   }
   if (kind === "no_classes") {
     return `Hola ${params.firstName}, ya no tienes usos disponibles en ${params.branchName}. Si quieres, te ayudamos a elegir tu siguiente servicio o plan.`;
@@ -763,10 +751,10 @@ function buildClientAlertMessage(kind: "app" | "birthday" | "inactive" | "expiri
     return `Hola ${params.firstName}, hace tiempo que no te vemos en ${params.branchName}. Si quieres volver, te ayudamos con tu siguiente visita.`;
   }
   if (kind === "expiring") {
-    return `Hola ${params.firstName}, tu ${params.planName || "servicio o plan"} en ${params.branchName} está por vencer${params.expiresAt ? ` (${params.expiresAt})` : ""}.`;
+    return `Hola ${params.firstName}, tu ${params.planName || "servicio o plan"} en ${params.branchName} está por vencer${params.expiresAt  ` (${params.expiresAt})` : ""}.`;
   }
   if (kind === "expired") {
-    return `Hola ${params.firstName}, tu ${params.planName || "servicio o plan"} en ${params.branchName} ya venció${params.expiresAt ? ` (${params.expiresAt})` : ""}. Si quieres, te ayudamos a reactivarlo.`;
+    return `Hola ${params.firstName}, tu ${params.planName || "servicio o plan"} en ${params.branchName} ya venció${params.expiresAt  ` (${params.expiresAt})` : ""}. Si quieres, te ayudamos a reactivarlo.`;
   }
   if (kind === "no_classes") {
     return `Hola ${params.firstName}, ya no tienes usos disponibles en ${params.branchName}. Si quieres, te ayudamos a elegir tu siguiente servicio o plan.`;
@@ -817,7 +805,7 @@ const TEMPLATE_LABELS: Record<string, string> = {
 };
 
 function fillTemplate(template: string, vars: Record<string, string>): string {
-  return template.replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? `{${key}}`);
+  return template.replace(/\{(\w+)\}/g, (_, key) => vars[key]  `{${key}}`);
 }
 
 function WhatsAppModal({ target, branchName, onClose }: {
@@ -839,10 +827,10 @@ function WhatsAppModal({ target, branchName, onClose }: {
       firstName: target.name,
       fullName: displayName(target.name, target.lastName),
       branchName,
-      expiresAt: target.expiresAt ? formatDate(target.expiresAt) : "",
-      classesRemaining: target.classesRemaining?.toString() ?? "",
-      classesTotal: target.classesTotal?.toString() ?? "",
-      planName: target.planName ?? "",
+      expiresAt: target.expiresAt  formatDate(target.expiresAt)  "" : "",
+      classesRemaining: target.classesRemaining.toString()  "",
+      classesTotal: target.classesTotal.toString()  "",
+      planName: target.planName  "",
     };
   }, [target, branchName]);
 
@@ -852,9 +840,9 @@ function WhatsAppModal({ target, branchName, onClose }: {
     }
   }, [selectedTemplate, templates, vars]);
 
-  const phone = target?.phone ? normalizePhoneMX(target.phone) : null;
+  const phone = target.phone  normalizePhoneMX(target.phone) : null;
   const waLink = phone && message.trim()
-    ? `https://wa.me/${phone}?text=${encodeURIComponent(message)}`
+     `https://wa.me/${phone}text=${encodeURIComponent(message)}`
     : null;
 
   return (
@@ -863,10 +851,10 @@ function WhatsAppModal({ target, branchName, onClose }: {
         <DialogHeader>
           <DialogTitle>Enviar WhatsApp</DialogTitle>
           <DialogDescription>
-            {target ? `Para: ${displayName(target.name, target.lastName)}` : ""}
+            {target  `Para: ${displayName(target.name, target.lastName)}` : ""}
           </DialogDescription>
         </DialogHeader>
-        {!target?.phone ? (
+        {!target.phone  (
           <p className="text-sm text-muted-foreground py-2" data-testid="text-wa-no-phone">
             Este cliente no tiene número de teléfono registrado. Edita su perfil para agregarlo.
           </p>
@@ -874,7 +862,7 @@ function WhatsAppModal({ target, branchName, onClose }: {
           <div className="space-y-4">
             <div className="flex items-center gap-2 text-sm">
               <Phone className="h-3.5 w-3.5 text-muted-foreground" />
-              <span data-testid="text-wa-phone">{target?.phone ?? ""}</span>
+              <span data-testid="text-wa-phone">{target.phone}</span>
             </div>
             <div>
               <Label>Plantilla</Label>
@@ -921,12 +909,12 @@ function WhatsAppModal({ target, branchName, onClose }: {
 
 function getInitials(name: string, lastName: string | null): string {
   const first = name.charAt(0).toUpperCase();
-  const last = lastName ? lastName.charAt(0).toUpperCase() : "";
-  return last ? `${first}${last}` : first;
+  const last = lastName  lastName.charAt(0).toUpperCase() : "";
+  return last  `${first}${last}` : first;
 }
 
 function ClientAvatar({ avatarUrl, name, lastName, size = "md" }: { avatarUrl: string | null; name: string; lastName: string | null; size: "sm" | "md" | "lg" }) {
-  const sizeClasses = size === "sm" ? "w-8 h-8 text-xs" : size === "md" ? "w-10 h-10 text-sm" : "h-14 w-14 text-lg sm:h-16 sm:w-16 sm:text-xl";
+  const sizeClasses = size === "sm"  "w-8 h-8 text-xs" : size === "md"  "w-10 h-10 text-sm" : "h-14 w-14 text-lg sm:h-16 sm:w-16 sm:text-xl";
 
   if (avatarUrl) {
     return (
@@ -951,7 +939,7 @@ function AvatarUploadSection({ clientId, avatarUrl, name, lastName }: { clientId
   const [uploading, setUploading] = useState(false);
 
   async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
+    const file = e.target.files.[0];
     if (!file) return;
 
     const validTypes = ["image/jpeg", "image/png", "image/webp"];
@@ -1008,8 +996,8 @@ function AvatarUploadSection({ clientId, avatarUrl, name, lastName }: { clientId
         <label className="cursor-pointer" data-testid="client-avatar-upload">
           <input type="file" accept="image/jpeg,image/png,image/webp" className="hidden" onChange={handleUpload} disabled={uploading} />
           <span className="inline-flex items-center gap-1 break-words text-[11px] text-primary hover:underline sm:text-xs">
-            {uploading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Camera className="h-3 w-3" />}
-            {avatarUrl ? "Cambiar foto" : "Subir foto"}
+            {uploading  <Loader2 className="h-3 w-3 animate-spin" /> : <Camera className="h-3 w-3" />}
+            {avatarUrl  "Cambiar foto" : "Subir foto"}
           </span>
         </label>
         {avatarUrl && (
@@ -1039,8 +1027,8 @@ function CreateClientDialog({
 }) {
   const { toast } = useToast();
   const { user } = useAuth();
-  const branchSlug = ((user?.branch as any)?.slug ?? "");
-  const appLink = branchSlug ? `${window.location.origin}/app/${branchSlug}` : "";
+  const branchSlug = (user.branch as any).slug  "";
+  const appLink = branchSlug  `${window.location.origin}/app/${branchSlug}` : "";
   const [name, setName] = useState("");
   const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
@@ -1055,17 +1043,13 @@ function CreateClientDialog({
   const [duplicateState, setDuplicateState] = useState<CreateClientDuplicateState | null>(null);
 
   function buildCreatePayload(overrides: Record<string, unknown> = {}) {
-    const normalizedEmail = normalizeOptionalEmailInput(email);
-    const normalizedPhone = normalizeOptionalTextInput(phone);
-    const data: any = { name: name.trim(), ...overrides };
-    if (normalizedEmail) data.email = normalizedEmail;
-    if (normalizedPhone) data.phone = normalizedPhone;
-    if (lastName.trim()) data.lastName = lastName.trim();
+    const data: any = { name, email, phone: phone || undefined, ...overrides };
+    if (lastName) data.lastName = lastName;
     if (birthDate) data.birthDate = birthDate;
     if (gender) data.gender = gender;
-    if (emergencyContactName.trim()) data.emergencyContactName = emergencyContactName.trim();
-    if (emergencyContactPhone.trim()) data.emergencyContactPhone = emergencyContactPhone.trim();
-    if (medicalNotes.trim()) data.medicalNotes = medicalNotes.trim();
+    if (emergencyContactName) data.emergencyContactName = emergencyContactName;
+    if (emergencyContactPhone) data.emergencyContactPhone = emergencyContactPhone;
+    if (medicalNotes) data.medicalNotes = medicalNotes;
     return data;
   }
 
@@ -1081,7 +1065,7 @@ function CreateClientDialog({
       const rawText = await resp.text();
       let payload: any = null;
       try {
-        payload = rawText ? JSON.parse(rawText) : null;
+        payload = rawText  JSON.parse(rawText) : null;
       } catch {
         payload = null;
       }
@@ -1095,7 +1079,7 @@ function CreateClientDialog({
         throw error;
       }
 
-      return payload ?? {};
+      return payload  {};
     },
     onSuccess: (data: any) => {
       setDuplicateState(null);
@@ -1123,7 +1107,7 @@ function CreateClientDialog({
           duplicateType: err.duplicateType,
           message: err.message || "Encontramos un posible duplicado",
           candidate: err.candidate || null,
-          candidates: Array.isArray(err.candidates) ? err.candidates : undefined,
+          candidates: Array.isArray(err.candidates)  err.candidates : undefined,
           candidateCount: err.candidateCount,
           canReuseExisting: err.canReuseExisting,
           canCreateAnyway: err.canCreateAnyway,
@@ -1148,7 +1132,7 @@ function CreateClientDialog({
   }
 
   function handleOpenExistingCandidate() {
-    if (!duplicateState?.candidate?.userId) return;
+    if (!duplicateState.candidate.userId) return;
     const candidateUserId = duplicateState.candidate.userId;
     resetAndClose();
     onOpenExisting(candidateUserId);
@@ -1160,7 +1144,7 @@ function CreateClientDialog({
   }
 
   function handleReuseExistingCandidate() {
-    if (!duplicateState?.candidate?.userId) return;
+    if (!duplicateState.candidate.userId) return;
     createMutation.mutate(
       buildCreatePayload({ reuseExistingClientId: duplicateState.candidate.userId }),
     );
@@ -1170,22 +1154,22 @@ function CreateClientDialog({
     createMutation.mutate(buildCreatePayload({ confirmPotentialDuplicate: true }));
   }
 
-  const duplicateCandidateName = duplicateState?.candidate
-    ? displayName(duplicateState.candidate.name, duplicateState.candidate.lastName)
+  const duplicateCandidateName = duplicateState.candidate
+     displayName(duplicateState.candidate.name, duplicateState.candidate.lastName)
     : "";
   const duplicateDialogTitle =
-    duplicateState?.code === "AMBIGUOUS_DUPLICATE"
-      ? "Hay varios clientes con el mismo teléfono"
-      : duplicateState?.duplicateType === "phone" && duplicateCandidateName
-        ? `Este teléfono ya pertenece a ${duplicateCandidateName}`
-      : duplicateState?.code === "DUPLICATE_CLIENT"
-        ? "Este cliente ya parece estar registrado"
+    duplicateState.code === "AMBIGUOUS_DUPLICATE"
+       "Hay varios clientes con el mismo telefono"
+      : duplicateState.duplicateType === "phone" && duplicateCandidateName
+       `Este telefono ya pertenece a ${duplicateCandidateName}`
+      : duplicateState.code === "DUPLICATE_CLIENT"
+       "Este cliente ya parece estar registrado"
       : "Encontramos datos similares";
 
   if (createdPassword) {
     const clientName = [name, lastName].filter(Boolean).join(" ");
-    const accessText = `Hola ${name}, aquí están tus datos de acceso para ${((user?.branch as any)?.name ?? "el estudio")}:\n\nUsuario (email): ${email}\nContraseña: ${createdPassword}${appLink ? `\nApp: ${appLink}` : ""}`;
-    const waPhone = phone ? normalizePhoneMX(phone) : null;
+    const accessText = `Hola ${name}, aquí están tus datos de acceso para ${(user.branch as any).name  "el estudio"}:\n\nUsuario (email): ${email}\nContraseña: ${createdPassword}${appLink  `\nApp: ${appLink}` : ""}`;
+    const waPhone = phone  normalizePhoneMX(phone) : null;
     return (
       <Dialog open={open} onOpenChange={() => resetAndClose()}>
         <DialogContent data-testid="dialog-credentials">
@@ -1214,7 +1198,7 @@ function CreateClientDialog({
             {waPhone && (
               <Button
                 className="w-full bg-green-600 hover:bg-green-700 text-white"
-                onClick={() => window.open(`https://wa.me/${waPhone}?text=${encodeURIComponent(accessText)}`, "_blank")}
+                onClick={() => window.open(`https://wa.me/${waPhone}text=${encodeURIComponent(accessText)}`, "_blank")}
                 data-testid="button-wa-credentials"
               >
                 <MessageCircle className="h-4 w-4 mr-2" />
@@ -1259,9 +1243,8 @@ function CreateClientDialog({
             </div>
           </div>
           <div className="space-y-2">
-            <Label htmlFor="client-email">Correo electrónico (opcional)</Label>
-            <Input id="client-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="correo@ejemplo.com" data-testid="input-client-email" />
-            <p className="text-xs text-muted-foreground">Puedes registrarlo solo con nombre y teléfono.</p>
+            <Label htmlFor="client-email">Email *</Label>
+            <Input id="client-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="correo@ejemplo.com" required data-testid="input-client-email" />
           </div>
           <div className="space-y-2">
             <Label htmlFor="client-phone">Teléfono (opcional)</Label>
@@ -1269,8 +1252,8 @@ function CreateClientDialog({
           </div>
 
           <Button type="button" variant="ghost" size="sm" className="w-full" onClick={() => setShowMore(!showMore)} data-testid="button-toggle-more-fields">
-            {showMore ? <ChevronUp className="h-4 w-4 mr-1" /> : <ChevronDown className="h-4 w-4 mr-1" />}
-            {showMore ? "Menos datos" : "Más datos"}
+            {showMore  <ChevronUp className="h-4 w-4 mr-1" /> : <ChevronDown className="h-4 w-4 mr-1" />}
+            {showMore  "Menos datos" : "Más datos"}
           </Button>
 
           {showMore && (
@@ -1313,8 +1296,8 @@ function CreateClientDialog({
 
           <DialogFooter>
             <Button type="button" variant="outline" onClick={resetAndClose} data-testid="button-cancel-create-client">Cancelar</Button>
-            <Button type="submit" disabled={createMutation.isPending || !name.trim()} data-testid="button-submit-client">
-              {createMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <UserPlus className="h-4 w-4 mr-2" />}
+            <Button type="submit" disabled={createMutation.isPending || !name || !email} data-testid="button-submit-client">
+              {createMutation.isPending  <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <UserPlus className="h-4 w-4 mr-2" />}
               Crear
             </Button>
           </DialogFooter>
@@ -1332,17 +1315,17 @@ function CreateClientDialog({
           <AlertDialogHeader>
             <AlertDialogTitle>{duplicateDialogTitle}</AlertDialogTitle>
             <AlertDialogDescription>
-              {duplicateState?.message ?? ""}
+              {duplicateState.message}
             </AlertDialogDescription>
           </AlertDialogHeader>
 
-          {duplicateState?.candidate && (
+          {duplicateState.candidate && (
             <div className="rounded-lg border bg-muted/40 p-3 text-sm space-y-2">
               <div className="font-medium">{duplicateCandidateName}</div>
               <div className="text-muted-foreground">{duplicateState.candidate.phone || "Sin telefono registrado"}</div>
               <div className="text-muted-foreground">{displayClientEmail(duplicateState.candidate.email)}</div>
               <div className="text-muted-foreground">
-                {duplicateState.candidate.birthDate ? `Cumpleanos: ${formatDate(duplicateState.candidate.birthDate)}` : "Sin cumpleanos registrado"}
+                {duplicateState.candidate.birthDate  `Cumpleanos: ${formatDate(duplicateState.candidate.birthDate)}` : "Sin cumpleanos registrado"}
               </div>
               <div className="flex flex-wrap gap-2 pt-1">
                 <Badge variant="outline">
@@ -1353,16 +1336,16 @@ function CreateClientDialog({
                   )}
                 </Badge>
                 <Badge variant="secondary">
-                  {duplicateState.candidate.membershipStatus === "left" ? "Cliente inactivo" : "Cliente activo"}
+                  {duplicateState.candidate.membershipStatus === "left"  "Cliente inactivo" : "Cliente activo"}
                 </Badge>
-                {duplicateState?.candidateCount && duplicateState.candidateCount > 1 && (
+                {duplicateState.candidateCount && duplicateState.candidateCount > 1 && (
                   <Badge variant="destructive">{duplicateState.candidateCount} coincidencias fuertes</Badge>
                 )}
               </div>
             </div>
           )}
 
-          {duplicateState?.code === "AMBIGUOUS_DUPLICATE" && !!duplicateState.candidates?.length && (
+          {duplicateState.code === "AMBIGUOUS_DUPLICATE" && !!duplicateState.candidates.length && (
             <div className="space-y-2">
               {duplicateState.candidates.map((candidate) => (
                 <div key={candidate.userId} className="rounded-lg border bg-muted/40 p-3 text-sm space-y-2">
@@ -1376,7 +1359,7 @@ function CreateClientDialog({
                           {clientOriginLabel(candidate.identityControl, candidate.userId, "duplicate-multiple")}
                         </Badge>
                         <Badge variant="secondary">
-                          {candidate.membershipStatus === "left" ? "Cliente inactivo" : "Cliente activo"}
+                          {candidate.membershipStatus === "left"  "Cliente inactivo" : "Cliente activo"}
                         </Badge>
                       </div>
                     </div>
@@ -1401,7 +1384,7 @@ function CreateClientDialog({
             >
               Cancelar
             </AlertDialogCancel>
-            {duplicateState?.candidate?.userId && duplicateState.code !== "AMBIGUOUS_DUPLICATE" && (
+            {duplicateState.candidate.userId && duplicateState.code !== "AMBIGUOUS_DUPLICATE" && (
               <Button
                 type="button"
                 variant="outline"
@@ -1411,33 +1394,33 @@ function CreateClientDialog({
                 Abrir cliente existente
               </Button>
             )}
-            {duplicateState?.code === "DUPLICATE_CLIENT" && duplicateState.duplicateType !== "phone" && duplicateState.canReuseExisting && (
+            {duplicateState.code === "DUPLICATE_CLIENT" && duplicateState.duplicateType !== "phone" && duplicateState.canReuseExisting && (
               <AlertDialogAction
                 onClick={handleReuseExistingCandidate}
                 disabled={createMutation.isPending}
                 data-testid="button-reuse-existing-client"
               >
-                {createMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                {createMutation.isPending  <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
                 Completar datos faltantes
               </AlertDialogAction>
             )}
-            {duplicateState?.code === "DUPLICATE_CLIENT" && duplicateState.duplicateType === "phone" && duplicateState.canCreateAnyway && (
+            {duplicateState.code === "DUPLICATE_CLIENT" && duplicateState.duplicateType === "phone" && duplicateState.canCreateAnyway && (
               <AlertDialogAction
                 onClick={handleCreateAnyway}
                 disabled={createMutation.isPending}
                 data-testid="button-create-client-phone-anyway"
               >
-                {createMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                {createMutation.isPending  <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
                 Crear de todas formas
               </AlertDialogAction>
             )}
-            {duplicateState?.code === "POSSIBLE_DUPLICATE_CLIENT" && duplicateState.canCreateAnyway && (
+            {duplicateState.code === "POSSIBLE_DUPLICATE_CLIENT" && duplicateState.canCreateAnyway && (
               <AlertDialogAction
                 onClick={handleCreateAnyway}
                 disabled={createMutation.isPending}
                 data-testid="button-create-client-anyway"
               >
-                {createMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                {createMutation.isPending  <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
                 Crear de todas formas
               </AlertDialogAction>
             )}
@@ -1514,7 +1497,7 @@ function EditClientDialog({ clientId, open, onOpenChange }: { clientId: string |
   }, [open, clientId, profile]);
 
   const isProfileReady = !!profile && profile.user.id === clientId;
-  const resolvedIdentityControl = resolveClientIdentityControl(profile?.identityControl ?? null, {
+  const resolvedIdentityControl = resolveClientIdentityControl(profile.identityControl, {
     context: "edit-client-dialog",
     clientId,
   });
@@ -1533,7 +1516,7 @@ function EditClientDialog({ clientId, open, onOpenChange }: { clientId: string |
         const rawText = await resp.text();
         let payload: any = null;
         try {
-          payload = rawText ? JSON.parse(rawText) : null;
+          payload = rawText  JSON.parse(rawText) : null;
         } catch {
           payload = null;
         }
@@ -1547,7 +1530,7 @@ function EditClientDialog({ clientId, open, onOpenChange }: { clientId: string |
           throw error;
         }
 
-        return payload ?? {};
+        return payload  {};
       };
 
       const clientResp = await requestJson(`/api/branch/clients/${clientId}`, data.client);
@@ -1575,9 +1558,9 @@ function EditClientDialog({ clientId, open, onOpenChange }: { clientId: string |
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     const identityPayload = canEditIdentity
-      ? {
-          name: name.trim() || undefined,
-          email: normalizeOptionalEmailInput(email),
+       {
+          name: name || undefined,
+          email: email || undefined,
           lastName: lastName || null,
           phone: phone || null,
           birthDate: birthDate || null,
@@ -1594,10 +1577,10 @@ function EditClientDialog({ clientId, open, onOpenChange }: { clientId: string |
         injuriesNotes: injuriesNotes || null,
         medicalWarnings: medicalWarnings || null,
         parqAccepted,
-        parqAcceptedDate: parqAccepted ? (profile?.user.parqAcceptedDate || new Date().toISOString().split("T")[0]) : null,
+        parqAcceptedDate: parqAccepted  (profile.user.parqAcceptedDate || new Date().toISOString().split("T")[0]) : null,
       },
       crm: {
-        clientStatus: crmClientStatus === "auto" ? null : crmClientStatus,
+        clientStatus: crmClientStatus === "auto"  null : crmClientStatus,
         tags: crmTags || null,
         },
       });
@@ -1615,7 +1598,7 @@ function EditClientDialog({ clientId, open, onOpenChange }: { clientId: string |
           <DialogTitle>Editar cliente</DialogTitle>
           <DialogDescription>Modifica los datos del cliente</DialogDescription>
         </DialogHeader>
-        {!isProfileReady ? (
+        {!isProfileReady  (
           <div className="space-y-3">
             <Skeleton className="h-10 w-full" />
             <Skeleton className="h-10 w-full" />
@@ -1644,7 +1627,7 @@ function EditClientDialog({ clientId, open, onOpenChange }: { clientId: string |
               </div>
             </div>
             <div className="space-y-2">
-              <Label>{canEditIdentity ? "Correo electrónico (opcional)" : "Correo de acceso"}</Label>
+              <Label>Correo de acceso</Label>
               <Input
                 type="email"
                 value={email}
@@ -1655,7 +1638,7 @@ function EditClientDialog({ clientId, open, onOpenChange }: { clientId: string |
               />
               <p className="text-xs text-muted-foreground">
                 {canEditIdentity
-                  ? "Puedes agregar, actualizar o quitar el correo porque este cliente fue creado desde tu sucursal."
+                   "Puedes actualizar los datos de identidad porque este cliente fue creado desde tu sucursal."
                   : identityManagedReason}
               </p>
             </div>
@@ -1673,7 +1656,7 @@ function EditClientDialog({ clientId, open, onOpenChange }: { clientId: string |
                 <div>
                   <p className="text-sm font-medium">CRM</p>
                   <p className="text-xs text-muted-foreground">
-                    Última visita detectada: {profile.crm.lastVisit ? formatDateTime(profile.crm.lastVisit) : "Nunca"}
+                    Ultima visita detectada: {profile.crm.lastVisit  formatDateTime(profile.crm.lastVisit) : "Nunca"}
                   </p>
                 </div>
                 <Badge variant="outline" className={crmStatusBadgeClass(profile.crm.clientStatus)} data-testid="badge-edit-crm-status">
@@ -1773,7 +1756,7 @@ function EditClientDialog({ clientId, open, onOpenChange }: { clientId: string |
             <DialogFooter>
               <Button type="button" variant="outline" onClick={handleClose} data-testid="button-cancel-edit">Cancelar</Button>
               <Button type="submit" disabled={editMutation.isPending || !name} data-testid="button-save-edit">
-                {editMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Pencil className="h-4 w-4 mr-2" />}
+                {editMutation.isPending  <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Pencil className="h-4 w-4 mr-2" />}
                 Guardar
               </Button>
             </DialogFooter>
@@ -1794,7 +1777,7 @@ function InviteLinkDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
   });
 
   function copyLink() {
-    if (linkData?.inviteUrl) {
+    if (linkData.inviteUrl) {
       navigator.clipboard.writeText(linkData.inviteUrl);
       setCopied(true);
       toast({ title: "Link copiado" });
@@ -1810,11 +1793,11 @@ function InviteLinkDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
           <DialogDescription>Comparte este link para que los clientes se registren y se unan a tu sucursal</DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
-          {linkData ? (
+          {linkData  (
             <div className="flex gap-2">
               <Input value={linkData.inviteUrl} readOnly className="font-mono text-sm" data-testid="input-invite-url" />
               <Button variant="outline" onClick={copyLink} data-testid="button-copy-invite">
-                {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                {copied  <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
               </Button>
             </div>
           ) : (
@@ -1903,7 +1886,7 @@ function ClientDebtSection({ clientId, hasDebt, debtAmount }: { clientId: string
           disabled={debtMutation.isPending}
           data-testid="client-debt-save"
         >
-          {debtMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Guardar"}
+          {debtMutation.isPending  <Loader2 className="h-3 w-3 animate-spin" /> : "Guardar"}
         </Button>
       </div>
     </div>
@@ -1969,8 +1952,8 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
 }) {
   const { toast } = useToast();
   const { user } = useAuth();
-  const branchSlug = ((user?.branch as any)?.slug ?? "");
-  const appLink = branchSlug ? `${window.location.origin}/app/${branchSlug}` : "";
+  const branchSlug = (user.branch as any).slug  "";
+  const appLink = branchSlug  `${window.location.origin}/app/${branchSlug}` : "";
   const [noteContent, setNoteContent] = useState("");
   const [showAllNotes, setShowAllNotes] = useState(false);
   const [showPlanSelect, setShowPlanSelect] = useState(false);
@@ -1990,7 +1973,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
   });
   const commercialHistoryQuery = useQuery<ClientCommercialHistoryResponse>({
     queryKey: [
-      `/api/branch/clients/${clientId}/commercial-history?filter=${commercialHistoryFilter}&page=${commercialHistoryPage}&limit=10`,
+      `/api/branch/clients/${clientId}/commercial-historyfilter=${commercialHistoryFilter}&page=${commercialHistoryPage}&limit=10`,
     ],
     enabled: open && !!clientId,
     placeholderData: (previous) => previous,
@@ -2037,7 +2020,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
       cancelAnimationFrame(rafId);
       window.clearTimeout(timeoutId);
     };
-  }, [open, clientId, profile?.user.id]);
+  }, [open, clientId, profile.user.id]);
 
   useEffect(() => {
     if (!open) return;
@@ -2185,27 +2168,13 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
 
   const activePlans = (plans || []).filter(p => p.isActive);
   const todayAssignmentDate = getMxTodayIsoDate();
-  const selectedAssignPlan = activePlans.find((plan) => plan.id === selectedAssignPlanId) ?? null;
+  const selectedAssignPlan = activePlans.find((plan) => plan.id === selectedAssignPlanId)  null;
   const assignPlanPreviewExpiresAt = calculatePlanExpirationPreview(selectedAssignPlan, assignmentStartDate);
   const isHistoricalAssignment = assignmentStartDate < todayAssignmentDate;
-  const age = profile ? calcAge(profile.user.birthDate) : null;
+  const age = profile  calcAge(profile.user.birthDate) : null;
   const commercialHistory = commercialHistoryQuery.data;
-  const commercialHistoryData: ClientCommercialHistoryResponse = commercialHistory ?? {
-    summary: {
-      totalSpentAmount: 0,
-      salesCount: 0,
-      averageTicketAmount: 0,
-      lastPurchaseAt: null,
-      currentMonthAmount: 0,
-    },
-    items: [],
-    total: 0,
-    page: 1,
-    limit: 10,
-    filter: commercialHistoryFilter,
-  };
   const commercialHistoryPageCount = commercialHistory
-    ? Math.max(1, Math.ceil(commercialHistory.total / commercialHistory.limit))
+     Math.max(1, Math.ceil(commercialHistory.total / commercialHistory.limit))
     : 1;
 
   const renderAssignPlanPicker = () => (
@@ -2225,7 +2194,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
         </p>
       </div>
 
-      {isHistoricalAssignment ? (
+      {isHistoricalAssignment  (
         <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200">
           Se registrará la membresía con fecha histórica. También se registrará el ingreso en Caja con esa fecha.
         </div>
@@ -2243,7 +2212,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
         </Select>
       </div>
 
-      {activePlans.length === 0 ? (
+      {activePlans.length === 0  (
         <p className="text-xs text-muted-foreground">No hay servicios o planes activos. Crea uno en la pestaña Servicios y planes.</p>
       ) : (
         <div className="space-y-2">
@@ -2256,7 +2225,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                 type="button"
                 onClick={() => setSelectedAssignPlanId(plan.id)}
                 className={`w-full rounded-md border bg-background p-2 text-left text-sm transition-colors ${
-                  isSelected ? "border-primary ring-1 ring-primary/30" : "hover:bg-muted/50"
+                  isSelected  "border-primary ring-1 ring-primary/30" : "hover:bg-muted/50"
                 }`}
                 data-testid={`button-select-plan-${plan.id}`}
               >
@@ -2268,7 +2237,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                   {cycleLabel(plan.cycleMonths)} · {usageSummaryLabel(plan.classLimit, plan.cycleMonths)}
                 </div>
                 <div className="mt-1 text-[11px] text-muted-foreground">
-                  Inicia {formatDate(assignmentStartDate)} · {previewExpiresAt ? `Vence ${formatCalendarPreview(previewExpiresAt)}` : "Sin fecha de vencimiento"}
+                  Inicia {formatDate(assignmentStartDate)} · {previewExpiresAt  `Vence ${formatCalendarPreview(previewExpiresAt)}` : "Sin fecha de vencimiento"}
                 </div>
               </button>
             );
@@ -2276,7 +2245,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
         </div>
       )}
 
-      {selectedAssignPlan ? (
+      {selectedAssignPlan  (
         <div className="rounded-md border bg-background px-3 py-2 text-xs">
           <p className="font-medium">Plan seleccionado</p>
           <p className="mt-1 text-muted-foreground">{selectedAssignPlan.name}</p>
@@ -2287,7 +2256,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
             </div>
             <div>
               <p className="text-muted-foreground">Fecha de vencimiento</p>
-              <p className="font-medium">{assignPlanPreviewExpiresAt ? formatCalendarPreview(assignPlanPreviewExpiresAt) : "Sin fecha de vencimiento"}</p>
+              <p className="font-medium">{assignPlanPreviewExpiresAt  formatCalendarPreview(assignPlanPreviewExpiresAt) : "Sin fecha de vencimiento"}</p>
             </div>
           </div>
         </div>
@@ -2309,7 +2278,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
           }
           data-testid="button-confirm-assign-plan"
         >
-          {assignPlanMutation.isPending ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : <Package className="mr-1 h-3.5 w-3.5" />}
+          {assignPlanMutation.isPending  <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : <Package className="mr-1 h-3.5 w-3.5" />}
           Asignar servicio o plan
         </Button>
         <Button
@@ -2339,17 +2308,17 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
         </DialogHeader>
 
         <div
-          key={`client-profile-scroll-${clientId ?? "none"}`}
+          key={`client-profile-scroll-${clientId  "none"}`}
           ref={scrollContainerRef}
           className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 pb-[calc(env(safe-area-inset-bottom)+6.5rem)] md:px-0 md:py-0 md:pb-0"
         >
-          {isLoading ? (
+        {isLoading  (
           <div className="space-y-3">
             <Skeleton className="h-6 w-48" />
             <Skeleton className="h-4 w-32" />
             <Skeleton className="h-4 w-40" />
           </div>
-          ) : profile ? (
+        ) : profile  (
           <div className="max-w-full min-w-0 space-y-3 md:space-y-4">
             <div className="sticky top-0 z-10 -mx-4 border-b bg-background/95 px-4 pb-2.5 pt-[calc(env(safe-area-inset-top)+0.35rem)] pr-14 backdrop-blur md:static md:mx-0 md:border-b-0 md:bg-transparent md:px-0 md:pb-0 md:pt-0 md:pr-0">
               <div className="grid grid-cols-[auto,minmax(0,1fr)] items-start gap-3 md:block md:space-y-4">
@@ -2378,14 +2347,14 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                         data-testid="client-whatsapp"
                         onClick={(e) => {
                           e.stopPropagation();
-                          onWhatsApp?.({
+                          onWhatsApp.({
                             name: profile.user.name,
                             lastName: profile.user.lastName,
                             phone: profile.user.phone,
-                            expiresAt: profile.membership.expiresAt ?? null,
-                            classesRemaining: profile.membership.classesRemaining ?? null,
-                            classesTotal: profile.membership.classesTotal ?? null,
-                            planName: profile.plan?.name ?? profile.planNameSnapshot ?? null,
+                            expiresAt: profile.membership.expiresAt  null,
+                            classesRemaining: profile.membership.classesRemaining  null,
+                            classesTotal: profile.membership.classesTotal  null,
+                            planName: profile.plan.name  profile.planNameSnapshot  null,
                           });
                         }}
                       >
@@ -2414,7 +2383,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                     </span>
                     {profile.user.birthDate && (
                       <span data-testid="text-profile-age">
-                        {age !== null ? `${age} años` : ""} ({profile.user.birthDate})
+                        {age !== null  `${age} años` : ""} ({profile.user.birthDate})
                       </span>
                     )}
                     {profile.user.gender && (
@@ -2447,7 +2416,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                 disabled={attendanceMutation.isPending || profile.membership.status !== "active" || profile.membership.clientStatus === "frozen"}
                 data-testid="button-register-attendance"
               >
-                {attendanceMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <ClipboardCheck className="h-4 w-4 mr-1" />}
+                {attendanceMutation.isPending  <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <ClipboardCheck className="h-4 w-4 mr-1" />}
                 Registrar asistencia
               </Button>
               <Button size="sm" variant="destructive" className="col-span-2 h-10 w-full sm:col-span-1 sm:h-9" onClick={() => { onOpenChange(false); onDelete(profile.user.id, displayName(profile.user.name, profile.user.lastName)); }} data-testid="button-profile-delete">
@@ -2471,7 +2440,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                 </div>
                 <div className="w-full rounded-md bg-background p-2 text-center">
                   <div className="text-base font-bold sm:text-lg" data-testid="text-classes-remaining-summary">
-                    {profile.membership.classesRemaining !== null ? profile.membership.classesRemaining : "∞"}
+                    {profile.membership.classesRemaining !== null  profile.membership.classesRemaining : "∞"}
                   </div>
                   <div className="text-[10px] text-muted-foreground">Usos disponibles</div>
                 </div>
@@ -2480,14 +2449,14 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                 <div className="flex flex-col gap-1 text-xs sm:flex-row sm:items-center sm:justify-between">
                   <span className="text-muted-foreground">Última asistencia</span>
                   <span className="break-words font-medium sm:text-right" data-testid="text-last-attendance">
-                    {profile.recentAttendances.length > 0 ? formatDateTime(profile.recentAttendances[0].checkedInAt) : "Nunca"}
+                    {profile.recentAttendances.length > 0  formatDateTime(profile.recentAttendances[0].checkedInAt) : "Nunca"}
                   </span>
                 </div>
                 <div className="flex flex-col gap-1 text-xs sm:flex-row sm:items-center sm:justify-between">
                   <span className="text-muted-foreground">Próxima reserva</span>
                   <span className="break-words font-medium sm:text-right" data-testid="text-next-booking">
                     {profile.nextBooking
-                      ? `${profile.nextBooking.className} · ${formatDate(profile.nextBooking.bookingDate)} ${profile.nextBooking.startTime}`
+                       `${profile.nextBooking.className} · ${formatDate(profile.nextBooking.bookingDate)} ${profile.nextBooking.startTime}`
                       : "Sin reservas"}
                   </span>
                 </div>
@@ -2522,7 +2491,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                     Reporta comportamiento problemático al Super Admin y, si hace falta, bloquea solo esta sucursal.
                   </p>
                 </div>
-                {profile.moderation.localBlock ? (
+                {profile.moderation.localBlock  (
                   <Badge variant="outline" className="self-start whitespace-normal border-red-200 bg-red-50 text-left text-red-700" data-testid="badge-profile-local-block">
                     Bloqueado local
                   </Badge>
@@ -2537,7 +2506,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                 <div className="rounded-md border border-red-200 bg-red-50/80 p-3 text-sm space-y-1" data-testid="card-profile-local-block">
                   <p className="font-medium text-red-700">Este cliente no puede interactuar con esta sucursal.</p>
                   <p className="text-red-700/80">
-                    {profile.moderation.localBlock.reason ? reportReasonLabel(profile.moderation.localBlock.reason) : "Sin motivo especificado"}
+                    {profile.moderation.localBlock.reason  reportReasonLabel(profile.moderation.localBlock.reason) : "Sin motivo especificado"}
                   </p>
                   {profile.moderation.localBlock.note && (
                     <p className="text-red-700/80">{profile.moderation.localBlock.note}</p>
@@ -2577,7 +2546,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                       />
                       Bloquear tambien en esta sucursal
                     </label>
-                    {!profile.moderation.localBlock ? (
+                    {!profile.moderation.localBlock  (
                       <Button
                         type="button"
                         variant="outline"
@@ -2587,7 +2556,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                         disabled={localBlockMutation.isPending}
                         data-testid="button-local-block"
                       >
-                        {localBlockMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <Shield className="h-3.5 w-3.5 mr-1" />}
+                        {localBlockMutation.isPending  <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <Shield className="h-3.5 w-3.5 mr-1" />}
                         Bloquear en esta sucursal
                       </Button>
                     ) : (
@@ -2600,7 +2569,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                         disabled={localUnblockMutation.isPending}
                         data-testid="button-local-unblock"
                       >
-                        {localUnblockMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <Shield className="h-3.5 w-3.5 mr-1" />}
+                        {localUnblockMutation.isPending  <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <Shield className="h-3.5 w-3.5 mr-1" />}
                         Desbloquear sucursal
                       </Button>
                     )}
@@ -2627,7 +2596,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                   disabled={reportMutation.isPending}
                   data-testid="button-report-client"
                 >
-                  {reportMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <AlertTriangle className="h-4 w-4 mr-2" />}
+                  {reportMutation.isPending  <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <AlertTriangle className="h-4 w-4 mr-2" />}
                   Reportar a Super Admin
                 </Button>
               </div>
@@ -2638,7 +2607,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                     Historial de incidencias ({profile.moderation.reports.length})
                   </p>
                 </div>
-                {profile.moderation.reports.length === 0 ? (
+                {profile.moderation.reports.length === 0  (
                   <p className="text-xs text-muted-foreground italic">Sin incidencias registradas.</p>
                 ) : (
                   profile.moderation.reports.slice(0, 5).map((report) => (
@@ -2654,8 +2623,8 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                       </div>
                       {report.note && <p className="break-words text-sm">{report.note}</p>}
                       <p className="break-words text-[11px] text-muted-foreground">
-                        {report.reporterName ? `Reportado por ${report.reporterName}` : "Reportado por admin"}
-                        {report.reviewedAt && report.reviewerName ? ` · Revisado por ${report.reviewerName}` : ""}
+                        {report.reporterName  `Reportado por ${report.reporterName}` : "Reportado por admin"}
+                        {report.reviewedAt && report.reviewerName  ` · Revisado por ${report.reviewerName}` : ""}
                       </p>
                     </div>
                   ))
@@ -2668,17 +2637,17 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                 <Package className="h-3.5 w-3.5" />
                 Servicio o plan activo
               </h4>
-              {profile.plan ? (
+              {profile.plan  (
                 <div className="space-y-2">
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
                       <span className="break-words text-sm font-medium" data-testid="text-profile-plan">{profile.plan.name}</span>
                       <Badge
-                        variant={profile.planStatus === "expired" ? "destructive" : "default"}
+                        variant={profile.planStatus === "expired"  "destructive" : "default"}
                         className="text-[10px]"
                         data-testid="badge-plan-status"
                       >
-                        {profile.planStatus === "expired" ? "Vencido" : "Activo"}
+                        {profile.planStatus === "expired"  "Vencido" : "Activo"}
                       </Badge>
                     </div>
                     <Button variant="ghost" size="sm" className="h-10 w-full px-2 text-xs sm:h-6 sm:w-auto" onClick={() => removePlanMutation.mutate()} disabled={removePlanMutation.isPending} data-testid="button-remove-plan">
@@ -2698,24 +2667,24 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                     <div className="bg-background rounded-md p-2">
                       <div className="text-muted-foreground mb-0.5">Pagado el</div>
                       <div className="font-medium" data-testid="text-paid-at">
-                        {profile.membership.paidAt ? formatDate(profile.membership.paidAt) : "—"}
+                        {profile.membership.paidAt  formatDate(profile.membership.paidAt) : "—"}
                       </div>
                     </div>
                     <div className="bg-background rounded-md p-2">
                       <div className="text-muted-foreground mb-0.5">Vence el</div>
-                      <div className={`font-medium ${profile.planStatus === "expired" ? "text-red-500" : ""}`} data-testid="text-plan-expires">
-                        {profile.membership.expiresAt ? formatDate(profile.membership.expiresAt) : "—"}
+                      <div className={`font-medium ${profile.planStatus === "expired"  "text-red-500" : ""}`} data-testid="text-plan-expires">
+                        {profile.membership.expiresAt  formatDate(profile.membership.expiresAt) : "—"}
                       </div>
                     </div>
                   </div>
 
                   <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-                    {profile.membership.classesRemaining !== null && profile.membership.classesTotal !== null ? (
+                    {profile.membership.classesRemaining !== null && profile.membership.classesTotal !== null  (
                       <span className="flex flex-wrap items-center gap-1" data-testid="text-classes-remaining">
                         <Hash className="h-3 w-3" />
                         {profile.membership.classesRemaining}/{profile.membership.classesTotal} usos restantes
                       </span>
-                    ) : profile.membership.classesRemaining !== null ? (
+                    ) : profile.membership.classesRemaining !== null  (
                       <span className="flex flex-wrap items-center gap-1" data-testid="text-classes-remaining">
                         <Hash className="h-3 w-3" />
                         {profile.membership.classesRemaining} usos restantes
@@ -2745,13 +2714,13 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                         disabled={renewMutation.isPending}
                         data-testid="button-renew-plan"
                       >
-                        {renewMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Calendar className="h-4 w-4 mr-1" />}
+                        {renewMutation.isPending  <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Calendar className="h-4 w-4 mr-1" />}
                         Renovar vigencia
                       </Button>
                     </div>
                   )}
                 </div>
-              ) : profile.planStatus === "deleted" ? (
+              ) : profile.planStatus === "deleted"  (
                 <div className="space-y-2">
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge variant="outline" className="whitespace-normal border-orange-400 text-orange-600 text-[10px]" data-testid="badge-plan-deleted">
@@ -2775,11 +2744,11 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                       </div>
                       <div className="bg-background rounded-md p-2">
                         <div className="text-muted-foreground mb-0.5">Vencía el</div>
-                        <div className="font-medium">{profile.membership.expiresAt ? formatDate(profile.membership.expiresAt) : "—"}</div>
+                        <div className="font-medium">{profile.membership.expiresAt  formatDate(profile.membership.expiresAt) : "—"}</div>
                       </div>
                     </div>
                   )}
-                  {!showPlanSelect ? (
+                  {!showPlanSelect  (
                     <Button
                       variant="default"
                       size="sm"
@@ -2800,7 +2769,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
               ) : (
                 <div className="space-y-2">
                   <p className="text-xs text-muted-foreground" data-testid="text-no-plan">Sin servicio o plan asignado</p>
-                  {!showPlanSelect ? (
+                  {!showPlanSelect  (
                     <Button
                       variant="outline"
                       size="sm"
@@ -2828,11 +2797,11 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
               </h4>
               <div className="flex flex-wrap items-center gap-2">
                 <Badge
-                  variant={profile.user.parqAccepted ? "default" : "outline"}
-                  className={`text-[10px] ${profile.user.parqAccepted ? "bg-green-600" : ""}`}
+                  variant={profile.user.parqAccepted  "default" : "outline"}
+                  className={`text-[10px] ${profile.user.parqAccepted  "bg-green-600" : ""}`}
                   data-testid="badge-parq"
                 >
-                  PAR-Q {profile.user.parqAccepted ? "✓" : "pendiente"}
+                  PAR-Q {profile.user.parqAccepted  "✓" : "pendiente"}
                 </Badge>
                 {profile.user.parqAccepted && profile.user.parqAcceptedDate && (
                   <span className="break-words text-[10px] text-muted-foreground">Firmado: {profile.user.parqAcceptedDate}</span>
@@ -2840,7 +2809,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
               </div>
               {(profile.user.emergencyContactName || profile.user.emergencyContactPhone) && (
                 <div className="break-words text-xs text-muted-foreground">
-                  <span className="font-medium">Contacto emergencia:</span> {profile.user.emergencyContactName || ""} {profile.user.emergencyContactPhone ? `(${profile.user.emergencyContactPhone})` : ""}
+                  <span className="font-medium">Contacto emergencia:</span> {profile.user.emergencyContactName || ""} {profile.user.emergencyContactPhone  `(${profile.user.emergencyContactPhone})` : ""}
                 </div>
               )}
               {profile.user.medicalNotes && (
@@ -2892,7 +2861,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                         <div className="min-w-0">
                           <p className="break-words text-sm font-medium">{purchase.concept}</p>
                           <p className="break-words text-xs text-muted-foreground">
-                            {formatDate(purchase.entryDate)} · {purchase.paymentMethod ? purchase.paymentMethod.replace(/_/g, " ") : "Método no especificado"}
+                            {formatDate(purchase.entryDate)} · {purchase.paymentMethod  purchase.paymentMethod.replace(/_/g, " ") : "Método no especificado"}
                           </p>
                         </div>
                         <span className="text-sm font-semibold text-emerald-600">
@@ -2937,29 +2906,29 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                 <div className="rounded-md bg-background p-2">
                   <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Total gastado</p>
                   <p className="mt-1 text-sm font-semibold">
-                    {formatCurrencyMx(commercialHistoryData.summary.totalSpentAmount ?? 0)}
+                    {formatCurrencyMx(commercialHistory.summary.totalSpentAmount  0)}
                   </p>
                 </div>
                 <div className="rounded-md bg-background p-2">
                   <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Ventas</p>
-                  <p className="mt-1 text-sm font-semibold">{commercialHistoryData.summary.salesCount ?? 0}</p>
+                  <p className="mt-1 text-sm font-semibold">{commercialHistory.summary.salesCount  0}</p>
                 </div>
                 <div className="rounded-md bg-background p-2">
                   <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Ticket promedio</p>
                   <p className="mt-1 text-sm font-semibold">
-                    {formatCurrencyMx(commercialHistoryData.summary.averageTicketAmount ?? 0)}
+                    {formatCurrencyMx(commercialHistory.summary.averageTicketAmount  0)}
                   </p>
                 </div>
                 <div className="rounded-md bg-background p-2">
                   <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Compras del mes</p>
                   <p className="mt-1 text-sm font-semibold">
-                    {formatCurrencyMx(commercialHistoryData.summary.currentMonthAmount ?? 0)}
+                    {formatCurrencyMx(commercialHistory.summary.currentMonthAmount  0)}
                   </p>
                 </div>
                 <div className="rounded-md bg-background p-2">
                   <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Última compra</p>
                   <p className="mt-1 text-sm font-semibold">
-                    {commercialHistoryData.summary.lastPurchaseAt ? formatDate(commercialHistoryData.summary.lastPurchaseAt) : "Sin ventas"}
+                    {commercialHistory.summary.lastPurchaseAt  formatDate(commercialHistory.summary.lastPurchaseAt) : "Sin ventas"}
                   </p>
                 </div>
               </div>
@@ -2970,7 +2939,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                     key={filter}
                     type="button"
                     size="sm"
-                    variant={commercialHistoryFilter === filter ? "default" : "outline"}
+                    variant={commercialHistoryFilter === filter  "default" : "outline"}
                     className="h-8 rounded-full px-3 text-xs"
                     onClick={() => {
                       setCommercialHistoryFilter(filter);
@@ -2982,12 +2951,12 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                 ))}
               </div>
 
-              {commercialHistoryQuery.isLoading ? (
+              {commercialHistoryQuery.isLoading  (
                 <div className="space-y-2">
                   <Skeleton className="h-24 w-full rounded-2xl" />
                   <Skeleton className="h-24 w-full rounded-2xl" />
                 </div>
-              ) : !commercialHistory || commercialHistory.items.length === 0 ? (
+              ) : !commercialHistory || commercialHistory.items.length === 0  (
                 <div className="rounded-md border border-dashed bg-background/70 p-4 text-center">
                   <p className="text-sm font-medium">Sin ventas comerciales todavía</p>
                   <p className="mt-1 text-xs text-muted-foreground">
@@ -2996,9 +2965,9 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                 </div>
               ) : (
                 <div className="space-y-3">
-                  {commercialHistoryData.items.map((sale) => {
+                  {commercialHistory.items.map((sale) => {
                     const paymentLine = sale.payments.length > 0
-                      ? sale.payments.map((payment) => `${getSalePaymentMethodLabel(payment.paymentMethod)} ${formatCurrencyMx(payment.amount)}`).join(" · ")
+                       sale.payments.map((payment) => `${getSalePaymentMethodLabel(payment.paymentMethod)} ${formatCurrencyMx(payment.amount)}`).join(" · ")
                       : "Sin pagos registrados";
                     const totalUnits = sale.items.reduce((sum, item) => sum + item.quantity, 0);
                     const typeLabel = getCommercialItemKindLabel(sale.items);
@@ -3015,7 +2984,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                               {formatDateTime(sale.saleDate)} · {getSaleChannelLabel(sale.channel)}
                             </p>
                             <p className="mt-1 break-words text-xs text-muted-foreground">
-                              {sale.sellerName ? `Atendió ${sale.sellerName}` : "Sin vendedor"} · {paymentLine}
+                              {sale.sellerName  `Atendió ${sale.sellerName}` : "Sin vendedor"} · {paymentLine}
                             </p>
                           </div>
                           <div className="text-left sm:text-right">
@@ -3037,7 +3006,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                                   {item.quantity} × {item.nameSnapshot}
                                 </p>
                                 <p className="break-words text-xs text-muted-foreground">
-                                  {item.categorySnapshot || "Sin categoría"} · {item.itemType === "commercial_product" ? "Producto" : "Servicio o plan"}
+                                  {item.categorySnapshot || "Sin categoría"} · {item.itemType === "commercial_product"  "Producto" : "Servicio o plan"}
                                 </p>
                               </div>
                               <div className="text-sm font-medium">
@@ -3051,7 +3020,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                           <span>
                             Pagado {formatCurrencyMx(sale.paidAmount)}
                           </span>
-                          {sale.notes ? <span className="break-words">Nota: {sale.notes}</span> : null}
+                          {sale.notes  <span className="break-words">Nota: {sale.notes}</span> : null}
                         </div>
                       </div>
                     );
@@ -3059,7 +3028,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
 
                   <div className="flex flex-col gap-2 border-t pt-2 sm:flex-row sm:items-center sm:justify-between">
                     <p className="text-xs text-muted-foreground">
-                      Página {commercialHistoryData.page} de {commercialHistoryPageCount} · {commercialHistoryData.total} venta{commercialHistoryData.total === 1 ? "" : "s"} en {getCommercialHistoryFilterLabel(commercialHistoryData.filter).toLowerCase()}
+                      Página {commercialHistory.page} de {commercialHistoryPageCount} · {commercialHistory.total} venta{commercialHistory.total === 1  "" : "s"} en {getCommercialHistoryFilterLabel(commercialHistory.filter).toLowerCase()}
                     </p>
                     <div className="flex gap-2">
                       <Button
@@ -3068,7 +3037,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                         variant="outline"
                         className="h-8 px-3 text-xs"
                         onClick={() => setCommercialHistoryPage((current) => Math.max(1, current - 1))}
-                        disabled={commercialHistoryData.page <= 1}
+                        disabled={commercialHistory.page <= 1}
                       >
                         Anterior
                       </Button>
@@ -3078,7 +3047,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                         variant="outline"
                         className="h-8 px-3 text-xs"
                         onClick={() => setCommercialHistoryPage((current) => current + 1)}
-                        disabled={commercialHistoryData.page >= commercialHistoryPageCount}
+                        disabled={commercialHistory.page >= commercialHistoryPageCount}
                       >
                         Siguiente
                       </Button>
@@ -3108,17 +3077,17 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                   disabled={noteMutation.isPending || !noteContent.trim()}
                   data-testid="button-add-note"
                 >
-                  {noteMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
+                  {noteMutation.isPending  <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
                 </Button>
               </div>
               <div className="space-y-0" data-testid="client-notes-list">
                 {profile.notes.length === 0 && (
                   <p className="text-xs text-muted-foreground italic">Sin notas registradas</p>
                 )}
-                {(showAllNotes ? profile.notes : profile.notes.slice(0, 10)).map((note, idx) => (
+                {(showAllNotes  profile.notes : profile.notes.slice(0, 10)).map((note, idx) => (
                   <div key={note.id} className="relative pl-4 pb-3" data-testid={`note-${note.id}`}>
                     <div className="absolute left-[5px] top-[6px] w-1.5 h-1.5 rounded-full bg-primary" />
-                    {idx < (showAllNotes ? profile.notes.length : Math.min(profile.notes.length, 10)) - 1 && (
+                    {idx < (showAllNotes  profile.notes.length : Math.min(profile.notes.length, 10)) - 1 && (
                       <div className="absolute left-[7px] top-[14px] bottom-0 w-px bg-border" />
                     )}
                     <div className="mb-0.5 break-words text-[10px] text-muted-foreground">
@@ -3135,7 +3104,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                     onClick={() => setShowAllNotes(!showAllNotes)}
                     data-testid="button-show-all-notes"
                   >
-                    {showAllNotes ? "Mostrar menos" : `Ver todas (${profile.notes.length})`}
+                    {showAllNotes  "Mostrar menos" : `Ver todas (${profile.notes.length})`}
                   </Button>
                 )}
               </div>
@@ -3203,13 +3172,6 @@ function ClientAlertsHub({
   onViewClient: (userId: string) => void;
 }) {
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
-  const alertsData: AlertsData = alerts ?? {
-    expiringMemberships: [],
-    expiredMemberships: [],
-    inactiveClients: [],
-    clientsWithoutClasses: [],
-    upcomingBirthdays: [],
-  };
 
   const sections = [
     {
@@ -3223,15 +3185,15 @@ function ClientAlertsHub({
         subtitle: `Alta ${formatDate(client.joinedAt)} · ${clientOriginLabel(client.identityControl, client.userId, "alerts-app")}`,
         phone: client.phone,
         onView: () => onViewClient(client.userId),
-        onWhatsApp: () => openWaLink(client.phone, buildClientAlertMessage("app", { firstName: client.name, branchName, planName: null, expiresAt: null })),
+        onWhatsApp: () => openWaLink(client.phone, buildClientAlertMessage("app", { firstName: client.name, branchName })),
       })),
     },
     {
       key: "expiring",
       title: "⚠️ Planes por vencer",
       description: "Conviene escribirles antes de que pierdan continuidad.",
-      count: alertsData.expiringMemberships.length || 0,
-      items: alertsData.expiringMemberships.map((item) => ({
+      count: alerts.expiringMemberships.length || 0,
+      items: (alerts.expiringMemberships || []).map((item) => ({
         id: item.membershipId,
         title: displayName(item.name, item.lastName),
         subtitle: `${item.planName || "Sin plan"} · Vence ${formatDate(item.expiresAt)}`,
@@ -3249,8 +3211,8 @@ function ClientAlertsHub({
       key: "expired",
       title: "Planes vencidos sin renovación",
       description: "Clientes que ya vencieron y pueden reactivarse con seguimiento.",
-      count: alertsData.expiredMemberships.length || 0,
-      items: alertsData.expiredMemberships.map((item) => ({
+      count: alerts.expiredMemberships.length || 0,
+      items: (alerts.expiredMemberships || []).map((item) => ({
         id: item.membershipId,
         title: displayName(item.name, item.lastName),
         subtitle: `${item.planName || "Sin plan"} · Venció ${formatDate(item.expiresAt)}`,
@@ -3268,42 +3230,42 @@ function ClientAlertsHub({
       key: "birthdays",
       title: "Próximos cumpleaños",
       description: "Ideal para reactivar con un mensaje simple y personal.",
-      count: alertsData.upcomingBirthdays.length || 0,
-      items: alertsData.upcomingBirthdays.map((item) => ({
+      count: alerts.upcomingBirthdays.length || 0,
+      items: (alerts.upcomingBirthdays || []).map((item) => ({
         id: item.membershipId,
         title: displayName(item.name, item.lastName),
         subtitle: `Cumple ${formatDate(item.birthDate)}`,
         phone: item.phone,
         onView: () => onViewClient(item.userId),
-        onWhatsApp: () => openWaLink(item.phone, buildClientAlertMessage("birthday", { firstName: item.name, branchName, planName: null, expiresAt: null })),
+        onWhatsApp: () => openWaLink(item.phone, buildClientAlertMessage("birthday", { firstName: item.name, branchName })),
       })),
     },
     {
       key: "inactive",
       title: "😴 Clientes inactivos",
       description: "No han vuelto en un periodo largo y vale la pena retomarlos.",
-      count: alertsData.inactiveClients.length || 0,
-      items: alertsData.inactiveClients.map((item) => ({
+      count: alerts.inactiveClients.length || 0,
+      items: (alerts.inactiveClients || []).map((item) => ({
         id: item.membershipId,
         title: displayName(item.name, item.lastName),
         subtitle: `Última actividad ${formatDate(item.lastAttendance || item.joinedAt)}`,
         phone: item.phone,
         onView: () => onViewClient(item.userId),
-        onWhatsApp: () => openWaLink(item.phone, buildClientAlertMessage("inactive", { firstName: item.name, branchName, planName: null, expiresAt: null })),
+        onWhatsApp: () => openWaLink(item.phone, buildClientAlertMessage("inactive", { firstName: item.name, branchName })),
       })),
     },
     {
       key: "no_classes",
       title: "🎟 Sin usos disponibles",
       description: "Clientes que ya consumieron sus usos y están listos para continuar.",
-      count: alertsData.clientsWithoutClasses.length || 0,
-      items: alertsData.clientsWithoutClasses.map((item) => ({
+      count: alerts.clientsWithoutClasses.length || 0,
+      items: (alerts.clientsWithoutClasses || []).map((item) => ({
         id: item.membershipId,
         title: displayName(item.name, item.lastName),
-        subtitle: `${item.planName || "Sin plan"} · 0/${item.classesTotal ?? ""} usos`,
+        subtitle: `${item.planName || "Sin plan"} · 0/${item.classesTotal  ""} usos`,
         phone: item.phone,
         onView: () => onViewClient(item.userId),
-        onWhatsApp: () => openWaLink(item.phone, buildClientAlertMessage("no_classes", { firstName: item.name, branchName, planName: null, expiresAt: null })),
+        onWhatsApp: () => openWaLink(item.phone, buildClientAlertMessage("no_classes", { firstName: item.name, branchName })),
       })),
     },
   ].filter((section) => section.count > 0);
@@ -3321,12 +3283,12 @@ function ClientAlertsHub({
           </p>
         </div>
 
-        {loading ? (
+        {loading  (
           <div className="grid gap-3 xl:grid-cols-2">
             <Skeleton className="h-44 rounded-2xl" />
             <Skeleton className="h-44 rounded-2xl" />
           </div>
-        ) : sections.length === 0 ? (
+        ) : sections.length === 0  (
           <div className="rounded-2xl border border-dashed px-4 py-8 text-center">
             <p className="text-sm font-medium">Sin alertas relevantes por ahora</p>
             <p className="mt-1 text-sm text-muted-foreground">
@@ -3336,8 +3298,8 @@ function ClientAlertsHub({
         ) : (
           <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
             {sections.map((section) => {
-              const expanded = expandedSections[section.key] ?? false;
-              const visibleItems = expanded ? section.items : section.items.slice(0, 3);
+              const expanded = expandedSections[section.key]  false;
+              const visibleItems = expanded  section.items : section.items.slice(0, 3);
 
               return (
                 <div key={section.key} className="rounded-2xl border border-border/70 bg-muted/20 p-4">
@@ -3372,7 +3334,7 @@ function ClientAlertsHub({
                             }))
                           }
                         >
-                          {expanded ? "Ver menos" : "Ver todos"}
+                          {expanded  "Ver menos" : "Ver todos"}
                         </Button>
                       )}
                     </div>
@@ -3399,10 +3361,10 @@ function ClientAlertsHub({
   );
 }
 
-export default function ClientesTab({ focusRequest }: { focusRequest?: ClientFocusRequest | null } = {}) {
+export default function ClientesTab({ focusRequest }: { focusRequest: ClientFocusRequest | null } = {}) {
   const { toast } = useToast();
   const { user } = useAuth();
-  const branchName = ((user?.branch as any)?.name ?? "");
+  const branchName = (user.branch as any).name  "";
   const [search, setSearch] = useState("");
   const [activeFilter, setActiveFilter] = useState<ClientFilterKey>("with_plan");
   const [showCreateDialog, setShowCreateDialog] = useState(false);
@@ -3414,16 +3376,10 @@ export default function ClientesTab({ focusRequest }: { focusRequest?: ClientFoc
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
   const [waTarget, setWaTarget] = useState<WaModalTarget | null>(null);
 
-  const { data: clients = [], isLoading } = useQuery<BranchClient[]>({
+  const { data: clients, isLoading } = useQuery<BranchClient[]>({
     queryKey: ["/api/branch/clients"],
   });
-  const { data: alerts = {
-    expiringMemberships: [],
-    expiredMemberships: [],
-    inactiveClients: [],
-    clientsWithoutClasses: [],
-    upcomingBirthdays: [],
-  }, isLoading: alertsLoading } = useQuery<AlertsData>({
+  const { data: alerts, isLoading: alertsLoading } = useQuery<AlertsData>({
     queryKey: ["/api/branch/alerts"],
   });
 
@@ -3452,13 +3408,13 @@ export default function ClientesTab({ focusRequest }: { focusRequest?: ClientFoc
   );
   const recentAppClients = useMemo(() => {
     const now = Date.now();
-    return clients
+    return (clients || [])
       .filter((client) => isAppJoinedClient(client))
       .filter((client) => now - new Date(client.joinedAt).getTime() <= 14 * 24 * 60 * 60 * 1000)
       .sort((a, b) => new Date(b.joinedAt).getTime() - new Date(a.joinedAt).getTime());
   }, [clients]);
 
-  const baseClients = useMemo(() => clients, [clients]);
+  const baseClients = useMemo(() => clients || [], [clients]);
   const clientsByFilter = useMemo(() => {
     return baseClients.filter((client) => {
       if (activeFilter === "with_plan") return hasActiveServiceOrPlan(client);
@@ -3480,7 +3436,7 @@ export default function ClientesTab({ focusRequest }: { focusRequest?: ClientFoc
       const crmStatusText = crmStatusLabel(c.crmClientStatus).toLowerCase();
       return (
         full.includes(q) ||
-        (c.email || "").toLowerCase().includes(q) ||
+        c.email.toLowerCase().includes(q) ||
         (c.phone && c.phone.includes(q)) ||
         tagText.includes(q) ||
         crmStatusText.includes(q)
@@ -3504,12 +3460,12 @@ export default function ClientesTab({ focusRequest }: { focusRequest?: ClientFoc
   }
 
   useEffect(() => {
-    if (!focusRequest?.userId) {
+    if (!focusRequest.userId) {
       return;
     }
 
     openProfile(focusRequest.userId);
-  }, [focusRequest?.nonce, focusRequest?.userId]);
+  }, [focusRequest.nonce]);
 
   function openEdit(userId: string) {
     setEditClientId(userId);
@@ -3545,7 +3501,7 @@ export default function ClientesTab({ focusRequest }: { focusRequest?: ClientFoc
                 {filterOptions.map((filter) => (
                   <Button
                     key={filter.key}
-                    variant={activeFilter === filter.key ? "default" : "outline"}
+                    variant={activeFilter === filter.key  "default" : "outline"}
                     size="sm"
                     className="shrink-0 rounded-full"
                     onClick={() => setActiveFilter(filter.key)}
@@ -3553,7 +3509,7 @@ export default function ClientesTab({ focusRequest }: { focusRequest?: ClientFoc
                   >
                     {filter.label}
                     <Badge
-                      variant={activeFilter === filter.key ? "secondary" : "outline"}
+                      variant={activeFilter === filter.key  "secondary" : "outline"}
                       className="ml-2 rounded-full px-1.5 py-0 text-[10px]"
                     >
                       {filter.count}
@@ -3604,7 +3560,7 @@ export default function ClientesTab({ focusRequest }: { focusRequest?: ClientFoc
         </div>
       </div>
 
-      {isLoading ? (
+      {isLoading  (
         <div className="space-y-2">
           {[1, 2, 3].map((i) => (
             <Card key={i}>
@@ -3620,17 +3576,17 @@ export default function ClientesTab({ focusRequest }: { focusRequest?: ClientFoc
             </Card>
           ))}
         </div>
-      ) : filteredClients.length === 0 ? (
+      ) : filteredClients.length === 0  (
         <Card>
           <CardContent className="p-4">
             <div className="text-center py-12" data-testid="empty-clients">
               <Users className="h-12 w-12 text-muted-foreground/30 mx-auto mb-4" />
               <h3 className="font-semibold text-lg mb-1">
-                {search ? "Sin resultados" : "Sin clientes"}
+                {search  "Sin resultados" : "Sin clientes"}
               </h3>
               <p className="text-sm text-muted-foreground max-w-md mx-auto">
                 {search
-                  ? `No se encontraron clientes con "${search}"`
+                   `No se encontraron clientes con "${search}"`
                   : "Agrega tu primer cliente o comparte el link de invitación."}
               </p>
               {!search && (
@@ -3715,7 +3671,7 @@ export default function ClientesTab({ focusRequest }: { focusRequest?: ClientFoc
                           className="text-[10px] px-1.5 py-0 border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-900/60 dark:bg-sky-950/30 dark:text-sky-300"
                           data-testid={`badge-individual-purchases-${client.userId}`}
                         >
-                          {client.individualPurchaseCount} compra{client.individualPurchaseCount === 1 ? "" : "s"} individual{client.individualPurchaseCount === 1 ? "" : "es"}
+                          {client.individualPurchaseCount} compra{client.individualPurchaseCount === 1  "" : "s"} individual{client.individualPurchaseCount === 1  "" : "es"}
                         </Badge>
                       )}
                     </div>
@@ -3725,29 +3681,29 @@ export default function ClientesTab({ focusRequest }: { focusRequest?: ClientFoc
                       <span>Cliente desde {formatDate(client.joinedAt)}</span>
                     </div>
                     <div className="flex items-center gap-1.5 mt-1 flex-wrap">
-                      {client.planName ? (
+                      {client.planName  (
                         <>
                           <Badge
-                            variant={client.planStatus === "expired" ? "destructive" : client.planStatus === "deleted" ? "outline" : "outline"}
-                            className={`text-[10px] px-1.5 py-0 ${client.planStatus === "deleted" ? "border-orange-400 text-orange-600" : ""}`}
+                            variant={client.planStatus === "expired"  "destructive" : client.planStatus === "deleted"  "outline" : "outline"}
+                            className={`text-[10px] px-1.5 py-0 ${client.planStatus === "deleted"  "border-orange-400 text-orange-600" : ""}`}
                             data-testid={`badge-plan-${client.userId}`}
                           >
-                            {client.planStatus === "deleted" ? "Servicio o plan eliminado" : getClientCommercialLabel(client)}
+                            {client.planStatus === "deleted"  "Servicio o plan eliminado" : getClientCommercialLabel(client)}
                           </Badge>
                           {client.planStatus !== "deleted" && (
                             <>
                               <Badge variant="secondary" className="text-[10px] px-1.5 py-0" data-testid={`badge-cycle-${client.userId}`}>
                                 {cycleLabel(client.cycleMonths)}
                               </Badge>
-                              {client.classesRemaining !== null && client.classesTotal !== null ? (
+                              {client.classesRemaining !== null && client.classesTotal !== null  (
                                 <span className="text-[10px] text-muted-foreground" data-testid={`text-classes-${client.userId}`}>
                                   {client.classesRemaining}/{client.classesTotal} usos
                                 </span>
-                              ) : client.classesRemaining === null && client.classesTotal === null ? (
+                              ) : client.classesRemaining === null && client.classesTotal === null  (
                                 <span className="text-[10px] text-muted-foreground">Uso ilimitado</span>
                               ) : null}
                               {client.expiresAt && (
-                                <span className={`text-[10px] ${client.planStatus === "expired" ? "text-red-500 font-medium" : "text-muted-foreground"}`} data-testid={`text-expires-${client.userId}`}>
+                                <span className={`text-[10px] ${client.planStatus === "expired"  "text-red-500 font-medium" : "text-muted-foreground"}`} data-testid={`text-expires-${client.userId}`}>
                                   {getPlanTimingLabel(client)}
                                 </span>
                               )}
@@ -3780,7 +3736,7 @@ export default function ClientesTab({ focusRequest }: { focusRequest?: ClientFoc
                     )}
                     {client.reportCount > 0 && (
                       <div className="text-[10px] text-muted-foreground mt-1" data-testid={`text-client-report-count-${client.userId}`}>
-                        {client.reportCount} incidencia{client.reportCount === 1 ? "" : "s"}
+                        {client.reportCount} incidencia{client.reportCount === 1  "" : "s"}
                       </div>
                     )}
                   </div>
@@ -3878,7 +3834,7 @@ export default function ClientesTab({ focusRequest }: { focusRequest?: ClientFoc
             );
           })}
           <p className="text-xs text-muted-foreground text-center pt-2" data-testid="text-clients-total">
-            {filteredClients.length} cliente{filteredClients.length !== 1 ? "s" : ""} en la vista actual
+            {filteredClients.length} cliente{filteredClients.length !== 1  "s" : ""} en la vista actual
           </p>
         </div>
       )}
@@ -3901,7 +3857,7 @@ export default function ClientesTab({ focusRequest }: { focusRequest?: ClientFoc
           <AlertDialogHeader>
             <AlertDialogTitle>¿Eliminar cliente</AlertDialogTitle>
             <AlertDialogDescription>
-              Se desactivará el servicio o plan de <strong>{deleteTarget?.name ?? ""}</strong>. El cliente dejará de aparecer en la lista. Esta acción se puede revertir.
+              Se desactivará el servicio o plan de <strong>{deleteTarget.name}</strong>. El cliente dejará de aparecer en la lista. Esta acción se puede revertir.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -3912,7 +3868,7 @@ export default function ClientesTab({ focusRequest }: { focusRequest?: ClientFoc
               disabled={deleteMutation.isPending}
               data-testid="button-confirm-delete"
             >
-              {deleteMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Trash2 className="h-4 w-4 mr-1" />}
+              {deleteMutation.isPending  <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Trash2 className="h-4 w-4 mr-1" />}
               Eliminar
             </AlertDialogAction>
           </AlertDialogFooter>

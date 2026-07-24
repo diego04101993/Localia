@@ -5,6 +5,8 @@ import {
   ArrowUpRight,
   ChartPie,
   CalendarRange,
+  ChevronLeft,
+  ChevronRight,
   Download,
   Loader2,
   Pencil,
@@ -26,17 +28,26 @@ import {
 } from "@shared/schema";
 import { apiRequest } from "@/lib/queryClient";
 import {
+  invalidateBranchCommercialQueries,
   invalidateBranchFinanceQueries,
   invalidateBranchRecurringExpenseQueries,
   invalidateBranchStaffFinanceQueries,
   invalidateBranchStaffQueries,
 } from "@/lib/branch-dashboard-cache";
 import { useToast } from "@/hooks/use-toast";
+import { useHorizontalScrollNav } from "@/hooks/use-horizontal-scroll-nav";
 import { useAuth } from "@/lib/auth";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
@@ -49,7 +60,6 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  Table,
   TableBody,
   TableCell,
   TableHead,
@@ -111,7 +121,7 @@ interface BranchClient {
   userId: string;
   name: string;
   lastName: string | null;
-  email: string;
+  email: string | null;
   phone: string | null;
 }
 
@@ -181,6 +191,77 @@ interface BranchStaffClassLog {
   paymentMethod: string | null;
 }
 
+type CajaFocusRequest = {
+  source: "commercial_sale" | "sales_commission_payment";
+  sourceId: string;
+  nonce: number;
+};
+
+interface BranchSaleDetail {
+  id: string;
+  folio: string;
+  clientUserId: string | null;
+  clientDisplayName: string | null;
+  clientEmail: string | null;
+  sellerId: string | null;
+  sellerNameSnapshot: string | null;
+  channel: string;
+  status: string;
+  taxMode: "tax_included" | "tax_added" | "tax_exempt" | null;
+  taxRate: number | null;
+  subtotalAmount: number;
+  subtotalBeforeTax: number | null;
+  discountAmount: number;
+  taxableSubtotal: number | null;
+  taxTotal: number | null;
+  grandTotal: number | null;
+  totalAmount: number;
+  paidAmount: number;
+  notes: string | null;
+  cancelledByUserId: string | null;
+  cancellationReason: string | null;
+  cancelledAt: string | null;
+  createdAt: string;
+  items: Array<{
+    id: string;
+    itemType: string;
+    nameSnapshot: string;
+    categorySnapshot: string | null;
+    quantity: number;
+    unitPriceAmount: number;
+    discountAmount: number;
+    costAmountSnapshot: number;
+    lineTotalAmount: number;
+  }>;
+  payments: Array<{
+    id: string;
+    paymentMethod: string;
+    amount: number;
+    reference: string | null;
+    paidAt: string;
+  }>;
+}
+
+interface BranchCommissionPaymentDetail {
+  id: string;
+  salespersonId: string;
+  salespersonName: string | null;
+  amount: number;
+  totalAllocatedAmount: number;
+  paymentMethod: string;
+  reference: string | null;
+  notes: string | null;
+  periodStart: string | null;
+  periodEnd: string | null;
+  paidAt: string;
+  allocations?: Array<{
+    id: string;
+    commissionAccrualId: string;
+    amountAllocated: number;
+    createdAt: string;
+  }>;
+}
+
 interface StaffClassLogFormState {
   staffId: string;
   classesCount: string;
@@ -220,6 +301,29 @@ const CATEGORY_LABELS: Record<string, string> = {
   otro: "Otro",
 };
 
+function getBranchSaleFiscalSnapshot(sale: BranchSaleDetail) {
+  return {
+    taxMode: sale.taxMode ?? "tax_exempt",
+    taxRate: sale.taxRate ?? 0,
+    subtotalBeforeTax: sale.subtotalBeforeTax ?? sale.subtotalAmount,
+    taxableSubtotal: sale.taxableSubtotal ?? Math.max(0, sale.totalAmount),
+    taxTotal: sale.taxTotal ?? 0,
+    grandTotal: sale.grandTotal ?? sale.totalAmount,
+  };
+}
+
+function getBranchSaleTaxModeLabel(taxMode: BranchSaleDetail["taxMode"]) {
+  switch (taxMode) {
+    case "tax_included":
+      return "Precio incluye IVA";
+    case "tax_added":
+      return "Agregar IVA al precio";
+    case "tax_exempt":
+    default:
+      return "Sin IVA";
+  }
+}
+
 const FREQUENCY_LABELS: Record<string, string> = {
   monthly: "Mensual",
   weekly: "Semanal",
@@ -231,8 +335,12 @@ const SOURCE_LABELS: Record<string, string> = {
   fixed_expense: "Gasto fijo",
   membership_assign: "Membresía",
   membership_renew: "Renovación",
-  staff_class_log: "Clases impartidas",
+  staff_class_log: "Trabajo registrado",
+  commercial_sale: "Venta comercial",
+  sales_commission_payment: "Pago de comisión",
 };
+
+const READ_ONLY_FINANCE_SOURCES = new Set(["commercial_sale", "sales_commission_payment"]);
 
 const ALL_CATEGORY_OPTIONS = Array.from(
   new Set([...branchFinanceIncomeCategories, ...branchFinanceExpenseCategories]),
@@ -251,6 +359,18 @@ function formatDateLabel(value: string) {
     day: "2-digit",
     month: "short",
     year: "numeric",
+  });
+}
+
+function formatDateTimeLabel(value: string | null | undefined) {
+  if (!value) return "Sin fecha";
+  return new Date(value).toLocaleString("es-MX", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: "America/Mexico_City",
   });
 }
 
@@ -438,6 +558,62 @@ function getFinanceSourceLabel(source: string | null) {
   return SOURCE_LABELS[source] || source;
 }
 
+function isReadOnlyFinanceSource(source: string | null) {
+  return !!source && READ_ONLY_FINANCE_SOURCES.has(source);
+}
+
+function getFinanceEntryContextLine(entry: BranchFinanceEntry) {
+  if (entry.source === "commercial_sale") {
+    const folio = entry.metadata?.folio ? `Folio ${entry.metadata.folio}` : null;
+    const seller = entry.metadata?.sellerNameSnapshot ? `Vendedor ${entry.metadata.sellerNameSnapshot}` : null;
+    return [folio, seller].filter(Boolean).join(" · ") || null;
+  }
+
+  if (entry.source === "sales_commission_payment") {
+    return entry.metadata?.salespersonName ? `Comisión a ${entry.metadata.salespersonName}` : null;
+  }
+
+  return null;
+}
+
+function getSaleEntryTargetId(entry: BranchFinanceEntry) {
+  if (entry.source !== "commercial_sale") return null;
+  const metadataSaleId =
+    typeof entry.metadata?.saleId === "string" && entry.metadata.saleId.trim().length > 0
+      ? entry.metadata.saleId.trim()
+      : null;
+  return metadataSaleId || entry.sourceId || null;
+}
+
+function getFinanceEntryPrimaryConcept(entry: BranchFinanceEntry) {
+  if (entry.source === "commercial_sale" && Array.isArray(entry.metadata?.items) && entry.metadata.items.length > 0) {
+    const items = entry.metadata.items
+      .filter((item: any) => item && typeof item.name === "string")
+      .map((item: any) => ({
+        name: String(item.name).trim(),
+        quantity: Number(item.quantity || 0),
+      }))
+      .filter((item: { name: string; quantity: number }) => item.name.length > 0);
+
+    if (items.length > 0) {
+      const [firstItem, ...restItems] = items;
+      const quantityLabel = Number.isFinite(firstItem.quantity) && firstItem.quantity > 0 ? `${firstItem.quantity} × ` : "";
+      return `${quantityLabel}${firstItem.name}${restItems.length ? ` +${restItems.length} más` : ""}`;
+    }
+  }
+
+  return entry.concept;
+}
+
+function getFinanceEntrySecondaryConcept(entry: BranchFinanceEntry) {
+  if (entry.source === "commercial_sale") {
+    const folio = entry.metadata?.folio ? `Folio ${entry.metadata.folio}` : null;
+    return ["Venta comercial", folio].filter(Boolean).join(" · ");
+  }
+
+  return getFinanceEntryContextLine(entry);
+}
+
 function getExpenseBucketLabel(category: string) {
   switch (category) {
     case "renta":
@@ -453,7 +629,7 @@ function getExpenseBucketLabel(category: string) {
   }
 }
 
-export default function CajaTab() {
+export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequest | null } = {}) {
   const { user } = useAuth();
   const { toast } = useToast();
   const [rangePreset, setRangePreset] = useState<RangePreset>("ninety_days");
@@ -477,9 +653,14 @@ export default function CajaTab() {
   const [staffForm, setStaffForm] = useState<StaffFormState>(createInitialStaffFormState());
   const [editingStaffMember, setEditingStaffMember] = useState<BranchStaffMember | null>(null);
   const [staffClassLogForm, setStaffClassLogForm] = useState<StaffClassLogFormState>(createInitialStaffClassLogFormState());
+  const [saleDetailId, setSaleDetailId] = useState<string | null>(null);
+  const [commissionPaymentDetailId, setCommissionPaymentDetailId] = useState<string | null>(null);
+  const [saleCancellationReason, setSaleCancellationReason] = useState("");
+  const [saleCancellationRequestId, setSaleCancellationRequestId] = useState(() => crypto.randomUUID());
   const recurringExpenseFormRef = useRef<HTMLDivElement | null>(null);
   const staffFormRef = useRef<HTMLDivElement | null>(null);
   const financeFormRef = useRef<HTMLDivElement | null>(null);
+  const entriesTableScroll = useHorizontalScrollNav();
 
   const summaryUrl = buildSummaryUrl(from, to);
   const entriesUrl = buildEntriesUrl({
@@ -535,6 +716,71 @@ export default function CajaTab() {
     queryKey: ["/api/branch/finance/staff/class-logs?limit=8"],
   });
 
+  const {
+    data: saleDetail,
+    isLoading: saleDetailLoading,
+    isError: saleDetailIsError,
+    error: saleDetailError,
+    refetch: refetchSaleDetail,
+  } = useQuery<BranchSaleDetail>({
+    queryKey: saleDetailId ? [`/api/branch/sales/${saleDetailId}`] : ["/api/branch/sales/detail/idle"],
+    enabled: !!saleDetailId,
+  });
+  const saleFiscalSnapshot = saleDetail ? getBranchSaleFiscalSnapshot(saleDetail) : null;
+
+  useEffect(() => {
+    setSaleCancellationReason("");
+    setSaleCancellationRequestId(crypto.randomUUID());
+  }, [saleDetailId]);
+
+  const cancelSaleMutation = useMutation({
+    mutationFn: async () => {
+      if (!saleDetailId) {
+        throw new Error("Selecciona una venta primero");
+      }
+      const reason = saleCancellationReason.trim();
+      if (reason.length < 3) {
+        throw new Error("Escribe un motivo claro para cancelar la venta");
+      }
+
+      const response = await apiRequest("POST", `/api/branch/sales/${saleDetailId}/cancel`, {
+        reason,
+        idempotencyKey: saleCancellationRequestId,
+      });
+
+      return response.json() as Promise<BranchSaleDetail>;
+    },
+    onSuccess: async (sale) => {
+      await Promise.all([
+        invalidateBranchFinanceQueries(),
+        invalidateBranchCommercialQueries({
+          clientId: sale.clientUserId ?? null,
+          saleId: sale.id,
+          salespersonId: sale.sellerId ?? null,
+        }),
+        refetchSaleDetail(),
+      ]);
+      setSaleCancellationReason("");
+      setSaleCancellationRequestId(crypto.randomUUID());
+      toast({
+        title: "Venta cancelada",
+        description: `${sale.folio} ya quedo marcada como cancelada y se genero el reverso automatico.`,
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: "No se pudo cancelar la venta",
+        description: error instanceof Error ? error.message : "Intenta nuevamente en unos segundos.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const { data: commissionPaymentDetail, isLoading: commissionPaymentDetailLoading } = useQuery<BranchCommissionPaymentDetail>({
+    queryKey: commissionPaymentDetailId ? [`/api/branch/commission-payments/${commissionPaymentDetailId}`] : ["/api/branch/commission-payments/detail/idle"],
+    enabled: !!commissionPaymentDetailId,
+  });
+
   useEffect(() => {
     setPage(1);
   }, [from, to, typeFilter, categoryFilter, clientFilter, search]);
@@ -558,13 +804,27 @@ export default function CajaTab() {
     }
   }, [financeGoalStorageKey]);
 
+  useEffect(() => {
+    if (!focusRequest?.sourceId) return;
+    if (focusRequest.source === "commercial_sale") {
+      setSaleDetailId(focusRequest.sourceId);
+      setCommissionPaymentDetailId(null);
+      return;
+    }
+
+    if (focusRequest.source === "sales_commission_payment") {
+      setCommissionPaymentDetailId(focusRequest.sourceId);
+      setSaleDetailId(null);
+    }
+  }, [focusRequest]);
+
   const filteredClients = clients.filter((client) => {
     const fullName = [client.name, client.lastName].filter(Boolean).join(" ").trim().toLowerCase();
     const needle = clientSearch.trim().toLowerCase();
     if (!needle) return true;
     return (
       fullName.includes(needle) ||
-      client.email.toLowerCase().includes(needle) ||
+      (client.email || "").toLowerCase().includes(needle) ||
       (client.phone || "").toLowerCase().includes(needle)
     );
   });
@@ -575,7 +835,7 @@ export default function CajaTab() {
     mutationFn: async () => {
       const amount = Number(form.amount);
       if (!Number.isFinite(amount) || amount <= 0) {
-        throw new Error("Captura un monto valido");
+        throw new Error("Captura un monto válido");
       }
 
       const payload = {
@@ -833,6 +1093,15 @@ export default function CajaTab() {
   }
 
   function handleEditEntry(entry: BranchFinanceEntry) {
+    if (isReadOnlyFinanceSource(entry.source)) {
+      toast({
+        title: "Movimiento automático",
+        description: "Este movimiento se administra desde su origen y no puede editarse manualmente.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     setEditingEntry(entry);
     setForm({
       type: entry.type,
@@ -847,6 +1116,27 @@ export default function CajaTab() {
     });
     setClientSearch(entry.clientDisplayName || "");
     scrollSectionIntoView(financeFormRef);
+  }
+
+  function handleOpenEntryDetail(entry: BranchFinanceEntry) {
+    const saleTargetId = getSaleEntryTargetId(entry);
+    if (saleTargetId) {
+      setCommissionPaymentDetailId(null);
+      setSaleDetailId(saleTargetId);
+      return;
+    }
+
+    if (entry.source === "sales_commission_payment" && entry.sourceId) {
+      setSaleDetailId(null);
+      setCommissionPaymentDetailId(entry.sourceId);
+      return;
+    }
+
+    toast({
+      title: "Detalle no disponible",
+      description: "Este movimiento no tiene un origen automático navegable.",
+      variant: "destructive",
+    });
   }
 
   function handleCancelEdit() {
@@ -978,7 +1268,7 @@ export default function CajaTab() {
     : 0;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 overflow-x-hidden">
       <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
         <div>
           <h3 className="text-lg font-semibold">Caja</h3>
@@ -1336,13 +1626,13 @@ export default function CajaTab() {
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-2">
-            <Button variant={rangePreset === "thirty_days" ? "default" : "outline"} size="sm" onClick={() => handleQuickRangeChange("thirty_days")}>Últimos 30 días</Button>
-            <Button variant={rangePreset === "ninety_days" ? "default" : "outline"} size="sm" onClick={() => handleQuickRangeChange("ninety_days")}>Últimos 90 días</Button>
-            <Button variant={rangePreset === "six_months" ? "default" : "outline"} size="sm" onClick={() => handleQuickRangeChange("six_months")}>Últimos 6 meses</Button>
-            <Button variant={rangePreset === "twelve_months" ? "default" : "outline"} size="sm" onClick={() => handleQuickRangeChange("twelve_months")}>Últimos 12 meses</Button>
-            <Button variant={rangePreset === "all" ? "default" : "outline"} size="sm" onClick={() => handleQuickRangeChange("all")}>Todo</Button>
-            <Button variant={rangePreset === "custom" ? "default" : "outline"} size="sm" onClick={() => setRangePreset("custom")}>Personalizado</Button>
+          <div className="grid grid-cols-2 gap-2 md:flex md:flex-wrap">
+            <Button className="w-full justify-center md:w-auto" variant={rangePreset === "thirty_days" ? "default" : "outline"} size="sm" onClick={() => handleQuickRangeChange("thirty_days")}>Últimos 30 días</Button>
+            <Button className="w-full justify-center md:w-auto" variant={rangePreset === "ninety_days" ? "default" : "outline"} size="sm" onClick={() => handleQuickRangeChange("ninety_days")}>Últimos 90 días</Button>
+            <Button className="w-full justify-center md:w-auto" variant={rangePreset === "six_months" ? "default" : "outline"} size="sm" onClick={() => handleQuickRangeChange("six_months")}>Últimos 6 meses</Button>
+            <Button className="w-full justify-center md:w-auto" variant={rangePreset === "twelve_months" ? "default" : "outline"} size="sm" onClick={() => handleQuickRangeChange("twelve_months")}>Últimos 12 meses</Button>
+            <Button className="w-full justify-center md:w-auto" variant={rangePreset === "all" ? "default" : "outline"} size="sm" onClick={() => handleQuickRangeChange("all")}>Todo</Button>
+            <Button className="w-full justify-center md:w-auto" variant={rangePreset === "custom" ? "default" : "outline"} size="sm" onClick={() => setRangePreset("custom")}>Personalizado</Button>
           </div>
 
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
@@ -1537,8 +1827,9 @@ export default function CajaTab() {
               </div>
             </div>
 
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-col gap-2 md:flex-row md:flex-wrap">
               <Button
+                className="w-full justify-center md:w-auto"
                 onClick={() => recurringExpenseMutation.mutate()}
                 disabled={recurringExpenseMutation.isPending || !recurringExpenseForm.name.trim() || !recurringExpenseForm.amount}
               >
@@ -1546,7 +1837,7 @@ export default function CajaTab() {
                 {editingRecurringExpense ? "Guardar cambios" : "Crear gasto fijo"}
               </Button>
               {editingRecurringExpense ? (
-                <Button variant="outline" onClick={handleCancelRecurringExpenseEdit}>
+                <Button className="w-full justify-center md:w-auto" variant="outline" onClick={handleCancelRecurringExpenseEdit}>
                   Cancelar edición
                 </Button>
               ) : null}
@@ -1582,8 +1873,9 @@ export default function CajaTab() {
                         </p>
                         {expense.notes ? <p className="text-sm text-muted-foreground">{expense.notes}</p> : null}
                       </div>
-                      <div className="flex flex-wrap gap-2">
+                      <div className="flex flex-col gap-2 md:flex-row md:flex-wrap">
                         <Button
+                          className="w-full justify-center md:w-auto"
                           size="sm"
                           variant="outline"
                           onClick={() => recurringExpenseRegisterMutation.mutate(expense.id)}
@@ -1591,13 +1883,13 @@ export default function CajaTab() {
                         >
                           Registrar en Caja
                         </Button>
-                        <Button size="sm" variant="outline" onClick={() => handleEditRecurringExpense(expense)}>
+                        <Button className="w-full justify-center md:w-auto" size="sm" variant="outline" onClick={() => handleEditRecurringExpense(expense)}>
                           <Pencil className="h-3.5 w-3.5" />
                         </Button>
                         <Button
+                          className="w-full justify-center text-rose-600 md:w-auto"
                           size="sm"
                           variant="outline"
-                          className="text-rose-600"
                           onClick={() => recurringExpenseDeleteMutation.mutate(expense.id)}
                           disabled={recurringExpenseDeleteMutation.isPending}
                         >
@@ -1616,10 +1908,10 @@ export default function CajaTab() {
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-base">
               <Users className="h-4 w-4 text-primary" />
-              {editingStaffMember ? "Editando profesor / empleado" : "Profesores / empleados"}
+              {editingStaffMember ? "Editando colaborador" : "Colaboradores"}
             </CardTitle>
             <CardDescription>
-              Controla pago por clase y registra automáticamente el gasto correspondiente en Caja.
+              Configura una tarifa por unidad y registra automáticamente el gasto correspondiente en Caja.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">
@@ -1641,7 +1933,7 @@ export default function CajaTab() {
                 />
               </div>
               <div className="space-y-2">
-                <Label>Pago por clase</Label>
+                <Label>Pago por unidad</Label>
                 <Input
                   type="number"
                   min="0"
@@ -1675,8 +1967,9 @@ export default function CajaTab() {
               </div>
             </div>
 
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-col gap-2 md:flex-row md:flex-wrap">
               <Button
+                className="w-full justify-center md:w-auto"
                 onClick={() => staffMutation.mutate()}
                 disabled={staffMutation.isPending || !staffForm.name.trim() || !staffForm.payPerClass}
               >
@@ -1684,13 +1977,13 @@ export default function CajaTab() {
                 {editingStaffMember ? "Guardar cambios" : "Crear colaborador"}
               </Button>
               {editingStaffMember ? (
-                <Button variant="outline" onClick={handleCancelStaffEdit}>
+                <Button className="w-full justify-center md:w-auto" variant="outline" onClick={handleCancelStaffEdit}>
                   Cancelar edición
                 </Button>
               ) : null}
             </div>
             {editingStaffMember ? (
-              <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-sm text-foreground">
+                <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-sm text-foreground">
                 Editando: <span className="font-medium">{editingStaffMember.name}</span>
               </div>
             ) : null}
@@ -1700,7 +1993,7 @@ export default function CajaTab() {
                 Array.from({ length: 3 }).map((_, index) => <Skeleton key={index} className="h-20 w-full" />)
               ) : staffMembers.length === 0 ? (
                 <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">
-                  Aún no tienes profesores o empleados registrados.
+                  Aún no tienes colaboradores registrados.
                 </div>
               ) : (
                 staffMembers.map((member) => (
@@ -1714,19 +2007,19 @@ export default function CajaTab() {
                           </Badge>
                         </div>
                         <p className="text-sm text-muted-foreground">
-                          Pago por clase: {formatCurrency(member.payPerClass)}
+                          Tarifa por unidad: {formatCurrency(member.payPerClass)}
                           {member.phone ? ` · ${member.phone}` : ""}
                         </p>
                         {member.notes ? <p className="text-sm text-muted-foreground">{member.notes}</p> : null}
                       </div>
-                      <div className="flex flex-wrap gap-2">
-                        <Button size="sm" variant="outline" onClick={() => handleEditStaffMember(member)}>
+                      <div className="flex flex-col gap-2 md:flex-row md:flex-wrap">
+                        <Button className="w-full justify-center md:w-auto" size="sm" variant="outline" onClick={() => handleEditStaffMember(member)}>
                           <Pencil className="h-3.5 w-3.5" />
                         </Button>
                         <Button
+                          className="w-full justify-center text-rose-600 md:w-auto"
                           size="sm"
                           variant="outline"
-                          className="text-rose-600"
                           onClick={() => staffDeleteMutation.mutate(member.id)}
                           disabled={staffDeleteMutation.isPending}
                         >
@@ -1741,14 +2034,14 @@ export default function CajaTab() {
 
             <div className="rounded-2xl border border-dashed p-4">
               <div className="mb-3">
-                <p className="font-medium">Registrar clases impartidas</p>
+                <p className="font-medium">Registrar trabajo realizado</p>
                 <p className="text-sm text-muted-foreground">
-                  Calcula el total y lo registra como gasto automático en Caja.
+                  Registra clases, horas, días, servicios u otras unidades trabajadas y lo guarda como gasto automático en Caja.
                 </p>
               </div>
               <div className="grid gap-3 md:grid-cols-2">
                 <div className="space-y-2">
-                  <Label>Profesor / empleado</Label>
+                  <Label>Colaborador</Label>
                   <Select
                     value={staffClassLogForm.staffId}
                     onValueChange={(value) => setStaffClassLogForm((current) => ({ ...current, staffId: value }))}
@@ -1764,7 +2057,7 @@ export default function CajaTab() {
                   </Select>
                 </div>
                 <div className="space-y-2">
-                  <Label>Número de clases</Label>
+                  <Label>Cantidad</Label>
                   <Input
                     type="number"
                     min="1"
@@ -1805,16 +2098,17 @@ export default function CajaTab() {
                   />
                 </div>
               </div>
-              <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+              <div className="mt-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <p className="text-sm text-muted-foreground">
                   Total estimado: <span className="font-medium text-foreground">{formatCurrency(staffLogPreviewTotal)}</span>
                 </p>
                 <Button
+                  className="w-full justify-center md:w-auto"
                   onClick={() => staffClassLogMutation.mutate()}
                   disabled={staffClassLogMutation.isPending || !staffClassLogForm.staffId || !staffClassLogForm.classesCount}
                 >
                   {staffClassLogMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ReceiptText className="mr-2 h-4 w-4" />}
-                  Registrar clases
+                  Registrar trabajo
                 </Button>
               </div>
 
@@ -1823,14 +2117,14 @@ export default function CajaTab() {
                 {staffClassLogsLoading ? (
                   Array.from({ length: 3 }).map((_, index) => <Skeleton key={index} className="h-14 w-full" />)
                 ) : staffClassLogs.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">Aún no has registrado clases impartidas.</p>
+                  <p className="text-sm text-muted-foreground">Aún no has registrado trabajo realizado.</p>
                 ) : (
                   staffClassLogs.map((log) => (
                     <div key={log.id} className="flex flex-col gap-1 rounded-lg border p-3 text-sm md:flex-row md:items-center md:justify-between">
                       <div>
                         <p className="font-medium">{log.staffName}</p>
                         <p className="text-muted-foreground">
-                          {log.classesCount} clase{log.classesCount === 1 ? "" : "s"} · {formatDateLabel(log.classDate)}
+                          Cantidad: {log.classesCount} · {formatDateLabel(log.classDate)}
                           {log.paymentMethod ? ` · ${getPaymentMethodLabel(log.paymentMethod)}` : ""}
                         </p>
                       </div>
@@ -1960,8 +2254,8 @@ export default function CajaTab() {
                   <SelectContent>
                     <SelectItem value="none">Sin cliente ligado</SelectItem>
                     {filteredClients.slice(0, 100).map((client) => (
-                      <SelectItem key={client.userId} value={client.userId}>
-                        {[client.name, client.lastName].filter(Boolean).join(" ")} - {client.email}
+                    <SelectItem key={client.userId} value={client.userId}>
+                        {[client.name, client.lastName].filter(Boolean).join(" ")} - {client.email || "Sin correo"}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -1997,8 +2291,9 @@ export default function CajaTab() {
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-col gap-2 md:flex-row md:flex-wrap">
             <Button
+              className="w-full justify-center md:w-auto"
               onClick={() => saveMutation.mutate()}
               disabled={saveMutation.isPending || !form.concept.trim() || !form.amount}
             >
@@ -2006,7 +2301,7 @@ export default function CajaTab() {
               {editingEntry ? "Guardar cambios" : "Registrar movimiento"}
             </Button>
             {editingEntry ? (
-              <Button variant="outline" onClick={handleCancelEdit}>
+              <Button className="w-full justify-center md:w-auto" variant="outline" onClick={handleCancelEdit}>
                 Cancelar edición
               </Button>
             ) : null}
@@ -2014,7 +2309,7 @@ export default function CajaTab() {
         </CardContent>
       </Card>
 
-      <div className="grid gap-4 xl:grid-cols-[1.7fr,1fr]">
+      <div className="grid gap-4 xl:grid-cols-1 2xl:grid-cols-[minmax(0,2.1fr)_minmax(320px,0.75fr)]">
         <Card>
           <CardHeader className="pb-3">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -2022,7 +2317,7 @@ export default function CajaTab() {
                 <CardTitle className="text-base">Movimientos</CardTitle>
                 <CardDescription>{pageLabel}</CardDescription>
               </div>
-              <Button variant="outline" size="sm" onClick={handleExport}>
+              <Button className="w-full justify-center md:w-auto" variant="outline" size="sm" onClick={handleExport}>
                 <Download className="mr-2 h-4 w-4" />
                 Exportar CSV
               </Button>
@@ -2042,78 +2337,216 @@ export default function CajaTab() {
               </div>
             ) : (
               <>
-                <Table>
+                <div className="space-y-3 md:hidden">
+                  {entriesData.items.map((entry) => (
+                    <div
+                      key={entry.id}
+                      className={`rounded-xl border p-3 ${editingEntry?.id === entry.id ? "border-primary/40 bg-primary/5" : ""}`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-xs text-muted-foreground">{formatDateLabel(entry.entryDate)}</p>
+                          <div className="mt-1 flex flex-wrap items-center gap-2">
+                            <p className="break-words text-sm font-medium">{getFinanceEntryPrimaryConcept(entry)}</p>
+                            <Badge variant={entry.type === "income" ? "default" : "destructive"} className={entry.type === "income" ? "bg-emerald-600" : ""}>
+                              {entry.type === "income" ? "Ingreso" : "Gasto"}
+                            </Badge>
+                          </div>
+                        </div>
+                        <p className="shrink-0 text-sm font-semibold">{formatCurrency(entry.amount)}</p>
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                        <span>{getCategoryLabel(entry.category)}</span>
+                        <Badge variant="outline" className="text-[10px]">
+                          {getFinanceSourceLabel(entry.source)}
+                        </Badge>
+                      </div>
+                      <div className="mt-2 space-y-1 text-sm">
+                        <p className="break-words text-muted-foreground">
+                          Cliente: {entry.clientDisplayName || "Sin cliente"}
+                        </p>
+                        {entry.clientEmail ? <p className="break-all text-xs text-muted-foreground">{entry.clientEmail}</p> : null}
+                        <p className="text-muted-foreground">Método: {getPaymentMethodLabel(entry.paymentMethod)}</p>
+                        {getFinanceEntrySecondaryConcept(entry) ? <p className="break-words text-xs text-muted-foreground">{getFinanceEntrySecondaryConcept(entry)}</p> : null}
+                        {entry.notes ? <p className="break-words text-xs text-muted-foreground">{entry.notes}</p> : null}
+                      </div>
+                      <div className="mt-3 flex flex-col gap-2">
+                        {isReadOnlyFinanceSource(entry.source) ? (
+                          <>
+                            <Button
+                              className="w-full justify-center"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleOpenEntryDetail(entry)}
+                              title="Movimiento automático. Para modificarlo debe gestionarse desde la venta."
+                            >
+                              <ReceiptText className="mr-2 h-3.5 w-3.5" />
+                              Ver detalle
+                            </Button>
+                            <p className="text-xs text-muted-foreground">
+                              Movimiento automático. Para modificarlo debe gestionarse desde su origen.
+                            </p>
+                          </>
+                        ) : (
+                          <>
+                            <Button
+                              className="w-full justify-center"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleEditEntry(entry)}
+                            >
+                              <Pencil className="mr-2 h-3.5 w-3.5" />
+                              Editar
+                            </Button>
+                            <Button
+                              className="w-full justify-center text-rose-600"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => deleteMutation.mutate(entry.id)}
+                              disabled={deleteMutation.isPending}
+                            >
+                              <Trash2 className="mr-2 h-3.5 w-3.5" />
+                              Eliminar
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="relative hidden md:block">
+                {entriesTableScroll.isOverflowing ? (
+                  <div className="sticky top-0 z-20 mb-3 flex items-center gap-3 rounded-xl border border-border/70 bg-background/95 px-3 py-2 shadow-sm backdrop-blur">
+                    <span className="text-xs text-muted-foreground">Desliza para ver más columnas</span>
+                    <div ref={entriesTableScroll.mirrorScrollRef} className="h-4 flex-1 overflow-x-auto rounded-full border border-border/60 bg-muted/40">
+                      <div style={{ width: entriesTableScroll.contentWidth, height: 1 }} />
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      className="h-9 w-9"
+                      onClick={() => entriesTableScroll.scrollByDirection("left")}
+                      disabled={!entriesTableScroll.canScrollLeft}
+                      title="Ver columnas anteriores"
+                    >
+                      <ChevronLeft className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      className="h-9 w-9"
+                      onClick={() => entriesTableScroll.scrollByDirection("right")}
+                      disabled={!entriesTableScroll.canScrollRight}
+                      title="Ver más columnas"
+                    >
+                      <ChevronRight className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ) : null}
+                {entriesTableScroll.isOverflowing ? (
+                  <>
+                    <div className={`pointer-events-none absolute bottom-0 left-0 top-12 z-10 w-10 bg-gradient-to-r from-background via-background/80 to-transparent transition-opacity ${entriesTableScroll.canScrollLeft ? "opacity-100" : "opacity-0"}`} />
+                    <div className={`pointer-events-none absolute bottom-0 right-0 top-12 z-10 w-10 bg-gradient-to-l from-background via-background/80 to-transparent transition-opacity ${entriesTableScroll.canScrollRight ? "opacity-100" : "opacity-0"}`} />
+                  </>
+                ) : null}
+                <div ref={entriesTableScroll.containerRef} className="overflow-x-auto rounded-xl">
+                <table className="w-full min-w-[1340px] caption-bottom text-sm">
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Fecha</TableHead>
-                      <TableHead>Tipo</TableHead>
-                      <TableHead>Categoría</TableHead>
-                      <TableHead>Concepto</TableHead>
-                      <TableHead>Cliente</TableHead>
-                      <TableHead>Método</TableHead>
-                      <TableHead className="text-right">Monto</TableHead>
-                      <TableHead>Acciones</TableHead>
+                      <TableHead className="sticky left-0 z-[16] w-[120px] bg-background shadow-[8px_0_12px_-10px_rgba(15,23,42,0.18)]">Fecha</TableHead>
+                      <TableHead className="sticky left-[120px] z-[16] w-[110px] bg-background">Tipo</TableHead>
+                      <TableHead className="sticky left-[230px] z-[16] w-[140px] bg-background">Categoría</TableHead>
+                      <TableHead className="sticky left-[370px] z-[16] min-w-[320px] bg-background shadow-[8px_0_12px_-10px_rgba(15,23,42,0.18)]">Concepto</TableHead>
+                      <TableHead className="min-w-[220px]">Cliente</TableHead>
+                      <TableHead className="w-[140px]">Método</TableHead>
+                      <TableHead className="w-[140px] text-right">Monto</TableHead>
+                      <TableHead className="sticky right-0 z-[16] w-[150px] bg-background text-right shadow-[-8px_0_12px_-10px_rgba(15,23,42,0.18)]">Acciones</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {entriesData.items.map((entry) => (
-                      <TableRow key={entry.id} className={editingEntry?.id === entry.id ? "bg-primary/5" : undefined}>
-                        <TableCell>{formatDateLabel(entry.entryDate)}</TableCell>
-                        <TableCell>
+                      <TableRow key={entry.id} className={`group ${editingEntry?.id === entry.id ? "bg-primary/5" : ""}`}>
+                        <TableCell className={`sticky left-0 z-[14] w-[120px] align-top text-sm shadow-[8px_0_12px_-10px_rgba(15,23,42,0.18)] ${editingEntry?.id === entry.id ? "bg-primary/5" : "bg-background group-hover:bg-muted/50"}`}>{formatDateLabel(entry.entryDate)}</TableCell>
+                        <TableCell className={`sticky left-[120px] z-[14] w-[110px] align-top ${editingEntry?.id === entry.id ? "bg-primary/5" : "bg-background group-hover:bg-muted/50"}`}>
                           <Badge variant={entry.type === "income" ? "default" : "destructive"} className={entry.type === "income" ? "bg-emerald-600" : ""}>
                             {entry.type === "income" ? "Ingreso" : "Gasto"}
                           </Badge>
                         </TableCell>
-                        <TableCell>{getCategoryLabel(entry.category)}</TableCell>
-                        <TableCell>
-                          <div>
+                        <TableCell className={`sticky left-[230px] z-[14] w-[140px] align-top text-sm ${editingEntry?.id === entry.id ? "bg-primary/5" : "bg-background group-hover:bg-muted/50"}`}>{getCategoryLabel(entry.category)}</TableCell>
+                        <TableCell className={`sticky left-[370px] z-[14] min-w-[320px] align-top shadow-[8px_0_12px_-10px_rgba(15,23,42,0.18)] ${editingEntry?.id === entry.id ? "bg-primary/5" : "bg-background group-hover:bg-muted/50"}`}>
+                          <div className="min-w-0 space-y-1">
                             <div className="flex flex-wrap items-center gap-2">
-                              <p className="font-medium">{entry.concept}</p>
+                              <p className="min-w-0 break-words font-medium">{getFinanceEntryPrimaryConcept(entry)}</p>
                               <Badge variant="outline" className="text-[10px]">
                                 {getFinanceSourceLabel(entry.source)}
                               </Badge>
                             </div>
-                            {entry.notes ? <p className="text-xs text-muted-foreground">{entry.notes}</p> : null}
+                            {getFinanceEntrySecondaryConcept(entry) ? (
+                              <p className="break-words text-xs text-muted-foreground">{getFinanceEntrySecondaryConcept(entry)}</p>
+                            ) : null}
+                            {entry.notes ? <p className="line-clamp-2 break-words text-xs text-muted-foreground">{entry.notes}</p> : null}
                           </div>
                         </TableCell>
-                        <TableCell>
-                          <div>
-                            <p>{entry.clientDisplayName || "Sin cliente"}</p>
-                            {entry.clientEmail ? <p className="text-xs text-muted-foreground">{entry.clientEmail}</p> : null}
+                        <TableCell className="align-top">
+                          <div className="min-w-0">
+                            <p className="break-words">{entry.clientDisplayName || "Sin cliente"}</p>
+                            {entry.clientEmail ? <p className="break-all text-xs text-muted-foreground">{entry.clientEmail}</p> : null}
                           </div>
                         </TableCell>
-                        <TableCell>{getPaymentMethodLabel(entry.paymentMethod)}</TableCell>
-                        <TableCell className="text-right font-medium">{formatCurrency(entry.amount)}</TableCell>
-                        <TableCell>
-                          <div className="flex gap-2">
-                            <Button variant="outline" size="sm" onClick={() => handleEditEntry(entry)}>
-                              <Pencil className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="text-rose-600"
-                              onClick={() => deleteMutation.mutate(entry.id)}
-                              disabled={deleteMutation.isPending}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
+                        <TableCell className="align-top text-sm">{getPaymentMethodLabel(entry.paymentMethod)}</TableCell>
+                        <TableCell className="align-top text-right font-medium">{formatCurrency(entry.amount)}</TableCell>
+                        <TableCell className={`sticky right-0 z-[14] align-top shadow-[-8px_0_12px_-10px_rgba(15,23,42,0.18)] ${editingEntry?.id === entry.id ? "bg-primary/5" : "bg-background group-hover:bg-muted/50"}`}>
+                          <div className="flex justify-end gap-2">
+                            {isReadOnlyFinanceSource(entry.source) ? (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleOpenEntryDetail(entry)}
+                                title="Movimiento automático. Para modificarlo debe gestionarse desde la venta."
+                              >
+                                <ReceiptText className="h-3.5 w-3.5" />
+                              </Button>
+                            ) : (
+                              <>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleEditEntry(entry)}
+                                >
+                                  <Pencil className="h-3.5 w-3.5" />
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="text-rose-600"
+                                  onClick={() => deleteMutation.mutate(entry.id)}
+                                  disabled={deleteMutation.isPending}
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </Button>
+                              </>
+                            )}
                           </div>
                         </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
-                </Table>
+                </table>
+                </div>
+                </div>
 
-                <div className="flex items-center justify-between gap-3">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                   <p className="text-sm text-muted-foreground">
                     Página {entriesData.page} de {pageCount}
                   </p>
-                  <div className="flex gap-2">
-                    <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((current) => current - 1)}>
+                  <div className="flex w-full gap-2 md:w-auto">
+                    <Button className="flex-1 md:flex-none" variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((current) => current - 1)}>
                       Anterior
                     </Button>
-                    <Button variant="outline" size="sm" disabled={page >= pageCount} onClick={() => setPage((current) => current + 1)}>
+                    <Button className="flex-1 md:flex-none" variant="outline" size="sm" disabled={page >= pageCount} onClick={() => setPage((current) => current + 1)}>
                       Siguiente
                     </Button>
                   </div>
@@ -2123,7 +2556,7 @@ export default function CajaTab() {
           </CardContent>
         </Card>
 
-        <div className="space-y-4">
+      <div className="space-y-4">
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-base">Total por día</CardTitle>
@@ -2193,6 +2626,217 @@ export default function CajaTab() {
           </Card>
         </div>
       </div>
+
+      <Dialog open={!!saleDetailId} onOpenChange={(open) => !open && setSaleDetailId(null)}>
+        <DialogContent className="max-h-[100dvh] overflow-y-auto sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Detalle de venta comercial</DialogTitle>
+            <DialogDescription>Movimiento automático enlazado a branch_sales y a Caja en modo solo lectura.</DialogDescription>
+          </DialogHeader>
+          {saleDetailLoading ? (
+            <div className="space-y-3 py-2">
+              <Skeleton className="h-20 w-full rounded-2xl" />
+              <Skeleton className="h-28 w-full rounded-2xl" />
+              <Skeleton className="h-28 w-full rounded-2xl" />
+            </div>
+          ) : saleDetailIsError || !saleDetail ? (
+            <div className="space-y-4 py-2">
+              <div className="rounded-2xl border border-dashed border-rose-300 bg-rose-50/80 p-4 text-sm text-rose-800 dark:border-rose-900/70 dark:bg-rose-950/30 dark:text-rose-100">
+                <p className="font-medium">No pudimos cargar esta venta.</p>
+                <p className="mt-1 break-words">
+                  {saleDetailError instanceof Error && saleDetailError.message.trim()
+                    ? saleDetailError.message.replace(/^\d+:\s*/, "")
+                    : "Intenta nuevamente para recuperar el detalle enlazado desde Caja."}
+                </p>
+              </div>
+              <div className="flex justify-end">
+                <Button variant="outline" onClick={() => void refetchSaleDetail()}>
+                  Reintentar
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4 py-2">
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <Card><CardContent className="min-w-0 p-4"><p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Folio</p><p className="mt-2 break-words text-lg font-semibold">{saleDetail.folio}</p></CardContent></Card>
+                <Card><CardContent className="min-w-0 p-4"><p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Cliente</p><p className="mt-2 break-words text-lg font-semibold">{saleDetail.clientDisplayName || "Mostrador"}</p></CardContent></Card>
+                <Card><CardContent className="min-w-0 p-4"><p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Vendedor</p><p className="mt-2 break-words text-lg font-semibold">{saleDetail.sellerNameSnapshot || "Sin vendedor"}</p></CardContent></Card>
+                <Card><CardContent className="min-w-0 p-4"><p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Canal</p><p className="mt-2 break-words text-lg font-semibold">{saleDetail.channel}</p></CardContent></Card>
+              </div>
+
+              <Card>
+                <CardContent className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-4">
+                  <div><p className="text-sm text-muted-foreground">Creada</p><p className="font-medium">{formatDateTimeLabel(saleDetail.createdAt)}</p></div>
+                  <div><p className="text-sm text-muted-foreground">Modo fiscal</p><p className="font-medium">{getBranchSaleTaxModeLabel(saleFiscalSnapshot?.taxMode ?? "tax_exempt")}</p></div>
+                  <div><p className="text-sm text-muted-foreground">Tasa</p><p className="font-medium">{`${(saleFiscalSnapshot?.taxRate ?? 0).toFixed(2).replace(/\.00$/, "")}%`}</p></div>
+                  <div><p className="text-sm text-muted-foreground">Total cobrado</p><p className="font-medium">{formatCurrency(saleFiscalSnapshot?.grandTotal ?? saleDetail.totalAmount)}</p></div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardContent className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-5">
+                  <div><p className="text-sm text-muted-foreground">Subtotal</p><p className="font-medium">{formatCurrency(saleFiscalSnapshot?.subtotalBeforeTax ?? saleDetail.subtotalAmount)}</p></div>
+                  <div><p className="text-sm text-muted-foreground">Descuento</p><p className="font-medium">{formatCurrency(saleDetail.discountAmount)}</p></div>
+                  <div><p className="text-sm text-muted-foreground">Base gravable</p><p className="font-medium">{formatCurrency(saleFiscalSnapshot?.taxableSubtotal ?? saleDetail.totalAmount)}</p></div>
+                  <div><p className="text-sm text-muted-foreground">IVA</p><p className="font-medium">{formatCurrency(saleFiscalSnapshot?.taxTotal ?? 0)}</p></div>
+                  <div><p className="text-sm text-muted-foreground">Pagado</p><p className="font-medium">{formatCurrency(saleDetail.paidAmount)}</p></div>
+                </CardContent>
+              </Card>
+
+              {saleDetail.status === "cancelled" ? (
+                <Card className="border-amber-300 bg-amber-50/80 dark:border-amber-900/70 dark:bg-amber-950/30">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-base">Venta cancelada</CardTitle>
+                    <CardDescription>La venta conserva su historial y ya no participa en los indicadores comerciales activos.</CardDescription>
+                  </CardHeader>
+                  <CardContent className="grid gap-3 text-sm md:grid-cols-3">
+                    <div><p className="text-muted-foreground">Fecha</p><p className="font-medium">{saleDetail.cancelledAt ? formatDateTimeLabel(saleDetail.cancelledAt) : "Sin fecha"}</p></div>
+                    <div><p className="text-muted-foreground">Motivo</p><p className="font-medium break-words">{saleDetail.cancellationReason || "Sin motivo registrado"}</p></div>
+                    <div><p className="text-muted-foreground">Estado</p><p className="font-medium capitalize">{saleDetail.status}</p></div>
+                  </CardContent>
+                </Card>
+              ) : (
+                <Card className="border-destructive/20 bg-destructive/5">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-base">Cancelar venta</CardTitle>
+                    <CardDescription>
+                      Esta accion genera un reverso en Caja, devuelve inventario si aplica y anula las comisiones ligadas sin borrar el historial.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="rounded-xl border border-destructive/20 bg-background/80 p-3 text-sm text-muted-foreground">
+                      <ul className="space-y-1">
+                        <li>• La venta quedara marcada como cancelada.</li>
+                        <li>• Caja recibira un movimiento compensatorio unico.</li>
+                        <li>• Las existencias y comisiones se revertiran cuando existan.</li>
+                      </ul>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="sale-cancellation-reason">Motivo obligatorio</Label>
+                      <Textarea
+                        id="sale-cancellation-reason"
+                        rows={3}
+                        value={saleCancellationReason}
+                        onChange={(event) => setSaleCancellationReason(event.target.value)}
+                        placeholder="Explica por que se cancela esta venta"
+                        data-testid="input-sale-cancellation-reason"
+                      />
+                    </div>
+                    <div className="flex justify-end">
+                      <Button
+                        variant="destructive"
+                        onClick={() => cancelSaleMutation.mutate()}
+                        disabled={cancelSaleMutation.isPending || saleCancellationReason.trim().length < 3}
+                        data-testid="button-cancel-branch-sale"
+                      >
+                        {cancelSaleMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                        Cancelar venta
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">Renglones vendidos</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {saleDetail.items.map((item) => (
+                    <div key={item.id} className="rounded-xl border p-3">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="break-words font-medium">{item.nameSnapshot}</p>
+                          <p className="text-sm text-muted-foreground">{item.categorySnapshot || "Sin categoría"}</p>
+                        </div>
+                        <Badge variant="outline">{item.quantity} pza(s)</Badge>
+                      </div>
+                      <div className="mt-2 grid gap-2 text-sm text-muted-foreground md:grid-cols-3">
+                        <p>Unitario: {formatCurrency(item.unitPriceAmount)}</p>
+                        <p>Descuento: {formatCurrency(item.discountAmount)}</p>
+                        <p className="font-medium text-foreground">Total: {formatCurrency(item.lineTotalAmount)}</p>
+                      </div>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">Pagos registrados</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {saleDetail.payments.map((payment) => (
+                    <div key={payment.id} className="rounded-xl border p-3">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <p className="font-medium">{getPaymentMethodLabel(payment.paymentMethod)}</p>
+                        <p className="font-semibold">{formatCurrency(payment.amount)}</p>
+                      </div>
+                      <div className="mt-2 grid gap-2 text-sm text-muted-foreground md:grid-cols-2">
+                        <p className="break-words">Fecha: {formatDateTimeLabel(payment.paidAt)}</p>
+                        <p className="break-words">Referencia: {payment.reference || "Sin referencia"}</p>
+                      </div>
+                    </div>
+                  ))}
+                  {saleDetail.notes ? <p className="text-sm text-muted-foreground">Nota: {saleDetail.notes}</p> : null}
+                </CardContent>
+              </Card>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!commissionPaymentDetailId} onOpenChange={(open) => !open && setCommissionPaymentDetailId(null)}>
+        <DialogContent className="max-h-[100dvh] overflow-y-auto sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Detalle de comisión pagada</DialogTitle>
+            <DialogDescription>Movimiento automático enlazado a pagos de comisión y a Caja en modo solo lectura.</DialogDescription>
+          </DialogHeader>
+          {commissionPaymentDetailLoading || !commissionPaymentDetail ? (
+            <div className="space-y-3 py-2">
+              <Skeleton className="h-20 w-full rounded-2xl" />
+              <Skeleton className="h-28 w-full rounded-2xl" />
+            </div>
+          ) : (
+            <div className="space-y-4 py-2">
+              <div className="grid gap-3 md:grid-cols-2">
+                <Card><CardContent className="p-4"><p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Vendedor</p><p className="mt-2 text-lg font-semibold">{commissionPaymentDetail.salespersonName || "Sin vendedor"}</p></CardContent></Card>
+                <Card><CardContent className="p-4"><p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Monto</p><p className="mt-2 text-lg font-semibold">{formatCurrency(commissionPaymentDetail.amount)}</p></CardContent></Card>
+              </div>
+
+              <Card>
+                <CardContent className="grid gap-3 p-4 md:grid-cols-2">
+                  <div><p className="text-sm text-muted-foreground">Pagado el</p><p className="font-medium">{formatDateTimeLabel(commissionPaymentDetail.paidAt)}</p></div>
+                  <div><p className="text-sm text-muted-foreground">Método</p><p className="font-medium">{getPaymentMethodLabel(commissionPaymentDetail.paymentMethod)}</p></div>
+                  <div><p className="text-sm text-muted-foreground">Periodo</p><p className="font-medium">{commissionPaymentDetail.periodStart || commissionPaymentDetail.periodEnd ? `${commissionPaymentDetail.periodStart || "—"} al ${commissionPaymentDetail.periodEnd || "—"}` : "Sin periodo acotado"}</p></div>
+                  <div><p className="text-sm text-muted-foreground">Asignado a comisiones</p><p className="font-medium">{formatCurrency(commissionPaymentDetail.totalAllocatedAmount)}</p></div>
+                  <div><p className="text-sm text-muted-foreground">Referencia</p><p className="font-medium">{commissionPaymentDetail.reference || "Sin referencia"}</p></div>
+                  <div><p className="text-sm text-muted-foreground">Nota</p><p className="font-medium">{commissionPaymentDetail.notes || "Sin nota"}</p></div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">Asignaciones</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {commissionPaymentDetail.allocations?.length ? commissionPaymentDetail.allocations.map((allocation) => (
+                    <div key={allocation.id} className="rounded-xl border p-3">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <p className="font-medium">Comisión {allocation.commissionAccrualId.slice(0, 8)}...</p>
+                        <p className="font-semibold">{formatCurrency(allocation.amountAllocated)}</p>
+                      </div>
+                      <p className="mt-2 text-sm text-muted-foreground">Asignada {formatDateTimeLabel(allocation.createdAt)}</p>
+                    </div>
+                  )) : (
+                    <p className="text-sm text-muted-foreground">No hay asignaciones visibles para este pago.</p>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -9,6 +9,7 @@ import {
   LayoutDashboard,
   Moon,
   Sun,
+  MoreHorizontal,
   AlertTriangle,
   X,
   CreditCard,
@@ -46,6 +47,9 @@ import {
   Wallet,
   Settings2,
   UserCircle,
+  Package2,
+  Truck,
+  BriefcaseBusiness,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -68,6 +72,14 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
+import {
+  Drawer,
+  DrawerClose,
+  DrawerContent,
+  DrawerDescription,
+  DrawerHeader,
+  DrawerTitle,
+} from "@/components/ui/drawer";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { invalidateBranchMembershipQueries } from "@/lib/branch-dashboard-cache";
 import { useToast } from "@/hooks/use-toast";
@@ -75,24 +87,34 @@ import { useLocation } from "wouter";
 import { Area, AreaChart, CartesianGrid, Line, XAxis, YAxis } from "recharts";
 import ClientesTab from "@/components/clientes-tab";
 import MembresiasTab from "@/components/membresias-tab";
+import ProductosTab from "@/components/productos-tab";
+import ProveedoresComprasTab from "@/components/proveedores-compras-tab";
+import VendedoresTab from "@/components/vendedores-tab";
+import ProyectosTab from "@/components/proyectos-tab";
 import ReservasTab from "@/components/reservas-tab";
 import ContenidoTab from "@/components/contenido-tab";
 import TvModeTab from "@/components/tv-mode-tab";
 import PerfilPublicoTab from "@/components/perfil-publico-tab";
 import NotificationsPanel, { type NotificationItem } from "@/components/notifications-panel";
 import CajaTab from "@/components/caja-tab";
+import CobrarTab from "@/components/cobrar-tab";
 
 const DASHBOARD_TABS = [
   { value: "resumen", label: "Resumen", icon: LayoutDashboard },
+  { value: "cobrar", label: "Cobrar", icon: Wallet },
+  { value: "proyectos", label: "Proyectos", icon: BriefcaseBusiness },
   { value: "clientes", label: "Clientes", icon: Users },
+  { value: "productos", label: "Productos", icon: Package2 },
   { value: "membresias", label: "Membresías", icon: CreditCard },
-  { value: "caja", label: "Caja", icon: DollarSign },
   { value: "reservas", label: "Reservas", icon: Calendar },
+  { value: "compras", label: "Proveedores y compras", icon: Truck },
+  { value: "vendedores", label: "Vendedores", icon: UserCircle },
+  { value: "caja", label: "Caja", icon: DollarSign },
   { value: "contenido", label: "Contenido", icon: FileText },
   { value: "perfil", label: "Perfil Público", icon: Building2 },
-  { value: "configuracion", label: "Configuración", icon: Settings2 },
   { value: "promociones", label: "Promociones", icon: Tag },
   { value: "tv", label: "TV Mode", icon: Monitor },
+  { value: "configuracion", label: "Configuración", icon: Settings2 },
 ] as const;
 
 type TabValue = typeof DASHBOARD_TABS[number]["value"];
@@ -115,6 +137,31 @@ type ClientNotificationTarget = {
   userId: string;
   nonce: number;
 };
+
+type ProductNotificationTarget = {
+  productId: string;
+  action: "performance" | "inventory";
+  nonce: number;
+};
+
+type PurchaseNotificationTarget = {
+  supplierId?: string | null;
+  purchaseId?: string | null;
+  nonce: number;
+};
+
+type SalespersonNotificationTarget = {
+  salespersonId: string;
+  nonce: number;
+};
+
+type CajaNotificationTarget = {
+  source: "commercial_sale" | "sales_commission_payment";
+  sourceId: string;
+  nonce: number;
+};
+
+const MOBILE_PRIMARY_TAB_VALUES: TabValue[] = ["resumen", "clientes", "caja", "reservas"];
 
 const DASHBOARD_NAV_TABS = DASHBOARD_TABS.map((tab) => {
     if (tab.value === "membresias") {
@@ -171,6 +218,83 @@ interface BranchDashboardMetrics {
   lowClassesClients: number;
   activePromotions: number;
   recentReviews: number;
+}
+
+interface CommercialDashboardTopProduct {
+  productId: string;
+  name: string;
+  category: string | null;
+  unitsSold: number;
+  revenueAmount: number;
+  grossProfitAmount: number;
+  lastSoldAt: string | null;
+  quantityOnHand: number | null;
+  minimumStock: number | null;
+  inventoryStatus: "not_tracked" | "uninitialized" | "available" | "low_stock" | "out_of_stock";
+}
+
+interface CommercialDashboardTopCategory {
+  category: string;
+  unitsSold: number;
+  revenueAmount: number;
+  grossProfitAmount: number;
+}
+
+interface CommercialDashboardTopSalesperson {
+  salespersonId: string;
+  name: string;
+  salesCount: number;
+  totalSoldAmount: number;
+  averageTicketAmount: number;
+  productsSoldCount: number;
+  generatedCommissionAmount: number;
+  paidCommissionAmount: number;
+  pendingCommissionAmount: number;
+  monthlyGoalAmount: number | null;
+  goalProgressPercent: number | null;
+}
+
+interface CommercialDashboardTopCustomer {
+  clientUserId: string;
+  clientName: string;
+  clientEmail: string | null;
+  totalSpentAmount: number;
+  salesCount: number;
+  lastPurchaseAt: string | null;
+  firstPurchaseAt: string | null;
+}
+
+interface CommercialDashboardTopSupplier {
+  supplierId: string | null;
+  supplierName: string;
+  totalPurchasedAmount: number;
+  purchasesCount: number;
+  lastPurchaseAt: string | null;
+}
+
+interface BranchCommercialDashboardMetrics {
+  month: string;
+  salesTodayAmount: number;
+  salesMonthAmount: number;
+  ticketCount: number;
+  averageTicketAmount: number;
+  productsSoldCount: number;
+  grossProfitAmount: number;
+  topProducts: CommercialDashboardTopProduct[];
+  topCategories: CommercialDashboardTopCategory[];
+  topSalespeople: CommercialDashboardTopSalesperson[];
+  topCustomers: CommercialDashboardTopCustomer[];
+  firstPurchaseCustomers: CommercialDashboardTopCustomer[];
+  lowStockCount: number;
+  outOfStockCount: number;
+  uninitializedInventoryCount: number;
+  inventoryEstimatedValue: number;
+  generatedCommissionAmount: number;
+  paidCommissionAmount: number;
+  pendingCommissionAmount: number;
+  purchasesReceivedCount: number;
+  totalPurchasedAmount: number;
+  topSuppliers: CommercialDashboardTopSupplier[];
 }
 
 interface BranchFinanceSummary {
@@ -2422,7 +2546,7 @@ function ResumenTabPremiumCompact({ branchStats, branchStatus, branchSlug, branc
   );
 }
 
-function ResumenTabDesktopSaaS({ branchStats, branchStatus, branchSlug, branchId, branchName, isLoading, reservationStats, reservationLoading, dashboardMetrics, alerts, alertsLoading, onViewClient }: {
+function ResumenTabDesktopSaaS({ branchStats, branchStatus, branchSlug, branchId, branchName, isLoading, reservationStats, reservationLoading, dashboardMetrics, commercialDashboard, alerts, alertsLoading, onViewClient }: {
   branchStats: { activeMemberships: number; uniqueActiveCustomers: number; totalCustomers: number } | undefined;
   branchStatus: string;
   branchSlug: string;
@@ -2432,6 +2556,7 @@ function ResumenTabDesktopSaaS({ branchStats, branchStatus, branchSlug, branchId
   reservationStats: ReservationStats | undefined;
   reservationLoading: boolean;
   dashboardMetrics: BranchDashboardMetrics | undefined;
+  commercialDashboard: BranchCommercialDashboardMetrics | undefined;
   alerts: AlertsData | undefined;
   alertsLoading: boolean;
   onViewClient: (userId: string) => void;
@@ -2622,9 +2747,54 @@ function ResumenTabDesktopSaaS({ branchStats, branchStatus, branchSlug, branchId
     },
   ];
 
+  const commercialCards = [
+    {
+      title: "Ventas de hoy",
+      value: formatCurrencyMx(commercialDashboard?.salesTodayAmount ?? 0),
+      helper: "Solo ventas comerciales completadas",
+      icon: Wallet,
+      accent: "text-emerald-600 dark:text-emerald-400",
+    },
+    {
+      title: "Ventas del mes",
+      value: formatCurrencyMx(commercialDashboard?.salesMonthAmount ?? 0),
+      helper: `${commercialDashboard?.ticketCount ?? 0} tickets`,
+      icon: TrendingUp,
+      accent: "text-sky-600 dark:text-sky-400",
+    },
+    {
+      title: "Ticket promedio",
+      value: formatCurrencyMx(commercialDashboard?.averageTicketAmount ?? 0),
+      helper: `${commercialDashboard?.productsSoldCount ?? 0} productos vendidos`,
+      icon: BarChart3,
+      accent: "text-violet-600 dark:text-violet-400",
+    },
+    {
+      title: "Utilidad bruta",
+      value: formatCurrencyMx(commercialDashboard?.grossProfitAmount ?? 0),
+      helper: "Estimado sobre costo de producto",
+      icon: ArrowUpRight,
+      accent: "text-fuchsia-600 dark:text-fuchsia-400",
+    },
+    {
+      title: "Stock bajo / agotado",
+      value: `${commercialDashboard?.lowStockCount ?? 0} / ${commercialDashboard?.outOfStockCount ?? 0}`,
+      helper: `${commercialDashboard?.uninitializedInventoryCount ?? 0} sin inventario inicial`,
+      icon: Package2,
+      accent: "text-amber-600 dark:text-amber-400",
+    },
+    {
+      title: "Comisión pendiente",
+      value: formatCurrencyMx(commercialDashboard?.pendingCommissionAmount ?? 0),
+      helper: `${formatCurrencyMx(commercialDashboard?.paidCommissionAmount ?? 0)} pagada`,
+      icon: UserCircle,
+      accent: "text-rose-600 dark:text-rose-400",
+    },
+  ];
+
   return (
     <div className="space-y-3">
-      <section className="rounded-[22px] border border-slate-200/70 bg-white/95 p-4 shadow-sm dark:border-slate-800/80 dark:bg-slate-950/80">
+      <section className="rounded-[22px] border border-slate-200/70 bg-white/95 p-3.5 shadow-sm dark:border-slate-800/80 dark:bg-slate-950/80 sm:p-4">
         <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
           <div className="space-y-1">
             <div className="flex flex-wrap items-center gap-2">
@@ -2633,7 +2803,7 @@ function ResumenTabDesktopSaaS({ branchStats, branchStatus, branchSlug, branchId
                 Resumen ejecutivo
               </Badge>
             </div>
-            <h2 className="text-xl font-semibold tracking-tight text-foreground md:text-2xl">
+            <h2 className="text-lg font-semibold tracking-tight text-foreground sm:text-xl md:text-2xl">
               Así va {branchName}
             </h2>
             <p className="text-sm text-muted-foreground" data-testid="text-status-description">
@@ -2658,11 +2828,11 @@ function ResumenTabDesktopSaaS({ branchStats, branchStatus, branchSlug, branchId
           </div>
         </div>
 
-        <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-7">
+        <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-7">
           {summaryTopCards.map((item) => (
             <div
               key={item.title}
-              className={`min-h-[102px] rounded-2xl border border-white/70 bg-gradient-to-br ${item.tint} p-3.5 shadow-sm backdrop-blur-sm dark:border-white/10 dark:bg-white/5`}
+              className={`min-h-[92px] rounded-2xl border border-white/70 bg-gradient-to-br ${item.tint} p-3 shadow-sm backdrop-blur-sm dark:border-white/10 dark:bg-white/5 sm:min-h-[102px] sm:p-3.5`}
             >
               <div className="mb-3 flex items-start justify-between gap-3">
                 <div className="min-w-0">
@@ -2670,7 +2840,7 @@ function ResumenTabDesktopSaaS({ branchStats, branchStatus, branchSlug, branchId
                   {topCardsLoading ? (
                     <Skeleton className="mt-2.5 h-7 w-20 rounded-lg" />
                   ) : (
-                    <p className="mt-2.5 truncate text-xl font-semibold tracking-tight md:text-2xl" data-testid={item.testId}>
+                    <p className="mt-2 truncate text-lg font-semibold tracking-tight sm:mt-2.5 sm:text-xl md:text-2xl" data-testid={item.testId}>
                       {item.value}
                     </p>
                   )}
@@ -2703,9 +2873,9 @@ function ResumenTabDesktopSaaS({ branchStats, branchStatus, branchSlug, branchId
           </CardHeader>
           <CardContent className="pt-3">
             {financeLoading ? (
-              <Skeleton className="h-[190px] w-full rounded-2xl" />
+              <Skeleton className="h-[150px] w-full rounded-2xl md:h-[190px]" />
             ) : hasChartData ? (
-              <ChartContainer config={financeChartConfig} className="h-[190px] w-full">
+              <ChartContainer config={financeChartConfig} className="h-[150px] w-full md:h-[190px]">
                 <AreaChart data={chartData} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
                   <defs>
                     <linearGradient id="incomeFillDesktop" x1="0" y1="0" x2="0" y2="1">
@@ -2758,7 +2928,7 @@ function ResumenTabDesktopSaaS({ branchStats, branchStatus, branchSlug, branchId
                 </AreaChart>
               </ChartContainer>
             ) : (
-              <div className="flex h-[150px] flex-col items-center justify-center rounded-3xl border border-dashed border-border/70 bg-muted/20 px-6 text-center">
+              <div className="flex h-[132px] flex-col items-center justify-center rounded-3xl border border-dashed border-border/70 bg-muted/20 px-4 text-center sm:h-[150px] sm:px-6">
                 <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10">
                   <BarChart3 className="h-5 w-5 text-primary" />
                 </div>
@@ -2801,7 +2971,7 @@ function ResumenTabDesktopSaaS({ branchStats, branchStatus, branchSlug, branchId
                 </div>
               )}
 
-              <div className="grid grid-cols-3 gap-2.5">
+              <div className="grid grid-cols-3 gap-2 sm:gap-2.5">
                 <div className="rounded-2xl bg-sky-50 p-2.5 dark:bg-sky-950/30">
                   <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Próximas</p>
                   <p className="mt-1.5 text-lg font-semibold">{dashboardMetrics?.upcomingBookings ?? 0}</p>
@@ -2883,6 +3053,211 @@ function ResumenTabDesktopSaaS({ branchStats, branchStatus, branchSlug, branchId
                 ) : (
                   <p className="rounded-2xl border border-dashed border-border/70 px-3 py-4 text-sm text-muted-foreground">
                     Todavía no hay gastos categorizados para mostrar.
+                  </p>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <h3 className="text-base font-semibold text-foreground">Rendimiento comercial</h3>
+            <p className="text-sm text-muted-foreground">
+              Lectura independiente de ventas, inventario, comisiones y compras sin mezclarla con Caja.
+            </p>
+          </div>
+          <Badge variant="outline" className="w-fit rounded-full px-3 py-1 text-[11px] uppercase tracking-[0.18em]">
+            Mes {commercialDashboard?.month ?? "actual"}
+          </Badge>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
+          {commercialCards.map((item) => (
+            <Card key={item.title} className="border-white/70 bg-white/90 shadow-sm dark:border-white/10 dark:bg-slate-950/70">
+              <CardContent className="flex items-start justify-between gap-3 p-4">
+                <div className="min-w-0">
+                  <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{item.title}</p>
+                  <p className="mt-2 break-words text-xl font-semibold">{item.value}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{item.helper}</p>
+                </div>
+                <item.icon className={`mt-1 h-4.5 w-4.5 shrink-0 ${item.accent}`} />
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+
+        <div className="grid gap-3 2xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1fr)]">
+          <Card className="border-white/70 bg-white/90 shadow-sm dark:border-white/10 dark:bg-slate-950/70">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">Top productos y categorías</CardTitle>
+            </CardHeader>
+            <CardContent className="grid gap-3 md:grid-cols-2">
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Productos</p>
+                  <span className="text-[11px] text-muted-foreground">Top 5</span>
+                </div>
+                {commercialDashboard?.topProducts?.length ? (
+                  commercialDashboard.topProducts.slice(0, 5).map((item) => (
+                    <div key={item.productId} className="rounded-2xl border border-border/60 bg-background/70 p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium">{item.name}</p>
+                          <p className="truncate text-xs text-muted-foreground">{item.category || "Sin categoría"}</p>
+                        </div>
+                        <Badge variant="outline">{item.unitsSold}</Badge>
+                      </div>
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        {formatCurrencyMx(item.revenueAmount)} · utilidad {formatCurrencyMx(item.grossProfitAmount)}
+                      </p>
+                    </div>
+                  ))
+                ) : (
+                  <p className="rounded-2xl border border-dashed border-border/70 px-3 py-4 text-sm text-muted-foreground">
+                    Aún no hay ventas suficientes para destacar productos.
+                  </p>
+                )}
+              </div>
+
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Categorías</p>
+                  <span className="text-[11px] text-muted-foreground">Top 5</span>
+                </div>
+                {commercialDashboard?.topCategories?.length ? (
+                  commercialDashboard.topCategories.slice(0, 5).map((item) => (
+                    <div key={item.category} className="rounded-2xl border border-border/60 bg-background/70 p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <p className="truncate text-sm font-medium">{item.category}</p>
+                        <Badge variant="outline">{item.unitsSold}</Badge>
+                      </div>
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        {formatCurrencyMx(item.revenueAmount)} · utilidad {formatCurrencyMx(item.grossProfitAmount)}
+                      </p>
+                    </div>
+                  ))
+                ) : (
+                  <p className="rounded-2xl border border-dashed border-border/70 px-3 py-4 text-sm text-muted-foreground">
+                    Todavía no hay categorías con rotación comercial.
+                  </p>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-white/70 bg-white/90 shadow-sm dark:border-white/10 dark:bg-slate-950/70">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">Vendedores y clientes</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="space-y-2">
+                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Top vendedores</p>
+                {commercialDashboard?.topSalespeople?.length ? (
+                  commercialDashboard.topSalespeople.slice(0, 4).map((item) => (
+                    <div key={item.salespersonId} className="rounded-2xl border border-border/60 bg-background/70 p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <p className="truncate text-sm font-medium">{item.name}</p>
+                        <Badge variant="outline">{item.salesCount}</Badge>
+                      </div>
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        {formatCurrencyMx(item.totalSoldAmount)} · pendiente {formatCurrencyMx(item.pendingCommissionAmount)}
+                      </p>
+                    </div>
+                  ))
+                ) : (
+                  <p className="rounded-2xl border border-dashed border-border/70 px-3 py-4 text-sm text-muted-foreground">
+                    Aún no hay vendedores con ventas en este periodo.
+                  </p>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Clientes con más compras</p>
+                {commercialDashboard?.topCustomers?.length ? (
+                  commercialDashboard.topCustomers.slice(0, 4).map((item) => (
+                    <button
+                      key={item.clientUserId}
+                      type="button"
+                      onClick={() => onViewClient(item.clientUserId)}
+                      className="w-full rounded-2xl border border-border/60 bg-background/70 p-3 text-left transition-colors hover:bg-muted/40"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <p className="truncate text-sm font-medium">{item.clientName}</p>
+                        <Badge variant="outline">{item.salesCount}</Badge>
+                      </div>
+                      <p className="mt-2 text-xs text-muted-foreground">{formatCurrencyMx(item.totalSpentAmount)}</p>
+                    </button>
+                  ))
+                ) : (
+                  <p className="rounded-2xl border border-dashed border-border/70 px-3 py-4 text-sm text-muted-foreground">
+                    Cuando entren ventas ligadas a clientes, aparecerán aquí.
+                  </p>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-white/70 bg-white/90 shadow-sm dark:border-white/10 dark:bg-slate-950/70">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">Inventario, compras y primeras compras</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="rounded-2xl border border-border/60 bg-background/70 p-3">
+                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Inventario estimado</p>
+                <p className="mt-1.5 text-lg font-semibold">{formatCurrencyMx(commercialDashboard?.inventoryEstimatedValue ?? 0)}</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {commercialDashboard?.lowStockCount ?? 0} bajos · {commercialDashboard?.outOfStockCount ?? 0} agotados
+                </p>
+              </div>
+
+              <div className="rounded-2xl border border-border/60 bg-background/70 p-3">
+                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Compras recibidas</p>
+                <p className="mt-1.5 text-lg font-semibold">{commercialDashboard?.purchasesReceivedCount ?? 0}</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Total {formatCurrencyMx(commercialDashboard?.totalPurchasedAmount ?? 0)}
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Primeras compras</p>
+                {commercialDashboard?.firstPurchaseCustomers?.length ? (
+                  commercialDashboard.firstPurchaseCustomers.slice(0, 4).map((item) => (
+                    <button
+                      key={`${item.clientUserId}-first`}
+                      type="button"
+                      onClick={() => onViewClient(item.clientUserId)}
+                      className="w-full rounded-2xl border border-border/60 bg-background/70 p-3 text-left transition-colors hover:bg-muted/40"
+                    >
+                      <p className="truncate text-sm font-medium">{item.clientName}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {formatCurrencyMx(item.totalSpentAmount)} · {item.salesCount} venta{item.salesCount === 1 ? "" : "s"}
+                      </p>
+                    </button>
+                  ))
+                ) : (
+                  <p className="rounded-2xl border border-dashed border-border/70 px-3 py-4 text-sm text-muted-foreground">
+                    Sin primeras compras registradas en el periodo.
+                  </p>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Proveedores principales</p>
+                {commercialDashboard?.topSuppliers?.length ? (
+                  commercialDashboard.topSuppliers.slice(0, 3).map((item) => (
+                    <div key={`${item.supplierId ?? item.supplierName}-supplier`} className="rounded-2xl border border-border/60 bg-background/70 p-3">
+                      <p className="truncate text-sm font-medium">{item.supplierName}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {formatCurrencyMx(item.totalPurchasedAmount)} · {item.purchasesCount} compra{item.purchasesCount === 1 ? "" : "s"}
+                      </p>
+                    </div>
+                  ))
+                ) : (
+                  <p className="rounded-2xl border border-dashed border-border/70 px-3 py-4 text-sm text-muted-foreground">
+                    Aún no hay compras recibidas para resumir proveedores.
                   </p>
                 )}
               </div>
@@ -3079,19 +3454,19 @@ function PromocionesTab() {
   const today = new Date().toISOString().split("T")[0];
 
   return (
-    <div className="space-y-4 p-4 max-w-3xl mx-auto">
-      <div className="flex items-center justify-between">
+    <div className="mx-auto max-w-3xl space-y-4 p-0 md:p-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-xl font-bold">Promociones</h2>
           <p className="text-sm text-muted-foreground">Crea ofertas visibles en tu perfil y en la app global</p>
         </div>
-        <Button onClick={() => setShowForm(!showForm)} data-testid="button-add-promotion">
+        <Button className="w-full sm:w-auto" onClick={() => setShowForm(!showForm)} data-testid="button-add-promotion">
           <Plus className="h-4 w-4 mr-2" /> Nueva promoción
         </Button>
       </div>
 
       {showForm && (
-        <Card className="border-2 border-primary/20">
+        <Card className="border-2 border-primary/20 max-md:fixed max-md:inset-0 max-md:z-50 max-md:flex max-md:flex-col max-md:overflow-y-auto max-md:rounded-none max-md:border-0 max-md:bg-background max-md:px-4 max-md:pb-[calc(env(safe-area-inset-bottom)+1rem)] max-md:pt-[calc(env(safe-area-inset-top)+1rem)]">
           <CardHeader className="pb-2">
             <CardTitle className="text-base">Nueva promoción</CardTitle>
           </CardHeader>
@@ -3104,7 +3479,7 @@ function PromocionesTab() {
               <Label htmlFor="promo-desc">Descripción</Label>
               <Textarea id="promo-desc" value={description} onChange={e => setDescription(e.target.value)} placeholder="Detalles de la promoción..." rows={3} data-testid="input-promo-description" />
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <Label htmlFor="promo-start">Fecha de inicio</Label>
                 <Input id="promo-start" type="date" value={startDate} min={today} onChange={e => setStartDate(e.target.value)} data-testid="input-promo-start-date" />
@@ -3147,7 +3522,7 @@ function PromocionesTab() {
                 <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${isGlobal ? "translate-x-5" : ""}`} />
               </button>
             </div>
-            <div className="flex gap-2 pt-2">
+            <div className="flex flex-col gap-2 border-t pt-4 max-md:sticky max-md:bottom-0 max-md:-mx-4 max-md:bg-background/95 max-md:px-4 max-md:pb-[calc(env(safe-area-inset-bottom)+0.5rem)] max-md:backdrop-blur sm:flex-row">
               <Button onClick={handleSubmit} disabled={submitting} className="flex-1" data-testid="button-submit-promo">
                 {submitting ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Save className="h-4 w-4 mr-2" />}
                 Guardar promoción
@@ -3178,14 +3553,14 @@ function PromocionesTab() {
             const isExpired = promo.endDate && promo.endDate < today;
             return (
               <Card key={promo.id} className={`overflow-hidden ${!promo.isActive || isExpired ? "opacity-60" : ""}`} data-testid={`card-promo-${promo.id}`}>
-                <div className="flex">
+                <div className="flex flex-col sm:flex-row">
                   {promo.imageUrl && (
-                    <img src={promo.imageUrl} alt={promo.title} className="w-28 h-full object-cover flex-shrink-0" style={{ minHeight: 96 }} />
+                    <img src={promo.imageUrl} alt={promo.title} className="h-44 w-full object-cover sm:h-full sm:w-28 sm:flex-shrink-0" style={{ minHeight: 96 }} />
                   )}
                   <CardContent className="flex-1 p-4">
-                    <div className="flex items-start justify-between gap-2">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                       <div className="flex-1 min-w-0">
-                        <p className="font-semibold truncate" data-testid={`text-promo-title-${promo.id}`}>{promo.title}</p>
+                        <p className="font-semibold break-words sm:truncate" data-testid={`text-promo-title-${promo.id}`}>{promo.title}</p>
                         {promo.description && <p className="text-sm text-muted-foreground mt-0.5 line-clamp-2">{promo.description}</p>}
                         <div className="flex flex-wrap gap-1.5 mt-2">
                           {promo.endDate && (
@@ -3195,7 +3570,7 @@ function PromocionesTab() {
                           )}
                         </div>
                       </div>
-                      <div className="flex flex-col gap-1.5 flex-shrink-0">
+                      <div className="grid grid-cols-1 gap-1.5 sm:flex sm:flex-col sm:flex-shrink-0">
                         <button
                           title={promo.isActive ? "Desactivar" : "Activar"}
                           onClick={() => handleToggle(promo.id, "isActive", promo.isActive)}
@@ -3339,8 +3714,9 @@ function ConfigurationTab({
               </p>
             </div>
 
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
               <Button
+                className="w-full sm:w-auto"
                 onClick={() => renameBranchMutation.mutate(draftName.trim())}
                 disabled={!draftName.trim() || !hasNameChanged || renameBranchMutation.isPending}
                 data-testid="button-save-branch-official-name"
@@ -3354,6 +3730,7 @@ function ConfigurationTab({
               </Button>
               <Button
                 variant="outline"
+                className="w-full sm:w-auto"
                 onClick={onOpenPublicProfileSettings}
                 data-testid="button-open-public-profile-settings"
               >
@@ -3383,7 +3760,7 @@ function ConfigurationTab({
                 <li>Cambiar contraseña</li>
               </ul>
             </div>
-            <Button onClick={onOpenMyProfile} data-testid="button-open-my-profile-security">
+            <Button className="w-full sm:w-auto" onClick={onOpenMyProfile} data-testid="button-open-my-profile-security">
               <ExternalLink className="h-4 w-4 mr-2" />
               Ir a mi perfil y seguridad
             </Button>
@@ -3400,8 +3777,13 @@ export default function DashboardPage() {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   const [activeTab, setActiveTab] = useState<TabValue>("resumen");
+  const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
   const [reservationFocus, setReservationFocus] = useState<ReservationNotificationTarget | null>(null);
   const [clientFocus, setClientFocus] = useState<ClientNotificationTarget | null>(null);
+  const [productFocus, setProductFocus] = useState<ProductNotificationTarget | null>(null);
+  const [purchaseFocus, setPurchaseFocus] = useState<PurchaseNotificationTarget | null>(null);
+  const [salespersonFocus, setSalespersonFocus] = useState<SalespersonNotificationTarget | null>(null);
+  const [cajaFocus, setCajaFocus] = useState<CajaNotificationTarget | null>(null);
 
   const branchName = user?.branch?.name || "Tu Sucursal";
   const branchSlug = user?.branch?.slug || "";
@@ -3429,6 +3811,11 @@ export default function DashboardPage() {
     enabled: !!user?.branchId,
   });
 
+  const { data: commercialDashboard } = useQuery<BranchCommercialDashboardMetrics>({
+    queryKey: ["/api/branch/commercial-dashboard"],
+    enabled: !!user?.branchId,
+  });
+
   const endImpersonateMutation = useMutation({
     mutationFn: async () => {
       await apiRequest("POST", "/api/superadmin/impersonate/end");
@@ -3445,6 +3832,18 @@ export default function DashboardPage() {
       toast({ title: "Error", description: "No se pudo salir del modo soporte", variant: "destructive" });
     },
   });
+
+  const mobilePrimaryTabs = DASHBOARD_NAV_TABS.filter((tab) => MOBILE_PRIMARY_TAB_VALUES.includes(tab.value));
+  const mobileMoreTabs = DASHBOARD_NAV_TABS.filter((tab) => !MOBILE_PRIMARY_TAB_VALUES.includes(tab.value));
+  const isMoreTabActive = !MOBILE_PRIMARY_TAB_VALUES.includes(activeTab);
+
+  function handleSelectMobileTab(tab: TabValue) {
+    setActiveTab(tab);
+    setIsMoreMenuOpen(false);
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  }
 
   function handleViewClient(userId: string) {
     if (!userId) {
@@ -3543,6 +3942,45 @@ export default function DashboardPage() {
       return;
     }
 
+    if (data.notificationAction === "open_product" && typeof data.productId === "string" && data.productId) {
+      setProductFocus({
+        productId: data.productId,
+        action: notification.type === "inventory_out_of_stock" ? "inventory" : "performance",
+        nonce: Date.now(),
+      });
+      setActiveTab("productos");
+      return;
+    }
+
+    if (data.notificationAction === "open_purchase" && typeof data.purchaseId === "string" && data.purchaseId) {
+      setPurchaseFocus({
+        purchaseId: data.purchaseId,
+        supplierId: typeof data.supplierId === "string" ? data.supplierId : null,
+        nonce: Date.now(),
+      });
+      setActiveTab("compras");
+      return;
+    }
+
+    if (data.notificationAction === "open_salesperson" && typeof data.salespersonId === "string" && data.salespersonId) {
+      setSalespersonFocus({
+        salespersonId: data.salespersonId,
+        nonce: Date.now(),
+      });
+      setActiveTab("vendedores");
+      return;
+    }
+
+    if (data.notificationAction === "open_sale" && typeof data.saleId === "string" && data.saleId) {
+      setCajaFocus({
+        source: "commercial_sale",
+        sourceId: data.saleId,
+        nonce: Date.now(),
+      });
+      setActiveTab("caja");
+      return;
+    }
+
     toast({
       title: notification.title,
       description: notification.message,
@@ -3587,13 +4025,13 @@ export default function DashboardPage() {
       )}
 
       <header className="sticky top-0 z-50 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60" style={{ top: (branchStatus === "suspended" && isImpersonating) ? '80px' : (branchStatus === "suspended" || isImpersonating) ? '40px' : undefined }}>
-        <div className="mx-auto flex max-w-[1680px] items-center justify-between gap-3 px-4 py-4 lg:px-6">
+        <div className="mx-auto flex max-w-[1680px] items-center justify-between gap-3 px-4 py-3 sm:py-4 lg:px-6">
           <div className="flex items-center gap-3">
             <div className="flex items-center justify-center w-9 h-9 rounded-md bg-primary">
               <LayoutDashboard className="h-5 w-5 text-primary-foreground" />
             </div>
-            <div>
-              <h1 className="font-bold text-lg leading-tight" data-testid="text-dashboard-title">
+            <div className="min-w-0">
+              <h1 className="max-w-[240px] truncate font-bold text-base leading-tight sm:max-w-none sm:text-lg" data-testid="text-dashboard-title">
                 {branchName}
               </h1>
               <p className="text-xs text-muted-foreground">Panel de administración</p>
@@ -3618,18 +4056,23 @@ export default function DashboardPage() {
               {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </Button>
             {!isImpersonating && (
-              <Button variant="ghost" onClick={logout} data-testid="button-logout-dashboard">
-                <LogOut className="h-4 w-4 mr-2" />
-                Salir
-              </Button>
+              <>
+                <Button className="sm:hidden" size="icon" variant="ghost" onClick={logout} data-testid="button-logout-dashboard-mobile">
+                  <LogOut className="h-4 w-4" />
+                </Button>
+                <Button className="hidden sm:inline-flex" variant="ghost" onClick={logout} data-testid="button-logout-dashboard">
+                  <LogOut className="h-4 w-4 mr-2" />
+                  Salir
+                </Button>
+              </>
             )}
           </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-[1680px] px-4 py-4 lg:px-6">
+      <main className="mx-auto max-w-[1680px] px-4 py-4 pb-24 md:pb-4 lg:px-6">
         <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as TabValue)}>
-          <div className="overflow-x-auto pb-1 lg:hidden">
+          <div className="hidden overflow-x-auto pb-1 md:block lg:hidden">
             <TabsList className="w-full sm:w-auto" data-testid="tabs-dashboard-nav">
               {DASHBOARD_NAV_TABS.map((tab) => (
                 <TabsTrigger
@@ -3704,6 +4147,7 @@ export default function DashboardPage() {
                   reservationStats={reservationStats}
                   reservationLoading={reservationLoading}
                   dashboardMetrics={dashboardMetrics}
+                  commercialDashboard={commercialDashboard}
                   alerts={alerts}
                   alertsLoading={alertsLoading}
                   onViewClient={handleViewClient}
@@ -3718,8 +4162,28 @@ export default function DashboardPage() {
                 <MembresiasTab />
               </TabsContent>
 
+              <TabsContent value="productos" className="mt-0">
+                <ProductosTab focusRequest={productFocus} />
+              </TabsContent>
+
+              <TabsContent value="compras" className="mt-0">
+                <ProveedoresComprasTab focusRequest={purchaseFocus} />
+              </TabsContent>
+
+              <TabsContent value="vendedores" className="mt-0">
+                <VendedoresTab focusRequest={salespersonFocus} />
+              </TabsContent>
+
               <TabsContent value="caja" className="mt-0">
-                <CajaTab />
+                <CajaTab focusRequest={cajaFocus} />
+              </TabsContent>
+
+              <TabsContent value="cobrar" className="mt-0">
+                <CobrarTab />
+              </TabsContent>
+
+              <TabsContent value="proyectos" className="mt-0">
+                <ProyectosTab />
               </TabsContent>
 
               <TabsContent value="reservas" className="mt-0">
@@ -3755,6 +4219,89 @@ export default function DashboardPage() {
           </div>
         </Tabs>
       </main>
+
+      <div data-mobile-bottom-nav="true" className="fixed inset-x-0 bottom-0 z-40 border-t border-border/70 bg-background/95 px-2 pb-[env(safe-area-inset-bottom)] pt-2 backdrop-blur supports-[backdrop-filter]:bg-background/90 md:hidden">
+        <div className="mx-auto flex max-w-lg items-center gap-1">
+          {mobilePrimaryTabs.map((tab) => (
+            <button
+              key={tab.value}
+              type="button"
+              onClick={() => handleSelectMobileTab(tab.value)}
+              className={`flex min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-2xl px-2 py-2.5 text-[11px] font-medium transition-colors ${
+                activeTab === tab.value
+                  ? "bg-primary text-primary-foreground shadow-sm"
+                  : "text-muted-foreground"
+              }`}
+              data-testid={`mobile-nav-${tab.value}`}
+            >
+              <tab.icon className="h-4 w-4 shrink-0" />
+              <span className="truncate">{tab.label}</span>
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => setIsMoreMenuOpen(true)}
+            className={`flex min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-2xl px-2 py-2.5 text-[11px] font-medium transition-colors ${
+              isMoreTabActive || isMoreMenuOpen
+                ? "bg-primary text-primary-foreground shadow-sm"
+                : "text-muted-foreground"
+            }`}
+            data-testid="mobile-nav-more"
+          >
+            <MoreHorizontal className="h-4 w-4 shrink-0" />
+            <span className="truncate">Más</span>
+          </button>
+        </div>
+      </div>
+
+      <Drawer open={isMoreMenuOpen} onOpenChange={setIsMoreMenuOpen}>
+        <DrawerContent className="left-0 right-0 bottom-0 z-[60] w-screen max-w-[100vw] overflow-hidden rounded-t-[24px] border-x-0 border-b-0 border-t border-border/80 bg-background px-0 shadow-[0_-20px_56px_rgba(15,23,42,0.28)] md:hidden">
+          <DrawerHeader className="relative gap-1 px-4 pb-3 pt-2 text-left">
+            <DrawerTitle className="pr-10 text-base leading-6">Más módulos</DrawerTitle>
+            <DrawerDescription className="pr-10 text-xs leading-5">
+              El resto de herramientas sin alterar el dashboard.
+            </DrawerDescription>
+            <DrawerClose asChild>
+              <button
+                type="button"
+                className="absolute right-4 top-2 flex h-9 w-9 items-center justify-center rounded-full border border-border/70 bg-background text-muted-foreground shadow-sm transition-colors hover:text-foreground"
+                aria-label="Cerrar más módulos"
+                data-testid="mobile-more-close"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </DrawerClose>
+          </DrawerHeader>
+          <div className="max-h-[calc(92dvh-6.5rem)] min-w-0 max-w-full space-y-2 overflow-y-auto px-4 pb-[calc(env(safe-area-inset-bottom)+1rem)]">
+            {mobileMoreTabs.map((tab) => (
+              <button
+                key={tab.value}
+                type="button"
+                onClick={() => handleSelectMobileTab(tab.value)}
+                className={`flex w-full min-w-0 max-w-full items-center justify-between gap-3 rounded-2xl border px-4 py-3 text-left transition-colors ${
+                  activeTab === tab.value
+                    ? "border-primary bg-primary/5 text-foreground"
+                    : "border-border/70 bg-card text-foreground"
+                }`}
+                data-testid={`mobile-more-${tab.value}`}
+              >
+                <div className="flex min-w-0 max-w-full items-center gap-3">
+                  <div className={`flex h-10 w-10 items-center justify-center rounded-2xl ${
+                    activeTab === tab.value ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground"
+                  }`}>
+                    <tab.icon className="h-4 w-4 shrink-0" />
+                  </div>
+                  <div className="min-w-0 max-w-full">
+                    <p className="break-words text-sm font-medium">{tab.label}</p>
+                    <p className="break-words text-xs text-muted-foreground">Abrir módulo</p>
+                  </div>
+                </div>
+                {activeTab === tab.value ? <Badge variant="secondary">Activo</Badge> : null}
+              </button>
+            ))}
+          </div>
+        </DrawerContent>
+      </Drawer>
     </div>
   );
 }

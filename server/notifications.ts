@@ -79,6 +79,19 @@ function getMxDateParts() {
   return { year, month, day };
 }
 
+function getMxMonthKey() {
+  const { year, month } = getMxDateParts();
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+
+function formatCurrencyAmount(amount: number | null | undefined) {
+  return new Intl.NumberFormat("es-MX", {
+    style: "currency",
+    currency: "MXN",
+    maximumFractionDigits: 0,
+  }).format(Number(amount ?? 0));
+}
+
 function isBirthdayToday(birthDate: string | null | undefined) {
   if (!birthDate) return false;
 
@@ -373,6 +386,236 @@ export async function syncBirthdayTodayNotifications(params: {
     return createdCount;
   } catch (err: any) {
     console.error("[NOTIFICATIONS] Error sincronizando cumpleaños de hoy:", err?.stack || err);
+    return 0;
+  }
+}
+
+export async function syncCommercialNotifications(params: {
+  branchId: string;
+  actorUserId: string;
+}) {
+  try {
+    const signals = await storage.getBranchCommercialNotificationSignals(params.branchId);
+    const monthKey = getMxMonthKey();
+    let createdCount = 0;
+
+    const emitOnce = async (args: {
+      type: string;
+      action: string;
+      referenceId: string;
+      title: string;
+      message: string;
+      data?: Record<string, any> | null;
+    }) => {
+      const existingAudit = await storage.findAuditLogByReference({
+        action: args.action,
+        branchId: params.branchId,
+        referenceId: args.referenceId,
+      });
+
+      const existingNotification = await storage.findNotificationByReference({
+        type: args.type,
+        referenceId: args.referenceId,
+        branchId: params.branchId,
+        roleTarget: "BRANCH_ADMIN",
+        recipientUserId: null,
+      });
+
+      const auditMetadata =
+        existingAudit && typeof existingAudit.metadata === "object" && existingAudit.metadata
+          ? (existingAudit.metadata as Record<string, any>)
+          : null;
+      const auditNotificationId =
+        typeof auditMetadata?.notificationId === "string" && auditMetadata.notificationId
+          ? auditMetadata.notificationId
+          : null;
+
+      if (existingAudit && (existingNotification || auditNotificationId)) {
+        return null;
+      }
+
+      let notificationId = existingNotification?.id ?? null;
+      if (!existingNotification) {
+        const created = await createBranchNotificationOnce(params.branchId, {
+          type: args.type,
+          referenceId: args.referenceId,
+          title: args.title,
+          message: args.message,
+          data: args.data ?? null,
+        });
+        notificationId = created?.id ?? null;
+        if (created) {
+          createdCount += 1;
+        }
+      }
+
+      if (!notificationId) return null;
+
+      await storage.createAuditLog({
+        actorUserId: params.actorUserId,
+        action: args.action,
+        branchId: params.branchId,
+        metadata: {
+          referenceId: args.referenceId,
+          notificationId,
+          type: args.type,
+          ...(args.data ?? {}),
+        },
+      });
+
+      return notificationId;
+    };
+
+    for (const product of signals.lowStockProducts) {
+      const updatedAtKey = new Date(product.updatedAt).toISOString();
+      await emitOnce({
+        type: "inventory_low_stock",
+        action: "NOTIFICATION_INVENTORY_LOW_STOCK_EMITTED",
+        referenceId: `stock_low:${params.branchId}:${product.productId}:${updatedAtKey}`,
+        title: `📦 ${product.productName} quedó con ${product.quantityOnHand} unidades`,
+        message: `Mínimo ${product.minimumStock} · Revisa inventario`,
+        data: {
+          productId: product.productId,
+          productName: product.productName,
+          branchId: params.branchId,
+          quantityOnHand: product.quantityOnHand,
+          minimumStock: product.minimumStock,
+          updatedAt: product.updatedAt,
+          notificationAction: "open_product",
+        },
+      });
+    }
+
+    for (const product of signals.outOfStockProducts) {
+      const updatedAtKey = new Date(product.updatedAt).toISOString();
+      await emitOnce({
+        type: "inventory_out_of_stock",
+        action: "NOTIFICATION_INVENTORY_OUT_OF_STOCK_EMITTED",
+        referenceId: `stock_out:${params.branchId}:${product.productId}:${updatedAtKey}`,
+        title: `🚨 ${product.productName} se agotó`,
+        message: "Sin existencias disponibles",
+        data: {
+          productId: product.productId,
+          productName: product.productName,
+          branchId: params.branchId,
+          quantityOnHand: product.quantityOnHand,
+          minimumStock: product.minimumStock,
+          updatedAt: product.updatedAt,
+          notificationAction: "open_product",
+        },
+      });
+    }
+
+    for (const customer of signals.firstPurchaseCustomers) {
+      await emitOnce({
+        type: "commercial_first_purchase",
+        action: "NOTIFICATION_COMMERCIAL_FIRST_PURCHASE_EMITTED",
+        referenceId: `first_purchase:${params.branchId}:${customer.clientUserId}`,
+        title: `🛒 Primera compra de ${customer.clientName}`,
+        message: `${formatCurrencyAmount(customer.totalSpentAmount)} · ${customer.salesCount} venta${customer.salesCount === 1 ? "" : "s"}`,
+        data: {
+          clientUserId: customer.clientUserId,
+          clientName: customer.clientName,
+          branchId: params.branchId,
+          totalSpentAmount: customer.totalSpentAmount,
+          salesCount: customer.salesCount,
+          firstPurchaseAt: customer.firstPurchaseAt,
+          lastPurchaseAt: customer.lastPurchaseAt,
+          notificationAction: "open_client",
+        },
+      });
+    }
+
+    for (const salesperson of signals.goalReachedSalespeople) {
+      await emitOnce({
+        type: "sales_goal_reached",
+        action: "NOTIFICATION_SALES_GOAL_REACHED_EMITTED",
+        referenceId: `sales_goal:${params.branchId}:${salesperson.salespersonId}:${monthKey}:${salesperson.monthlyGoalAmount ?? 0}`,
+        title: `🏆 ${salesperson.name} alcanzó su meta mensual`,
+        message: `${formatCurrencyAmount(salesperson.totalSoldAmount)} vendidos · ${salesperson.salesCount} tickets`,
+        data: {
+          salespersonId: salesperson.salespersonId,
+          salespersonName: salesperson.name,
+          branchId: params.branchId,
+          month: monthKey,
+          totalSoldAmount: salesperson.totalSoldAmount,
+          salesCount: salesperson.salesCount,
+          monthlyGoalAmount: salesperson.monthlyGoalAmount,
+          goalProgressPercent: salesperson.goalProgressPercent,
+          notificationAction: "open_salesperson",
+        },
+      });
+    }
+
+    for (const sale of signals.largeSales) {
+      await emitOnce({
+        type: "commercial_large_sale",
+        action: "NOTIFICATION_COMMERCIAL_LARGE_SALE_EMITTED",
+        referenceId: `large_sale:${sale.saleId}`,
+        title: `💰 Venta de ${formatCurrencyAmount(sale.totalAmount)} registrada`,
+        message: [sale.folio, sale.sellerName || sale.clientDisplayName || "Venta comercial"]
+          .filter(Boolean)
+          .join(" · "),
+        data: {
+          saleId: sale.saleId,
+          branchId: params.branchId,
+          folio: sale.folio,
+          totalAmount: sale.totalAmount,
+          clientUserId: sale.clientUserId,
+          clientDisplayName: sale.clientDisplayName,
+          sellerId: sale.sellerId,
+          sellerName: sale.sellerName,
+          createdAt: sale.createdAt,
+          notificationAction: "open_sale",
+        },
+      });
+    }
+
+    for (const purchase of signals.receivedPurchases) {
+      await emitOnce({
+        type: "purchase_received",
+        action: "NOTIFICATION_PURCHASE_RECEIVED_EMITTED",
+        referenceId: `purchase_received:${purchase.purchaseId}`,
+        title: `🚚 Compra ${purchase.folio} recibida`,
+        message: [purchase.supplierName, formatCurrencyAmount(purchase.totalAmount)]
+          .filter(Boolean)
+          .join(" · "),
+        data: {
+          purchaseId: purchase.purchaseId,
+          branchId: params.branchId,
+          folio: purchase.folio,
+          supplierId: purchase.supplierId,
+          supplierName: purchase.supplierName,
+          receivedAt: purchase.receivedAt,
+          totalAmount: purchase.totalAmount,
+          notificationAction: "open_purchase",
+        },
+      });
+    }
+
+    for (const salesperson of signals.pendingCommissions) {
+      await emitOnce({
+        type: "commission_pending",
+        action: "NOTIFICATION_COMMISSION_PENDING_EMITTED",
+        referenceId: `commission_pending:${params.branchId}:${salesperson.salespersonId}:${monthKey}`,
+        title: `💸 ${salesperson.name} tiene comisión pendiente`,
+        message: `${formatCurrencyAmount(salesperson.pendingCommissionAmount)} pendiente del mes`,
+        data: {
+          salespersonId: salesperson.salespersonId,
+          salespersonName: salesperson.name,
+          branchId: params.branchId,
+          month: monthKey,
+          pendingCommissionAmount: salesperson.pendingCommissionAmount,
+          generatedCommissionAmount: salesperson.generatedCommissionAmount,
+          paidCommissionAmount: salesperson.paidCommissionAmount,
+          notificationAction: "open_salesperson",
+        },
+      });
+    }
+
+    return createdCount;
+  } catch (err: any) {
+    console.error("[NOTIFICATIONS] Error sincronizando alertas comerciales:", err?.stack || err);
     return 0;
   }
 }

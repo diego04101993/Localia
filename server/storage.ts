@@ -26,6 +26,21 @@ import {
   branchPhotos,
   branchPosts,
   branchProducts,
+  branchCommercialProducts,
+  branchCommercialProjects,
+  branchSalespeople,
+  branchSales,
+  branchSaleItems,
+  branchSalePayments,
+  branchCommissionRules,
+  branchCommissionAccruals,
+  branchCommissionPayments,
+  branchCommissionPaymentAllocations,
+  branchInventoryBalances,
+  branchInventoryMovements,
+  branchSuppliers,
+  branchPurchases,
+  branchPurchaseItems,
   branchServices,
   branchServiceSaleOptions,
   branchVideos,
@@ -68,6 +83,36 @@ import {
   type InsertBranchPost,
   type BranchProduct,
   type InsertBranchProduct,
+  type BranchCommercialProduct,
+  type InsertBranchCommercialProduct,
+  type BranchCommercialProject,
+  type InsertBranchCommercialProject,
+  type BranchSalesperson,
+  type InsertBranchSalesperson,
+  type BranchSale,
+  type InsertBranchSale,
+  type BranchSaleItem,
+  type InsertBranchSaleItem,
+  type BranchSalePayment,
+  type InsertBranchSalePayment,
+  type BranchCommissionRule,
+  type InsertBranchCommissionRule,
+  type BranchCommissionAccrual,
+  type InsertBranchCommissionAccrual,
+  type BranchCommissionPayment,
+  type InsertBranchCommissionPayment,
+  type BranchCommissionPaymentAllocation,
+  type InsertBranchCommissionPaymentAllocation,
+  type BranchInventoryBalance,
+  type InsertBranchInventoryBalance,
+  type BranchInventoryMovement,
+  type InsertBranchInventoryMovement,
+  type BranchSupplier,
+  type InsertBranchSupplier,
+  type BranchPurchase,
+  type InsertBranchPurchase,
+  type BranchPurchaseItem,
+  type InsertBranchPurchaseItem,
   type BranchService,
   type InsertBranchService,
   type BranchServiceSaleOption,
@@ -114,6 +159,7 @@ import {
 import { normalizeSearchText } from "./search-utils";
 
 const BRANCH_TIMEZONE = "America/Mexico_City";
+const COMMERCIAL_LARGE_SALE_THRESHOLD = 10000;
 const CRM_ACTIVITY_WINDOW_DAYS = 30;
 const CRM_ACTIVITY_WINDOW_MS = CRM_ACTIVITY_WINDOW_DAYS * 24 * 60 * 60 * 1000;
 const DEFAULT_GLOBAL_APP_SETTINGS: Array<{ key: string; valueJson: any; scope: string }> = [
@@ -154,9 +200,169 @@ function getCurrentMonthRange() {
   };
 }
 
+function getMonthRangeByKey(month?: string | null): { monthKey: string; from: string; toExclusive: string } {
+  const monthKey = month && /^\d{4}-\d{2}$/.test(month) ? month : getMxLocalDate().slice(0, 7);
+  const [yearText, monthText] = monthKey.split("-");
+  const year = Number(yearText);
+  const monthNumber = Number(monthText);
+  const from = `${monthKey}-01`;
+  const nextMonthDate = new Date(year, monthNumber, 1);
+  const toExclusive = `${nextMonthDate.getFullYear()}-${String(nextMonthDate.getMonth() + 1).padStart(2, "0")}-01`;
+  return { monthKey, from, toExclusive };
+}
+
 function toFinanceAmount(value: unknown): number {
   const amount = Number(value);
-  return Number.isFinite(amount) ? amount : 0;
+  return Number.isFinite(amount) ? Number(amount.toFixed(2)) : 0;
+}
+
+function roundMoney(value: number): number {
+  return Number(value.toFixed(2));
+}
+
+type CommercialTaxSnapshotLike = {
+  taxMode?: string | null;
+  subtotalBeforeTax?: number | null;
+  taxableSubtotal?: number | null;
+  taxTotal?: number | null;
+  grandTotal?: number | null;
+};
+
+function hasStoredCommercialTaxBreakdown(row: CommercialTaxSnapshotLike) {
+  return row.taxMode != null
+    || row.subtotalBeforeTax != null
+    || row.taxableSubtotal != null
+    || row.taxTotal != null
+    || row.grandTotal != null;
+}
+
+const BRANCH_COMMERCIAL_PROJECT_CODE_UNIQUE = "branch_commercial_projects_branch_code_unique";
+
+type CommercialTaxMode = "tax_included" | "tax_added" | "tax_exempt";
+
+function computeCommercialTaxSnapshot(params: {
+  subtotalAmount: number;
+  discountAmount: number;
+  taxMode: CommercialTaxMode;
+  taxRate: number;
+}) {
+  const subtotalAmount = roundMoney(Math.max(0, params.subtotalAmount || 0));
+  const discountAmount = roundMoney(Math.max(0, params.discountAmount || 0));
+  const discountedSubtotal = roundMoney(Math.max(0, subtotalAmount - discountAmount));
+  const taxMode = params.taxMode;
+  const taxRate = taxMode === "tax_exempt" ? 0 : roundMoney(Math.max(0, params.taxRate || 0));
+  const taxFactor = taxRate > 0 ? taxRate / 100 : 0;
+
+  if (taxMode === "tax_included" && taxFactor > 0) {
+    const subtotalBeforeTax = roundMoney(subtotalAmount / (1 + taxFactor));
+    const taxableSubtotal = roundMoney(discountedSubtotal / (1 + taxFactor));
+    const taxTotal = roundMoney(discountedSubtotal - taxableSubtotal);
+    return {
+      taxMode,
+      taxRate,
+      subtotalBeforeTax,
+      taxableSubtotal,
+      taxTotal,
+      grandTotal: discountedSubtotal,
+    };
+  }
+
+  if (taxMode === "tax_added" && taxFactor > 0) {
+    const subtotalBeforeTax = subtotalAmount;
+    const taxableSubtotal = discountedSubtotal;
+    const taxTotal = roundMoney(taxableSubtotal * taxFactor);
+    return {
+      taxMode,
+      taxRate,
+      subtotalBeforeTax,
+      taxableSubtotal,
+      taxTotal,
+      grandTotal: roundMoney(taxableSubtotal + taxTotal),
+    };
+  }
+
+  return {
+    taxMode,
+    taxRate: 0,
+    subtotalBeforeTax: subtotalAmount,
+    taxableSubtotal: discountedSubtotal,
+    taxTotal: 0,
+    grandTotal: discountedSubtotal,
+  };
+}
+
+const COMMISSION_RULE_SPECIFICITY: Record<string, number> = {
+  percentage_product: 300,
+  fixed_product: 300,
+  percentage_category: 200,
+  percentage_all_sales: 100,
+  fixed_per_sale: 100,
+  bonus_monthly_goal: 0,
+};
+
+function normalizeOptionalTextValue(value: unknown): string | null {
+  if (value == null) return null;
+  const trimmed = String(value).trim();
+  return trimmed ? trimmed : null;
+}
+
+function isPgUniqueViolation(error: any) {
+  return error?.code === "23505";
+}
+
+function isPgUniqueViolationForConstraint(error: any, constraintName: string) {
+  if (!isPgUniqueViolation(error)) return false;
+  const constraint = typeof error?.constraint === "string" ? error.constraint : "";
+  const message = typeof error?.message === "string" ? error.message : "";
+  return constraint === constraintName || message.includes(constraintName);
+}
+
+function getMxDateParts(value: Date | string | null | undefined) {
+  const date = value instanceof Date ? value : value ? new Date(value) : new Date();
+  const localDate = date.toLocaleDateString("en-CA", { timeZone: BRANCH_TIMEZONE });
+  return {
+    date: localDate,
+    monthKey: localDate.slice(0, 7),
+  };
+}
+
+function isRuleActiveForDate(rule: BranchCommissionRuleRow, localDate: string) {
+  if (!rule.isActive || rule.deletedAt) return false;
+  if (rule.validFrom && localDate < rule.validFrom) return false;
+  if (rule.validUntil && localDate > rule.validUntil) return false;
+  return true;
+}
+
+function computeInventoryStatus(
+  usesInventory: boolean,
+  balance: { quantityOnHand: number; minimumStock: number } | null,
+): "not_tracked" | "uninitialized" | "available" | "low_stock" | "out_of_stock" {
+  if (!usesInventory) return "not_tracked";
+  if (!balance) return "uninitialized";
+  if (balance.quantityOnHand <= 0) return "out_of_stock";
+  if (balance.minimumStock > 0 && balance.quantityOnHand <= balance.minimumStock) return "low_stock";
+  return "available";
+}
+
+function generateBranchSaleFolio(date = new Date()): string {
+  const ymd = date.toLocaleDateString("en-CA", { timeZone: BRANCH_TIMEZONE }).replace(/-/g, "");
+  const stamp = Date.now().toString(36).slice(-6).toUpperCase();
+  const random = Math.random().toString(36).slice(2, 6).toUpperCase();
+  return `VTA-${ymd}-${stamp}${random}`;
+}
+
+function generateBranchPurchaseFolio(date = new Date()): string {
+  const ymd = date.toLocaleDateString("en-CA", { timeZone: BRANCH_TIMEZONE }).replace(/-/g, "");
+  const stamp = Date.now().toString(36).slice(-6).toUpperCase();
+  const random = Math.random().toString(36).slice(2, 6).toUpperCase();
+  return `COM-${ymd}-${stamp}${random}`;
+}
+
+function generateBranchCommercialProjectCode(date = new Date()): string {
+  const ymd = date.toLocaleDateString("en-CA", { timeZone: BRANCH_TIMEZONE }).replace(/-/g, "");
+  const stamp = Date.now().toString(36).slice(-6).toUpperCase();
+  const random = Math.random().toString(36).slice(2, 6).toUpperCase();
+  return `PRJ-${ymd}-${stamp}${random}`;
 }
 
 function mapRecurringCategoryToFinanceCategory(category: string): string {
@@ -171,11 +377,16 @@ function getMembershipFinanceEventKey(params: {
   expiresAt?: Date | string | null;
   paidAt?: Date | string | null;
 }): string {
+  const dateOnlyPattern = /^\d{4}-\d{2}-\d{2}$/;
   const expiresAtValue = params.expiresAt
-    ? formatDateOnly(new Date(params.expiresAt))
+    ? typeof params.expiresAt === "string" && dateOnlyPattern.test(params.expiresAt)
+      ? params.expiresAt
+      : formatDateOnly(new Date(params.expiresAt))
     : "sin-expiracion";
   const paidAtValue = params.paidAt
-    ? formatDateOnly(new Date(params.paidAt))
+    ? typeof params.paidAt === "string" && dateOnlyPattern.test(params.paidAt)
+      ? params.paidAt
+      : formatDateOnly(new Date(params.paidAt))
     : getMxLocalDate();
   return `${params.eventType}:${params.membershipId}:${params.planId}:${expiresAtValue}:${paidAtValue}`;
 }
@@ -512,6 +723,704 @@ export interface BranchServiceSaleOptionRow {
   updatedAt: Date | string;
 }
 
+export interface BranchCommercialProductRow {
+  id: string;
+  branchId: string;
+  name: string;
+  category: string;
+  description: string | null;
+  photoUrl: string | null;
+  sku: string | null;
+  barcode: string | null;
+  costAmount: number;
+  salePriceAmount: number;
+  isActive: boolean;
+  isPublicVisible: boolean;
+  usesInventory: boolean;
+  displayOrder: number;
+  inventoryQuantityOnHand?: number | null;
+  inventoryMinimumStock?: number | null;
+  inventoryStatus?: "not_tracked" | "uninitialized" | "available" | "low_stock" | "out_of_stock";
+  inventoryUpdatedAt?: Date | string | null;
+  createdBy: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}
+
+export interface BranchCommercialProductListPage {
+  items: BranchCommercialProductRow[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
+  };
+  filterOptions: {
+    categories: string[];
+  };
+  summary: {
+    total: number;
+    active: number;
+    publicVisible: number;
+    inventoryReady: number;
+  };
+}
+
+export interface BranchSalespersonRow {
+  id: string;
+  branchId: string;
+  userId: string | null;
+  name: string;
+  lastName: string | null;
+  phone: string | null;
+  email: string | null;
+  employeeCode: string | null;
+  roleLabel: string | null;
+  monthlyGoalAmount: number | null;
+  isActive: boolean;
+  notes: string | null;
+  createdBy: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+  deletedAt: Date | string | null;
+}
+
+export interface BranchSalespersonSummaryRow {
+  salespersonId: string;
+  branchId: string;
+  month: string;
+  totalSoldAmount: number;
+  salesCount: number;
+  averageTicketAmount: number;
+  productsSoldCount: number;
+  monthlyGoalAmount: number | null;
+  goalProgressPercent: number | null;
+}
+
+export interface BranchCommissionRuleRow {
+  id: string;
+  branchId: string;
+  salespersonId: string;
+  name: string;
+  ruleType: string;
+  percentageRate: number | null;
+  fixedAmount: number | null;
+  commercialProductId: string | null;
+  category: string | null;
+  minimumGoalAmount: number | null;
+  bonusAmount: number | null;
+  priority: number;
+  isActive: boolean;
+  validFrom: string | null;
+  validUntil: string | null;
+  createdBy: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+  deletedAt: Date | string | null;
+}
+
+export interface BranchCommissionAccrualRow {
+  id: string;
+  branchId: string;
+  salespersonId: string;
+  saleId: string | null;
+  saleItemId: string | null;
+  commissionRuleId: string | null;
+  accrualType: string;
+  referenceKey: string;
+  periodMonth: string | null;
+  status: string;
+  baseAmount: number;
+  rateSnapshot: number | null;
+  fixedAmountSnapshot: number | null;
+  commissionAmount: number;
+  salespersonNameSnapshot: string;
+  ruleNameSnapshot: string | null;
+  calculationSnapshot: any;
+  accruedAt: Date | string;
+  approvedAt: Date | string | null;
+  paidAmount: number;
+  reversedAt: Date | string | null;
+  reversalReason: string | null;
+  createdAt: Date | string;
+}
+
+export interface BranchCommissionPaymentAllocationRow {
+  id: string;
+  branchId: string;
+  commissionPaymentId: string;
+  commissionAccrualId: string;
+  amountAllocated: number;
+  createdAt: Date | string;
+}
+
+export interface BranchCommissionPaymentRow {
+  id: string;
+  branchId: string;
+  salespersonId: string;
+  amount: number;
+  paymentMethod: string;
+  reference: string | null;
+  notes: string | null;
+  periodStart: string | null;
+  periodEnd: string | null;
+  paidAt: Date | string;
+  createdBy: string | null;
+  createdAt: Date | string;
+  allocations?: BranchCommissionPaymentAllocationRow[];
+}
+
+export interface BranchSalespersonCommissionSummaryRow {
+  salespersonId: string;
+  branchId: string;
+  month: string;
+  totalSoldAmount: number;
+  salesCount: number;
+  averageTicketAmount: number;
+  productsSoldCount: number;
+  monthlyGoalAmount: number | null;
+  goalProgressPercent: number | null;
+  generatedCommissionAmount: number;
+  approvedCommissionAmount: number;
+  paidCommissionAmount: number;
+  pendingCommissionAmount: number;
+  reversedCommissionAmount: number;
+  bonusGeneratedAmount: number;
+}
+
+export interface BranchSaleItemRow {
+  id: string;
+  saleId: string;
+  branchId: string;
+  itemType: string;
+  commercialProductId: string | null;
+  serviceId: string | null;
+  planId: string | null;
+  nameSnapshot: string;
+  categorySnapshot: string | null;
+  quantity: number;
+  unitPriceAmount: number;
+  discountAmount: number;
+  costAmountSnapshot: number;
+  lineTotalAmount: number;
+  metadata: any;
+  createdAt: Date | string;
+}
+
+export interface BranchSalePaymentRow {
+  id: string;
+  saleId: string;
+  branchId: string;
+  paymentMethod: string;
+  amount: number;
+  reference: string | null;
+  paidAt: Date | string;
+  createdBy: string | null;
+  createdAt: Date | string;
+}
+
+export interface BranchSaleRow {
+  id: string;
+  branchId: string;
+  projectId: string | null;
+  projectCode: string | null;
+  projectName: string | null;
+  folio: string;
+  clientUserId: string | null;
+  clientDisplayName: string | null;
+  clientEmail: string | null;
+  sellerId: string | null;
+  sellerUserId: string | null;
+  sellerNameSnapshot: string | null;
+  sellerMetadata: any;
+  channel: string;
+  status: string;
+  subtotalAmount: number;
+  discountAmount: number;
+  totalAmount: number;
+  paidAmount: number;
+  taxMode: string | null;
+  taxRate: number | null;
+  subtotalBeforeTax: number | null;
+  taxableSubtotal: number | null;
+  taxTotal: number | null;
+  grandTotal: number | null;
+  notes: string | null;
+  createdBy: string | null;
+  cancelledAt: Date | string | null;
+  cancelledByUserId: string | null;
+  cancellationReason: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+  items: BranchSaleItemRow[];
+  payments: BranchSalePaymentRow[];
+}
+
+export interface BranchInventoryBalanceRow {
+  id: string;
+  branchId: string;
+  commercialProductId: string;
+  quantityOnHand: number;
+  minimumStock: number;
+  status: "not_tracked" | "uninitialized" | "available" | "low_stock" | "out_of_stock";
+  updatedBy: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}
+
+export interface BranchInventoryMovementRow {
+  id: string;
+  branchId: string;
+  commercialProductId: string;
+  movementType: string;
+  quantityDelta: number;
+  quantityBefore: number;
+  quantityAfter: number;
+  unitCostSnapshot: number | null;
+  reason: string;
+  notes: string | null;
+  saleId: string | null;
+  saleItemId: string | null;
+  purchaseId: string | null;
+  purchaseItemId: string | null;
+  createdBy: string | null;
+  metadata: any;
+  createdAt: Date | string;
+}
+
+export interface BranchInventorySummaryRow {
+  productId: string;
+  usesInventory: boolean;
+  balance: BranchInventoryBalanceRow | null;
+  status: "not_tracked" | "uninitialized" | "available" | "low_stock" | "out_of_stock";
+  movementCount: number;
+  recentMovements: BranchInventoryMovementRow[];
+}
+
+export interface BranchSupplierRow {
+  id: string;
+  branchId: string;
+  name: string;
+  contactName: string | null;
+  phone: string | null;
+  email: string | null;
+  taxId: string | null;
+  address: string | null;
+  paymentTerms: string | null;
+  notes: string | null;
+  isActive: boolean;
+  createdBy: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+  deletedAt: Date | string | null;
+}
+
+export interface BranchPurchaseItemRow {
+  id: string;
+  purchaseId: string;
+  branchId: string;
+  commercialProductId: string | null;
+  nameSnapshot: string;
+  skuSnapshot: string | null;
+  quantityOrdered: number;
+  quantityReceived: number;
+  unitCost: number;
+  lineTotal: number;
+  metadata: any;
+  createdAt: Date | string;
+}
+
+export interface BranchCommercialProjectSummaryRow {
+  linkedSalesCount: number;
+  linkedPurchasesCount: number;
+  linkedDraftPurchasesCount: number;
+  revenueBeforeTax: number;
+  revenueHistoricalWithoutBreakdown: number;
+  taxCollected: number;
+  revenueGrossTotal: number;
+  cashCollectedTotal: number;
+  purchaseCommittedBeforeTax: number;
+  purchaseCommittedHistoricalWithoutBreakdown: number;
+  purchaseReceivedBeforeTax: number;
+  purchaseReceivedHistoricalWithoutBreakdown: number;
+  purchasePaidTotal: number;
+  committedProfitEstimate: number;
+  receivedProfitEstimate: number;
+  cashFlowNet: number;
+  marginPercent: number | null;
+}
+
+export interface BranchCommercialProjectRow {
+  id: string;
+  branchId: string;
+  code: string;
+  name: string;
+  description: string | null;
+  customerUserId: string | null;
+  customerDisplayName: string | null;
+  status: "draft" | "active" | "completed" | "cancelled" | "archived";
+  startDate: string;
+  expectedEndDate: string | null;
+  completedAt: Date | string | null;
+  notes: string | null;
+  createdByUserId: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+  deletedAt: Date | string | null;
+  summary: BranchCommercialProjectSummaryRow;
+}
+
+export interface BranchCommercialProjectLinkedSaleRow {
+  id: string;
+  folio: string;
+  clientUserId: string | null;
+  clientDisplayName: string | null;
+  status: string;
+  subtotalAmount: number;
+  discountAmount: number;
+  totalAmount: number;
+  paidAmount: number;
+  taxMode: string | null;
+  taxRate: number | null;
+  subtotalBeforeTax: number | null;
+  taxableSubtotal: number | null;
+  taxTotal: number | null;
+  grandTotal: number | null;
+  createdAt: Date | string;
+  cancelledAt: Date | string | null;
+}
+
+export interface BranchPurchaseRow {
+  id: string;
+  branchId: string;
+  projectId: string | null;
+  projectCode: string | null;
+  projectName: string | null;
+  folio: string;
+  supplierId: string | null;
+  supplierName: string | null;
+  status: "draft" | "ordered" | "partially_received" | "received" | "cancelled";
+  purchaseDate: string;
+  expectedDate: string | null;
+  receivedAt: Date | string | null;
+  paymentStatus: "unpaid" | "partial" | "paid";
+  paymentMethod: string | null;
+  subtotalAmount: number;
+  discountAmount: number;
+  taxMode: string | null;
+  taxRate: number | null;
+  subtotalBeforeTax: number | null;
+  taxableSubtotal: number | null;
+  taxTotal: number | null;
+  grandTotal: number | null;
+  totalAmount: number;
+  paidAmount: number;
+  reference: string | null;
+  notes: string | null;
+  createdBy: string | null;
+  cancelledAt: Date | string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+  totalItems: number;
+  totalUnitsOrdered: number;
+  totalUnitsReceived: number;
+}
+
+export interface BranchPurchaseDetailRow extends BranchPurchaseRow {
+  items: BranchPurchaseItemRow[];
+}
+
+export interface BranchCommercialProjectLinkedPurchaseRow {
+  id: string;
+  folio: string;
+  supplierId: string | null;
+  supplierName: string | null;
+  status: string;
+  purchaseDate: string;
+  paymentStatus: string;
+  subtotalAmount: number;
+  discountAmount: number;
+  totalAmount: number;
+  paidAmount: number;
+  taxMode: string | null;
+  taxRate: number | null;
+  subtotalBeforeTax: number | null;
+  taxableSubtotal: number | null;
+  taxTotal: number | null;
+  grandTotal: number | null;
+  receivedAt: Date | string | null;
+  cancelledAt: Date | string | null;
+  createdAt: Date | string;
+}
+
+export interface BranchCommercialProjectDetailRow extends BranchCommercialProjectRow {
+  sales: BranchCommercialProjectLinkedSaleRow[];
+  purchases: BranchCommercialProjectLinkedPurchaseRow[];
+}
+
+export interface BranchCommercialProjectListPage {
+  items: BranchCommercialProjectRow[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
+  };
+}
+
+export interface BranchCommercialProjectLinkableSaleRow {
+  id: string;
+  folio: string;
+  clientUserId: string | null;
+  clientDisplayName: string | null;
+  status: string;
+  totalAmount: number;
+  taxableSubtotal: number | null;
+  taxTotal: number | null;
+  grandTotal: number | null;
+  createdAt: Date | string;
+}
+
+export interface BranchCommercialProjectLinkableSalesPage {
+  items: BranchCommercialProjectLinkableSaleRow[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
+  };
+}
+
+export interface BranchCommercialProjectLinkablePurchaseRow {
+  id: string;
+  folio: string;
+  supplierId: string | null;
+  supplierName: string | null;
+  status: string;
+  totalAmount: number;
+  taxableSubtotal: number | null;
+  taxTotal: number | null;
+  grandTotal: number | null;
+  purchaseDate: string;
+}
+
+export interface BranchCommercialProjectLinkablePurchasesPage {
+  items: BranchCommercialProjectLinkablePurchaseRow[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
+  };
+}
+
+export interface BranchCommercialDashboardTopProductRow {
+  productId: string;
+  name: string;
+  category: string | null;
+  unitsSold: number;
+  revenueAmount: number;
+  grossProfitAmount: number;
+  lastSoldAt: Date | string | null;
+  quantityOnHand: number | null;
+  minimumStock: number | null;
+  inventoryStatus: "not_tracked" | "uninitialized" | "available" | "low_stock" | "out_of_stock";
+}
+
+export interface BranchCommercialDashboardTopCategoryRow {
+  category: string;
+  unitsSold: number;
+  revenueAmount: number;
+  grossProfitAmount: number;
+}
+
+export interface BranchCommercialDashboardTopSalespersonRow {
+  salespersonId: string;
+  name: string;
+  totalSoldAmount: number;
+  salesCount: number;
+  averageTicketAmount: number;
+  productsSoldCount: number;
+  customersCount: number;
+  generatedCommissionAmount: number;
+  paidCommissionAmount: number;
+  pendingCommissionAmount: number;
+  monthlyGoalAmount: number | null;
+  goalProgressPercent: number | null;
+  lastSaleAt: Date | string | null;
+}
+
+export interface BranchCommercialDashboardTopCustomerRow {
+  clientUserId: string;
+  clientName: string;
+  clientEmail: string | null;
+  totalSpentAmount: number;
+  salesCount: number;
+  lastPurchaseAt: Date | string | null;
+  firstPurchaseAt: Date | string | null;
+}
+
+export interface BranchCommercialDashboardTopSupplierRow {
+  supplierId: string | null;
+  supplierName: string;
+  totalPurchasedAmount: number;
+  purchasesCount: number;
+  lastPurchaseAt: Date | string | null;
+}
+
+export interface BranchCommercialDashboardRow {
+  month: string;
+  salesTodayAmount: number;
+  salesMonthAmount: number;
+  ticketCount: number;
+  averageTicketAmount: number;
+  productsSoldCount: number;
+  grossProfitAmount: number;
+  topProducts: BranchCommercialDashboardTopProductRow[];
+  topCategories: BranchCommercialDashboardTopCategoryRow[];
+  topSalespeople: BranchCommercialDashboardTopSalespersonRow[];
+  topCustomers: BranchCommercialDashboardTopCustomerRow[];
+  firstPurchaseCustomers: BranchCommercialDashboardTopCustomerRow[];
+  lowStockCount: number;
+  outOfStockCount: number;
+  uninitializedInventoryCount: number;
+  inventoryEstimatedValue: number;
+  generatedCommissionAmount: number;
+  paidCommissionAmount: number;
+  pendingCommissionAmount: number;
+  purchasesReceivedCount: number;
+  totalPurchasedAmount: number;
+  topSuppliers: BranchCommercialDashboardTopSupplierRow[];
+}
+
+export interface BranchClientCommercialHistoryItemRow {
+  saleId: string;
+  folio: string;
+  saleDate: Date | string;
+  totalAmount: number;
+  paidAmount: number;
+  discountAmount: number;
+  sellerId: string | null;
+  sellerName: string | null;
+  channel: string;
+  notes: string | null;
+  items: BranchSaleItemRow[];
+  payments: BranchSalePaymentRow[];
+}
+
+export interface BranchClientCommercialHistorySummaryRow {
+  totalSpentAmount: number;
+  salesCount: number;
+  averageTicketAmount: number;
+  lastPurchaseAt: Date | string | null;
+  currentMonthAmount: number;
+}
+
+export interface BranchClientCommercialHistoryResult {
+  summary: BranchClientCommercialHistorySummaryRow;
+  items: BranchClientCommercialHistoryItemRow[];
+  total: number;
+  page: number;
+  limit: number;
+  filter: "all" | "products" | "services" | "current_month";
+}
+
+export interface BranchCommercialProductPerformanceSaleRow {
+  saleId: string;
+  folio: string;
+  saleDate: Date | string;
+  clientUserId: string | null;
+  clientDisplayName: string | null;
+  sellerName: string | null;
+  quantitySold: number;
+  revenueAmount: number;
+  grossProfitAmount: number;
+  paymentMethods: string[];
+}
+
+export interface BranchCommercialProductPerformanceRow {
+  productId: string;
+  productName: string;
+  category: string;
+  from: string | null;
+  to: string | null;
+  salesCount: number;
+  unitsSold: number;
+  revenueAmount: number;
+  costAmountSold: number;
+  grossProfitAmount: number;
+  grossMarginPercent: number | null;
+  lastSaleAt: Date | string | null;
+  quantityOnHand: number | null;
+  minimumStock: number | null;
+  inventoryStatus: "not_tracked" | "uninitialized" | "available" | "low_stock" | "out_of_stock";
+  recentSales: BranchCommercialProductPerformanceSaleRow[];
+}
+
+export interface BranchSupplierSummaryProductRow {
+  commercialProductId: string | null;
+  name: string;
+  unitsOrdered: number;
+  unitsReceived: number;
+  totalPurchasedAmount: number;
+}
+
+export interface BranchSupplierSummaryRow {
+  supplierId: string;
+  supplierName: string;
+  totalPurchasedAmount: number;
+  purchasesCount: number;
+  averageTicketAmount: number;
+  lastPurchaseAt: Date | string | null;
+  productsSuppliedCount: number;
+  receivedPurchasesCount: number;
+  pendingPurchasesCount: number;
+  topProducts: BranchSupplierSummaryProductRow[];
+}
+
+export interface BranchCommissionPaymentDetailRow extends BranchCommissionPaymentRow {
+  salespersonName: string | null;
+  totalAllocatedAmount: number;
+}
+
+export interface BranchCommercialNotificationSignals {
+  lowStockProducts: Array<{
+    productId: string;
+    productName: string;
+    quantityOnHand: number;
+    minimumStock: number;
+    updatedAt: Date | string;
+  }>;
+  outOfStockProducts: Array<{
+    productId: string;
+    productName: string;
+    quantityOnHand: number;
+    minimumStock: number;
+    updatedAt: Date | string;
+  }>;
+  firstPurchaseCustomers: BranchCommercialDashboardTopCustomerRow[];
+  goalReachedSalespeople: BranchCommercialDashboardTopSalespersonRow[];
+  largeSales: Array<{
+    saleId: string;
+    folio: string;
+    totalAmount: number;
+    clientUserId: string | null;
+    clientDisplayName: string | null;
+    sellerId: string | null;
+    sellerName: string | null;
+    createdAt: Date | string;
+  }>;
+  receivedPurchases: Array<{
+    purchaseId: string;
+    folio: string;
+    supplierId: string | null;
+    supplierName: string | null;
+    receivedAt: Date | string | null;
+    totalAmount: number;
+  }>;
+  pendingCommissions: BranchCommercialDashboardTopSalespersonRow[];
+}
+
 export interface BranchServiceRow {
   id: string;
   branchId: string;
@@ -535,7 +1444,15 @@ export interface BranchHardDeleteResult {
   reason?: string;
   branchName?: string;
   deletedAdminCount: number;
+  deletedAdminFirebaseUids: string[];
   uploadUrls: string[];
+}
+
+export interface BranchPurgeEstimateRow {
+  branchId: string;
+  branchName: string;
+  counts: Record<string, number>;
+  uploadCount: number;
 }
 
 export interface BranchMonthlyBillingRow {
@@ -558,7 +1475,7 @@ export interface BranchMonthlyBillingRow {
 
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
-  getUserByEmail(email: string): Promise<User | undefined>;
+  getUserByEmail(email: string | null | undefined): Promise<User | undefined>;
   getUserByGoogleId(googleId: string): Promise<User | undefined>;
   getUserByFirebaseUid(firebaseUid: string): Promise<User | undefined>;
   createUser(user: InsertUser): Promise<User>;
@@ -579,6 +1496,7 @@ export interface IStorage {
   }): Promise<Branch | undefined>;
   softDeleteBranch(id: string): Promise<Branch | undefined>;
   hardDeleteBranch(id: string): Promise<BranchHardDeleteResult>;
+  estimateBranchPurge(branchId: string): Promise<BranchPurgeEstimateRow | undefined>;
   getBranchAdmins(branchId: string): Promise<User[]>;
   getUsersByRole(role: string): Promise<User[]>;
   getBranchMetrics(): Promise<BranchMetrics[]>;
@@ -626,6 +1544,7 @@ export interface IStorage {
     to?: string;
     type?: string;
   }): Promise<BranchFinanceEntryRow[]>;
+  getBranchFinanceEntry(branchId: string, entryId: string): Promise<BranchFinanceEntryRow | undefined>;
   createBranchFinanceEntry(data: InsertBranchFinanceEntry): Promise<BranchFinanceEntryRow>;
   findBranchFinanceEntryBySource(branchId: string, source: string, sourceId: string): Promise<BranchFinanceEntryRow | undefined>;
   updateBranchFinanceEntry(branchId: string, entryId: string, data: Partial<InsertBranchFinanceEntry>): Promise<BranchFinanceEntryRow | undefined>;
@@ -717,6 +1636,15 @@ export interface IStorage {
     createdBy?: string | null;
   }): Promise<BranchStaffClassLogRow>;
   getBranchClients(branchId: string, includeLeft?: boolean): Promise<any[]>;
+  getBranchClientCommercialHistory(
+    branchId: string,
+    userId: string,
+    filters?: {
+      filter?: "all" | "products" | "services" | "current_month";
+      page?: number;
+      limit?: number;
+    },
+  ): Promise<BranchClientCommercialHistoryResult>;
   linkBranchClientToAppUser(branchId: string, sourceUserId: string, targetUserId: string): Promise<{
     membershipId: string | null;
     updatedTargetFields: string[];
@@ -754,7 +1682,14 @@ export interface IStorage {
   deactivatePlan(id: string): Promise<MembershipPlan | undefined>;
   detachPlanFromMemberships(planId: string, planName: string): Promise<number>;
   getPlan(id: string): Promise<MembershipPlan | undefined>;
-  assignPlanToMembership(membershipId: string, planId: string, classesRemaining: number | null, classesTotal: number | null, expiresAt: Date | null): Promise<Membership | undefined>;
+  assignPlanToMembership(
+    membershipId: string,
+    planId: string,
+    classesRemaining: number | null,
+    classesTotal: number | null,
+    expiresAt: Date | null,
+    startDate: Date,
+  ): Promise<Membership | undefined>;
   removePlanFromMembership(membershipId: string): Promise<Membership | undefined>;
   createMembershipFinanceEntry(data: {
     branchId: string;
@@ -813,6 +1748,201 @@ export interface IStorage {
   updateBranchProduct(id: string, data: Partial<InsertBranchProduct>): Promise<BranchProduct | undefined>;
   deleteBranchProduct(id: string): Promise<void>;
   reorderBranchProducts(branchId: string, ids: string[]): Promise<void>;
+  getBranchCommercialProducts(branchId: string): Promise<BranchCommercialProductRow[]>;
+  getBranchCommercialProductsPage(branchId: string, filters?: {
+    page?: number | null;
+    pageSize?: number | null;
+    search?: string | null;
+    status?: "all" | "active" | "inactive" | "archived" | null;
+    category?: string | null;
+    inventoryMode?: "all" | "inventory" | "no_inventory" | null;
+    publicMode?: "all" | "public" | "private" | null;
+    sort?: "updated_desc" | "name_asc" | "price_desc" | "price_asc" | "category_asc" | null;
+  }): Promise<BranchCommercialProductListPage>;
+  getBranchCommercialProductById(branchId: string, productId: string): Promise<BranchCommercialProductRow | undefined>;
+  getBranchCommercialProductPerformance(
+    branchId: string,
+    productId: string,
+    filters?: { from?: string | null; to?: string | null },
+  ): Promise<BranchCommercialProductPerformanceRow | undefined>;
+  createBranchCommercialProduct(data: InsertBranchCommercialProduct): Promise<BranchCommercialProductRow>;
+  updateBranchCommercialProduct(branchId: string, productId: string, data: Partial<InsertBranchCommercialProduct>): Promise<BranchCommercialProductRow | undefined>;
+  softDeleteBranchCommercialProduct(branchId: string, productId: string): Promise<boolean>;
+  getBranchCommercialProjects(branchId: string, filters?: {
+    page?: number | null;
+    pageSize?: number | null;
+    search?: string | null;
+    status?: string | null;
+    customerId?: string | null;
+    dateFrom?: string | null;
+    dateTo?: string | null;
+    sort?: "updated_desc" | "name_asc" | "name_desc" | "start_date_desc" | "start_date_asc" | null;
+    includeArchived?: boolean;
+  }): Promise<BranchCommercialProjectListPage>;
+  getBranchCommercialProjectById(branchId: string, projectId: string): Promise<BranchCommercialProjectDetailRow | undefined>;
+  getBranchCommercialProjectOptions(branchId: string): Promise<Array<{ id: string; code: string; name: string; status: string }>>;
+  getBranchCommercialProjectLinkableSales(branchId: string, filters?: {
+    page?: number | null;
+    pageSize?: number | null;
+    search?: string | null;
+    dateFrom?: string | null;
+    dateTo?: string | null;
+  }): Promise<BranchCommercialProjectLinkableSalesPage>;
+  getBranchCommercialProjectLinkablePurchases(branchId: string, filters?: {
+    page?: number | null;
+    pageSize?: number | null;
+    search?: string | null;
+    dateFrom?: string | null;
+    dateTo?: string | null;
+  }): Promise<BranchCommercialProjectLinkablePurchasesPage>;
+  createBranchCommercialProject(data: InsertBranchCommercialProject): Promise<BranchCommercialProjectRow>;
+  createBranchCommercialProjectFromSale(data: {
+    branchId: string;
+    saleId: string;
+    name?: string | null;
+    description?: string | null;
+    notes?: string | null;
+    expectedEndDate?: string | null;
+    createdByUserId?: string | null;
+  }): Promise<BranchCommercialProjectDetailRow>;
+  updateBranchCommercialProject(branchId: string, projectId: string, data: Partial<InsertBranchCommercialProject>): Promise<BranchCommercialProjectRow | undefined>;
+  linkBranchSaleToCommercialProject(branchId: string, projectId: string, saleId: string): Promise<BranchCommercialProjectDetailRow>;
+  linkBranchPurchaseToCommercialProject(branchId: string, projectId: string, purchaseId: string): Promise<BranchCommercialProjectDetailRow>;
+  getBranchCommercialDashboard(branchId: string, month?: string | null): Promise<BranchCommercialDashboardRow>;
+  getBranchCommercialNotificationSignals(branchId: string): Promise<BranchCommercialNotificationSignals>;
+  getBranchSaleDetail(branchId: string, saleId: string): Promise<BranchSaleRow | undefined>;
+  cancelBranchSale(data: {
+    branchId: string;
+    saleId: string;
+    reason: string;
+    cancelledByUserId: string;
+    idempotencyKey: string;
+  }): Promise<BranchSaleRow | undefined>;
+  getBranchSalespeople(branchId: string, filters?: { isActive?: boolean | null }): Promise<BranchSalespersonRow[]>;
+  getBranchSalespersonById(branchId: string, salespersonId: string): Promise<BranchSalespersonRow | undefined>;
+  getBranchSalespeopleRanking(branchId: string, month?: string | null): Promise<BranchCommercialDashboardTopSalespersonRow[]>;
+  createBranchSalesperson(data: InsertBranchSalesperson): Promise<BranchSalespersonRow>;
+  updateBranchSalesperson(branchId: string, salespersonId: string, data: Partial<InsertBranchSalesperson>): Promise<BranchSalespersonRow | undefined>;
+  softDeleteBranchSalesperson(branchId: string, salespersonId: string): Promise<boolean>;
+  getBranchSalespersonSummary(branchId: string, salespersonId: string, month?: string | null): Promise<BranchSalespersonSummaryRow | undefined>;
+  getBranchSalespersonSales(branchId: string, salespersonId: string, month?: string | null): Promise<BranchSaleRow[]>;
+  getBranchCommissionRules(branchId: string, salespersonId: string): Promise<BranchCommissionRuleRow[]>;
+  getBranchCommissionRuleById(branchId: string, ruleId: string): Promise<BranchCommissionRuleRow | undefined>;
+  createBranchCommissionRule(data: InsertBranchCommissionRule): Promise<BranchCommissionRuleRow>;
+  updateBranchCommissionRule(branchId: string, ruleId: string, data: Partial<InsertBranchCommissionRule>): Promise<BranchCommissionRuleRow | undefined>;
+  softDeleteBranchCommissionRule(branchId: string, ruleId: string): Promise<boolean>;
+  getBranchSalespersonCommissions(branchId: string, salespersonId: string, month?: string | null): Promise<BranchCommissionAccrualRow[]>;
+  getBranchSalespersonCommissionSummary(branchId: string, salespersonId: string, month?: string | null): Promise<BranchSalespersonCommissionSummaryRow | undefined>;
+  getBranchSalespersonCommissionPayments(branchId: string, salespersonId: string, month?: string | null): Promise<BranchCommissionPaymentRow[]>;
+  getBranchCommissionPaymentById(branchId: string, paymentId: string): Promise<BranchCommissionPaymentDetailRow | undefined>;
+  createBranchSalespersonCommissionPayment(data: {
+    branchId: string;
+    salespersonId: string;
+    amount: number;
+    paymentMethod: string;
+    idempotencyKey?: string | null;
+    reference?: string | null;
+    notes?: string | null;
+    periodStart?: string | null;
+    periodEnd?: string | null;
+    accrualIds?: string[] | null;
+    paidAt?: Date | null;
+    createdBy?: string | null;
+  }): Promise<BranchCommissionPaymentRow>;
+  getBranchSuppliers(branchId: string): Promise<BranchSupplierRow[]>;
+  getBranchSupplierById(branchId: string, supplierId: string): Promise<BranchSupplierRow | undefined>;
+  getBranchSupplierSummary(branchId: string, supplierId: string): Promise<BranchSupplierSummaryRow | undefined>;
+  createBranchSupplier(data: InsertBranchSupplier): Promise<BranchSupplierRow>;
+  updateBranchSupplier(branchId: string, supplierId: string, data: Partial<InsertBranchSupplier>): Promise<BranchSupplierRow | undefined>;
+  softDeleteBranchSupplier(branchId: string, supplierId: string): Promise<boolean>;
+  getBranchPurchases(branchId: string, filters?: {
+    status?: string | null;
+    supplierId?: string | null;
+    from?: string | null;
+    to?: string | null;
+  }): Promise<BranchPurchaseRow[]>;
+  getBranchPurchaseById(branchId: string, purchaseId: string): Promise<BranchPurchaseDetailRow | undefined>;
+  createBranchPurchase(data: {
+    purchase: InsertBranchPurchase;
+    items: InsertBranchPurchaseItem[];
+  }): Promise<BranchPurchaseDetailRow>;
+  receiveBranchPurchase(data: {
+    branchId: string;
+    purchaseId: string;
+    receivedBy?: string | null;
+    notes?: string | null;
+  }): Promise<BranchPurchaseDetailRow>;
+  cancelBranchPurchase(branchId: string, purchaseId: string): Promise<BranchPurchaseDetailRow | undefined>;
+  createBranchSale(data: {
+    sale: InsertBranchSale;
+    items: InsertBranchSaleItem[];
+    payments: InsertBranchSalePayment[];
+    finance?: {
+      source: string;
+      category?: string | null;
+      notes?: string | null;
+      entryDate?: string | null;
+      metadata?: any;
+      clientName?: string | null;
+    } | null;
+    inventoryAdjustment?: {
+      commercialProductId: string;
+      quantity: number;
+      unitCostSnapshot?: number | null;
+      createdBy?: string | null;
+      notes?: string | null;
+      metadata?: any;
+    } | null;
+    inventoryAdjustments?: Array<{
+      commercialProductId: string;
+      quantity: number;
+      unitCostSnapshot?: number | null;
+      createdBy?: string | null;
+      notes?: string | null;
+      metadata?: any;
+    }> | null;
+  }): Promise<BranchSaleRow>;
+  getBranchCommercialProductInventory(branchId: string, productId: string): Promise<BranchInventorySummaryRow>;
+  getBranchCommercialProductInventoryMovements(branchId: string, productId: string, limit?: number): Promise<BranchInventoryMovementRow[]>;
+  createBranchCommercialProductInitialInventory(data: {
+    branchId: string;
+    commercialProductId: string;
+    quantity: number;
+    minimumStock: number;
+    unitCost?: number | null;
+    notes?: string | null;
+    createdBy?: string | null;
+  }): Promise<BranchInventorySummaryRow>;
+  createBranchCommercialProductInventoryEntry(data: {
+    branchId: string;
+    commercialProductId: string;
+    quantity: number;
+    minimumStock?: number | null;
+    unitCost?: number | null;
+    reason: string;
+    notes?: string | null;
+    createdBy?: string | null;
+  }): Promise<BranchInventorySummaryRow>;
+  adjustBranchCommercialProductInventory(data: {
+    branchId: string;
+    commercialProductId: string;
+    newQuantity?: number | null;
+    quantityDelta?: number | null;
+    minimumStock?: number | null;
+    unitCost?: number | null;
+    reason: string;
+    notes?: string | null;
+    createdBy?: string | null;
+  }): Promise<BranchInventorySummaryRow>;
+  createBranchCommercialProductInventoryWaste(data: {
+    branchId: string;
+    commercialProductId: string;
+    quantity: number;
+    movementType: "waste" | "damaged";
+    reason: string;
+    notes?: string | null;
+    createdBy?: string | null;
+  }): Promise<BranchInventorySummaryRow>;
   getBranchServices(branchId: string): Promise<BranchServiceRow[]>;
   createBranchService(data: InsertBranchService): Promise<BranchServiceRow>;
   updateBranchService(branchId: string, serviceId: string, data: Partial<InsertBranchService>): Promise<BranchServiceRow | undefined>;
@@ -832,7 +1962,7 @@ export interface IStorage {
   getInactiveClients(branchId: string, daysSince: number): Promise<any[]>;
   getClientsWithoutClasses(branchId: string): Promise<any[]>;
   getMembershipsAssignedToPlan(planId: string): Promise<number>;
-  updateClient(userId: string, data: { name?: string; email?: string; lastName?: string | null; phone?: string | null; birthDate?: string | null; gender?: string | null; emergencyContactName?: string | null; emergencyContactPhone?: string | null; medicalNotes?: string | null; injuriesNotes?: string | null; medicalWarnings?: string | null; parqAccepted?: boolean; parqAcceptedDate?: string | null; avatarUrl?: string | null }): Promise<any>;
+  updateClient(userId: string, data: { name?: string; email?: string | null; lastName?: string | null; phone?: string | null; birthDate?: string | null; gender?: string | null; emergencyContactName?: string | null; emergencyContactPhone?: string | null; medicalNotes?: string | null; injuriesNotes?: string | null; medicalWarnings?: string | null; parqAccepted?: boolean; parqAcceptedDate?: string | null; avatarUrl?: string | null }): Promise<any>;
   updateClientStatus(membershipId: string, clientStatus: string): Promise<any>;
   updateClientDebt(membershipId: string, hasDebt: boolean, debtAmount: number): Promise<any>;
   softDeleteMembership(membershipId: string): Promise<any>;
@@ -884,8 +2014,16 @@ export class DatabaseStorage implements IStorage {
     return user;
   }
 
-  async getUserByEmail(email: string): Promise<User | undefined> {
-    const [user] = await db.select().from(users).where(eq(users.email, email));
+  async getUserByEmail(email: string | null | undefined): Promise<User | undefined> {
+    const normalizedEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+    if (!normalizedEmail) {
+      return undefined;
+    }
+
+    const [user] = await db
+      .select()
+      .from(users)
+      .where(sql`lower(btrim(${users.email})) = ${normalizedEmail}`);
     return user;
   }
 
@@ -1067,7 +2205,166 @@ export class DatabaseStorage implements IStorage {
     return branch;
   }
 
+  async estimateBranchPurge(branchId: string): Promise<BranchPurgeEstimateRow | undefined> {
+    const [branch] = await db
+      .select({ id: branches.id, name: branches.name, coverImageUrl: branches.coverImageUrl })
+      .from(branches)
+      .where(eq(branches.id, branchId))
+      .limit(1);
+
+    if (!branch) return undefined;
+
+    const countRow = async (value: Promise<Array<{ total: number }>>) => Number((await value)[0]?.total ?? 0);
+    const [
+      adminUsers,
+      clientCrmCount,
+      membershipsCount,
+      membershipPlansCount,
+      schedulesCount,
+      bookingsCount,
+      reviewsCount,
+      notificationsCount,
+      financeEntriesCount,
+      recurringExpensesCount,
+      staffMembersCount,
+      staffClassLogsCount,
+      servicesCount,
+      serviceOptionsCount,
+      commercialProjectsCount,
+      salesCount,
+      salespeopleCount,
+      commercialProductsCount,
+      inventoryBalancesCount,
+      inventoryMovementsCount,
+      suppliersCount,
+      purchasesCount,
+      purchaseItemsCount,
+      commissionRulesCount,
+      commissionAccrualsCount,
+      commissionPaymentsCount,
+      commissionAllocationsCount,
+      promotionsCount,
+      announcementsCount,
+      photosCount,
+      postsCount,
+      videosCount,
+      legacyProductsCount,
+      monthlyBillingCount,
+    ] = await Promise.all([
+      countRow(db.select({ total: count() }).from(users).where(and(eq(users.branchId, branchId), eq(users.role, "BRANCH_ADMIN")))),
+      countRow(db.select({ total: count() }).from(branchClientCrm).where(eq(branchClientCrm.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(memberships).where(eq(memberships.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(membershipPlans).where(eq(membershipPlans.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(classSchedules).where(eq(classSchedules.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(classBookings).where(eq(classBookings.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchReviews).where(eq(branchReviews.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(notifications).where(eq(notifications.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchFinanceEntries).where(eq(branchFinanceEntries.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchRecurringExpenses).where(eq(branchRecurringExpenses.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchStaffMembers).where(eq(branchStaffMembers.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchStaffClassLogs).where(eq(branchStaffClassLogs.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchServices).where(eq(branchServices.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchServiceSaleOptions).where(eq(branchServiceSaleOptions.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchCommercialProjects).where(eq(branchCommercialProjects.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchSales).where(eq(branchSales.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchSalespeople).where(eq(branchSalespeople.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchCommercialProducts).where(eq(branchCommercialProducts.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchInventoryBalances).where(eq(branchInventoryBalances.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchInventoryMovements).where(eq(branchInventoryMovements.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchSuppliers).where(eq(branchSuppliers.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchPurchases).where(eq(branchPurchases.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchPurchaseItems).where(eq(branchPurchaseItems.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchCommissionRules).where(eq(branchCommissionRules.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchCommissionAccruals).where(eq(branchCommissionAccruals.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchCommissionPayments).where(eq(branchCommissionPayments.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchCommissionPaymentAllocations).where(eq(branchCommissionPaymentAllocations.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(promotions).where(eq(promotions.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchAnnouncements).where(eq(branchAnnouncements.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchPhotos).where(eq(branchPhotos.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchPosts).where(eq(branchPosts.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchVideos).where(eq(branchVideos.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchProducts).where(eq(branchProducts.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchMonthlyBilling).where(eq(branchMonthlyBilling.branchId, branchId))),
+    ]);
+
+    const uploadUrls = new Set<string>();
+    const addUploadUrl = (value: string | null | undefined) => {
+      if (typeof value === "string" && value.trim().length > 0) {
+        uploadUrls.add(value.trim());
+      }
+    };
+
+    addUploadUrl(branch.coverImageUrl);
+    const [adminRows, scheduleRows, photoRows, postRows, productRows, commercialProductRows, videoRows, announcementRows, promotionRows] = await Promise.all([
+      db.select({ avatarUrl: users.avatarUrl }).from(users).where(and(eq(users.branchId, branchId), eq(users.role, "BRANCH_ADMIN"))),
+      db.select({ routineImageUrl: classSchedules.routineImageUrl }).from(classSchedules).where(eq(classSchedules.branchId, branchId)),
+      db.select({ url: branchPhotos.url }).from(branchPhotos).where(eq(branchPhotos.branchId, branchId)),
+      db.select({ mediaUrl: branchPosts.mediaUrl }).from(branchPosts).where(eq(branchPosts.branchId, branchId)),
+      db.select({ imageUrl: branchProducts.imageUrl }).from(branchProducts).where(eq(branchProducts.branchId, branchId)),
+      db.select({ photoUrl: branchCommercialProducts.photoUrl }).from(branchCommercialProducts).where(eq(branchCommercialProducts.branchId, branchId)),
+      db.select({ url: branchVideos.url, thumbnailUrl: branchVideos.thumbnailUrl }).from(branchVideos).where(eq(branchVideos.branchId, branchId)),
+      db.select({ imageUrl: branchAnnouncements.imageUrl }).from(branchAnnouncements).where(eq(branchAnnouncements.branchId, branchId)),
+      db.select({ imageUrl: promotions.imageUrl }).from(promotions).where(eq(promotions.branchId, branchId)),
+    ]);
+
+    adminRows.forEach((row) => addUploadUrl(row.avatarUrl));
+    scheduleRows.forEach((row) => addUploadUrl(row.routineImageUrl));
+    photoRows.forEach((row) => addUploadUrl(row.url));
+    postRows.forEach((row) => addUploadUrl(row.mediaUrl));
+    productRows.forEach((row) => addUploadUrl(row.imageUrl));
+    commercialProductRows.forEach((row) => addUploadUrl(row.photoUrl));
+    videoRows.forEach((row) => {
+      addUploadUrl(row.url);
+      addUploadUrl(row.thumbnailUrl);
+    });
+    announcementRows.forEach((row) => addUploadUrl(row.imageUrl));
+    promotionRows.forEach((row) => addUploadUrl(row.imageUrl));
+
+    return {
+      branchId,
+      branchName: branch.name,
+      counts: {
+        adminUsers,
+        clientCrm: clientCrmCount,
+        memberships: membershipsCount,
+        membershipPlans: membershipPlansCount,
+        schedules: schedulesCount,
+        bookings: bookingsCount,
+        reviews: reviewsCount,
+        notifications: notificationsCount,
+        financeEntries: financeEntriesCount,
+        recurringExpenses: recurringExpensesCount,
+        staffMembers: staffMembersCount,
+        staffClassLogs: staffClassLogsCount,
+        services: servicesCount,
+        serviceOptions: serviceOptionsCount,
+        commercialProjects: commercialProjectsCount,
+        sales: salesCount,
+        salespeople: salespeopleCount,
+        commercialProducts: commercialProductsCount,
+        inventoryBalances: inventoryBalancesCount,
+        inventoryMovements: inventoryMovementsCount,
+        suppliers: suppliersCount,
+        purchases: purchasesCount,
+        purchaseItems: purchaseItemsCount,
+        commissionRules: commissionRulesCount,
+        commissionAccruals: commissionAccrualsCount,
+        commissionPayments: commissionPaymentsCount,
+        commissionAllocations: commissionAllocationsCount,
+        promotions: promotionsCount,
+        announcements: announcementsCount,
+        photos: photosCount,
+        posts: postsCount,
+        videos: videosCount,
+        legacyProducts: legacyProductsCount,
+        monthlyBilling: monthlyBillingCount,
+      },
+      uploadCount: uploadUrls.size,
+    };
+  }
+
   async hardDeleteBranch(id: string): Promise<BranchHardDeleteResult> {
+    let purgePhase = "PURGE_INIT";
     const [branch] = await db
       .select()
       .from(branches)
@@ -1080,10 +2377,12 @@ export class DatabaseStorage implements IStorage {
         reason: "Sucursal no encontrada",
         deletedAdminCount: 0,
         uploadUrls: [],
+        deletedAdminFirebaseUids: [],
       };
     }
 
     const uploadUrls = new Set<string>();
+    const deletedAdminFirebaseUids = new Set<string>();
     let deletedAdminCount = 0;
 
     const addUploadUrl = (value: string | null | undefined) => {
@@ -1092,9 +2391,11 @@ export class DatabaseStorage implements IStorage {
       }
     };
 
-    await db.transaction(async (tx) => {
+    try {
+      await db.transaction(async (tx) => {
+      purgePhase = "PURGE_DB_LOAD_ADMINS";
       const adminRows = await tx
-        .select({ id: users.id, avatarUrl: users.avatarUrl })
+        .select({ id: users.id, avatarUrl: users.avatarUrl, firebaseUid: users.firebaseUid })
         .from(users)
         .where(and(eq(users.branchId, id), eq(users.role, "BRANCH_ADMIN")));
 
@@ -1102,13 +2403,20 @@ export class DatabaseStorage implements IStorage {
       deletedAdminCount = adminIds.length;
 
       addUploadUrl(branch.coverImageUrl);
-      adminRows.forEach((row) => addUploadUrl(row.avatarUrl));
+      adminRows.forEach((row) => {
+        addUploadUrl(row.avatarUrl);
+        if (typeof row.firebaseUid === "string" && row.firebaseUid.trim().length > 0) {
+          deletedAdminFirebaseUids.add(row.firebaseUid.trim());
+        }
+      });
 
+      purgePhase = "PURGE_DB_COLLECT_RELATED_ROWS";
       const [
         scheduleRows,
         photoRows,
         postRows,
         productRows,
+        commercialProductRows,
         videoRows,
         announcementRows,
         promotionRows,
@@ -1122,6 +2430,7 @@ export class DatabaseStorage implements IStorage {
         tx.select({ url: branchPhotos.url }).from(branchPhotos).where(eq(branchPhotos.branchId, id)),
         tx.select({ mediaUrl: branchPosts.mediaUrl }).from(branchPosts).where(eq(branchPosts.branchId, id)),
         tx.select({ imageUrl: branchProducts.imageUrl }).from(branchProducts).where(eq(branchProducts.branchId, id)),
+        tx.select({ photoUrl: branchCommercialProducts.photoUrl }).from(branchCommercialProducts).where(eq(branchCommercialProducts.branchId, id)),
         tx
           .select({ url: branchVideos.url, thumbnailUrl: branchVideos.thumbnailUrl })
           .from(branchVideos)
@@ -1139,6 +2448,7 @@ export class DatabaseStorage implements IStorage {
       photoRows.forEach((row) => addUploadUrl(row.url));
       postRows.forEach((row) => addUploadUrl(row.mediaUrl));
       productRows.forEach((row) => addUploadUrl(row.imageUrl));
+      commercialProductRows.forEach((row) => addUploadUrl(row.photoUrl));
       videoRows.forEach((row) => {
         addUploadUrl(row.url);
         addUploadUrl(row.thumbnailUrl);
@@ -1149,6 +2459,7 @@ export class DatabaseStorage implements IStorage {
       const reviewIds = reviewRows.map((row) => row.id);
       const bookingIds = bookingRows.map((row) => row.id);
 
+      purgePhase = "PURGE_DB_DELETE_LOGS_AND_MODERATION";
       const reviewModerationClauses = [];
       if (reviewIds.length > 0) {
         reviewModerationClauses.push(inArray(reviewModerationLogs.reviewId, reviewIds));
@@ -1234,18 +2545,40 @@ export class DatabaseStorage implements IStorage {
       }
       await tx.delete(auditLogs).where(or(...auditLogClauses)!);
 
+      purgePhase = "PURGE_DB_DELETE_STAFF_CLASS_LOGS";
+      await tx.delete(branchStaffClassLogs).where(eq(branchStaffClassLogs.branchId, id));
+
+      purgePhase = "PURGE_DB_DELETE_FINANCE";
       const financeClauses = [eq(branchFinanceEntries.branchId, id)];
       if (adminIds.length > 0) {
         financeClauses.push(inArray(branchFinanceEntries.createdBy, adminIds));
       }
       await tx.delete(branchFinanceEntries).where(or(...financeClauses)!);
 
+      purgePhase = "PURGE_DB_DELETE_BRANCH_TABLES";
       await tx.delete(branchMonthlyBilling).where(eq(branchMonthlyBilling.branchId, id));
       await tx.delete(promotions).where(eq(promotions.branchId, id));
       await tx.delete(branchAnnouncements).where(eq(branchAnnouncements.branchId, id));
       await tx.delete(branchPhotos).where(eq(branchPhotos.branchId, id));
       await tx.delete(branchPosts).where(eq(branchPosts.branchId, id));
       await tx.delete(branchProducts).where(eq(branchProducts.branchId, id));
+      await tx.delete(branchServiceSaleOptions).where(eq(branchServiceSaleOptions.branchId, id));
+      await tx.delete(branchServices).where(eq(branchServices.branchId, id));
+      await tx.delete(branchStaffMembers).where(eq(branchStaffMembers.branchId, id));
+      await tx.delete(branchRecurringExpenses).where(eq(branchRecurringExpenses.branchId, id));
+      await tx.delete(branchInventoryMovements).where(eq(branchInventoryMovements.branchId, id));
+      await tx.delete(branchPurchaseItems).where(eq(branchPurchaseItems.branchId, id));
+      await tx.delete(branchPurchases).where(eq(branchPurchases.branchId, id));
+      await tx.delete(branchSuppliers).where(eq(branchSuppliers.branchId, id));
+      await tx.delete(branchInventoryBalances).where(eq(branchInventoryBalances.branchId, id));
+      await tx.delete(branchCommissionPaymentAllocations).where(eq(branchCommissionPaymentAllocations.branchId, id));
+      await tx.delete(branchCommissionPayments).where(eq(branchCommissionPayments.branchId, id));
+      await tx.delete(branchCommissionAccruals).where(eq(branchCommissionAccruals.branchId, id));
+      await tx.delete(branchCommissionRules).where(eq(branchCommissionRules.branchId, id));
+      await tx.delete(branchSales).where(eq(branchSales.branchId, id));
+      await tx.delete(branchCommercialProjects).where(eq(branchCommercialProjects.branchId, id));
+      await tx.delete(branchSalespeople).where(eq(branchSalespeople.branchId, id));
+      await tx.delete(branchCommercialProducts).where(eq(branchCommercialProducts.branchId, id));
       await tx.delete(branchVideos).where(eq(branchVideos.branchId, id));
       await tx.delete(branchClientCrm).where(eq(branchClientCrm.branchId, id));
       await tx.delete(classBookings).where(eq(classBookings.branchId, id));
@@ -1254,21 +2587,32 @@ export class DatabaseStorage implements IStorage {
       await tx.delete(memberships).where(eq(memberships.branchId, id));
       await tx.delete(membershipPlans).where(eq(membershipPlans.branchId, id));
 
+      purgePhase = "PURGE_DB_DELETE_BRANCH_ADMINS";
       if (adminIds.length > 0) {
         await tx.delete(pushTokens).where(inArray(pushTokens.userId, adminIds));
         await tx.delete(passwordResetTokens).where(inArray(passwordResetTokens.userId, adminIds));
         await tx.delete(users).where(inArray(users.id, adminIds));
       }
 
+      purgePhase = "PURGE_DB_CLEAR_LINKED_USERS";
       await tx.update(users).set({ branchId: null }).where(eq(users.branchId, id));
+      purgePhase = "PURGE_DB_DELETE_BRANCH";
       await tx.delete(branches).where(eq(branches.id, id));
     });
+    } catch (error) {
+      console.error(`[BRANCH_PURGE][${purgePhase}] branch=${id}`, error instanceof Error ? error.stack || error.message : error);
+      if (error && typeof error === "object") {
+        (error as Record<string, unknown>).purgePhase = purgePhase;
+      }
+      throw error;
+    }
 
     return {
       deleted: true,
       branchName: branch.name,
       deletedAdminCount,
       uploadUrls: Array.from(uploadUrls),
+      deletedAdminFirebaseUids: Array.from(deletedAdminFirebaseUids),
     };
   }
 
@@ -2009,7 +3353,7 @@ export class DatabaseStorage implements IStorage {
   async updateUser(id: string, data: {
     name?: string;
     lastName?: string | null;
-    email?: string;
+    email?: string | null;
     phone?: string | null;
     birthDate?: string | null;
     gender?: string | null;
@@ -2894,6 +4238,182 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
+  async getBranchClientCommercialHistory(
+    branchId: string,
+    userId: string,
+    filters?: {
+      filter?: "all" | "products" | "services" | "current_month";
+      page?: number;
+      limit?: number;
+    },
+  ): Promise<BranchClientCommercialHistoryResult> {
+    const membership = await this.getMembershipByUserAndBranch(userId, branchId);
+    const filter = filters?.filter ?? "all";
+    const page = Math.max(1, Number(filters?.page ?? 1) || 1);
+    const limit = Math.min(50, Math.max(1, Number(filters?.limit ?? 10) || 10));
+
+    if (!membership) {
+      return {
+        summary: {
+          totalSpentAmount: 0,
+          salesCount: 0,
+          averageTicketAmount: 0,
+          lastPurchaseAt: null,
+          currentMonthAmount: 0,
+        },
+        items: [],
+        total: 0,
+        page,
+        limit,
+        filter,
+      };
+    }
+
+    const monthRange = getMonthRangeByKey();
+    const filterClauses = [
+      eq(branchSales.branchId, branchId),
+      eq(branchSales.clientUserId, userId),
+      eq(branchSales.status, "completed"),
+    ];
+
+    if (filter === "current_month") {
+      filterClauses.push(sql`DATE(${branchSales.createdAt} AT TIME ZONE ${BRANCH_TIMEZONE}) >= ${monthRange.from}`);
+      filterClauses.push(sql`DATE(${branchSales.createdAt} AT TIME ZONE ${BRANCH_TIMEZONE}) < ${monthRange.toExclusive}`);
+    }
+
+    if (filter === "products") {
+      filterClauses.push(sql`
+        EXISTS (
+          SELECT 1
+          FROM ${branchSaleItems}
+          WHERE ${branchSaleItems.saleId} = ${branchSales.id}
+            AND ${branchSaleItems.itemType} = 'commercial_product'
+        )
+      `);
+    }
+
+    if (filter === "services") {
+      filterClauses.push(sql`
+        EXISTS (
+          SELECT 1
+          FROM ${branchSaleItems}
+          WHERE ${branchSaleItems.saleId} = ${branchSales.id}
+            AND ${branchSaleItems.itemType} <> 'commercial_product'
+        )
+      `);
+    }
+
+    const [summaryRows, currentMonthRows, totalRows, saleRows] = await Promise.all([
+      db
+        .select({
+          totalSpentAmount: sql<number>`COALESCE(SUM(${branchSales.totalAmount}), 0)`.as("total_spent_amount"),
+          salesCount: sql<number>`COUNT(*)`.as("sales_count"),
+          lastPurchaseAt: sql<Date | string | null>`MAX(${branchSales.createdAt})`.as("last_purchase_at"),
+        })
+        .from(branchSales)
+        .where(and(...filterClauses))
+        .limit(1),
+      db
+        .select({
+          totalSpentAmount: sql<number>`COALESCE(SUM(${branchSales.totalAmount}), 0)`.as("total_spent_amount"),
+        })
+        .from(branchSales)
+        .where(and(
+          eq(branchSales.branchId, branchId),
+          eq(branchSales.clientUserId, userId),
+          eq(branchSales.status, "completed"),
+          sql`DATE(${branchSales.createdAt} AT TIME ZONE ${BRANCH_TIMEZONE}) >= ${monthRange.from}`,
+          sql`DATE(${branchSales.createdAt} AT TIME ZONE ${BRANCH_TIMEZONE}) < ${monthRange.toExclusive}`,
+        ))
+        .limit(1),
+      db
+        .select({ total: sql<number>`COUNT(*)`.as("total") })
+        .from(branchSales)
+        .where(and(...filterClauses))
+        .limit(1),
+      db
+        .select({
+          id: branchSales.id,
+          folio: branchSales.folio,
+          createdAt: branchSales.createdAt,
+          totalAmount: branchSales.totalAmount,
+          paidAmount: branchSales.paidAmount,
+          discountAmount: branchSales.discountAmount,
+          sellerId: branchSales.sellerId,
+          sellerNameSnapshot: branchSales.sellerNameSnapshot,
+          channel: branchSales.channel,
+          notes: branchSales.notes,
+        })
+        .from(branchSales)
+        .where(and(...filterClauses))
+        .orderBy(desc(branchSales.createdAt))
+        .limit(limit)
+        .offset((page - 1) * limit),
+    ]);
+
+    const saleIds = saleRows.map((row) => row.id);
+    const [itemRows, paymentRows] = saleIds.length
+      ? await Promise.all([
+          db
+            .select()
+            .from(branchSaleItems)
+            .where(inArray(branchSaleItems.saleId, saleIds))
+            .orderBy(asc(branchSaleItems.createdAt)),
+          db
+            .select()
+            .from(branchSalePayments)
+            .where(inArray(branchSalePayments.saleId, saleIds))
+            .orderBy(asc(branchSalePayments.createdAt)),
+        ])
+      : [[], []];
+
+    const itemsBySaleId = new Map<string, BranchSaleItemRow[]>();
+    for (const row of itemRows) {
+      const current = itemsBySaleId.get(row.saleId) ?? [];
+      current.push(this.mapBranchSaleItemRow(row));
+      itemsBySaleId.set(row.saleId, current);
+    }
+
+    const paymentsBySaleId = new Map<string, BranchSalePaymentRow[]>();
+    for (const row of paymentRows) {
+      const current = paymentsBySaleId.get(row.saleId) ?? [];
+      current.push(this.mapBranchSalePaymentRow(row));
+      paymentsBySaleId.set(row.saleId, current);
+    }
+
+    const summaryRow = summaryRows[0];
+    const totalSpentAmount = toFinanceAmount(summaryRow?.totalSpentAmount);
+    const salesCount = Number(summaryRow?.salesCount ?? 0);
+
+    return {
+      summary: {
+        totalSpentAmount,
+        salesCount,
+        averageTicketAmount: salesCount > 0 ? Number((totalSpentAmount / salesCount).toFixed(2)) : 0,
+        lastPurchaseAt: summaryRow?.lastPurchaseAt ?? null,
+        currentMonthAmount: toFinanceAmount(currentMonthRows[0]?.totalSpentAmount),
+      },
+      items: saleRows.map((row) => ({
+        saleId: row.id,
+        folio: row.folio,
+        saleDate: row.createdAt,
+        totalAmount: toFinanceAmount(row.totalAmount),
+        paidAmount: toFinanceAmount(row.paidAmount),
+        discountAmount: toFinanceAmount(row.discountAmount),
+        sellerId: row.sellerId ?? null,
+        sellerName: row.sellerNameSnapshot ?? null,
+        channel: row.channel,
+        notes: row.notes ?? null,
+        items: itemsBySaleId.get(row.id) ?? [],
+        payments: paymentsBySaleId.get(row.id) ?? [],
+      })),
+      total: Number(totalRows[0]?.total ?? 0),
+      page,
+      limit,
+      filter,
+    };
+  }
+
   async linkBranchClientToAppUser(
     branchId: string,
     sourceUserId: string,
@@ -3362,8 +4882,14 @@ export class DatabaseStorage implements IStorage {
     return plan;
   }
 
-  async assignPlanToMembership(membershipId: string, planId: string, classesRemaining: number | null, classesTotal: number | null, expiresAt: Date | null): Promise<Membership | undefined> {
-    const now = new Date();
+  async assignPlanToMembership(
+    membershipId: string,
+    planId: string,
+    classesRemaining: number | null,
+    classesTotal: number | null,
+    expiresAt: Date | null,
+    startDate: Date,
+  ): Promise<Membership | undefined> {
     const [m] = await db
       .update(memberships)
       .set({
@@ -3372,9 +4898,9 @@ export class DatabaseStorage implements IStorage {
         classesRemaining,
         classesTotal,
         expiresAt,
-        membershipStartDate: now,
+        membershipStartDate: startDate,
         membershipEndDate: expiresAt,
-        paidAt: now,
+        paidAt: startDate,
       })
       .where(eq(memberships.id, membershipId))
       .returning();
@@ -4084,6 +5610,5093 @@ export class DatabaseStorage implements IStorage {
     }
   }
 
+  private mapBranchCommercialProductRow(row: BranchCommercialProduct): BranchCommercialProductRow {
+    return {
+      id: row.id,
+      branchId: row.branchId,
+      name: row.name,
+      category: row.category,
+      description: row.description ?? null,
+      photoUrl: row.photoUrl ?? null,
+      sku: row.sku ?? null,
+      barcode: row.barcode ?? null,
+      costAmount: toFinanceAmount(row.costAmount),
+      salePriceAmount: toFinanceAmount(row.salePriceAmount),
+      isActive: row.isActive,
+      isPublicVisible: row.isPublicVisible,
+      usesInventory: row.usesInventory,
+      displayOrder: row.displayOrder,
+      inventoryQuantityOnHand: null,
+      inventoryMinimumStock: null,
+      inventoryStatus: row.usesInventory ? "uninitialized" : "not_tracked",
+      inventoryUpdatedAt: null,
+      createdBy: row.createdBy ?? null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  }
+
+  private mapBranchSalespersonRow(row: BranchSalesperson): BranchSalespersonRow {
+    return {
+      id: row.id,
+      branchId: row.branchId,
+      userId: row.userId ?? null,
+      name: row.name,
+      lastName: row.lastName ?? null,
+      phone: row.phone ?? null,
+      email: row.email ?? null,
+      employeeCode: row.employeeCode ?? null,
+      roleLabel: row.roleLabel ?? null,
+      monthlyGoalAmount: row.monthlyGoalAmount == null ? null : toFinanceAmount(row.monthlyGoalAmount),
+      isActive: row.isActive,
+      notes: row.notes ?? null,
+      createdBy: row.createdBy ?? null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      deletedAt: row.deletedAt ?? null,
+    };
+  }
+
+  private mapBranchSaleItemRow(row: BranchSaleItem): BranchSaleItemRow {
+    return {
+      id: row.id,
+      saleId: row.saleId,
+      branchId: row.branchId,
+      itemType: row.itemType,
+      commercialProductId: row.commercialProductId ?? null,
+      serviceId: row.serviceId ?? null,
+      planId: row.planId ?? null,
+      nameSnapshot: row.nameSnapshot,
+      categorySnapshot: row.categorySnapshot ?? null,
+      quantity: row.quantity,
+      unitPriceAmount: toFinanceAmount(row.unitPriceAmount),
+      discountAmount: toFinanceAmount(row.discountAmount),
+      costAmountSnapshot: toFinanceAmount(row.costAmountSnapshot),
+      lineTotalAmount: toFinanceAmount(row.lineTotalAmount),
+      metadata: row.metadata ?? null,
+      createdAt: row.createdAt,
+    };
+  }
+
+  private mapBranchSalePaymentRow(row: BranchSalePayment): BranchSalePaymentRow {
+    return {
+      id: row.id,
+      saleId: row.saleId,
+      branchId: row.branchId,
+      paymentMethod: row.paymentMethod,
+      amount: toFinanceAmount(row.amount),
+      reference: row.reference ?? null,
+      paidAt: row.paidAt,
+      createdBy: row.createdBy ?? null,
+      createdAt: row.createdAt,
+    };
+  }
+
+  private mapBranchCommissionRuleRow(row: BranchCommissionRule): BranchCommissionRuleRow {
+    return {
+      id: row.id,
+      branchId: row.branchId,
+      salespersonId: row.salespersonId,
+      name: row.name,
+      ruleType: row.ruleType,
+      percentageRate: row.percentageRate == null ? null : Number(row.percentageRate),
+      fixedAmount: row.fixedAmount == null ? null : toFinanceAmount(row.fixedAmount),
+      commercialProductId: row.commercialProductId ?? null,
+      category: row.category ?? null,
+      minimumGoalAmount: row.minimumGoalAmount == null ? null : toFinanceAmount(row.minimumGoalAmount),
+      bonusAmount: row.bonusAmount == null ? null : toFinanceAmount(row.bonusAmount),
+      priority: row.priority,
+      isActive: row.isActive,
+      validFrom: row.validFrom ?? null,
+      validUntil: row.validUntil ?? null,
+      createdBy: row.createdBy ?? null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      deletedAt: row.deletedAt ?? null,
+    };
+  }
+
+  private mapBranchCommissionAccrualRow(row: BranchCommissionAccrual): BranchCommissionAccrualRow {
+    return {
+      id: row.id,
+      branchId: row.branchId,
+      salespersonId: row.salespersonId,
+      saleId: row.saleId ?? null,
+      saleItemId: row.saleItemId ?? null,
+      commissionRuleId: row.commissionRuleId ?? null,
+      accrualType: row.accrualType,
+      referenceKey: row.referenceKey,
+      periodMonth: row.periodMonth ?? null,
+      status: row.status,
+      baseAmount: toFinanceAmount(row.baseAmount),
+      rateSnapshot: row.rateSnapshot == null ? null : Number(row.rateSnapshot),
+      fixedAmountSnapshot: row.fixedAmountSnapshot == null ? null : toFinanceAmount(row.fixedAmountSnapshot),
+      commissionAmount: toFinanceAmount(row.commissionAmount),
+      salespersonNameSnapshot: row.salespersonNameSnapshot,
+      ruleNameSnapshot: row.ruleNameSnapshot ?? null,
+      calculationSnapshot: row.calculationSnapshot ?? null,
+      accruedAt: row.accruedAt,
+      approvedAt: row.approvedAt ?? null,
+      paidAmount: toFinanceAmount(row.paidAmount),
+      reversedAt: row.reversedAt ?? null,
+      reversalReason: row.reversalReason ?? null,
+      createdAt: row.createdAt,
+    };
+  }
+
+  private mapBranchCommissionPaymentAllocationRow(row: BranchCommissionPaymentAllocation): BranchCommissionPaymentAllocationRow {
+    return {
+      id: row.id,
+      branchId: row.branchId,
+      commissionPaymentId: row.commissionPaymentId,
+      commissionAccrualId: row.commissionAccrualId,
+      amountAllocated: toFinanceAmount(row.amountAllocated),
+      createdAt: row.createdAt,
+    };
+  }
+
+  private mapBranchCommissionPaymentRow(
+    row: BranchCommissionPayment,
+    allocations: BranchCommissionPaymentAllocationRow[] = [],
+  ): BranchCommissionPaymentRow {
+    return {
+      id: row.id,
+      branchId: row.branchId,
+      salespersonId: row.salespersonId,
+      amount: toFinanceAmount(row.amount),
+      paymentMethod: row.paymentMethod,
+      reference: row.reference ?? null,
+      notes: row.notes ?? null,
+      periodStart: row.periodStart ?? null,
+      periodEnd: row.periodEnd ?? null,
+      paidAt: row.paidAt,
+      createdBy: row.createdBy ?? null,
+      createdAt: row.createdAt,
+      allocations,
+    };
+  }
+
+  private mapBranchInventoryBalanceRow(
+    row: BranchInventoryBalance,
+    usesInventory = true,
+  ): BranchInventoryBalanceRow {
+    const quantityOnHand = row.quantityOnHand;
+    const minimumStock = row.minimumStock;
+    return {
+      id: row.id,
+      branchId: row.branchId,
+      commercialProductId: row.commercialProductId,
+      quantityOnHand,
+      minimumStock,
+      status: computeInventoryStatus(usesInventory, { quantityOnHand, minimumStock }),
+      updatedBy: row.updatedBy ?? null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  }
+
+  private mapBranchInventoryMovementRow(row: BranchInventoryMovement): BranchInventoryMovementRow {
+    return {
+      id: row.id,
+      branchId: row.branchId,
+      commercialProductId: row.commercialProductId,
+      movementType: row.movementType,
+      quantityDelta: row.quantityDelta,
+      quantityBefore: row.quantityBefore,
+      quantityAfter: row.quantityAfter,
+      unitCostSnapshot: row.unitCostSnapshot == null ? null : toFinanceAmount(row.unitCostSnapshot),
+      reason: row.reason,
+      notes: row.notes ?? null,
+      saleId: row.saleId ?? null,
+      saleItemId: row.saleItemId ?? null,
+      purchaseId: row.purchaseId ?? null,
+      purchaseItemId: row.purchaseItemId ?? null,
+      createdBy: row.createdBy ?? null,
+      metadata: row.metadata ?? null,
+      createdAt: row.createdAt,
+    };
+  }
+
+  private mapBranchSupplierRow(row: BranchSupplier): BranchSupplierRow {
+    return {
+      id: row.id,
+      branchId: row.branchId,
+      name: row.name,
+      contactName: row.contactName ?? null,
+      phone: row.phone ?? null,
+      email: row.email ?? null,
+      taxId: row.taxId ?? null,
+      address: row.address ?? null,
+      paymentTerms: row.paymentTerms ?? null,
+      notes: row.notes ?? null,
+      isActive: row.isActive,
+      createdBy: row.createdBy ?? null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      deletedAt: row.deletedAt ?? null,
+    };
+  }
+
+  private mapBranchPurchaseItemRow(row: BranchPurchaseItem): BranchPurchaseItemRow {
+    return {
+      id: row.id,
+      purchaseId: row.purchaseId,
+      branchId: row.branchId,
+      commercialProductId: row.commercialProductId ?? null,
+      nameSnapshot: row.nameSnapshot,
+      skuSnapshot: row.skuSnapshot ?? null,
+      quantityOrdered: row.quantityOrdered,
+      quantityReceived: row.quantityReceived,
+      unitCost: toFinanceAmount(row.unitCost),
+      lineTotal: toFinanceAmount(row.lineTotal),
+      metadata: row.metadata ?? null,
+      createdAt: row.createdAt,
+    };
+  }
+
+  private mapBranchPurchaseRow(row: {
+    id: string;
+    branchId: string;
+    projectId: string | null;
+    projectCode: string | null;
+    projectName: string | null;
+    folio: string;
+    supplierId: string | null;
+    supplierName: string | null;
+    status: string;
+    purchaseDate: string | Date;
+    expectedDate: string | Date | null;
+    receivedAt: Date | null;
+    paymentStatus: string;
+    paymentMethod: string | null;
+    subtotalAmount: unknown;
+    discountAmount: unknown;
+    taxMode: string | null;
+    taxRate: unknown;
+    subtotalBeforeTax: unknown;
+    taxableSubtotal: unknown;
+    taxTotal: unknown;
+    grandTotal: unknown;
+    totalAmount: unknown;
+    paidAmount: unknown;
+    reference: string | null;
+    notes: string | null;
+    createdBy: string | null;
+    cancelledAt: Date | null;
+    createdAt: Date;
+    updatedAt: Date;
+    totalItems?: number;
+    totalUnitsOrdered?: number;
+    totalUnitsReceived?: number;
+  }): BranchPurchaseRow {
+    return {
+      id: row.id,
+      branchId: row.branchId,
+      projectId: row.projectId ?? null,
+      projectCode: row.projectCode ?? null,
+      projectName: row.projectName ?? null,
+      folio: row.folio,
+      supplierId: row.supplierId ?? null,
+      supplierName: row.supplierName ?? null,
+      status: row.status as BranchPurchaseRow["status"],
+      purchaseDate: typeof row.purchaseDate === "string" ? row.purchaseDate : row.purchaseDate.toISOString().slice(0, 10),
+      expectedDate: row.expectedDate == null
+        ? null
+        : typeof row.expectedDate === "string"
+          ? row.expectedDate
+          : row.expectedDate.toISOString().slice(0, 10),
+      receivedAt: row.receivedAt ?? null,
+      paymentStatus: row.paymentStatus as BranchPurchaseRow["paymentStatus"],
+      paymentMethod: row.paymentMethod ?? null,
+      subtotalAmount: toFinanceAmount(row.subtotalAmount),
+      discountAmount: toFinanceAmount(row.discountAmount),
+      taxMode: row.taxMode ?? null,
+      taxRate: row.taxRate == null ? null : toFinanceAmount(row.taxRate),
+      subtotalBeforeTax: row.subtotalBeforeTax == null ? null : toFinanceAmount(row.subtotalBeforeTax),
+      taxableSubtotal: row.taxableSubtotal == null ? null : toFinanceAmount(row.taxableSubtotal),
+      taxTotal: row.taxTotal == null ? null : toFinanceAmount(row.taxTotal),
+      grandTotal: row.grandTotal == null ? null : toFinanceAmount(row.grandTotal),
+      totalAmount: toFinanceAmount(row.totalAmount),
+      paidAmount: toFinanceAmount(row.paidAmount),
+      reference: row.reference ?? null,
+      notes: row.notes ?? null,
+      createdBy: row.createdBy ?? null,
+      cancelledAt: row.cancelledAt ?? null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      totalItems: Number(row.totalItems ?? 0),
+      totalUnitsOrdered: Number(row.totalUnitsOrdered ?? 0),
+      totalUnitsReceived: Number(row.totalUnitsReceived ?? 0),
+    };
+  }
+
+  private async getLockedBranchInventoryBalance(
+    tx: any,
+    branchId: string,
+    commercialProductId: string,
+  ): Promise<BranchInventoryBalance | null> {
+    const result = await tx.execute(sql`
+      SELECT *
+      FROM branch_inventory_balances
+      WHERE branch_id = ${branchId}
+        AND commercial_product_id = ${commercialProductId}
+      FOR UPDATE
+    `);
+
+    const row = (result as any)?.rows?.[0] ?? null;
+    if (!row) return null;
+
+    return {
+      id: row.id,
+      branchId: row.branch_id,
+      commercialProductId: row.commercial_product_id,
+      quantityOnHand: Number(row.quantity_on_hand ?? 0),
+      minimumStock: Number(row.minimum_stock ?? 0),
+      updatedBy: row.updated_by ?? null,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    } as BranchInventoryBalance;
+  }
+
+  private async getLockedBranchPurchase(
+    tx: any,
+    branchId: string,
+    purchaseId: string,
+  ): Promise<BranchPurchase | null> {
+    const result = await tx.execute(sql`
+      SELECT *
+      FROM branch_purchases
+      WHERE branch_id = ${branchId}
+        AND id = ${purchaseId}
+      FOR UPDATE
+    `);
+
+    const row = (result as any)?.rows?.[0] ?? null;
+    if (!row) return null;
+
+    return {
+      id: row.id,
+      branchId: row.branch_id,
+      projectId: row.project_id ?? null,
+      folio: row.folio,
+      supplierId: row.supplier_id ?? null,
+      status: row.status,
+      purchaseDate: row.purchase_date,
+      expectedDate: row.expected_date ?? null,
+      receivedAt: row.received_at ?? null,
+      paymentStatus: row.payment_status,
+      paymentMethod: row.payment_method ?? null,
+      subtotalAmount: String(row.subtotal_amount ?? 0),
+      discountAmount: String(row.discount_amount ?? 0),
+      taxMode: row.tax_mode ?? null,
+      taxRate: row.tax_rate == null ? null : String(row.tax_rate),
+      subtotalBeforeTax: row.subtotal_before_tax == null ? null : String(row.subtotal_before_tax),
+      taxableSubtotal: row.taxable_subtotal == null ? null : String(row.taxable_subtotal),
+      taxTotal: row.tax_total == null ? null : String(row.tax_total),
+      grandTotal: row.grand_total == null ? null : String(row.grand_total),
+      totalAmount: String(row.total_amount ?? 0),
+      paidAmount: String(row.paid_amount ?? 0),
+      reference: row.reference ?? null,
+      notes: row.notes ?? null,
+      createdBy: row.created_by ?? null,
+      cancelledAt: row.cancelled_at ?? null,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    } as BranchPurchase;
+  }
+
+  private async lockBranchCommissionAccrualIdsTx(
+    tx: any,
+    branchId: string,
+    accrualIds: string[],
+  ): Promise<void> {
+    if (!accrualIds.length) return;
+
+    const accrualIdList = sql.join(accrualIds.map((accrualId) => sql`${accrualId}`), sql`, `);
+    await tx.execute(sql`
+      SELECT id
+      FROM branch_commission_accruals
+      WHERE branch_id = ${branchId}
+        AND id IN (${accrualIdList})
+      FOR UPDATE
+    `);
+  }
+
+  private async insertBranchInventoryMovementTx(
+    tx: any,
+    data: InsertBranchInventoryMovement,
+  ): Promise<BranchInventoryMovementRow> {
+    const [created] = await tx
+      .insert(branchInventoryMovements)
+      .values({
+        ...data,
+        unitCostSnapshot: data.unitCostSnapshot == null ? null : String(toFinanceAmount(data.unitCostSnapshot)),
+      } as any)
+      .returning();
+
+    return this.mapBranchInventoryMovementRow(created);
+  }
+
+  private async getBranchSaleById(branchId: string, saleId: string): Promise<BranchSaleRow | undefined> {
+    const [sale] = await db
+      .select({
+        id: branchSales.id,
+        branchId: branchSales.branchId,
+        projectId: branchSales.projectId,
+        projectCode: branchCommercialProjects.code,
+        projectName: branchCommercialProjects.name,
+        folio: branchSales.folio,
+        clientUserId: branchSales.clientUserId,
+        sellerUserId: branchSales.sellerUserId,
+        sellerId: branchSales.sellerId,
+        sellerNameSnapshot: branchSales.sellerNameSnapshot,
+        sellerMetadata: branchSales.sellerMetadata,
+        channel: branchSales.channel,
+        status: branchSales.status,
+        subtotalAmount: branchSales.subtotalAmount,
+        discountAmount: branchSales.discountAmount,
+        totalAmount: branchSales.totalAmount,
+        paidAmount: branchSales.paidAmount,
+        taxMode: branchSales.taxMode,
+        taxRate: branchSales.taxRate,
+        subtotalBeforeTax: branchSales.subtotalBeforeTax,
+        taxableSubtotal: branchSales.taxableSubtotal,
+        taxTotal: branchSales.taxTotal,
+        grandTotal: branchSales.grandTotal,
+        notes: branchSales.notes,
+        createdBy: branchSales.createdBy,
+        cancelledAt: branchSales.cancelledAt,
+        cancelledByUserId: branchSales.cancelledByUserId,
+        cancellationReason: branchSales.cancellationReason,
+        createdAt: branchSales.createdAt,
+        updatedAt: branchSales.updatedAt,
+        clientName: users.name,
+        clientLastName: users.lastName,
+        clientEmail: users.email,
+      })
+      .from(branchSales)
+      .leftJoin(branchCommercialProjects, and(
+        eq(branchSales.projectId, branchCommercialProjects.id),
+        eq(branchSales.branchId, branchCommercialProjects.branchId),
+      ))
+      .leftJoin(users, eq(branchSales.clientUserId, users.id))
+      .where(and(
+        eq(branchSales.id, saleId),
+        eq(branchSales.branchId, branchId),
+      ))
+      .limit(1);
+
+    if (!sale) return undefined;
+
+    const [itemRows, paymentRows] = await Promise.all([
+      db
+        .select()
+        .from(branchSaleItems)
+        .where(eq(branchSaleItems.saleId, saleId))
+        .orderBy(asc(branchSaleItems.createdAt)),
+      db
+        .select()
+        .from(branchSalePayments)
+        .where(eq(branchSalePayments.saleId, saleId))
+        .orderBy(asc(branchSalePayments.createdAt)),
+    ]);
+
+    const clientDisplayName = [sale.clientName, sale.clientLastName].filter(Boolean).join(" ").trim() || null;
+
+    return {
+      id: sale.id,
+      branchId: sale.branchId,
+      projectId: sale.projectId ?? null,
+      projectCode: sale.projectCode ?? null,
+      projectName: sale.projectName ?? null,
+      folio: sale.folio,
+      clientUserId: sale.clientUserId ?? null,
+      clientDisplayName,
+      clientEmail: sale.clientEmail ?? null,
+      sellerId: sale.sellerId ?? null,
+      sellerUserId: sale.sellerUserId ?? null,
+      sellerNameSnapshot: sale.sellerNameSnapshot ?? null,
+      sellerMetadata: sale.sellerMetadata ?? null,
+      channel: sale.channel,
+      status: sale.status,
+      subtotalAmount: toFinanceAmount(sale.subtotalAmount),
+      discountAmount: toFinanceAmount(sale.discountAmount),
+      totalAmount: toFinanceAmount(sale.totalAmount),
+      paidAmount: toFinanceAmount(sale.paidAmount),
+      taxMode: sale.taxMode ?? null,
+      taxRate: sale.taxRate == null ? null : toFinanceAmount(sale.taxRate),
+      subtotalBeforeTax: sale.subtotalBeforeTax == null ? null : toFinanceAmount(sale.subtotalBeforeTax),
+      taxableSubtotal: sale.taxableSubtotal == null ? null : toFinanceAmount(sale.taxableSubtotal),
+      taxTotal: sale.taxTotal == null ? null : toFinanceAmount(sale.taxTotal),
+      grandTotal: sale.grandTotal == null ? null : toFinanceAmount(sale.grandTotal),
+      notes: sale.notes ?? null,
+      createdBy: sale.createdBy ?? null,
+      cancelledAt: sale.cancelledAt ?? null,
+      cancelledByUserId: sale.cancelledByUserId ?? null,
+      cancellationReason: sale.cancellationReason ?? null,
+      createdAt: sale.createdAt,
+      updatedAt: sale.updatedAt,
+      items: itemRows.map((row) => this.mapBranchSaleItemRow(row)),
+      payments: paymentRows.map((row) => this.mapBranchSalePaymentRow(row)),
+    };
+  }
+
+  private async getBranchSaleByIdempotencyKey(
+    branchId: string,
+    idempotencyKey: string,
+  ): Promise<BranchSaleRow | undefined> {
+    const [sale] = await db
+      .select({ id: branchSales.id })
+      .from(branchSales)
+      .where(and(
+        eq(branchSales.branchId, branchId),
+        eq(branchSales.idempotencyKey, idempotencyKey),
+      ))
+      .limit(1);
+
+    if (!sale) return undefined;
+    return this.getBranchSaleById(branchId, sale.id);
+  }
+
+  private async getBranchSaleByCancellationIdempotencyKey(
+    branchId: string,
+    idempotencyKey: string,
+  ): Promise<BranchSaleRow | undefined> {
+    const [sale] = await db
+      .select({ id: branchSales.id })
+      .from(branchSales)
+      .where(and(
+        eq(branchSales.branchId, branchId),
+        eq(branchSales.cancellationIdempotencyKey, idempotencyKey),
+      ))
+      .limit(1);
+
+    if (!sale) return undefined;
+    return this.getBranchSaleById(branchId, sale.id);
+  }
+
+  private async getBranchCommissionPaymentByIdempotencyKey(
+    branchId: string,
+    idempotencyKey: string,
+  ): Promise<BranchCommissionPaymentRow | undefined> {
+    const [paymentRow] = await db
+      .select()
+      .from(branchCommissionPayments)
+      .where(and(
+        eq(branchCommissionPayments.branchId, branchId),
+        eq(branchCommissionPayments.idempotencyKey, idempotencyKey),
+      ))
+      .limit(1);
+
+    if (!paymentRow) return undefined;
+
+    const allocationRows = await db
+      .select()
+      .from(branchCommissionPaymentAllocations)
+      .where(and(
+        eq(branchCommissionPaymentAllocations.branchId, branchId),
+        eq(branchCommissionPaymentAllocations.commissionPaymentId, paymentRow.id),
+      ));
+
+    return this.mapBranchCommissionPaymentRow(
+      paymentRow,
+      allocationRows.map((row) => this.mapBranchCommissionPaymentAllocationRow(row)),
+    );
+  }
+
+  private buildBranchSaleFinanceConcept(
+    sale: { folio: string },
+    items: Array<{ nameSnapshot: string; quantity: number }>,
+    sellerNameSnapshot?: string | null,
+  ) {
+    const summary = items
+      .slice(0, 3)
+      .map((item) => `${item.quantity} x ${item.nameSnapshot}`)
+      .join(", ");
+    const suffix = items.length > 3 ? " +" : "";
+    const sellerLabel = sellerNameSnapshot ? ` · Vendedor ${sellerNameSnapshot}` : "";
+    return summary ? `Venta ${sale.folio} · ${summary}${suffix}${sellerLabel}` : `Venta ${sale.folio}${sellerLabel}`;
+  }
+
+  private createEmptyCommercialProjectSummary(): BranchCommercialProjectSummaryRow {
+    return {
+      linkedSalesCount: 0,
+      linkedPurchasesCount: 0,
+      linkedDraftPurchasesCount: 0,
+      revenueBeforeTax: 0,
+      revenueHistoricalWithoutBreakdown: 0,
+      taxCollected: 0,
+      revenueGrossTotal: 0,
+      cashCollectedTotal: 0,
+      purchaseCommittedBeforeTax: 0,
+      purchaseCommittedHistoricalWithoutBreakdown: 0,
+      purchaseReceivedBeforeTax: 0,
+      purchaseReceivedHistoricalWithoutBreakdown: 0,
+      purchasePaidTotal: 0,
+      committedProfitEstimate: 0,
+      receivedProfitEstimate: 0,
+      cashFlowNet: 0,
+      marginPercent: null,
+    };
+  }
+
+  private finalizeCommercialProjectSummary(summary: BranchCommercialProjectSummaryRow): BranchCommercialProjectSummaryRow {
+    const committedProfitEstimate = roundMoney(summary.revenueBeforeTax - summary.purchaseCommittedBeforeTax);
+    const receivedProfitEstimate = roundMoney(summary.revenueBeforeTax - summary.purchaseReceivedBeforeTax);
+    const cashFlowNet = roundMoney(summary.cashCollectedTotal - summary.purchasePaidTotal);
+    const marginPercent = summary.revenueBeforeTax > 0
+      ? roundMoney((committedProfitEstimate / summary.revenueBeforeTax) * 100)
+      : null;
+
+    return {
+      ...summary,
+      revenueBeforeTax: roundMoney(summary.revenueBeforeTax),
+      revenueHistoricalWithoutBreakdown: roundMoney(summary.revenueHistoricalWithoutBreakdown),
+      taxCollected: roundMoney(summary.taxCollected),
+      revenueGrossTotal: roundMoney(summary.revenueGrossTotal),
+      cashCollectedTotal: roundMoney(summary.cashCollectedTotal),
+      purchaseCommittedBeforeTax: roundMoney(summary.purchaseCommittedBeforeTax),
+      purchaseCommittedHistoricalWithoutBreakdown: roundMoney(summary.purchaseCommittedHistoricalWithoutBreakdown),
+      purchaseReceivedBeforeTax: roundMoney(summary.purchaseReceivedBeforeTax),
+      purchaseReceivedHistoricalWithoutBreakdown: roundMoney(summary.purchaseReceivedHistoricalWithoutBreakdown),
+      purchasePaidTotal: roundMoney(summary.purchasePaidTotal),
+      committedProfitEstimate,
+      receivedProfitEstimate,
+      cashFlowNet,
+      marginPercent,
+    };
+  }
+
+  private mapBranchCommercialProjectRow(row: {
+    id: string;
+    branchId: string;
+    code: string;
+    name: string;
+    description: string | null;
+    customerUserId: string | null;
+    customerName?: string | null;
+    customerLastName?: string | null;
+    status: string;
+    startDate: string | Date;
+    expectedEndDate: string | Date | null;
+    completedAt: Date | string | null;
+    notes: string | null;
+    createdByUserId: string | null;
+    createdAt: Date | string;
+    updatedAt: Date | string;
+    deletedAt: Date | string | null;
+  }, summary?: BranchCommercialProjectSummaryRow): BranchCommercialProjectRow {
+    const customerDisplayName = [row.customerName, row.customerLastName].filter(Boolean).join(" ").trim() || null;
+
+    return {
+      id: row.id,
+      branchId: row.branchId,
+      code: row.code,
+      name: row.name,
+      description: row.description ?? null,
+      customerUserId: row.customerUserId ?? null,
+      customerDisplayName,
+      status: row.status as BranchCommercialProjectRow["status"],
+      startDate: typeof row.startDate === "string" ? row.startDate : row.startDate.toISOString().slice(0, 10),
+      expectedEndDate: row.expectedEndDate == null
+        ? null
+        : typeof row.expectedEndDate === "string"
+          ? row.expectedEndDate
+          : row.expectedEndDate.toISOString().slice(0, 10),
+      completedAt: row.completedAt ?? null,
+      notes: row.notes ?? null,
+      createdByUserId: row.createdByUserId ?? null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      deletedAt: row.deletedAt ?? null,
+      summary: summary ?? this.createEmptyCommercialProjectSummary(),
+    };
+  }
+
+  private computeCommercialProjectSummaryFromLists(
+    sales: BranchCommercialProjectLinkedSaleRow[],
+    purchases: BranchCommercialProjectLinkedPurchaseRow[],
+  ): BranchCommercialProjectSummaryRow {
+    const summary = this.createEmptyCommercialProjectSummary();
+    summary.linkedSalesCount = sales.length;
+    summary.linkedPurchasesCount = purchases.filter((purchase) => purchase.status !== "cancelled").length;
+    summary.linkedDraftPurchasesCount = purchases.filter((purchase) => purchase.status === "draft").length;
+
+    for (const sale of sales) {
+      const isActiveSale = sale.status === "completed" && !sale.cancelledAt;
+      if (!isActiveSale) continue;
+      const hasBreakdown = hasStoredCommercialTaxBreakdown(sale);
+      if (hasBreakdown) {
+        summary.revenueBeforeTax += sale.taxableSubtotal ?? sale.totalAmount;
+        summary.taxCollected += sale.taxTotal ?? 0;
+      } else {
+        summary.revenueHistoricalWithoutBreakdown += sale.totalAmount;
+      }
+      summary.revenueGrossTotal += hasBreakdown ? (sale.grandTotal ?? sale.totalAmount) : sale.totalAmount;
+      summary.cashCollectedTotal += sale.paidAmount;
+    }
+
+    for (const purchase of purchases) {
+      const countsForCommittedCost = purchase.status === "ordered" || purchase.status === "partially_received" || purchase.status === "received";
+      const countsForReceivedCost = purchase.status === "partially_received" || purchase.status === "received";
+      const countsForCash = purchase.status !== "cancelled";
+      const hasBreakdown = hasStoredCommercialTaxBreakdown(purchase);
+      if (countsForCommittedCost && !purchase.cancelledAt) {
+        if (hasBreakdown) {
+          summary.purchaseCommittedBeforeTax += purchase.taxableSubtotal ?? purchase.totalAmount;
+        } else {
+          summary.purchaseCommittedHistoricalWithoutBreakdown += purchase.totalAmount;
+        }
+      }
+      if (countsForReceivedCost && !purchase.cancelledAt) {
+        if (hasBreakdown) {
+          summary.purchaseReceivedBeforeTax += purchase.taxableSubtotal ?? purchase.totalAmount;
+        } else {
+          summary.purchaseReceivedHistoricalWithoutBreakdown += purchase.totalAmount;
+        }
+      }
+      if (countsForCash && !purchase.cancelledAt) {
+        summary.purchasePaidTotal += purchase.paidAmount;
+      }
+    }
+
+    return this.finalizeCommercialProjectSummary(summary);
+  }
+
+  private async getBranchCommercialProjectSummaryMap(
+    branchId: string,
+    projectIds: string[],
+  ): Promise<Map<string, BranchCommercialProjectSummaryRow>> {
+    const summaryMap = new Map<string, BranchCommercialProjectSummaryRow>();
+    if (!projectIds.length) return summaryMap;
+
+    for (const projectId of projectIds) {
+      summaryMap.set(projectId, this.createEmptyCommercialProjectSummary());
+    }
+
+    const [salesRows, purchaseRows] = await Promise.all([
+      db
+        .select({
+          projectId: branchSales.projectId,
+          linkedSalesCount: sql<number>`COUNT(*)`.as("linked_sales_count"),
+          revenueBeforeTax: sql<number>`COALESCE(SUM(CASE
+            WHEN ${branchSales.status} = 'completed'
+              AND ${branchSales.cancelledAt} IS NULL
+              AND (
+                ${branchSales.taxMode} IS NOT NULL
+                OR ${branchSales.subtotalBeforeTax} IS NOT NULL
+                OR ${branchSales.taxableSubtotal} IS NOT NULL
+                OR ${branchSales.taxTotal} IS NOT NULL
+                OR ${branchSales.grandTotal} IS NOT NULL
+              )
+            THEN COALESCE(${branchSales.taxableSubtotal}, ${branchSales.totalAmount})
+            ELSE 0
+          END), 0)`.as("revenue_before_tax"),
+          revenueHistoricalWithoutBreakdown: sql<number>`COALESCE(SUM(CASE
+            WHEN ${branchSales.status} = 'completed'
+              AND ${branchSales.cancelledAt} IS NULL
+              AND NOT (
+                ${branchSales.taxMode} IS NOT NULL
+                OR ${branchSales.subtotalBeforeTax} IS NOT NULL
+                OR ${branchSales.taxableSubtotal} IS NOT NULL
+                OR ${branchSales.taxTotal} IS NOT NULL
+                OR ${branchSales.grandTotal} IS NOT NULL
+              )
+            THEN COALESCE(${branchSales.totalAmount}, 0)
+            ELSE 0
+          END), 0)`.as("revenue_historical_without_breakdown"),
+          taxCollected: sql<number>`COALESCE(SUM(CASE
+            WHEN ${branchSales.status} = 'completed'
+              AND ${branchSales.cancelledAt} IS NULL
+              AND (
+                ${branchSales.taxMode} IS NOT NULL
+                OR ${branchSales.subtotalBeforeTax} IS NOT NULL
+                OR ${branchSales.taxableSubtotal} IS NOT NULL
+                OR ${branchSales.taxTotal} IS NOT NULL
+                OR ${branchSales.grandTotal} IS NOT NULL
+              )
+            THEN COALESCE(${branchSales.taxTotal}, 0)
+            ELSE 0
+          END), 0)`.as("tax_collected"),
+          revenueGrossTotal: sql<number>`COALESCE(SUM(CASE
+            WHEN ${branchSales.status} = 'completed' AND ${branchSales.cancelledAt} IS NULL
+            THEN COALESCE(${branchSales.grandTotal}, ${branchSales.totalAmount})
+            ELSE 0
+          END), 0)`.as("revenue_gross_total"),
+          cashCollectedTotal: sql<number>`COALESCE(SUM(CASE
+            WHEN ${branchSales.status} = 'completed' AND ${branchSales.cancelledAt} IS NULL
+            THEN COALESCE(${branchSales.paidAmount}, 0)
+            ELSE 0
+          END), 0)`.as("cash_collected_total"),
+        })
+        .from(branchSales)
+        .where(and(
+          eq(branchSales.branchId, branchId),
+          inArray(branchSales.projectId, projectIds),
+        ))
+        .groupBy(branchSales.projectId),
+      db
+        .select({
+          projectId: branchPurchases.projectId,
+          linkedPurchasesCount: sql<number>`COUNT(*) FILTER (WHERE ${branchPurchases.status} <> 'cancelled')`.as("linked_purchases_count"),
+          linkedDraftPurchasesCount: sql<number>`COUNT(*) FILTER (WHERE ${branchPurchases.status} = 'draft')`.as("linked_draft_purchases_count"),
+          purchaseCommittedBeforeTax: sql<number>`COALESCE(SUM(CASE
+            WHEN ${branchPurchases.status} IN ('ordered', 'partially_received', 'received')
+              AND ${branchPurchases.cancelledAt} IS NULL
+              AND (
+                ${branchPurchases.taxMode} IS NOT NULL
+                OR ${branchPurchases.subtotalBeforeTax} IS NOT NULL
+                OR ${branchPurchases.taxableSubtotal} IS NOT NULL
+                OR ${branchPurchases.taxTotal} IS NOT NULL
+                OR ${branchPurchases.grandTotal} IS NOT NULL
+              )
+            THEN COALESCE(${branchPurchases.taxableSubtotal}, ${branchPurchases.totalAmount})
+            ELSE 0
+          END), 0)`.as("purchase_committed_before_tax"),
+          purchaseCommittedHistoricalWithoutBreakdown: sql<number>`COALESCE(SUM(CASE
+            WHEN ${branchPurchases.status} IN ('ordered', 'partially_received', 'received')
+              AND ${branchPurchases.cancelledAt} IS NULL
+              AND NOT (
+                ${branchPurchases.taxMode} IS NOT NULL
+                OR ${branchPurchases.subtotalBeforeTax} IS NOT NULL
+                OR ${branchPurchases.taxableSubtotal} IS NOT NULL
+                OR ${branchPurchases.taxTotal} IS NOT NULL
+                OR ${branchPurchases.grandTotal} IS NOT NULL
+              )
+            THEN COALESCE(${branchPurchases.totalAmount}, 0)
+            ELSE 0
+          END), 0)`.as("purchase_committed_historical_without_breakdown"),
+          purchaseReceivedBeforeTax: sql<number>`COALESCE(SUM(CASE
+            WHEN ${branchPurchases.status} IN ('partially_received', 'received')
+              AND ${branchPurchases.cancelledAt} IS NULL
+              AND (
+                ${branchPurchases.taxMode} IS NOT NULL
+                OR ${branchPurchases.subtotalBeforeTax} IS NOT NULL
+                OR ${branchPurchases.taxableSubtotal} IS NOT NULL
+                OR ${branchPurchases.taxTotal} IS NOT NULL
+                OR ${branchPurchases.grandTotal} IS NOT NULL
+              )
+            THEN COALESCE(${branchPurchases.taxableSubtotal}, ${branchPurchases.totalAmount})
+            ELSE 0
+          END), 0)`.as("purchase_received_before_tax"),
+          purchaseReceivedHistoricalWithoutBreakdown: sql<number>`COALESCE(SUM(CASE
+            WHEN ${branchPurchases.status} IN ('partially_received', 'received')
+              AND ${branchPurchases.cancelledAt} IS NULL
+              AND NOT (
+                ${branchPurchases.taxMode} IS NOT NULL
+                OR ${branchPurchases.subtotalBeforeTax} IS NOT NULL
+                OR ${branchPurchases.taxableSubtotal} IS NOT NULL
+                OR ${branchPurchases.taxTotal} IS NOT NULL
+                OR ${branchPurchases.grandTotal} IS NOT NULL
+              )
+            THEN COALESCE(${branchPurchases.totalAmount}, 0)
+            ELSE 0
+          END), 0)`.as("purchase_received_historical_without_breakdown"),
+          purchasePaidTotal: sql<number>`COALESCE(SUM(CASE
+            WHEN ${branchPurchases.status} <> 'cancelled' AND ${branchPurchases.cancelledAt} IS NULL
+            THEN COALESCE(${branchPurchases.paidAmount}, 0)
+            ELSE 0
+          END), 0)`.as("purchase_paid_total"),
+        })
+        .from(branchPurchases)
+        .where(and(
+          eq(branchPurchases.branchId, branchId),
+          inArray(branchPurchases.projectId, projectIds),
+        ))
+        .groupBy(branchPurchases.projectId),
+    ]);
+
+    for (const row of salesRows) {
+      if (!row.projectId) continue;
+      const current = summaryMap.get(row.projectId) ?? this.createEmptyCommercialProjectSummary();
+      summaryMap.set(row.projectId, {
+        ...current,
+        linkedSalesCount: Number(row.linkedSalesCount ?? 0),
+        revenueBeforeTax: toFinanceAmount(row.revenueBeforeTax),
+        revenueHistoricalWithoutBreakdown: toFinanceAmount((row as any).revenueHistoricalWithoutBreakdown),
+        taxCollected: toFinanceAmount(row.taxCollected),
+        revenueGrossTotal: toFinanceAmount(row.revenueGrossTotal),
+        cashCollectedTotal: toFinanceAmount(row.cashCollectedTotal),
+      });
+    }
+
+    for (const row of purchaseRows) {
+      if (!row.projectId) continue;
+      const current = summaryMap.get(row.projectId) ?? this.createEmptyCommercialProjectSummary();
+      summaryMap.set(row.projectId, {
+        ...current,
+        linkedPurchasesCount: Number(row.linkedPurchasesCount ?? 0),
+        linkedDraftPurchasesCount: Number(row.linkedDraftPurchasesCount ?? 0),
+        purchaseCommittedBeforeTax: toFinanceAmount((row as any).purchaseCommittedBeforeTax),
+        purchaseCommittedHistoricalWithoutBreakdown: toFinanceAmount((row as any).purchaseCommittedHistoricalWithoutBreakdown),
+        purchaseReceivedBeforeTax: toFinanceAmount((row as any).purchaseReceivedBeforeTax),
+        purchaseReceivedHistoricalWithoutBreakdown: toFinanceAmount((row as any).purchaseReceivedHistoricalWithoutBreakdown),
+        purchasePaidTotal: toFinanceAmount(row.purchasePaidTotal),
+      });
+    }
+
+    summaryMap.forEach((summary, projectId) => {
+      summaryMap.set(projectId, this.finalizeCommercialProjectSummary(summary));
+    });
+
+    return summaryMap;
+  }
+
+  private async getBranchCommercialProjectRowById(
+    branchId: string,
+    projectId: string,
+  ): Promise<BranchCommercialProjectRow | undefined> {
+    const [row] = await db
+      .select({
+        id: branchCommercialProjects.id,
+        branchId: branchCommercialProjects.branchId,
+        code: branchCommercialProjects.code,
+        name: branchCommercialProjects.name,
+        description: branchCommercialProjects.description,
+        customerUserId: branchCommercialProjects.customerUserId,
+        customerName: users.name,
+        customerLastName: users.lastName,
+        status: branchCommercialProjects.status,
+        startDate: branchCommercialProjects.startDate,
+        expectedEndDate: branchCommercialProjects.expectedEndDate,
+        completedAt: branchCommercialProjects.completedAt,
+        notes: branchCommercialProjects.notes,
+        createdByUserId: branchCommercialProjects.createdByUserId,
+        createdAt: branchCommercialProjects.createdAt,
+        updatedAt: branchCommercialProjects.updatedAt,
+        deletedAt: branchCommercialProjects.deletedAt,
+      })
+      .from(branchCommercialProjects)
+      .leftJoin(users, eq(branchCommercialProjects.customerUserId, users.id))
+      .where(and(
+        eq(branchCommercialProjects.branchId, branchId),
+        eq(branchCommercialProjects.id, projectId),
+        isNull(branchCommercialProjects.deletedAt),
+      ))
+      .limit(1);
+
+    if (!row) return undefined;
+
+    const summaryMap = await this.getBranchCommercialProjectSummaryMap(branchId, [projectId]);
+    return this.mapBranchCommercialProjectRow(row, summaryMap.get(projectId));
+  }
+
+  private async getAssignableBranchCommercialProjectTx(
+    tx: any,
+    branchId: string,
+    projectId: string,
+  ): Promise<BranchCommercialProject | null> {
+    const [project] = await tx
+      .select()
+      .from(branchCommercialProjects)
+      .where(and(
+        eq(branchCommercialProjects.id, projectId),
+        eq(branchCommercialProjects.branchId, branchId),
+        isNull(branchCommercialProjects.deletedAt),
+      ))
+      .limit(1);
+
+    if (!project) return null;
+    if (project.status === "completed" || project.status === "cancelled" || project.status === "archived") {
+      throw new Error("BRANCH_COMMERCIAL_PROJECT_NOT_ASSIGNABLE");
+    }
+    return project;
+  }
+
+  private async insertBranchCommercialProjectWithRetryTx(
+    tx: any,
+    data: Omit<InsertBranchCommercialProject, "code"> & { code?: string | null },
+  ) {
+    const manualCode = normalizeOptionalTextValue((data as any).code);
+
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        const [project] = await tx
+          .insert(branchCommercialProjects)
+          .values({
+            ...data,
+            code: manualCode ?? generateBranchCommercialProjectCode(),
+          } as any)
+          .returning();
+
+        return project;
+      } catch (error) {
+        const isCodeCollision = isPgUniqueViolationForConstraint(error, BRANCH_COMMERCIAL_PROJECT_CODE_UNIQUE);
+        if (manualCode || !isCodeCollision) {
+          throw error;
+        }
+        if (attempt >= 3) {
+          throw new Error("BRANCH_COMMERCIAL_PROJECT_CODE_COLLISION");
+        }
+      }
+    }
+
+    throw new Error("BRANCH_COMMERCIAL_PROJECT_CODE_COLLISION");
+  }
+
+  private async validateBranchCommercialProjectCustomerTx(
+    tx: any,
+    branchId: string,
+    customerUserId: string | null | undefined,
+  ): Promise<string | null> {
+    const normalizedCustomerUserId = normalizeOptionalTextValue(customerUserId);
+    if (!normalizedCustomerUserId) return null;
+
+    const [membershipRow] = await tx
+      .select({ userId: memberships.userId })
+      .from(memberships)
+      .where(and(
+        eq(memberships.branchId, branchId),
+        eq(memberships.userId, normalizedCustomerUserId),
+      ))
+      .limit(1);
+
+    if (membershipRow?.userId) {
+      return normalizedCustomerUserId;
+    }
+
+    const [crmRow] = await tx
+      .select({ userId: branchClientCrm.userId })
+      .from(branchClientCrm)
+      .where(and(
+        eq(branchClientCrm.branchId, branchId),
+        eq(branchClientCrm.userId, normalizedCustomerUserId),
+      ))
+      .limit(1);
+
+    if (crmRow?.userId) {
+      return normalizedCustomerUserId;
+    }
+
+    throw new Error("BRANCH_COMMERCIAL_PROJECT_CUSTOMER_INVALID");
+  }
+
+  async getBranchCommercialProjectOptions(branchId: string): Promise<Array<{ id: string; code: string; name: string; status: string }>> {
+    const rows = await db
+      .select({
+        id: branchCommercialProjects.id,
+        code: branchCommercialProjects.code,
+        name: branchCommercialProjects.name,
+        status: branchCommercialProjects.status,
+      })
+      .from(branchCommercialProjects)
+      .where(and(
+        eq(branchCommercialProjects.branchId, branchId),
+        isNull(branchCommercialProjects.deletedAt),
+        inArray(branchCommercialProjects.status, ["draft", "active"]),
+      ))
+      .orderBy(desc(branchCommercialProjects.updatedAt), asc(branchCommercialProjects.name));
+
+    return rows;
+  }
+
+  async getBranchCommercialProjects(branchId: string, filters?: {
+    page?: number | null;
+    pageSize?: number | null;
+    search?: string | null;
+    status?: string | null;
+    customerId?: string | null;
+    dateFrom?: string | null;
+    dateTo?: string | null;
+    sort?: "updated_desc" | "name_asc" | "name_desc" | "start_date_desc" | "start_date_asc" | null;
+    includeArchived?: boolean;
+  }): Promise<BranchCommercialProjectListPage> {
+    const page = Math.max(1, Number(filters?.page ?? 1) || 1);
+    const requestedPageSize = Number(filters?.pageSize ?? 25) || 25;
+    const pageSize = Math.min(100, Math.max(25, requestedPageSize));
+    const offset = (page - 1) * pageSize;
+    const search = normalizeOptionalTextValue(filters?.search);
+    const status = normalizeOptionalTextValue(filters?.status) ?? "all";
+    const customerId = normalizeOptionalTextValue(filters?.customerId);
+    const dateFrom = normalizeOptionalTextValue(filters?.dateFrom);
+    const dateTo = normalizeOptionalTextValue(filters?.dateTo);
+    const sort = filters?.sort ?? "updated_desc";
+    const whereClauses: any[] = [
+      eq(branchCommercialProjects.branchId, branchId),
+      isNull(branchCommercialProjects.deletedAt),
+    ];
+
+    if (status && status !== "all") {
+      whereClauses.push(eq(branchCommercialProjects.status, status));
+    } else if (!filters?.includeArchived) {
+      whereClauses.push(sql`${branchCommercialProjects.status} <> 'archived'`);
+    }
+
+    if (customerId) {
+      whereClauses.push(eq(branchCommercialProjects.customerUserId, customerId));
+    }
+
+    if (dateFrom) {
+      whereClauses.push(gte(branchCommercialProjects.startDate, dateFrom));
+    }
+
+    if (dateTo) {
+      whereClauses.push(lte(branchCommercialProjects.startDate, dateTo));
+    }
+
+    if (search) {
+      const pattern = `%${search}%`;
+      whereClauses.push(sql`(
+        ${branchCommercialProjects.name} ILIKE ${pattern}
+        OR ${branchCommercialProjects.code} ILIKE ${pattern}
+        OR COALESCE(${branchCommercialProjects.description}, '') ILIKE ${pattern}
+      )`);
+    }
+
+    const orderByClauses = (() => {
+      switch (sort) {
+        case "name_asc":
+          return [asc(branchCommercialProjects.name), desc(branchCommercialProjects.updatedAt), asc(branchCommercialProjects.id)];
+        case "name_desc":
+          return [desc(branchCommercialProjects.name), desc(branchCommercialProjects.updatedAt), asc(branchCommercialProjects.id)];
+        case "start_date_asc":
+          return [asc(branchCommercialProjects.startDate), asc(branchCommercialProjects.name), asc(branchCommercialProjects.id)];
+        case "start_date_desc":
+          return [desc(branchCommercialProjects.startDate), desc(branchCommercialProjects.updatedAt), asc(branchCommercialProjects.id)];
+        case "updated_desc":
+        default:
+          return [desc(branchCommercialProjects.updatedAt), asc(branchCommercialProjects.name), asc(branchCommercialProjects.id)];
+      }
+    })();
+
+    const [totalRows, rows] = await Promise.all([
+      db
+        .select({ total: count() })
+        .from(branchCommercialProjects)
+        .where(and(...whereClauses)),
+      db
+        .select({
+          id: branchCommercialProjects.id,
+          branchId: branchCommercialProjects.branchId,
+          code: branchCommercialProjects.code,
+          name: branchCommercialProjects.name,
+          description: branchCommercialProjects.description,
+          customerUserId: branchCommercialProjects.customerUserId,
+          customerName: users.name,
+          customerLastName: users.lastName,
+          status: branchCommercialProjects.status,
+          startDate: branchCommercialProjects.startDate,
+          expectedEndDate: branchCommercialProjects.expectedEndDate,
+          completedAt: branchCommercialProjects.completedAt,
+          notes: branchCommercialProjects.notes,
+          createdByUserId: branchCommercialProjects.createdByUserId,
+          createdAt: branchCommercialProjects.createdAt,
+          updatedAt: branchCommercialProjects.updatedAt,
+          deletedAt: branchCommercialProjects.deletedAt,
+        })
+        .from(branchCommercialProjects)
+        .leftJoin(users, eq(branchCommercialProjects.customerUserId, users.id))
+        .where(and(...whereClauses))
+        .orderBy(...orderByClauses)
+        .limit(pageSize)
+        .offset(offset),
+    ]);
+
+    const summaryMap = await this.getBranchCommercialProjectSummaryMap(branchId, rows.map((row) => row.id));
+    const total = Number(totalRows[0]?.total ?? 0);
+    const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
+
+    return {
+      items: rows.map((row) => this.mapBranchCommercialProjectRow(row, summaryMap.get(row.id))),
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages,
+      },
+    };
+  }
+
+  async getBranchCommercialProjectLinkableSales(
+    branchId: string,
+    filters?: {
+      page?: number | null;
+      pageSize?: number | null;
+      search?: string | null;
+      dateFrom?: string | null;
+      dateTo?: string | null;
+    },
+  ): Promise<BranchCommercialProjectLinkableSalesPage> {
+    const page = Math.max(1, Number(filters?.page ?? 1) || 1);
+    const requestedPageSize = Number(filters?.pageSize ?? 25) || 25;
+    const pageSize = Math.min(100, Math.max(25, requestedPageSize));
+    const offset = (page - 1) * pageSize;
+    const search = normalizeOptionalTextValue(filters?.search);
+    const dateFrom = normalizeOptionalTextValue(filters?.dateFrom);
+    const dateTo = normalizeOptionalTextValue(filters?.dateTo);
+    const whereClauses: any[] = [
+      eq(branchSales.branchId, branchId),
+      eq(branchSales.status, "completed"),
+      isNull(branchSales.cancelledAt),
+      isNull(branchSales.projectId),
+    ];
+
+    if (dateFrom) {
+      whereClauses.push(sql`${branchSales.createdAt}::date >= ${dateFrom}`);
+    }
+
+    if (dateTo) {
+      whereClauses.push(sql`${branchSales.createdAt}::date <= ${dateTo}`);
+    }
+
+    if (search) {
+      const pattern = `%${search}%`;
+      whereClauses.push(sql`(
+        ${branchSales.folio} ILIKE ${pattern}
+        OR COALESCE(${users.name}, '') ILIKE ${pattern}
+        OR COALESCE(${users.lastName}, '') ILIKE ${pattern}
+        OR COALESCE(${users.email}, '') ILIKE ${pattern}
+      )`);
+    }
+
+    const [totalRows, rows] = await Promise.all([
+      db
+        .select({ total: count() })
+        .from(branchSales)
+        .leftJoin(users, eq(branchSales.clientUserId, users.id))
+        .where(and(...whereClauses)),
+      db
+        .select({
+          id: branchSales.id,
+          folio: branchSales.folio,
+          clientUserId: branchSales.clientUserId,
+          clientName: users.name,
+          clientLastName: users.lastName,
+          status: branchSales.status,
+          totalAmount: branchSales.totalAmount,
+          taxableSubtotal: branchSales.taxableSubtotal,
+          taxTotal: branchSales.taxTotal,
+          grandTotal: branchSales.grandTotal,
+          createdAt: branchSales.createdAt,
+        })
+        .from(branchSales)
+        .leftJoin(users, eq(branchSales.clientUserId, users.id))
+        .where(and(...whereClauses))
+        .orderBy(desc(branchSales.createdAt), desc(branchSales.id))
+        .limit(pageSize)
+        .offset(offset),
+    ]);
+
+    const total = Number(totalRows[0]?.total ?? 0);
+    const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
+
+    return {
+      items: rows.map((row) => ({
+        id: row.id,
+        folio: row.folio,
+        clientUserId: row.clientUserId ?? null,
+        clientDisplayName: [row.clientName, row.clientLastName].filter(Boolean).join(" ").trim() || null,
+        status: row.status,
+        totalAmount: toFinanceAmount(row.totalAmount),
+        taxableSubtotal: row.taxableSubtotal == null ? null : toFinanceAmount(row.taxableSubtotal),
+        taxTotal: row.taxTotal == null ? null : toFinanceAmount(row.taxTotal),
+        grandTotal: row.grandTotal == null ? null : toFinanceAmount(row.grandTotal),
+        createdAt: row.createdAt,
+      })),
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages,
+      },
+    };
+  }
+
+  async getBranchCommercialProjectLinkablePurchases(
+    branchId: string,
+    filters?: {
+      page?: number | null;
+      pageSize?: number | null;
+      search?: string | null;
+      dateFrom?: string | null;
+      dateTo?: string | null;
+    },
+  ): Promise<BranchCommercialProjectLinkablePurchasesPage> {
+    const page = Math.max(1, Number(filters?.page ?? 1) || 1);
+    const requestedPageSize = Number(filters?.pageSize ?? 25) || 25;
+    const pageSize = Math.min(100, Math.max(25, requestedPageSize));
+    const offset = (page - 1) * pageSize;
+    const search = normalizeOptionalTextValue(filters?.search);
+    const dateFrom = normalizeOptionalTextValue(filters?.dateFrom);
+    const dateTo = normalizeOptionalTextValue(filters?.dateTo);
+    const whereClauses: any[] = [
+      eq(branchPurchases.branchId, branchId),
+      isNull(branchPurchases.projectId),
+      sql`${branchPurchases.status} <> 'cancelled'`,
+    ];
+
+    if (dateFrom) {
+      whereClauses.push(gte(branchPurchases.purchaseDate, dateFrom));
+    }
+
+    if (dateTo) {
+      whereClauses.push(lte(branchPurchases.purchaseDate, dateTo));
+    }
+
+    if (search) {
+      const pattern = `%${search}%`;
+      whereClauses.push(sql`(
+        ${branchPurchases.folio} ILIKE ${pattern}
+        OR COALESCE(${branchSuppliers.name}, '') ILIKE ${pattern}
+      )`);
+    }
+
+    const [totalRows, rows] = await Promise.all([
+      db
+        .select({ total: count() })
+        .from(branchPurchases)
+        .leftJoin(branchSuppliers, eq(branchPurchases.supplierId, branchSuppliers.id))
+        .where(and(...whereClauses)),
+      db
+        .select({
+          id: branchPurchases.id,
+          folio: branchPurchases.folio,
+          supplierId: branchPurchases.supplierId,
+          supplierName: branchSuppliers.name,
+          status: branchPurchases.status,
+          totalAmount: branchPurchases.totalAmount,
+          taxableSubtotal: branchPurchases.taxableSubtotal,
+          taxTotal: branchPurchases.taxTotal,
+          grandTotal: branchPurchases.grandTotal,
+          purchaseDate: branchPurchases.purchaseDate,
+        })
+        .from(branchPurchases)
+        .leftJoin(branchSuppliers, eq(branchPurchases.supplierId, branchSuppliers.id))
+        .where(and(...whereClauses))
+        .orderBy(desc(branchPurchases.purchaseDate), desc(branchPurchases.createdAt), desc(branchPurchases.id))
+        .limit(pageSize)
+        .offset(offset),
+    ]);
+
+    const total = Number(totalRows[0]?.total ?? 0);
+    const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
+
+    return {
+      items: rows.map((row) => ({
+        id: row.id,
+        folio: row.folio,
+        supplierId: row.supplierId ?? null,
+        supplierName: row.supplierName ?? null,
+        status: row.status,
+        totalAmount: toFinanceAmount(row.totalAmount),
+        taxableSubtotal: row.taxableSubtotal == null ? null : toFinanceAmount(row.taxableSubtotal),
+        taxTotal: row.taxTotal == null ? null : toFinanceAmount(row.taxTotal),
+        grandTotal: row.grandTotal == null ? null : toFinanceAmount(row.grandTotal),
+        purchaseDate: typeof row.purchaseDate === "string" ? row.purchaseDate : String(row.purchaseDate).slice(0, 10),
+      })),
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages,
+      },
+    };
+  }
+
+  async getBranchCommercialProjectById(
+    branchId: string,
+    projectId: string,
+  ): Promise<BranchCommercialProjectDetailRow | undefined> {
+    const project = await this.getBranchCommercialProjectRowById(branchId, projectId);
+    if (!project) return undefined;
+
+    const [salesRows, purchaseRows] = await Promise.all([
+      db
+        .select({
+          id: branchSales.id,
+          folio: branchSales.folio,
+          clientUserId: branchSales.clientUserId,
+          clientName: users.name,
+          clientLastName: users.lastName,
+          status: branchSales.status,
+          subtotalAmount: branchSales.subtotalAmount,
+          discountAmount: branchSales.discountAmount,
+          totalAmount: branchSales.totalAmount,
+          paidAmount: branchSales.paidAmount,
+          taxMode: branchSales.taxMode,
+          taxRate: branchSales.taxRate,
+          subtotalBeforeTax: branchSales.subtotalBeforeTax,
+          taxableSubtotal: branchSales.taxableSubtotal,
+          taxTotal: branchSales.taxTotal,
+          grandTotal: branchSales.grandTotal,
+          createdAt: branchSales.createdAt,
+          cancelledAt: branchSales.cancelledAt,
+        })
+        .from(branchSales)
+        .leftJoin(users, eq(branchSales.clientUserId, users.id))
+        .where(and(
+          eq(branchSales.branchId, branchId),
+          eq(branchSales.projectId, projectId),
+        ))
+        .orderBy(desc(branchSales.createdAt)),
+      db
+        .select({
+          id: branchPurchases.id,
+          folio: branchPurchases.folio,
+          supplierId: branchPurchases.supplierId,
+          supplierName: branchSuppliers.name,
+          status: branchPurchases.status,
+          purchaseDate: branchPurchases.purchaseDate,
+          paymentStatus: branchPurchases.paymentStatus,
+          subtotalAmount: branchPurchases.subtotalAmount,
+          discountAmount: branchPurchases.discountAmount,
+          totalAmount: branchPurchases.totalAmount,
+          paidAmount: branchPurchases.paidAmount,
+          taxMode: branchPurchases.taxMode,
+          taxRate: branchPurchases.taxRate,
+          subtotalBeforeTax: branchPurchases.subtotalBeforeTax,
+          taxableSubtotal: branchPurchases.taxableSubtotal,
+          taxTotal: branchPurchases.taxTotal,
+          grandTotal: branchPurchases.grandTotal,
+          receivedAt: branchPurchases.receivedAt,
+          cancelledAt: branchPurchases.cancelledAt,
+          createdAt: branchPurchases.createdAt,
+        })
+        .from(branchPurchases)
+        .leftJoin(branchSuppliers, eq(branchPurchases.supplierId, branchSuppliers.id))
+        .where(and(
+          eq(branchPurchases.branchId, branchId),
+          eq(branchPurchases.projectId, projectId),
+        ))
+        .orderBy(desc(branchPurchases.purchaseDate), desc(branchPurchases.createdAt)),
+    ]);
+
+    const sales = salesRows.map((row) => ({
+      id: row.id,
+      folio: row.folio,
+      clientUserId: row.clientUserId ?? null,
+      clientDisplayName: [row.clientName, row.clientLastName].filter(Boolean).join(" ").trim() || null,
+      status: row.status,
+      subtotalAmount: toFinanceAmount(row.subtotalAmount),
+      discountAmount: toFinanceAmount(row.discountAmount),
+      totalAmount: toFinanceAmount(row.totalAmount),
+      paidAmount: toFinanceAmount(row.paidAmount),
+      taxMode: row.taxMode ?? null,
+      taxRate: row.taxRate == null ? null : toFinanceAmount(row.taxRate),
+      subtotalBeforeTax: row.subtotalBeforeTax == null ? null : toFinanceAmount(row.subtotalBeforeTax),
+      taxableSubtotal: row.taxableSubtotal == null ? null : toFinanceAmount(row.taxableSubtotal),
+      taxTotal: row.taxTotal == null ? null : toFinanceAmount(row.taxTotal),
+      grandTotal: row.grandTotal == null ? null : toFinanceAmount(row.grandTotal),
+      createdAt: row.createdAt,
+      cancelledAt: row.cancelledAt ?? null,
+    }));
+
+    const purchases = purchaseRows.map((row) => ({
+      id: row.id,
+      folio: row.folio,
+      supplierId: row.supplierId ?? null,
+      supplierName: row.supplierName ?? null,
+      status: row.status,
+      purchaseDate: typeof row.purchaseDate === "string" ? row.purchaseDate : String(row.purchaseDate).slice(0, 10),
+      paymentStatus: row.paymentStatus,
+      subtotalAmount: toFinanceAmount(row.subtotalAmount),
+      discountAmount: toFinanceAmount(row.discountAmount),
+      totalAmount: toFinanceAmount(row.totalAmount),
+      paidAmount: toFinanceAmount(row.paidAmount),
+      taxMode: row.taxMode ?? null,
+      taxRate: row.taxRate == null ? null : toFinanceAmount(row.taxRate),
+      subtotalBeforeTax: row.subtotalBeforeTax == null ? null : toFinanceAmount(row.subtotalBeforeTax),
+      taxableSubtotal: row.taxableSubtotal == null ? null : toFinanceAmount(row.taxableSubtotal),
+      taxTotal: row.taxTotal == null ? null : toFinanceAmount(row.taxTotal),
+      grandTotal: row.grandTotal == null ? null : toFinanceAmount(row.grandTotal),
+      receivedAt: row.receivedAt ?? null,
+      cancelledAt: row.cancelledAt ?? null,
+      createdAt: row.createdAt,
+    }));
+
+    return {
+      ...project,
+      summary: this.computeCommercialProjectSummaryFromLists(sales, purchases),
+      sales,
+      purchases,
+    };
+  }
+
+  async createBranchCommercialProject(data: InsertBranchCommercialProject): Promise<BranchCommercialProjectRow> {
+    const created = await db.transaction(async (tx) => {
+      const customerUserId = await this.validateBranchCommercialProjectCustomerTx(
+        tx,
+        data.branchId,
+        data.customerUserId,
+      );
+
+      return this.insertBranchCommercialProjectWithRetryTx(tx, {
+        ...data,
+        code: normalizeOptionalTextValue(data.code),
+        customerUserId,
+        description: normalizeOptionalTextValue(data.description),
+        notes: normalizeOptionalTextValue(data.notes),
+      } as any);
+    });
+
+    return (await this.getBranchCommercialProjectRowById(created.branchId, created.id))!;
+  }
+
+  async createBranchCommercialProjectFromSale(data: {
+    branchId: string;
+    saleId: string;
+    name?: string | null;
+    description?: string | null;
+    notes?: string | null;
+    expectedEndDate?: string | null;
+    createdByUserId?: string | null;
+  }): Promise<BranchCommercialProjectDetailRow> {
+    const projectId = await db.transaction(async (tx) => {
+      const [saleRow] = await tx
+        .select({
+          id: branchSales.id,
+          branchId: branchSales.branchId,
+          projectId: branchSales.projectId,
+          folio: branchSales.folio,
+          clientUserId: branchSales.clientUserId,
+          createdAt: branchSales.createdAt,
+          clientName: users.name,
+          clientLastName: users.lastName,
+        })
+        .from(branchSales)
+        .leftJoin(users, eq(branchSales.clientUserId, users.id))
+        .where(and(
+          eq(branchSales.id, data.saleId),
+          eq(branchSales.branchId, data.branchId),
+        ))
+        .limit(1);
+
+      if (!saleRow) {
+        throw new Error("BRANCH_COMMERCIAL_PROJECT_SALE_NOT_FOUND");
+      }
+      if (saleRow.projectId) {
+        throw new Error("BRANCH_COMMERCIAL_PROJECT_SALE_ALREADY_LINKED");
+      }
+
+      const clientName = [saleRow.clientName, saleRow.clientLastName].filter(Boolean).join(" ").trim();
+      const startDate = new Date(saleRow.createdAt).toLocaleDateString("en-CA", { timeZone: BRANCH_TIMEZONE });
+
+      const projectRow = await this.insertBranchCommercialProjectWithRetryTx(tx, {
+        branchId: data.branchId,
+        code: null,
+        name: normalizeOptionalTextValue(data.name) ?? (clientName ? `${saleRow.folio} - ${clientName}` : `Proyecto ${saleRow.folio}`),
+        description: normalizeOptionalTextValue(data.description),
+        customerUserId: saleRow.clientUserId ?? null,
+        status: "active",
+        startDate,
+        expectedEndDate: normalizeOptionalTextValue(data.expectedEndDate),
+        completedAt: null,
+        notes: normalizeOptionalTextValue(data.notes),
+        createdByUserId: data.createdByUserId ?? null,
+      } as any);
+
+      const linkedSale = await tx
+        .update(branchSales)
+        .set({
+          projectId: projectRow.id,
+          updatedAt: new Date(),
+        } as any)
+        .where(and(
+          eq(branchSales.id, data.saleId),
+          eq(branchSales.branchId, data.branchId),
+          isNull(branchSales.projectId),
+        ))
+        .returning({ id: branchSales.id });
+
+      if (!linkedSale.length) {
+        throw new Error("BRANCH_COMMERCIAL_PROJECT_SALE_ALREADY_LINKED");
+      }
+
+      return projectRow.id;
+    });
+
+    return (await this.getBranchCommercialProjectById(data.branchId, projectId))!;
+  }
+
+  async updateBranchCommercialProject(
+    branchId: string,
+    projectId: string,
+    data: Partial<InsertBranchCommercialProject>,
+  ): Promise<BranchCommercialProjectRow | undefined> {
+    const nextStatus = data.status ?? undefined;
+    const updated = await db.transaction(async (tx) => {
+      const customerUserId = data.customerUserId === undefined
+        ? undefined
+        : await this.validateBranchCommercialProjectCustomerTx(tx, branchId, data.customerUserId);
+
+      const [project] = await tx
+        .update(branchCommercialProjects)
+        .set({
+          ...data,
+          ...(customerUserId !== undefined ? { customerUserId } : {}),
+          description: data.description === undefined ? undefined : normalizeOptionalTextValue(data.description),
+          notes: data.notes === undefined ? undefined : normalizeOptionalTextValue(data.notes),
+          completedAt: nextStatus === undefined
+            ? undefined
+            : nextStatus === "completed"
+              ? new Date()
+              : null,
+          updatedAt: new Date(),
+        } as any)
+        .where(and(
+          eq(branchCommercialProjects.branchId, branchId),
+          eq(branchCommercialProjects.id, projectId),
+          isNull(branchCommercialProjects.deletedAt),
+        ))
+        .returning({ id: branchCommercialProjects.id });
+
+      return project;
+    });
+
+    if (!updated) return undefined;
+    return this.getBranchCommercialProjectRowById(branchId, updated.id);
+  }
+
+  async linkBranchSaleToCommercialProject(
+    branchId: string,
+    projectId: string,
+    saleId: string,
+  ): Promise<BranchCommercialProjectDetailRow> {
+    await db.transaction(async (tx) => {
+      const project = await this.getAssignableBranchCommercialProjectTx(tx, branchId, projectId);
+      if (!project) {
+        throw new Error("BRANCH_COMMERCIAL_PROJECT_NOT_FOUND");
+      }
+
+      const [sale] = await tx
+        .select({
+          id: branchSales.id,
+          projectId: branchSales.projectId,
+        })
+        .from(branchSales)
+        .where(and(
+          eq(branchSales.id, saleId),
+          eq(branchSales.branchId, branchId),
+        ))
+        .limit(1);
+
+      if (!sale) {
+        throw new Error("BRANCH_COMMERCIAL_PROJECT_SALE_NOT_FOUND");
+      }
+      if (sale.projectId && sale.projectId !== projectId) {
+        throw new Error("BRANCH_COMMERCIAL_PROJECT_SALE_ALREADY_LINKED");
+      }
+      if (sale.projectId === projectId) {
+        return;
+      }
+
+      const linkedSale = await tx
+        .update(branchSales)
+        .set({
+          projectId,
+          updatedAt: new Date(),
+        } as any)
+        .where(and(
+          eq(branchSales.id, saleId),
+          eq(branchSales.branchId, branchId),
+          isNull(branchSales.projectId),
+        ))
+        .returning({ id: branchSales.id });
+
+      if (!linkedSale.length) {
+        const [currentSale] = await tx
+          .select({ projectId: branchSales.projectId })
+          .from(branchSales)
+          .where(and(
+            eq(branchSales.id, saleId),
+            eq(branchSales.branchId, branchId),
+          ))
+          .limit(1);
+
+        if (!currentSale) {
+          throw new Error("BRANCH_COMMERCIAL_PROJECT_SALE_NOT_FOUND");
+        }
+        if (currentSale.projectId && currentSale.projectId !== projectId) {
+          throw new Error("BRANCH_COMMERCIAL_PROJECT_SALE_ALREADY_LINKED");
+        }
+      }
+    });
+
+    return (await this.getBranchCommercialProjectById(branchId, projectId))!;
+  }
+
+  async linkBranchPurchaseToCommercialProject(
+    branchId: string,
+    projectId: string,
+    purchaseId: string,
+  ): Promise<BranchCommercialProjectDetailRow> {
+    await db.transaction(async (tx) => {
+      const project = await this.getAssignableBranchCommercialProjectTx(tx, branchId, projectId);
+      if (!project) {
+        throw new Error("BRANCH_COMMERCIAL_PROJECT_NOT_FOUND");
+      }
+
+      const [purchase] = await tx
+        .select({
+          id: branchPurchases.id,
+          projectId: branchPurchases.projectId,
+        })
+        .from(branchPurchases)
+        .where(and(
+          eq(branchPurchases.id, purchaseId),
+          eq(branchPurchases.branchId, branchId),
+        ))
+        .limit(1);
+
+      if (!purchase) {
+        throw new Error("BRANCH_COMMERCIAL_PROJECT_PURCHASE_NOT_FOUND");
+      }
+      if (purchase.projectId && purchase.projectId !== projectId) {
+        throw new Error("BRANCH_COMMERCIAL_PROJECT_PURCHASE_ALREADY_LINKED");
+      }
+      if (purchase.projectId === projectId) {
+        return;
+      }
+
+      const linkedPurchase = await tx
+        .update(branchPurchases)
+        .set({
+          projectId,
+          updatedAt: new Date(),
+        } as any)
+        .where(and(
+          eq(branchPurchases.id, purchaseId),
+          eq(branchPurchases.branchId, branchId),
+          isNull(branchPurchases.projectId),
+        ))
+        .returning({ id: branchPurchases.id });
+
+      if (!linkedPurchase.length) {
+        const [currentPurchase] = await tx
+          .select({ projectId: branchPurchases.projectId })
+          .from(branchPurchases)
+          .where(and(
+            eq(branchPurchases.id, purchaseId),
+            eq(branchPurchases.branchId, branchId),
+          ))
+          .limit(1);
+
+        if (!currentPurchase) {
+          throw new Error("BRANCH_COMMERCIAL_PROJECT_PURCHASE_NOT_FOUND");
+        }
+        if (currentPurchase.projectId && currentPurchase.projectId !== projectId) {
+          throw new Error("BRANCH_COMMERCIAL_PROJECT_PURCHASE_ALREADY_LINKED");
+        }
+      }
+    });
+
+    return (await this.getBranchCommercialProjectById(branchId, projectId))!;
+  }
+
+  async getBranchCommercialProducts(branchId: string): Promise<BranchCommercialProductRow[]> {
+    const rows = await db
+      .select()
+      .from(branchCommercialProducts)
+      .where(and(
+        eq(branchCommercialProducts.branchId, branchId),
+        isNull(branchCommercialProducts.deletedAt),
+      ))
+      .orderBy(
+        desc(branchCommercialProducts.isActive),
+        asc(branchCommercialProducts.displayOrder),
+        asc(branchCommercialProducts.name),
+      );
+
+    const productIds = rows.map((row) => row.id);
+    const balanceRows = productIds.length
+      ? await db
+          .select()
+          .from(branchInventoryBalances)
+          .where(and(
+            eq(branchInventoryBalances.branchId, branchId),
+            inArray(branchInventoryBalances.commercialProductId, productIds),
+          ))
+      : [];
+
+    const balanceMap = new Map(balanceRows.map((row) => [row.commercialProductId, row]));
+
+    return rows.map((row) => {
+      const mapped = this.mapBranchCommercialProductRow(row);
+      const balance = balanceMap.get(row.id);
+      if (!balance) {
+        return mapped;
+      }
+
+      return {
+        ...mapped,
+        inventoryQuantityOnHand: balance.quantityOnHand,
+        inventoryMinimumStock: balance.minimumStock,
+        inventoryStatus: computeInventoryStatus(row.usesInventory, {
+          quantityOnHand: balance.quantityOnHand,
+          minimumStock: balance.minimumStock,
+        }),
+        inventoryUpdatedAt: balance.updatedAt,
+      };
+    });
+  }
+
+  async getBranchCommercialProductsPage(
+    branchId: string,
+    filters?: {
+      page?: number | null;
+      pageSize?: number | null;
+      search?: string | null;
+      status?: "all" | "active" | "inactive" | "archived" | null;
+      category?: string | null;
+      inventoryMode?: "all" | "inventory" | "no_inventory" | null;
+      publicMode?: "all" | "public" | "private" | null;
+      sort?: "updated_desc" | "name_asc" | "price_desc" | "price_asc" | "category_asc" | null;
+    },
+  ): Promise<BranchCommercialProductListPage> {
+    const page = Math.max(1, Number(filters?.page ?? 1) || 1);
+    const requestedPageSize = Number(filters?.pageSize ?? 25) || 25;
+    const pageSize = Math.min(100, Math.max(25, requestedPageSize));
+    const offset = (page - 1) * pageSize;
+    const status = filters?.status ?? "all";
+    const category = normalizeOptionalTextValue(filters?.category);
+    const search = normalizeOptionalTextValue(filters?.search);
+    const inventoryMode = filters?.inventoryMode ?? "all";
+    const publicMode = filters?.publicMode ?? "all";
+    const sort = filters?.sort ?? "updated_desc";
+    const whereClauses: any[] = [eq(branchCommercialProducts.branchId, branchId)];
+
+    if (status === "archived") {
+      whereClauses.push(sql`${branchCommercialProducts.deletedAt} IS NOT NULL`);
+    } else {
+      whereClauses.push(isNull(branchCommercialProducts.deletedAt));
+      if (status === "active") {
+        whereClauses.push(eq(branchCommercialProducts.isActive, true));
+      } else if (status === "inactive") {
+        whereClauses.push(eq(branchCommercialProducts.isActive, false));
+      }
+    }
+
+    if (category && category.toLowerCase() !== "all") {
+      whereClauses.push(eq(branchCommercialProducts.category, category));
+    }
+    if (inventoryMode === "inventory") {
+      whereClauses.push(eq(branchCommercialProducts.usesInventory, true));
+    } else if (inventoryMode === "no_inventory") {
+      whereClauses.push(eq(branchCommercialProducts.usesInventory, false));
+    }
+    if (publicMode === "public") {
+      whereClauses.push(eq(branchCommercialProducts.isPublicVisible, true));
+    } else if (publicMode === "private") {
+      whereClauses.push(eq(branchCommercialProducts.isPublicVisible, false));
+    }
+    if (search) {
+      const pattern = `%${search}%`;
+      whereClauses.push(sql`(
+        ${branchCommercialProducts.name} ILIKE ${pattern}
+        OR ${branchCommercialProducts.category} ILIKE ${pattern}
+        OR COALESCE(${branchCommercialProducts.description}, '') ILIKE ${pattern}
+        OR COALESCE(${branchCommercialProducts.sku}, '') ILIKE ${pattern}
+        OR COALESCE(${branchCommercialProducts.barcode}, '') ILIKE ${pattern}
+      )`);
+    }
+
+    const orderByClauses = (() => {
+      switch (sort) {
+        case "name_asc":
+          return [asc(branchCommercialProducts.name), asc(branchCommercialProducts.updatedAt)];
+        case "price_desc":
+          return [desc(branchCommercialProducts.salePriceAmount), asc(branchCommercialProducts.name)];
+        case "price_asc":
+          return [asc(branchCommercialProducts.salePriceAmount), asc(branchCommercialProducts.name)];
+        case "category_asc":
+          return [asc(branchCommercialProducts.category), asc(branchCommercialProducts.name)];
+        case "updated_desc":
+        default:
+          return [desc(branchCommercialProducts.updatedAt), desc(branchCommercialProducts.createdAt)];
+      }
+    })();
+
+    const [totalRows, rows, categoryRows, summaryRows] = await Promise.all([
+      db
+        .select({ total: count() })
+        .from(branchCommercialProducts)
+        .where(and(...whereClauses)),
+      db
+        .select()
+        .from(branchCommercialProducts)
+        .where(and(...whereClauses))
+        .orderBy(...orderByClauses)
+        .limit(pageSize)
+        .offset(offset),
+      db
+        .selectDistinct({ category: branchCommercialProducts.category })
+        .from(branchCommercialProducts)
+        .where(and(
+          eq(branchCommercialProducts.branchId, branchId),
+          isNull(branchCommercialProducts.deletedAt),
+        ))
+        .orderBy(asc(branchCommercialProducts.category)),
+      db
+        .select({
+          total: count(),
+          active: sql<number>`COUNT(*) FILTER (WHERE ${branchCommercialProducts.isActive} = true)`.as("active"),
+          publicVisible: sql<number>`COUNT(*) FILTER (WHERE ${branchCommercialProducts.isPublicVisible} = true)`.as("public_visible"),
+          inventoryReady: sql<number>`COUNT(*) FILTER (WHERE ${branchCommercialProducts.usesInventory} = true)`.as("inventory_ready"),
+        })
+        .from(branchCommercialProducts)
+        .where(and(...whereClauses)),
+    ]);
+
+    const productIds = rows.map((row) => row.id);
+    const balanceRows = productIds.length
+      ? await db
+          .select()
+          .from(branchInventoryBalances)
+          .where(and(
+            eq(branchInventoryBalances.branchId, branchId),
+            inArray(branchInventoryBalances.commercialProductId, productIds),
+          ))
+      : [];
+
+    const balanceMap = new Map(balanceRows.map((row) => [row.commercialProductId, row]));
+    const total = Number(totalRows[0]?.total ?? 0);
+    const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
+
+    return {
+      items: rows.map((row) => {
+        const mapped = this.mapBranchCommercialProductRow(row);
+        const balance = balanceMap.get(row.id);
+        if (!balance) {
+          return mapped;
+        }
+
+        return {
+          ...mapped,
+          inventoryQuantityOnHand: balance.quantityOnHand,
+          inventoryMinimumStock: balance.minimumStock,
+          inventoryStatus: computeInventoryStatus(row.usesInventory, {
+            quantityOnHand: balance.quantityOnHand,
+            minimumStock: balance.minimumStock,
+          }),
+          inventoryUpdatedAt: balance.updatedAt,
+        };
+      }),
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages,
+      },
+      filterOptions: {
+        categories: (categoryRows ?? [])
+          .map((row) => row.category?.trim())
+          .filter((value): value is string => !!value),
+      },
+      summary: {
+        total,
+        active: Number(summaryRows[0]?.active ?? 0),
+        publicVisible: Number(summaryRows[0]?.publicVisible ?? 0),
+        inventoryReady: Number(summaryRows[0]?.inventoryReady ?? 0),
+      },
+    };
+  }
+
+  async getBranchCommercialProductById(branchId: string, productId: string): Promise<BranchCommercialProductRow | undefined> {
+    const [row] = await db
+      .select()
+      .from(branchCommercialProducts)
+      .where(and(
+        eq(branchCommercialProducts.branchId, branchId),
+        eq(branchCommercialProducts.id, productId),
+        isNull(branchCommercialProducts.deletedAt),
+      ))
+      .limit(1);
+
+    return row ? this.mapBranchCommercialProductRow(row) : undefined;
+  }
+
+  async getBranchSaleDetail(branchId: string, saleId: string): Promise<BranchSaleRow | undefined> {
+    return this.getBranchSaleById(branchId, saleId);
+  }
+
+  async cancelBranchSale(data: {
+    branchId: string;
+    saleId: string;
+    reason: string;
+    cancelledByUserId: string;
+    idempotencyKey: string;
+  }): Promise<BranchSaleRow | undefined> {
+    const reason = normalizeOptionalTextValue(data.reason);
+    const idempotencyKey = normalizeOptionalTextValue(data.idempotencyKey);
+    if (!reason || !idempotencyKey) {
+      throw new Error("BRANCH_SALE_CANCELLATION_INVALID");
+    }
+
+    try {
+      const cancellationResult = await db.transaction(async (tx) => {
+        const cancellationTimestamp = new Date();
+        const [claimedSale] = await tx
+          .update(branchSales)
+          .set({
+            status: "cancelled",
+            cancelledAt: cancellationTimestamp,
+            cancelledByUserId: data.cancelledByUserId,
+            cancellationReason: reason,
+            cancellationIdempotencyKey: idempotencyKey,
+            updatedAt: cancellationTimestamp,
+          } as any)
+          .where(and(
+            eq(branchSales.id, data.saleId),
+            eq(branchSales.branchId, data.branchId),
+            eq(branchSales.status, "completed"),
+          ))
+          .returning({
+            id: branchSales.id,
+            branchId: branchSales.branchId,
+            folio: branchSales.folio,
+            clientUserId: branchSales.clientUserId,
+            totalAmount: branchSales.totalAmount,
+          });
+
+        if (!claimedSale) {
+          const [currentSale] = await tx
+            .select({
+              id: branchSales.id,
+              branchId: branchSales.branchId,
+              status: branchSales.status,
+              cancellationIdempotencyKey: branchSales.cancellationIdempotencyKey,
+            })
+            .from(branchSales)
+            .where(and(
+              eq(branchSales.id, data.saleId),
+              eq(branchSales.branchId, data.branchId),
+            ))
+            .limit(1);
+
+          if (!currentSale) {
+            return { status: "missing" as const };
+          }
+
+          if (currentSale.status === "cancelled") {
+            if (currentSale.cancellationIdempotencyKey === idempotencyKey) {
+              return { status: "already_cancelled_same_key" as const };
+            }
+            throw new Error("BRANCH_SALE_ALREADY_CANCELLED");
+          }
+
+          throw new Error("BRANCH_SALE_NOT_CANCELLABLE");
+        }
+
+        const [paymentRows, inventoryMovementRows, initialAccrualRows] = await Promise.all([
+          tx
+            .select()
+            .from(branchSalePayments)
+            .where(eq(branchSalePayments.saleId, claimedSale.id))
+            .orderBy(asc(branchSalePayments.createdAt)),
+          tx
+            .select()
+            .from(branchInventoryMovements)
+            .where(and(
+              eq(branchInventoryMovements.branchId, data.branchId),
+              eq(branchInventoryMovements.saleId, claimedSale.id),
+              eq(branchInventoryMovements.movementType, "sale"),
+            ))
+            .orderBy(asc(branchInventoryMovements.createdAt)),
+          tx
+            .select({
+              id: branchCommissionAccruals.id,
+              status: branchCommissionAccruals.status,
+              paidAmount: branchCommissionAccruals.paidAmount,
+            })
+            .from(branchCommissionAccruals)
+            .where(and(
+              eq(branchCommissionAccruals.branchId, data.branchId),
+              eq(branchCommissionAccruals.saleId, claimedSale.id),
+            ))
+            .orderBy(asc(branchCommissionAccruals.accruedAt), asc(branchCommissionAccruals.createdAt)),
+        ]);
+
+        const accrualIds = initialAccrualRows.map((row) => row.id);
+        await this.lockBranchCommissionAccrualIdsTx(tx, data.branchId, accrualIds);
+
+        const lockedAccrualRows = accrualIds.length > 0
+          ? await tx
+              .select({
+                id: branchCommissionAccruals.id,
+                status: branchCommissionAccruals.status,
+                paidAmount: branchCommissionAccruals.paidAmount,
+              })
+              .from(branchCommissionAccruals)
+              .where(and(
+                eq(branchCommissionAccruals.branchId, data.branchId),
+                inArray(branchCommissionAccruals.id, accrualIds),
+              ))
+          : [];
+
+        const allocationTotals = accrualIds.length > 0
+          ? await tx
+              .select({
+                commissionAccrualId: branchCommissionPaymentAllocations.commissionAccrualId,
+                totalAllocated: sql<number>`COALESCE(SUM(${branchCommissionPaymentAllocations.amountAllocated}), 0)`.as("total_allocated"),
+              })
+              .from(branchCommissionPaymentAllocations)
+              .where(and(
+                eq(branchCommissionPaymentAllocations.branchId, data.branchId),
+                inArray(branchCommissionPaymentAllocations.commissionAccrualId, accrualIds),
+              ))
+              .groupBy(branchCommissionPaymentAllocations.commissionAccrualId)
+          : [];
+
+        const allocationMap = new Map(
+          allocationTotals.map((row) => [row.commissionAccrualId, toFinanceAmount(row.totalAllocated)]),
+        );
+
+        const hasPaidCommission = lockedAccrualRows.some((row) => {
+          const paidAmount = toFinanceAmount(row.paidAmount);
+          const allocatedAmount = allocationMap.get(row.id) ?? 0;
+          return row.status === "partially_paid"
+            || row.status === "paid"
+            || paidAmount > 0.0001
+            || allocatedAmount > 0.0001;
+        });
+
+        if (hasPaidCommission) {
+          throw new Error("BRANCH_SALE_COMMISSION_ALREADY_PAID");
+        }
+
+        for (const movement of inventoryMovementRows) {
+          const quantityToRestore = Math.abs(movement.quantityDelta ?? 0);
+          if (quantityToRestore <= 0) continue;
+
+          const [existingBalance] = await tx
+            .select()
+            .from(branchInventoryBalances)
+            .where(and(
+              eq(branchInventoryBalances.branchId, data.branchId),
+              eq(branchInventoryBalances.commercialProductId, movement.commercialProductId),
+            ))
+            .limit(1);
+
+          const quantityBefore = existingBalance?.quantityOnHand ?? 0;
+          const quantityAfter = quantityBefore + quantityToRestore;
+          const minimumStock = existingBalance?.minimumStock ?? 0;
+
+          if (existingBalance) {
+            await tx
+              .update(branchInventoryBalances)
+              .set({
+                quantityOnHand: quantityAfter,
+                updatedBy: data.cancelledByUserId,
+                updatedAt: new Date(),
+              } as any)
+              .where(eq(branchInventoryBalances.id, existingBalance.id));
+          } else {
+            await tx.insert(branchInventoryBalances).values({
+              branchId: data.branchId,
+              commercialProductId: movement.commercialProductId,
+              quantityOnHand: quantityAfter,
+              minimumStock,
+              updatedBy: data.cancelledByUserId,
+            } as any);
+          }
+
+          await this.insertBranchInventoryMovementTx(tx, {
+            branchId: data.branchId,
+            commercialProductId: movement.commercialProductId,
+            movementType: "sale_cancellation",
+            quantityDelta: quantityToRestore,
+            quantityBefore,
+            quantityAfter,
+            unitCostSnapshot: movement.unitCostSnapshot == null ? null : toFinanceAmount(movement.unitCostSnapshot),
+            reason: "Reversion automatica por cancelacion de venta",
+            notes: reason,
+            saleId: claimedSale.id,
+            saleItemId: movement.saleItemId ?? null,
+            createdBy: data.cancelledByUserId,
+            metadata: {
+              reversedMovementId: movement.id,
+              cancellationReason: reason,
+            },
+          } as any);
+        }
+
+        const paymentMethods = Array.from(new Set(paymentRows.map((payment) => payment.paymentMethod)));
+        await tx
+          .insert(branchFinanceEntries)
+          .values({
+            branchId: data.branchId,
+            type: "expense",
+            category: "producto",
+            concept: `Reverso ${claimedSale.folio}`,
+            amount: String(toFinanceAmount(claimedSale.totalAmount)),
+            paymentMethod: paymentMethods.length === 1 ? paymentMethods[0] : "otro",
+            clientUserId: claimedSale.clientUserId ?? null,
+            clientName: null,
+            notes: reason,
+            entryDate: getMxLocalDate(),
+            createdBy: data.cancelledByUserId,
+            source: "commercial_sale_cancellation",
+            sourceId: claimedSale.id,
+            metadata: {
+              saleId: claimedSale.id,
+              folio: claimedSale.folio,
+              originalPaymentIds: paymentRows.map((payment) => payment.id),
+              originalPaymentMethods: paymentMethods,
+              reversalType: "sale_cancellation",
+            },
+          } as any)
+          .onConflictDoNothing();
+
+        const reversedAccruals = await this.reverseCommissionAccrualsForSaleTx(
+          tx,
+          data.branchId,
+          claimedSale.id,
+          reason,
+        );
+
+        return {
+          status: "cancelled" as const,
+          saleId: claimedSale.id,
+          reversedAccruals,
+        };
+      });
+
+      if (cancellationResult.status === "missing") {
+        return undefined;
+      }
+
+      return this.getBranchSaleById(data.branchId, data.saleId);
+    } catch (error: any) {
+      if (idempotencyKey && isPgUniqueViolation(error)) {
+        const existingSale = await this.getBranchSaleByCancellationIdempotencyKey(data.branchId, idempotencyKey);
+        if (existingSale?.id === data.saleId) {
+          return existingSale;
+        }
+        throw new Error("BRANCH_SALE_CANCELLATION_KEY_REUSED");
+      }
+      throw error;
+    }
+  }
+
+  async getBranchCommercialProductPerformance(
+    branchId: string,
+    productId: string,
+    filters?: { from?: string | null; to?: string | null },
+  ): Promise<BranchCommercialProductPerformanceRow | undefined> {
+    const product = await this.getBranchCommercialProductById(branchId, productId);
+    if (!product) return undefined;
+
+    const appliedFrom = filters?.from ?? `${getMxLocalDate().slice(0, 7)}-01`;
+    const appliedTo = filters?.to ?? getMxLocalDate();
+
+    const [summaryRows, saleRows, paymentRows, inventorySummary] = await Promise.all([
+      db
+        .select({
+          salesCount: sql<number>`COUNT(DISTINCT ${branchSales.id})`.as("sales_count"),
+          unitsSold: sql<number>`COALESCE(SUM(${branchSaleItems.quantity}), 0)`.as("units_sold"),
+          revenueAmount: sql<number>`COALESCE(SUM(${branchSaleItems.lineTotalAmount}), 0)`.as("revenue_amount"),
+          costAmountSold: sql<number>`COALESCE(SUM(${branchSaleItems.costAmountSnapshot} * ${branchSaleItems.quantity}), 0)`.as("cost_amount_sold"),
+          grossProfitAmount: sql<number>`COALESCE(SUM(${branchSaleItems.lineTotalAmount} - (${branchSaleItems.costAmountSnapshot} * ${branchSaleItems.quantity})), 0)`.as("gross_profit_amount"),
+          lastSaleAt: sql<Date | string | null>`MAX(${branchSales.createdAt})`.as("last_sale_at"),
+        })
+        .from(branchSaleItems)
+        .innerJoin(branchSales, eq(branchSales.id, branchSaleItems.saleId))
+        .where(and(
+          eq(branchSaleItems.branchId, branchId),
+          eq(branchSaleItems.commercialProductId, productId),
+          eq(branchSales.status, "completed"),
+          sql`DATE(${branchSales.createdAt} AT TIME ZONE ${BRANCH_TIMEZONE}) >= ${appliedFrom}`,
+          sql`DATE(${branchSales.createdAt} AT TIME ZONE ${BRANCH_TIMEZONE}) <= ${appliedTo}`,
+        ))
+        .limit(1),
+      db
+        .select({
+          saleId: branchSales.id,
+          folio: branchSales.folio,
+          saleDate: branchSales.createdAt,
+          clientUserId: branchSales.clientUserId,
+          clientDisplayName: sql<string | null>`concat_ws(' ', ${users.name}, coalesce(${users.lastName}, ''))`.as("client_display_name"),
+          sellerName: branchSales.sellerNameSnapshot,
+          quantitySold: sql<number>`COALESCE(SUM(${branchSaleItems.quantity}), 0)`.as("quantity_sold"),
+          revenueAmount: sql<number>`COALESCE(SUM(${branchSaleItems.lineTotalAmount}), 0)`.as("revenue_amount"),
+          grossProfitAmount: sql<number>`COALESCE(SUM(${branchSaleItems.lineTotalAmount} - (${branchSaleItems.costAmountSnapshot} * ${branchSaleItems.quantity})), 0)`.as("gross_profit_amount"),
+        })
+        .from(branchSaleItems)
+        .innerJoin(branchSales, eq(branchSales.id, branchSaleItems.saleId))
+        .leftJoin(users, eq(branchSales.clientUserId, users.id))
+        .where(and(
+          eq(branchSaleItems.branchId, branchId),
+          eq(branchSaleItems.commercialProductId, productId),
+          eq(branchSales.status, "completed"),
+          sql`DATE(${branchSales.createdAt} AT TIME ZONE ${BRANCH_TIMEZONE}) >= ${appliedFrom}`,
+          sql`DATE(${branchSales.createdAt} AT TIME ZONE ${BRANCH_TIMEZONE}) <= ${appliedTo}`,
+        ))
+        .groupBy(
+          branchSales.id,
+          branchSales.folio,
+          branchSales.createdAt,
+          branchSales.clientUserId,
+          users.name,
+          users.lastName,
+          branchSales.sellerNameSnapshot,
+        )
+        .orderBy(desc(branchSales.createdAt))
+        .limit(20),
+      db
+        .select({
+          saleId: branchSalePayments.saleId,
+          paymentMethod: branchSalePayments.paymentMethod,
+        })
+        .from(branchSalePayments)
+        .innerJoin(branchSales, eq(branchSales.id, branchSalePayments.saleId))
+        .where(and(
+          eq(branchSalePayments.branchId, branchId),
+          eq(branchSales.status, "completed"),
+          sql`${branchSalePayments.saleId} IN (
+            SELECT DISTINCT ${branchSaleItems.saleId}
+            FROM ${branchSaleItems}
+            INNER JOIN ${branchSales} AS sales_filter ON sales_filter.id = ${branchSaleItems.saleId}
+            WHERE ${branchSaleItems.branchId} = ${branchId}
+              AND ${branchSaleItems.commercialProductId} = ${productId}
+              AND sales_filter.status = 'completed'
+              AND DATE(sales_filter.created_at AT TIME ZONE ${BRANCH_TIMEZONE}) >= ${appliedFrom}
+              AND DATE(sales_filter.created_at AT TIME ZONE ${BRANCH_TIMEZONE}) <= ${appliedTo}
+          )`,
+        )),
+      this.getBranchCommercialProductInventory(branchId, productId),
+    ]);
+
+    const paymentMethodsBySaleId = new Map<string, string[]>();
+    for (const row of paymentRows) {
+      const current = paymentMethodsBySaleId.get(row.saleId) ?? [];
+      if (!current.includes(row.paymentMethod)) {
+        current.push(row.paymentMethod);
+      }
+      paymentMethodsBySaleId.set(row.saleId, current);
+    }
+
+    const summaryRow = summaryRows[0];
+    const revenueAmount = toFinanceAmount(summaryRow?.revenueAmount);
+    const grossProfitAmount = toFinanceAmount(summaryRow?.grossProfitAmount);
+    const costAmountSold = toFinanceAmount(summaryRow?.costAmountSold);
+
+    return {
+      productId: product.id,
+      productName: product.name,
+      category: product.category,
+      from: appliedFrom,
+      to: appliedTo,
+      salesCount: Number(summaryRow?.salesCount ?? 0),
+      unitsSold: Number(summaryRow?.unitsSold ?? 0),
+      revenueAmount,
+      costAmountSold,
+      grossProfitAmount,
+      grossMarginPercent: revenueAmount > 0 ? Number(((grossProfitAmount / revenueAmount) * 100).toFixed(2)) : null,
+      lastSaleAt: summaryRow?.lastSaleAt ?? null,
+      quantityOnHand: inventorySummary.balance?.quantityOnHand ?? null,
+      minimumStock: inventorySummary.balance?.minimumStock ?? null,
+      inventoryStatus: inventorySummary.status,
+      recentSales: saleRows.map((row) => ({
+        saleId: row.saleId,
+        folio: row.folio,
+        saleDate: row.saleDate,
+        clientUserId: row.clientUserId ?? null,
+        clientDisplayName: row.clientDisplayName?.trim() || null,
+        sellerName: row.sellerName ?? null,
+        quantitySold: Number(row.quantitySold ?? 0),
+        revenueAmount: toFinanceAmount(row.revenueAmount),
+        grossProfitAmount: toFinanceAmount(row.grossProfitAmount),
+        paymentMethods: paymentMethodsBySaleId.get(row.saleId) ?? [],
+      })),
+    };
+  }
+
+  async getBranchCommercialDashboard(
+    branchId: string,
+    month?: string | null,
+  ): Promise<BranchCommercialDashboardRow> {
+    const range = getMonthRangeByKey(month);
+    const today = getMxLocalDate();
+
+    const [
+      salesSummaryResult,
+      itemSummaryResult,
+      topProductsResult,
+      topCategoriesResult,
+      topCustomersResult,
+      firstPurchaseCustomersResult,
+      inventorySummaryResult,
+      commissionSummaryResult,
+      purchasesSummaryResult,
+      topSuppliersResult,
+      topSalespeople,
+    ] = await Promise.all([
+      db.execute(sql<{
+        salesTodayAmount: string | number | null;
+        salesMonthAmount: string | number | null;
+        ticketCount: string | number | null;
+      }>`
+        SELECT
+          COALESCE(SUM(CASE WHEN DATE(bs.created_at AT TIME ZONE ${BRANCH_TIMEZONE}) = ${today} THEN bs.total_amount ELSE 0 END), 0) AS "salesTodayAmount",
+          COALESCE(SUM(bs.total_amount), 0) AS "salesMonthAmount",
+          COUNT(*)::int AS "ticketCount"
+        FROM branch_sales bs
+        WHERE bs.branch_id = ${branchId}
+          AND bs.status = 'completed'
+          AND DATE(bs.created_at AT TIME ZONE ${BRANCH_TIMEZONE}) >= ${range.from}
+          AND DATE(bs.created_at AT TIME ZONE ${BRANCH_TIMEZONE}) < ${range.toExclusive}
+      `),
+      db.execute(sql<{
+        productsSoldCount: string | number | null;
+        grossProfitAmount: string | number | null;
+      }>`
+        SELECT
+          COALESCE(SUM(bsi.quantity), 0) AS "productsSoldCount",
+          COALESCE(SUM(bsi.line_total_amount - (bsi.cost_amount_snapshot * bsi.quantity)), 0) AS "grossProfitAmount"
+        FROM branch_sale_items bsi
+        INNER JOIN branch_sales bs ON bs.id = bsi.sale_id
+        WHERE bs.branch_id = ${branchId}
+          AND bs.status = 'completed'
+          AND DATE(bs.created_at AT TIME ZONE ${BRANCH_TIMEZONE}) >= ${range.from}
+          AND DATE(bs.created_at AT TIME ZONE ${BRANCH_TIMEZONE}) < ${range.toExclusive}
+      `),
+      db.execute(sql<{
+        productId: string;
+        name: string | null;
+        category: string | null;
+        unitsSold: string | number | null;
+        revenueAmount: string | number | null;
+        grossProfitAmount: string | number | null;
+        lastSoldAt: Date | string | null;
+        usesInventory: boolean | number | null;
+        quantityOnHand: string | number | null;
+        minimumStock: string | number | null;
+      }>`
+        SELECT
+          bsi.commercial_product_id AS "productId",
+          MAX(bsi.name_snapshot) AS "name",
+          MAX(NULLIF(bsi.category_snapshot, '')) AS "category",
+          COALESCE(SUM(bsi.quantity), 0) AS "unitsSold",
+          COALESCE(SUM(bsi.line_total_amount), 0) AS "revenueAmount",
+          COALESCE(SUM(bsi.line_total_amount - (bsi.cost_amount_snapshot * bsi.quantity)), 0) AS "grossProfitAmount",
+          MAX(bs.created_at) AS "lastSoldAt",
+          MAX(CASE WHEN bcp.uses_inventory THEN 1 ELSE 0 END) AS "usesInventory",
+          MAX(bib.quantity_on_hand) AS "quantityOnHand",
+          MAX(bib.minimum_stock) AS "minimumStock"
+        FROM branch_sale_items bsi
+        INNER JOIN branch_sales bs ON bs.id = bsi.sale_id
+        LEFT JOIN branch_commercial_products bcp
+          ON bcp.id = bsi.commercial_product_id
+         AND bcp.branch_id = ${branchId}
+        LEFT JOIN branch_inventory_balances bib
+          ON bib.branch_id = ${branchId}
+         AND bib.commercial_product_id = bsi.commercial_product_id
+        WHERE bs.branch_id = ${branchId}
+          AND bs.status = 'completed'
+          AND DATE(bs.created_at AT TIME ZONE ${BRANCH_TIMEZONE}) >= ${range.from}
+          AND DATE(bs.created_at AT TIME ZONE ${BRANCH_TIMEZONE}) < ${range.toExclusive}
+          AND bsi.commercial_product_id IS NOT NULL
+        GROUP BY bsi.commercial_product_id
+        ORDER BY COALESCE(SUM(bsi.line_total_amount), 0) DESC, MAX(bsi.name_snapshot) ASC
+        LIMIT 5
+      `),
+      db.execute(sql<{
+        category: string | null;
+        unitsSold: string | number | null;
+        revenueAmount: string | number | null;
+        grossProfitAmount: string | number | null;
+      }>`
+        SELECT
+          COALESCE(NULLIF(bsi.category_snapshot, ''), 'Sin categoría') AS category,
+          COALESCE(SUM(bsi.quantity), 0) AS "unitsSold",
+          COALESCE(SUM(bsi.line_total_amount), 0) AS "revenueAmount",
+          COALESCE(SUM(bsi.line_total_amount - (bsi.cost_amount_snapshot * bsi.quantity)), 0) AS "grossProfitAmount"
+        FROM branch_sale_items bsi
+        INNER JOIN branch_sales bs ON bs.id = bsi.sale_id
+        WHERE bs.branch_id = ${branchId}
+          AND bs.status = 'completed'
+          AND DATE(bs.created_at AT TIME ZONE ${BRANCH_TIMEZONE}) >= ${range.from}
+          AND DATE(bs.created_at AT TIME ZONE ${BRANCH_TIMEZONE}) < ${range.toExclusive}
+        GROUP BY COALESCE(NULLIF(bsi.category_snapshot, ''), 'Sin categoría')
+        ORDER BY COALESCE(SUM(bsi.line_total_amount), 0) DESC, COALESCE(NULLIF(bsi.category_snapshot, ''), 'Sin categoría') ASC
+        LIMIT 5
+      `),
+      db.execute(sql<{
+        clientUserId: string;
+        clientName: string | null;
+        clientEmail: string | null;
+        totalSpentAmount: string | number | null;
+        salesCount: string | number | null;
+        lastPurchaseAt: Date | string | null;
+        firstPurchaseAt: Date | string | null;
+      }>`
+        SELECT
+          bs.client_user_id AS "clientUserId",
+          concat_ws(' ', u.name, coalesce(u.last_name, '')) AS "clientName",
+          u.email AS "clientEmail",
+          COALESCE(SUM(bs.total_amount), 0) AS "totalSpentAmount",
+          COUNT(*)::int AS "salesCount",
+          MAX(bs.created_at) AS "lastPurchaseAt",
+          MIN(bs.created_at) AS "firstPurchaseAt"
+        FROM branch_sales bs
+        LEFT JOIN users u ON u.id = bs.client_user_id
+        WHERE bs.branch_id = ${branchId}
+          AND bs.status = 'completed'
+          AND bs.client_user_id IS NOT NULL
+          AND DATE(bs.created_at AT TIME ZONE ${BRANCH_TIMEZONE}) >= ${range.from}
+          AND DATE(bs.created_at AT TIME ZONE ${BRANCH_TIMEZONE}) < ${range.toExclusive}
+        GROUP BY bs.client_user_id, u.name, u.last_name, u.email
+        ORDER BY COALESCE(SUM(bs.total_amount), 0) DESC, MAX(bs.created_at) DESC
+        LIMIT 5
+      `),
+      db.execute(sql<{
+        clientUserId: string;
+        clientName: string | null;
+        clientEmail: string | null;
+        totalSpentAmount: string | number | null;
+        salesCount: string | number | null;
+        lastPurchaseAt: Date | string | null;
+        firstPurchaseAt: Date | string | null;
+      }>`
+        WITH customer_first_sales AS (
+          SELECT
+            bs.client_user_id AS client_user_id,
+            MIN(DATE(bs.created_at AT TIME ZONE ${BRANCH_TIMEZONE})) AS first_purchase_date
+          FROM branch_sales bs
+          WHERE bs.branch_id = ${branchId}
+            AND bs.status = 'completed'
+            AND bs.client_user_id IS NOT NULL
+          GROUP BY bs.client_user_id
+        )
+        SELECT
+          bs.client_user_id AS "clientUserId",
+          concat_ws(' ', u.name, coalesce(u.last_name, '')) AS "clientName",
+          u.email AS "clientEmail",
+          COALESCE(SUM(bs.total_amount), 0) AS "totalSpentAmount",
+          COUNT(*)::int AS "salesCount",
+          MAX(bs.created_at) AS "lastPurchaseAt",
+          MIN(bs.created_at) AS "firstPurchaseAt"
+        FROM branch_sales bs
+        INNER JOIN customer_first_sales cfs
+          ON cfs.client_user_id = bs.client_user_id
+        LEFT JOIN users u ON u.id = bs.client_user_id
+        WHERE bs.branch_id = ${branchId}
+          AND bs.status = 'completed'
+          AND bs.client_user_id IS NOT NULL
+          AND cfs.first_purchase_date >= ${range.from}
+          AND cfs.first_purchase_date < ${range.toExclusive}
+        GROUP BY bs.client_user_id, u.name, u.last_name, u.email, cfs.first_purchase_date
+        ORDER BY cfs.first_purchase_date DESC, MAX(bs.created_at) DESC
+        LIMIT 5
+      `),
+      db.execute(sql<{
+        lowStockCount: string | number | null;
+        outOfStockCount: string | number | null;
+        uninitializedInventoryCount: string | number | null;
+        inventoryEstimatedValue: string | number | null;
+      }>`
+        SELECT
+          COUNT(*) FILTER (WHERE bcp.uses_inventory = true AND bib.id IS NOT NULL AND bib.quantity_on_hand > 0 AND bib.quantity_on_hand <= bib.minimum_stock)::int AS "lowStockCount",
+          COUNT(*) FILTER (WHERE bcp.uses_inventory = true AND bib.id IS NOT NULL AND bib.quantity_on_hand <= 0)::int AS "outOfStockCount",
+          COUNT(*) FILTER (WHERE bcp.uses_inventory = true AND bib.id IS NULL)::int AS "uninitializedInventoryCount",
+          COALESCE(SUM(CASE WHEN bcp.uses_inventory = true AND bib.id IS NOT NULL THEN bcp.cost_amount * bib.quantity_on_hand ELSE 0 END), 0) AS "inventoryEstimatedValue"
+        FROM branch_commercial_products bcp
+        LEFT JOIN branch_inventory_balances bib
+          ON bib.branch_id = bcp.branch_id
+         AND bib.commercial_product_id = bcp.id
+        WHERE bcp.branch_id = ${branchId}
+          AND bcp.deleted_at IS NULL
+      `),
+      db.execute(sql<{
+        generatedCommissionAmount: string | number | null;
+        paidCommissionAmount: string | number | null;
+        pendingCommissionAmount: string | number | null;
+      }>`
+        SELECT
+          COALESCE(SUM(CASE WHEN bca.reversed_at IS NULL THEN bca.commission_amount ELSE 0 END), 0) AS "generatedCommissionAmount",
+          COALESCE(SUM(bca.paid_amount), 0) AS "paidCommissionAmount",
+          COALESCE(SUM(CASE WHEN bca.reversed_at IS NULL AND bca.status IN ('accrued', 'approved', 'partially_paid') THEN GREATEST(bca.commission_amount - bca.paid_amount, 0) ELSE 0 END), 0) AS "pendingCommissionAmount"
+        FROM branch_commission_accruals bca
+        WHERE bca.branch_id = ${branchId}
+          AND bca.period_month = ${range.monthKey}
+      `),
+      db.execute(sql<{
+        purchasesReceivedCount: string | number | null;
+        totalPurchasedAmount: string | number | null;
+      }>`
+        SELECT
+          COUNT(*) FILTER (WHERE bp.status = 'received' AND DATE(bp.received_at AT TIME ZONE ${BRANCH_TIMEZONE}) >= ${range.from} AND DATE(bp.received_at AT TIME ZONE ${BRANCH_TIMEZONE}) < ${range.toExclusive})::int AS "purchasesReceivedCount",
+          COALESCE(SUM(CASE WHEN bp.status = 'received' AND DATE(bp.received_at AT TIME ZONE ${BRANCH_TIMEZONE}) >= ${range.from} AND DATE(bp.received_at AT TIME ZONE ${BRANCH_TIMEZONE}) < ${range.toExclusive} THEN bp.total_amount ELSE 0 END), 0) AS "totalPurchasedAmount"
+        FROM branch_purchases bp
+        WHERE bp.branch_id = ${branchId}
+          AND bp.status <> 'cancelled'
+      `),
+      db.execute(sql<{
+        supplierId: string | null;
+        supplierName: string | null;
+        totalPurchasedAmount: string | number | null;
+        purchasesCount: string | number | null;
+        lastPurchaseAt: Date | string | null;
+      }>`
+        SELECT
+          bp.supplier_id AS "supplierId",
+          COALESCE(bs.name, 'Proveedor') AS "supplierName",
+          COALESCE(SUM(bp.total_amount), 0) AS "totalPurchasedAmount",
+          COUNT(*)::int AS "purchasesCount",
+          MAX(bp.received_at) AS "lastPurchaseAt"
+        FROM branch_purchases bp
+        LEFT JOIN branch_suppliers bs ON bs.id = bp.supplier_id
+        WHERE bp.branch_id = ${branchId}
+          AND bp.status = 'received'
+          AND DATE(bp.received_at AT TIME ZONE ${BRANCH_TIMEZONE}) >= ${range.from}
+          AND DATE(bp.received_at AT TIME ZONE ${BRANCH_TIMEZONE}) < ${range.toExclusive}
+        GROUP BY bp.supplier_id, bs.name
+        ORDER BY COALESCE(SUM(bp.total_amount), 0) DESC, MAX(bp.received_at) DESC
+        LIMIT 5
+      `),
+      this.getBranchSalespeopleRanking(branchId, range.monthKey),
+    ]);
+
+    const salesSummaryRow = (salesSummaryResult.rows?.[0] ?? null) as any;
+    const itemSummaryRow = (itemSummaryResult.rows?.[0] ?? null) as any;
+    const inventorySummaryRow = (inventorySummaryResult.rows?.[0] ?? null) as any;
+    const commissionSummaryRow = (commissionSummaryResult.rows?.[0] ?? null) as any;
+    const purchasesSummaryRow = (purchasesSummaryResult.rows?.[0] ?? null) as any;
+
+    const salesMonthAmount = toFinanceAmount(salesSummaryRow?.salesMonthAmount);
+    const ticketCount = Number(salesSummaryRow?.ticketCount ?? 0);
+
+    return {
+      month: range.monthKey,
+      salesTodayAmount: toFinanceAmount(salesSummaryRow?.salesTodayAmount),
+      salesMonthAmount,
+      ticketCount,
+      averageTicketAmount: ticketCount > 0 ? Number((salesMonthAmount / ticketCount).toFixed(2)) : 0,
+      productsSoldCount: Number(itemSummaryRow?.productsSoldCount ?? 0),
+      grossProfitAmount: toFinanceAmount(itemSummaryRow?.grossProfitAmount),
+      topProducts: (topProductsResult.rows ?? []).map((row: any) => ({
+        productId: row.productId,
+        name: row.name || "Producto",
+        category: row.category ?? null,
+        unitsSold: Number(row.unitsSold ?? 0),
+        revenueAmount: toFinanceAmount(row.revenueAmount),
+        grossProfitAmount: toFinanceAmount(row.grossProfitAmount),
+        lastSoldAt: row.lastSoldAt ?? null,
+        quantityOnHand: row.quantityOnHand == null ? null : Number(row.quantityOnHand),
+        minimumStock: row.minimumStock == null ? null : Number(row.minimumStock),
+        inventoryStatus: computeInventoryStatus(Number(row.usesInventory ?? 0) > 0, row.quantityOnHand == null ? null : {
+          quantityOnHand: Number(row.quantityOnHand),
+          minimumStock: Number(row.minimumStock ?? 0),
+        }),
+      })),
+      topCategories: (topCategoriesResult.rows ?? []).map((row: any) => ({
+        category: row.category || "Sin categoría",
+        unitsSold: Number(row.unitsSold ?? 0),
+        revenueAmount: toFinanceAmount(row.revenueAmount),
+        grossProfitAmount: toFinanceAmount(row.grossProfitAmount),
+      })),
+      topSalespeople: topSalespeople.slice(0, 5),
+      topCustomers: (topCustomersResult.rows ?? []).map((row: any) => ({
+        clientUserId: row.clientUserId,
+        clientName: row.clientName?.trim() || "Cliente",
+        clientEmail: row.clientEmail ?? null,
+        totalSpentAmount: toFinanceAmount(row.totalSpentAmount),
+        salesCount: Number(row.salesCount ?? 0),
+        lastPurchaseAt: row.lastPurchaseAt ?? null,
+        firstPurchaseAt: row.firstPurchaseAt ?? null,
+      })),
+      firstPurchaseCustomers: (firstPurchaseCustomersResult.rows ?? []).map((row: any) => ({
+        clientUserId: row.clientUserId,
+        clientName: row.clientName?.trim() || "Cliente",
+        clientEmail: row.clientEmail ?? null,
+        totalSpentAmount: toFinanceAmount(row.totalSpentAmount),
+        salesCount: Number(row.salesCount ?? 0),
+        lastPurchaseAt: row.lastPurchaseAt ?? null,
+        firstPurchaseAt: row.firstPurchaseAt ?? null,
+      })),
+      lowStockCount: Number(inventorySummaryRow?.lowStockCount ?? 0),
+      outOfStockCount: Number(inventorySummaryRow?.outOfStockCount ?? 0),
+      uninitializedInventoryCount: Number(inventorySummaryRow?.uninitializedInventoryCount ?? 0),
+      inventoryEstimatedValue: toFinanceAmount(inventorySummaryRow?.inventoryEstimatedValue),
+      generatedCommissionAmount: toFinanceAmount(commissionSummaryRow?.generatedCommissionAmount),
+      paidCommissionAmount: toFinanceAmount(commissionSummaryRow?.paidCommissionAmount),
+      pendingCommissionAmount: toFinanceAmount(commissionSummaryRow?.pendingCommissionAmount),
+      purchasesReceivedCount: Number(purchasesSummaryRow?.purchasesReceivedCount ?? 0),
+      totalPurchasedAmount: toFinanceAmount(purchasesSummaryRow?.totalPurchasedAmount),
+      topSuppliers: (topSuppliersResult.rows ?? []).map((row: any) => ({
+        supplierId: row.supplierId ?? null,
+        supplierName: row.supplierName || "Proveedor",
+        totalPurchasedAmount: toFinanceAmount(row.totalPurchasedAmount),
+        purchasesCount: Number(row.purchasesCount ?? 0),
+        lastPurchaseAt: row.lastPurchaseAt ?? null,
+      })),
+    };
+  }
+
+  async getBranchCommercialNotificationSignals(branchId: string): Promise<BranchCommercialNotificationSignals> {
+    const today = getMxLocalDate();
+    const monthRange = getMonthRangeByKey();
+
+    const [inventoryResult, firstPurchaseResult, largeSalesResult, receivedPurchasesResult, ranking] = await Promise.all([
+      db.execute(sql<{
+        productId: string;
+        productName: string | null;
+        quantityOnHand: string | number | null;
+        minimumStock: string | number | null;
+        updatedAt: Date | string | null;
+        inventoryState: string;
+      }>`
+        SELECT
+          bcp.id AS "productId",
+          bcp.name AS "productName",
+          bib.quantity_on_hand AS "quantityOnHand",
+          bib.minimum_stock AS "minimumStock",
+          bib.updated_at AS "updatedAt",
+          CASE
+            WHEN bib.id IS NULL THEN 'uninitialized'
+            WHEN bib.quantity_on_hand <= 0 THEN 'out_of_stock'
+            WHEN bib.quantity_on_hand > 0 AND bib.quantity_on_hand <= bib.minimum_stock THEN 'low_stock'
+            ELSE 'available'
+          END AS "inventoryState"
+        FROM branch_commercial_products bcp
+        LEFT JOIN branch_inventory_balances bib
+          ON bib.branch_id = bcp.branch_id
+         AND bib.commercial_product_id = bcp.id
+        WHERE bcp.branch_id = ${branchId}
+          AND bcp.deleted_at IS NULL
+          AND bcp.is_active = true
+          AND bcp.uses_inventory = true
+          AND (
+            (bib.id IS NOT NULL AND bib.quantity_on_hand <= 0)
+            OR (bib.id IS NOT NULL AND bib.quantity_on_hand > 0 AND bib.quantity_on_hand <= bib.minimum_stock)
+          )
+      `),
+      db.execute(sql<{
+        clientUserId: string;
+        clientName: string | null;
+        clientEmail: string | null;
+        totalSpentAmount: string | number | null;
+        salesCount: string | number | null;
+        lastPurchaseAt: Date | string | null;
+        firstPurchaseAt: Date | string | null;
+      }>`
+        WITH customer_first_sales AS (
+          SELECT
+            bs.client_user_id AS client_user_id,
+            MIN(DATE(bs.created_at AT TIME ZONE ${BRANCH_TIMEZONE})) AS first_purchase_date
+          FROM branch_sales bs
+          WHERE bs.branch_id = ${branchId}
+            AND bs.status = 'completed'
+            AND bs.client_user_id IS NOT NULL
+          GROUP BY bs.client_user_id
+        )
+        SELECT
+          bs.client_user_id AS "clientUserId",
+          concat_ws(' ', u.name, coalesce(u.last_name, '')) AS "clientName",
+          u.email AS "clientEmail",
+          COALESCE(SUM(bs.total_amount), 0) AS "totalSpentAmount",
+          COUNT(*)::int AS "salesCount",
+          MAX(bs.created_at) AS "lastPurchaseAt",
+          MIN(bs.created_at) AS "firstPurchaseAt"
+        FROM branch_sales bs
+        INNER JOIN customer_first_sales cfs
+          ON cfs.client_user_id = bs.client_user_id
+        LEFT JOIN users u ON u.id = bs.client_user_id
+        WHERE bs.branch_id = ${branchId}
+          AND bs.status = 'completed'
+          AND bs.client_user_id IS NOT NULL
+          AND cfs.first_purchase_date = ${today}
+        GROUP BY bs.client_user_id, u.name, u.last_name, u.email
+        ORDER BY MAX(bs.created_at) DESC
+      `),
+      db.execute(sql<{
+        saleId: string;
+        folio: string;
+        totalAmount: string | number | null;
+        clientUserId: string | null;
+        clientDisplayName: string | null;
+        sellerId: string | null;
+        sellerName: string | null;
+        createdAt: Date | string;
+      }>`
+        SELECT
+          bs.id AS "saleId",
+          bs.folio,
+          bs.total_amount AS "totalAmount",
+          bs.client_user_id AS "clientUserId",
+          concat_ws(' ', u.name, coalesce(u.last_name, '')) AS "clientDisplayName",
+          bs.seller_id AS "sellerId",
+          bs.seller_name_snapshot AS "sellerName",
+          bs.created_at AS "createdAt"
+        FROM branch_sales bs
+        LEFT JOIN users u ON u.id = bs.client_user_id
+        WHERE bs.branch_id = ${branchId}
+          AND bs.status = 'completed'
+          AND DATE(bs.created_at AT TIME ZONE ${BRANCH_TIMEZONE}) = ${today}
+          AND bs.total_amount >= ${COMMERCIAL_LARGE_SALE_THRESHOLD}
+        ORDER BY bs.total_amount DESC, bs.created_at DESC
+      `),
+      db.execute(sql<{
+        purchaseId: string;
+        folio: string;
+        supplierId: string | null;
+        supplierName: string | null;
+        receivedAt: Date | string | null;
+        totalAmount: string | number | null;
+      }>`
+        SELECT
+          bp.id AS "purchaseId",
+          bp.folio,
+          bp.supplier_id AS "supplierId",
+          COALESCE(bs.name, 'Proveedor') AS "supplierName",
+          bp.received_at AS "receivedAt",
+          bp.total_amount AS "totalAmount"
+        FROM branch_purchases bp
+        LEFT JOIN branch_suppliers bs ON bs.id = bp.supplier_id
+        WHERE bp.branch_id = ${branchId}
+          AND bp.status = 'received'
+          AND DATE(bp.received_at AT TIME ZONE ${BRANCH_TIMEZONE}) = ${today}
+        ORDER BY bp.received_at DESC
+      `),
+      this.getBranchSalespeopleRanking(branchId, monthRange.monthKey),
+    ]);
+
+    const lowStockProducts: BranchCommercialNotificationSignals["lowStockProducts"] = [];
+    const outOfStockProducts: BranchCommercialNotificationSignals["outOfStockProducts"] = [];
+
+    for (const row of inventoryResult.rows ?? []) {
+      const mapped = {
+        productId: (row as any).productId,
+        productName: (row as any).productName || "Producto",
+        quantityOnHand: Number((row as any).quantityOnHand ?? 0),
+        minimumStock: Number((row as any).minimumStock ?? 0),
+        updatedAt: (row as any).updatedAt ?? new Date(),
+      };
+
+      if ((row as any).inventoryState === "out_of_stock") {
+        outOfStockProducts.push(mapped);
+      } else if ((row as any).inventoryState === "low_stock") {
+        lowStockProducts.push(mapped);
+      }
+    }
+
+    return {
+      lowStockProducts,
+      outOfStockProducts,
+      firstPurchaseCustomers: (firstPurchaseResult.rows ?? []).map((row: any) => ({
+        clientUserId: row.clientUserId,
+        clientName: row.clientName?.trim() || "Cliente",
+        clientEmail: row.clientEmail ?? null,
+        totalSpentAmount: toFinanceAmount(row.totalSpentAmount),
+        salesCount: Number(row.salesCount ?? 0),
+        lastPurchaseAt: row.lastPurchaseAt ?? null,
+        firstPurchaseAt: row.firstPurchaseAt ?? null,
+      })),
+      goalReachedSalespeople: ranking.filter((row) => (row.monthlyGoalAmount ?? 0) > 0 && (row.goalProgressPercent ?? 0) >= 100),
+      largeSales: (largeSalesResult.rows ?? []).map((row: any) => ({
+        saleId: row.saleId,
+        folio: row.folio,
+        totalAmount: toFinanceAmount(row.totalAmount),
+        clientUserId: row.clientUserId ?? null,
+        clientDisplayName: row.clientDisplayName?.trim() || null,
+        sellerId: row.sellerId ?? null,
+        sellerName: row.sellerName ?? null,
+        createdAt: row.createdAt,
+      })),
+      receivedPurchases: (receivedPurchasesResult.rows ?? []).map((row: any) => ({
+        purchaseId: row.purchaseId,
+        folio: row.folio,
+        supplierId: row.supplierId ?? null,
+        supplierName: row.supplierName || "Proveedor",
+        receivedAt: row.receivedAt ?? null,
+        totalAmount: toFinanceAmount(row.totalAmount),
+      })),
+      pendingCommissions: ranking.filter((row) => row.pendingCommissionAmount > 0),
+    };
+  }
+
+  async getBranchCommercialProductInventoryMovements(
+    branchId: string,
+    productId: string,
+    limit = 50,
+  ): Promise<BranchInventoryMovementRow[]> {
+    const rows = await db
+      .select()
+      .from(branchInventoryMovements)
+      .where(and(
+        eq(branchInventoryMovements.branchId, branchId),
+        eq(branchInventoryMovements.commercialProductId, productId),
+      ))
+      .orderBy(desc(branchInventoryMovements.createdAt))
+      .limit(Math.min(Math.max(limit, 1), 200));
+
+    return rows.map((row) => this.mapBranchInventoryMovementRow(row));
+  }
+
+  async getBranchCommercialProductInventory(branchId: string, productId: string): Promise<BranchInventorySummaryRow> {
+    const product = await this.getBranchCommercialProductById(branchId, productId);
+    if (!product) {
+      throw new Error("COMMERCIAL_PRODUCT_NOT_FOUND");
+    }
+
+    const [balance, movementCountRow, recentMovements] = await Promise.all([
+      db
+        .select()
+        .from(branchInventoryBalances)
+        .where(and(
+          eq(branchInventoryBalances.branchId, branchId),
+          eq(branchInventoryBalances.commercialProductId, productId),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ count: sql<number>`COUNT(*)`.as("count") })
+        .from(branchInventoryMovements)
+        .where(and(
+          eq(branchInventoryMovements.branchId, branchId),
+          eq(branchInventoryMovements.commercialProductId, productId),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? { count: 0 }),
+      this.getBranchCommercialProductInventoryMovements(branchId, productId, 20),
+    ]);
+
+    const mappedBalance = balance ? this.mapBranchInventoryBalanceRow(balance, product.usesInventory) : null;
+
+    return {
+      productId,
+      usesInventory: product.usesInventory,
+      balance: mappedBalance,
+      status: computeInventoryStatus(product.usesInventory, mappedBalance ? {
+        quantityOnHand: mappedBalance.quantityOnHand,
+        minimumStock: mappedBalance.minimumStock,
+      } : null),
+      movementCount: Number(movementCountRow.count) || 0,
+      recentMovements,
+    };
+  }
+
+  async createBranchCommercialProduct(data: InsertBranchCommercialProduct): Promise<BranchCommercialProductRow> {
+    const [product] = await db.insert(branchCommercialProducts).values(data).returning();
+    return this.mapBranchCommercialProductRow(product);
+  }
+
+  async updateBranchCommercialProduct(
+    branchId: string,
+    productId: string,
+    data: Partial<InsertBranchCommercialProduct>,
+  ): Promise<BranchCommercialProductRow | undefined> {
+    const [product] = await db
+      .update(branchCommercialProducts)
+      .set({
+        ...data,
+        updatedAt: new Date(),
+      } as any)
+      .where(and(
+        eq(branchCommercialProducts.id, productId),
+        eq(branchCommercialProducts.branchId, branchId),
+        isNull(branchCommercialProducts.deletedAt),
+      ))
+      .returning();
+
+    return product ? this.mapBranchCommercialProductRow(product) : undefined;
+  }
+
+  async softDeleteBranchCommercialProduct(branchId: string, productId: string): Promise<boolean> {
+    const [deleted] = await db
+      .update(branchCommercialProducts)
+      .set({
+        deletedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(branchCommercialProducts.id, productId),
+        eq(branchCommercialProducts.branchId, branchId),
+        isNull(branchCommercialProducts.deletedAt),
+      ))
+      .returning({ id: branchCommercialProducts.id });
+
+    return !!deleted;
+  }
+
+  async getBranchSalespeople(
+    branchId: string,
+    filters?: { isActive?: boolean | null },
+  ): Promise<BranchSalespersonRow[]> {
+    const whereClauses = [
+      eq(branchSalespeople.branchId, branchId),
+      isNull(branchSalespeople.deletedAt),
+    ];
+    if (filters?.isActive !== undefined && filters?.isActive !== null) {
+      whereClauses.push(eq(branchSalespeople.isActive, filters.isActive));
+    }
+
+    const rows = await db
+      .select()
+      .from(branchSalespeople)
+      .where(and(...whereClauses))
+      .orderBy(desc(branchSalespeople.isActive), asc(branchSalespeople.name), asc(branchSalespeople.lastName));
+
+    return rows.map((row) => this.mapBranchSalespersonRow(row));
+  }
+
+  async getBranchSalespersonById(branchId: string, salespersonId: string): Promise<BranchSalespersonRow | undefined> {
+    const [row] = await db
+      .select()
+      .from(branchSalespeople)
+      .where(and(
+        eq(branchSalespeople.branchId, branchId),
+        eq(branchSalespeople.id, salespersonId),
+        isNull(branchSalespeople.deletedAt),
+      ))
+      .limit(1);
+
+    return row ? this.mapBranchSalespersonRow(row) : undefined;
+  }
+
+  async getBranchSalespeopleRanking(
+    branchId: string,
+    month?: string | null,
+  ): Promise<BranchCommercialDashboardTopSalespersonRow[]> {
+    const salespeople = await this.getBranchSalespeople(branchId);
+    if (!salespeople.length) return [];
+
+    const range = getMonthRangeByKey(month);
+
+    const [salesRows, itemRows, commissionRows] = await Promise.all([
+      db
+        .select({
+          salespersonId: branchSales.sellerId,
+          totalSoldAmount: sql<number>`COALESCE(SUM(${branchSales.totalAmount}), 0)`.as("total_sold_amount"),
+          salesCount: sql<number>`COUNT(*)`.as("sales_count"),
+          customersCount: sql<number>`COUNT(DISTINCT ${branchSales.clientUserId})`.as("customers_count"),
+          lastSaleAt: sql<Date | string | null>`MAX(${branchSales.createdAt})`.as("last_sale_at"),
+        })
+        .from(branchSales)
+        .where(and(
+          eq(branchSales.branchId, branchId),
+          eq(branchSales.status, "completed"),
+          sql`${branchSales.sellerId} IS NOT NULL`,
+          sql`DATE(${branchSales.createdAt} AT TIME ZONE ${BRANCH_TIMEZONE}) >= ${range.from}`,
+          sql`DATE(${branchSales.createdAt} AT TIME ZONE ${BRANCH_TIMEZONE}) < ${range.toExclusive}`,
+        ))
+        .groupBy(branchSales.sellerId),
+      db
+        .select({
+          salespersonId: branchSales.sellerId,
+          productsSoldCount: sql<number>`COALESCE(SUM(${branchSaleItems.quantity}), 0)`.as("products_sold_count"),
+        })
+        .from(branchSales)
+        .innerJoin(branchSaleItems, eq(branchSaleItems.saleId, branchSales.id))
+        .where(and(
+          eq(branchSales.branchId, branchId),
+          eq(branchSales.status, "completed"),
+          sql`${branchSales.sellerId} IS NOT NULL`,
+          sql`DATE(${branchSales.createdAt} AT TIME ZONE ${BRANCH_TIMEZONE}) >= ${range.from}`,
+          sql`DATE(${branchSales.createdAt} AT TIME ZONE ${BRANCH_TIMEZONE}) < ${range.toExclusive}`,
+        ))
+        .groupBy(branchSales.sellerId),
+      db
+        .select({
+          salespersonId: branchCommissionAccruals.salespersonId,
+          generatedCommissionAmount: sql<number>`COALESCE(SUM(CASE WHEN ${branchCommissionAccruals.reversedAt} IS NULL THEN ${branchCommissionAccruals.commissionAmount} ELSE 0 END), 0)`.as("generated_commission_amount"),
+          paidCommissionAmount: sql<number>`COALESCE(SUM(${branchCommissionAccruals.paidAmount}), 0)`.as("paid_commission_amount"),
+          pendingCommissionAmount: sql<number>`COALESCE(SUM(CASE WHEN ${branchCommissionAccruals.reversedAt} IS NULL AND ${branchCommissionAccruals.status} IN ('accrued', 'approved', 'partially_paid') THEN GREATEST(${branchCommissionAccruals.commissionAmount} - ${branchCommissionAccruals.paidAmount}, 0) ELSE 0 END), 0)`.as("pending_commission_amount"),
+        })
+        .from(branchCommissionAccruals)
+        .where(and(
+          eq(branchCommissionAccruals.branchId, branchId),
+          eq(branchCommissionAccruals.periodMonth, range.monthKey),
+        ))
+        .groupBy(branchCommissionAccruals.salespersonId),
+    ]);
+
+    const salesMap = new Map(
+      salesRows
+        .filter((row) => typeof row.salespersonId === "string" && row.salespersonId)
+        .map((row) => [row.salespersonId as string, row]),
+    );
+    const itemsMap = new Map(
+      itemRows
+        .filter((row) => typeof row.salespersonId === "string" && row.salespersonId)
+        .map((row) => [row.salespersonId as string, row]),
+    );
+    const commissionMap = new Map(
+      commissionRows.map((row) => [row.salespersonId, row]),
+    );
+
+    return salespeople
+      .map((salesperson) => {
+        const salesRow = salesMap.get(salesperson.id);
+        const itemRow = itemsMap.get(salesperson.id);
+        const commissionRow = commissionMap.get(salesperson.id);
+        const totalSoldAmount = toFinanceAmount(salesRow?.totalSoldAmount);
+        const salesCount = Number(salesRow?.salesCount ?? 0);
+        const averageTicketAmount = salesCount > 0 ? Number((totalSoldAmount / salesCount).toFixed(2)) : 0;
+        const goal = salesperson.monthlyGoalAmount;
+
+        return {
+          salespersonId: salesperson.id,
+          name: `${salesperson.name}${salesperson.lastName ? ` ${salesperson.lastName}` : ""}`.trim(),
+          totalSoldAmount,
+          salesCount,
+          averageTicketAmount,
+          productsSoldCount: Number(itemRow?.productsSoldCount ?? 0),
+          customersCount: Number(salesRow?.customersCount ?? 0),
+          generatedCommissionAmount: toFinanceAmount(commissionRow?.generatedCommissionAmount),
+          paidCommissionAmount: toFinanceAmount(commissionRow?.paidCommissionAmount),
+          pendingCommissionAmount: toFinanceAmount(commissionRow?.pendingCommissionAmount),
+          monthlyGoalAmount: goal,
+          goalProgressPercent: goal && goal > 0 ? Number(Math.min(100, (totalSoldAmount / goal) * 100).toFixed(2)) : null,
+          lastSaleAt: salesRow?.lastSaleAt ?? null,
+        } satisfies BranchCommercialDashboardTopSalespersonRow;
+      })
+      .sort((a, b) => {
+        if (b.totalSoldAmount !== a.totalSoldAmount) return b.totalSoldAmount - a.totalSoldAmount;
+        if (b.salesCount !== a.salesCount) return b.salesCount - a.salesCount;
+        return a.name.localeCompare(b.name, "es-MX");
+      });
+  }
+
+  async createBranchSalesperson(data: InsertBranchSalesperson): Promise<BranchSalespersonRow> {
+    const [created] = await db.insert(branchSalespeople).values(data).returning();
+    return this.mapBranchSalespersonRow(created);
+  }
+
+  async updateBranchSalesperson(
+    branchId: string,
+    salespersonId: string,
+    data: Partial<InsertBranchSalesperson>,
+  ): Promise<BranchSalespersonRow | undefined> {
+    const [updated] = await db
+      .update(branchSalespeople)
+      .set({
+        ...data,
+        updatedAt: new Date(),
+      } as any)
+      .where(and(
+        eq(branchSalespeople.branchId, branchId),
+        eq(branchSalespeople.id, salespersonId),
+        isNull(branchSalespeople.deletedAt),
+      ))
+      .returning();
+
+    return updated ? this.mapBranchSalespersonRow(updated) : undefined;
+  }
+
+  async softDeleteBranchSalesperson(branchId: string, salespersonId: string): Promise<boolean> {
+    const [deleted] = await db
+      .update(branchSalespeople)
+      .set({
+        deletedAt: new Date(),
+        isActive: false,
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(branchSalespeople.branchId, branchId),
+        eq(branchSalespeople.id, salespersonId),
+        isNull(branchSalespeople.deletedAt),
+      ))
+      .returning({ id: branchSalespeople.id });
+
+    return !!deleted;
+  }
+
+  async getBranchSalespersonSummary(
+    branchId: string,
+    salespersonId: string,
+    month?: string | null,
+  ): Promise<BranchSalespersonSummaryRow | undefined> {
+    const salesperson = await this.getBranchSalespersonById(branchId, salespersonId);
+    if (!salesperson) return undefined;
+
+    const range = getMonthRangeByKey(month);
+    const [summaryRow] = await db
+      .select({
+        totalSoldAmount: sql<number>`COALESCE(SUM(${branchSales.totalAmount}), 0)`.as("total_sold_amount"),
+        salesCount: sql<number>`COUNT(DISTINCT ${branchSales.id})`.as("sales_count"),
+        productsSoldCount: sql<number>`COALESCE(SUM(${branchSaleItems.quantity}), 0)`.as("products_sold_count"),
+      })
+      .from(branchSales)
+      .leftJoin(branchSaleItems, eq(branchSaleItems.saleId, branchSales.id))
+      .where(and(
+        eq(branchSales.branchId, branchId),
+        eq(branchSales.sellerId, salespersonId),
+        ne(branchSales.status, "cancelled"),
+        sql`DATE(${branchSales.createdAt} AT TIME ZONE ${BRANCH_TIMEZONE}) >= ${range.from}`,
+        sql`DATE(${branchSales.createdAt} AT TIME ZONE ${BRANCH_TIMEZONE}) < ${range.toExclusive}`,
+      ))
+      .limit(1);
+
+    const totalSoldAmount = toFinanceAmount(summaryRow?.totalSoldAmount);
+    const salesCount = Number(summaryRow?.salesCount ?? 0);
+    const productsSoldCount = Number(summaryRow?.productsSoldCount ?? 0);
+    const averageTicketAmount = salesCount > 0 ? Number((totalSoldAmount / salesCount).toFixed(2)) : 0;
+    const goal = salesperson.monthlyGoalAmount;
+
+    return {
+      salespersonId,
+      branchId,
+      month: range.monthKey,
+      totalSoldAmount,
+      salesCount,
+      averageTicketAmount,
+      productsSoldCount,
+      monthlyGoalAmount: goal,
+      goalProgressPercent: goal && goal > 0 ? Number(Math.min(100, (totalSoldAmount / goal) * 100).toFixed(2)) : null,
+    };
+  }
+
+  async getBranchSalespersonSales(
+    branchId: string,
+    salespersonId: string,
+    month?: string | null,
+  ): Promise<BranchSaleRow[]> {
+    const salesperson = await this.getBranchSalespersonById(branchId, salespersonId);
+    if (!salesperson) return [];
+
+    const range = getMonthRangeByKey(month);
+    const saleRows = await db
+      .select({ id: branchSales.id })
+      .from(branchSales)
+      .where(and(
+        eq(branchSales.branchId, branchId),
+        eq(branchSales.sellerId, salespersonId),
+        ne(branchSales.status, "cancelled"),
+        sql`DATE(${branchSales.createdAt} AT TIME ZONE ${BRANCH_TIMEZONE}) >= ${range.from}`,
+        sql`DATE(${branchSales.createdAt} AT TIME ZONE ${BRANCH_TIMEZONE}) < ${range.toExclusive}`,
+      ))
+      .orderBy(desc(branchSales.createdAt));
+
+    const sales = await Promise.all(
+      saleRows.map((row) => this.getBranchSaleById(branchId, row.id)),
+    );
+
+    return sales.filter((row): row is BranchSaleRow => !!row);
+  }
+
+  async getBranchCommissionRules(branchId: string, salespersonId: string): Promise<BranchCommissionRuleRow[]> {
+    const rows = await db
+      .select()
+      .from(branchCommissionRules)
+      .where(and(
+        eq(branchCommissionRules.branchId, branchId),
+        eq(branchCommissionRules.salespersonId, salespersonId),
+        isNull(branchCommissionRules.deletedAt),
+      ))
+      .orderBy(desc(branchCommissionRules.isActive), desc(branchCommissionRules.priority), desc(branchCommissionRules.createdAt));
+
+    return rows.map((row) => this.mapBranchCommissionRuleRow(row));
+  }
+
+  async getBranchCommissionRuleById(branchId: string, ruleId: string): Promise<BranchCommissionRuleRow | undefined> {
+    const [row] = await db
+      .select()
+      .from(branchCommissionRules)
+      .where(and(
+        eq(branchCommissionRules.branchId, branchId),
+        eq(branchCommissionRules.id, ruleId),
+        isNull(branchCommissionRules.deletedAt),
+      ))
+      .limit(1);
+
+    return row ? this.mapBranchCommissionRuleRow(row) : undefined;
+  }
+
+  async createBranchCommissionRule(data: InsertBranchCommissionRule): Promise<BranchCommissionRuleRow> {
+    const [created] = await db.insert(branchCommissionRules).values(data).returning();
+    return this.mapBranchCommissionRuleRow(created);
+  }
+
+  async updateBranchCommissionRule(
+    branchId: string,
+    ruleId: string,
+    data: Partial<InsertBranchCommissionRule>,
+  ): Promise<BranchCommissionRuleRow | undefined> {
+    const [updated] = await db
+      .update(branchCommissionRules)
+      .set({
+        ...data,
+        updatedAt: new Date(),
+      } as any)
+      .where(and(
+        eq(branchCommissionRules.branchId, branchId),
+        eq(branchCommissionRules.id, ruleId),
+        isNull(branchCommissionRules.deletedAt),
+      ))
+      .returning();
+
+    return updated ? this.mapBranchCommissionRuleRow(updated) : undefined;
+  }
+
+  async softDeleteBranchCommissionRule(branchId: string, ruleId: string): Promise<boolean> {
+    const [deleted] = await db
+      .update(branchCommissionRules)
+      .set({
+        deletedAt: new Date(),
+        isActive: false,
+        updatedAt: new Date(),
+      } as any)
+      .where(and(
+        eq(branchCommissionRules.branchId, branchId),
+        eq(branchCommissionRules.id, ruleId),
+        isNull(branchCommissionRules.deletedAt),
+      ))
+      .returning({ id: branchCommissionRules.id });
+
+    return !!deleted;
+  }
+
+  async getBranchSalespersonCommissions(
+    branchId: string,
+    salespersonId: string,
+    month?: string | null,
+  ): Promise<BranchCommissionAccrualRow[]> {
+    const salesperson = await this.getBranchSalespersonById(branchId, salespersonId);
+    if (!salesperson) return [];
+
+    const range = getMonthRangeByKey(month);
+    const rows = await db
+      .select()
+      .from(branchCommissionAccruals)
+      .where(and(
+        eq(branchCommissionAccruals.branchId, branchId),
+        eq(branchCommissionAccruals.salespersonId, salespersonId),
+        eq(branchCommissionAccruals.periodMonth, range.monthKey),
+      ))
+      .orderBy(desc(branchCommissionAccruals.accruedAt), desc(branchCommissionAccruals.createdAt));
+
+    return rows.map((row) => this.mapBranchCommissionAccrualRow(row));
+  }
+
+  async getBranchSalespersonCommissionSummary(
+    branchId: string,
+    salespersonId: string,
+    month?: string | null,
+  ): Promise<BranchSalespersonCommissionSummaryRow | undefined> {
+    const salesSummary = await this.getBranchSalespersonSummary(branchId, salespersonId, month);
+    if (!salesSummary) return undefined;
+
+    const [summaryRow] = await db
+      .select({
+        generatedCommissionAmount: sql<number>`COALESCE(SUM(CASE WHEN ${branchCommissionAccruals.reversedAt} IS NULL THEN ${branchCommissionAccruals.commissionAmount} ELSE 0 END), 0)`.as("generated_commission_amount"),
+        approvedCommissionAmount: sql<number>`COALESCE(SUM(CASE WHEN ${branchCommissionAccruals.reversedAt} IS NULL AND ${branchCommissionAccruals.status} IN ('approved', 'partially_paid', 'paid') THEN ${branchCommissionAccruals.commissionAmount} ELSE 0 END), 0)`.as("approved_commission_amount"),
+        paidCommissionAmount: sql<number>`COALESCE(SUM(${branchCommissionAccruals.paidAmount}), 0)`.as("paid_commission_amount"),
+        pendingCommissionAmount: sql<number>`COALESCE(SUM(CASE WHEN ${branchCommissionAccruals.reversedAt} IS NULL AND ${branchCommissionAccruals.status} IN ('accrued', 'approved', 'partially_paid') THEN GREATEST(${branchCommissionAccruals.commissionAmount} - ${branchCommissionAccruals.paidAmount}, 0) ELSE 0 END), 0)`.as("pending_commission_amount"),
+        reversedCommissionAmount: sql<number>`COALESCE(SUM(CASE WHEN ${branchCommissionAccruals.reversedAt} IS NOT NULL OR ${branchCommissionAccruals.status} = 'reversed' THEN ${branchCommissionAccruals.commissionAmount} ELSE 0 END), 0)`.as("reversed_commission_amount"),
+        bonusGeneratedAmount: sql<number>`COALESCE(SUM(CASE WHEN ${branchCommissionAccruals.reversedAt} IS NULL AND ${branchCommissionAccruals.accrualType} = 'monthly_bonus' THEN ${branchCommissionAccruals.commissionAmount} ELSE 0 END), 0)`.as("bonus_generated_amount"),
+      })
+      .from(branchCommissionAccruals)
+      .where(and(
+        eq(branchCommissionAccruals.branchId, branchId),
+        eq(branchCommissionAccruals.salespersonId, salespersonId),
+        eq(branchCommissionAccruals.periodMonth, salesSummary.month),
+      ))
+      .limit(1);
+
+    return {
+      ...salesSummary,
+      generatedCommissionAmount: toFinanceAmount(summaryRow?.generatedCommissionAmount),
+      approvedCommissionAmount: toFinanceAmount(summaryRow?.approvedCommissionAmount),
+      paidCommissionAmount: toFinanceAmount(summaryRow?.paidCommissionAmount),
+      pendingCommissionAmount: toFinanceAmount(summaryRow?.pendingCommissionAmount),
+      reversedCommissionAmount: toFinanceAmount(summaryRow?.reversedCommissionAmount),
+      bonusGeneratedAmount: toFinanceAmount(summaryRow?.bonusGeneratedAmount),
+    };
+  }
+
+  async getBranchSalespersonCommissionPayments(
+    branchId: string,
+    salespersonId: string,
+    month?: string | null,
+  ): Promise<BranchCommissionPaymentRow[]> {
+    const salesperson = await this.getBranchSalespersonById(branchId, salespersonId);
+    if (!salesperson) return [];
+
+    const range = getMonthRangeByKey(month);
+    const paymentRows = await db
+      .select()
+      .from(branchCommissionPayments)
+      .where(and(
+        eq(branchCommissionPayments.branchId, branchId),
+        eq(branchCommissionPayments.salespersonId, salespersonId),
+        sql`DATE(${branchCommissionPayments.paidAt} AT TIME ZONE ${BRANCH_TIMEZONE}) >= ${range.from}`,
+        sql`DATE(${branchCommissionPayments.paidAt} AT TIME ZONE ${BRANCH_TIMEZONE}) < ${range.toExclusive}`,
+      ))
+      .orderBy(desc(branchCommissionPayments.paidAt), desc(branchCommissionPayments.createdAt));
+
+    if (!paymentRows.length) return [];
+
+    const paymentIds = paymentRows.map((row) => row.id);
+    const allocationRows = await db
+      .select()
+      .from(branchCommissionPaymentAllocations)
+      .where(and(
+        eq(branchCommissionPaymentAllocations.branchId, branchId),
+        inArray(branchCommissionPaymentAllocations.commissionPaymentId, paymentIds),
+      ));
+
+    const allocationMap = new Map<string, BranchCommissionPaymentAllocationRow[]>();
+    allocationRows.forEach((row) => {
+      const current = allocationMap.get(row.commissionPaymentId) ?? [];
+      current.push(this.mapBranchCommissionPaymentAllocationRow(row));
+      allocationMap.set(row.commissionPaymentId, current);
+    });
+
+    return paymentRows.map((row) => this.mapBranchCommissionPaymentRow(row, allocationMap.get(row.id) ?? []));
+  }
+
+  async getBranchCommissionPaymentById(
+    branchId: string,
+    paymentId: string,
+  ): Promise<BranchCommissionPaymentDetailRow | undefined> {
+    const [paymentRow] = await db
+      .select()
+      .from(branchCommissionPayments)
+      .where(and(
+        eq(branchCommissionPayments.branchId, branchId),
+        eq(branchCommissionPayments.id, paymentId),
+      ))
+      .limit(1);
+
+    if (!paymentRow) return undefined;
+
+    const [allocationRows, salesperson] = await Promise.all([
+      db
+        .select()
+        .from(branchCommissionPaymentAllocations)
+        .where(and(
+          eq(branchCommissionPaymentAllocations.branchId, branchId),
+          eq(branchCommissionPaymentAllocations.commissionPaymentId, paymentId),
+        )),
+      this.getBranchSalespersonById(branchId, paymentRow.salespersonId),
+    ]);
+
+    const mapped = this.mapBranchCommissionPaymentRow(
+      paymentRow,
+      allocationRows.map((row) => this.mapBranchCommissionPaymentAllocationRow(row)),
+    );
+
+    return {
+      ...mapped,
+      salespersonName: salesperson
+        ? `${salesperson.name}${salesperson.lastName ? ` ${salesperson.lastName}` : ""}`.trim()
+        : paymentRow.salespersonId,
+      totalAllocatedAmount: Number(
+        mapped.allocations?.reduce((sum, allocation) => sum + allocation.amountAllocated, 0).toFixed(2) ?? 0,
+      ),
+    };
+  }
+
+  async createBranchSalespersonCommissionPayment(data: {
+    branchId: string;
+    salespersonId: string;
+    amount: number;
+    paymentMethod: string;
+    idempotencyKey?: string | null;
+    reference?: string | null;
+    notes?: string | null;
+    periodStart?: string | null;
+    periodEnd?: string | null;
+    accrualIds?: string[] | null;
+    paidAt?: Date | null;
+    createdBy?: string | null;
+  }): Promise<BranchCommissionPaymentRow> {
+    const salesperson = await this.getBranchSalespersonById(data.branchId, data.salespersonId);
+    if (!salesperson) {
+      throw new Error("BRANCH_SALESPERSON_NOT_FOUND");
+    }
+
+    const idempotencyKey = normalizeOptionalTextValue(data.idempotencyKey);
+    if (idempotencyKey) {
+      const existingPayment = await this.getBranchCommissionPaymentByIdempotencyKey(data.branchId, idempotencyKey);
+      if (existingPayment) {
+        return existingPayment;
+      }
+    }
+
+    try {
+      const payment = await db.transaction(async (tx) => {
+        const whereClauses = [
+          eq(branchCommissionAccruals.branchId, data.branchId),
+          eq(branchCommissionAccruals.salespersonId, data.salespersonId),
+          isNull(branchCommissionAccruals.reversedAt),
+          inArray(branchCommissionAccruals.status, ["accrued", "approved", "partially_paid"]),
+        ];
+        if (data.accrualIds?.length) {
+          whereClauses.push(inArray(branchCommissionAccruals.id, data.accrualIds));
+        }
+        if (data.periodStart) {
+          whereClauses.push(sql`DATE(${branchCommissionAccruals.accruedAt} AT TIME ZONE ${BRANCH_TIMEZONE}) >= ${data.periodStart}`);
+        }
+        if (data.periodEnd) {
+          whereClauses.push(sql`DATE(${branchCommissionAccruals.accruedAt} AT TIME ZONE ${BRANCH_TIMEZONE}) <= ${data.periodEnd}`);
+        }
+
+        const initialAccrualRows = await tx
+          .select({ id: branchCommissionAccruals.id })
+          .from(branchCommissionAccruals)
+          .where(and(...whereClauses))
+          .orderBy(asc(branchCommissionAccruals.accruedAt), asc(branchCommissionAccruals.createdAt));
+
+        const candidateAccrualIds = initialAccrualRows.map((row) => row.id);
+        await this.lockBranchCommissionAccrualIdsTx(tx, data.branchId, candidateAccrualIds);
+
+        const accrualRows = candidateAccrualIds.length > 0
+          ? await tx
+              .select()
+              .from(branchCommissionAccruals)
+              .where(and(
+                eq(branchCommissionAccruals.branchId, data.branchId),
+                inArray(branchCommissionAccruals.id, candidateAccrualIds),
+                isNull(branchCommissionAccruals.reversedAt),
+                inArray(branchCommissionAccruals.status, ["accrued", "approved", "partially_paid"]),
+              ))
+              .orderBy(asc(branchCommissionAccruals.accruedAt), asc(branchCommissionAccruals.createdAt))
+          : [];
+
+        const mappedAccruals = accrualRows
+          .map((row) => this.mapBranchCommissionAccrualRow(row))
+          .map((row) => ({
+            ...row,
+            pendingAmount: Math.max(0, Number((row.commissionAmount - row.paidAmount).toFixed(2))),
+          }))
+          .filter((row) => row.pendingAmount > 0);
+
+        const totalPending = Number(mappedAccruals.reduce((sum, row) => sum + row.pendingAmount, 0).toFixed(2));
+        if (totalPending <= 0) {
+          throw new Error("BRANCH_COMMISSION_NOTHING_TO_PAY");
+        }
+        if (Number(data.amount.toFixed(2)) > totalPending + 0.0001) {
+          throw new Error("BRANCH_COMMISSION_PAYMENT_EXCEEDS_PENDING");
+        }
+
+        let remaining = Number(data.amount.toFixed(2));
+        const allocationsToCreate: InsertBranchCommissionPaymentAllocation[] = [];
+        const accrualUpdates: Array<{ id: string; nextPaidAmount: number; nextStatus: string }> = [];
+
+        for (const accrual of mappedAccruals) {
+          if (remaining <= 0) break;
+          const allocated = Number(Math.min(remaining, accrual.pendingAmount).toFixed(2));
+          if (allocated <= 0) continue;
+          const nextPaidAmount = Number((accrual.paidAmount + allocated).toFixed(2));
+          const nextStatus = nextPaidAmount + 0.0001 >= accrual.commissionAmount ? "paid" : "partially_paid";
+          accrualUpdates.push({ id: accrual.id, nextPaidAmount, nextStatus });
+          allocationsToCreate.push({
+            branchId: data.branchId,
+            commissionPaymentId: "" as any,
+            commissionAccrualId: accrual.id,
+            amountAllocated: String(allocated) as any,
+          });
+          remaining = Number((remaining - allocated).toFixed(2));
+        }
+
+        if (remaining > 0.0001) {
+          throw new Error("BRANCH_COMMISSION_PAYMENT_ALLOCATION_INCOMPLETE");
+        }
+
+        const [paymentRow] = await tx
+          .insert(branchCommissionPayments)
+          .values({
+            branchId: data.branchId,
+            salespersonId: data.salespersonId,
+            amount: String(toFinanceAmount(data.amount)),
+            paymentMethod: data.paymentMethod,
+            idempotencyKey,
+            reference: normalizeOptionalTextValue(data.reference),
+            notes: normalizeOptionalTextValue(data.notes),
+            periodStart: data.periodStart ?? null,
+            periodEnd: data.periodEnd ?? null,
+            paidAt: data.paidAt ?? new Date(),
+            createdBy: data.createdBy ?? null,
+          } as any)
+          .returning();
+
+        if (allocationsToCreate.length > 0) {
+          await tx.insert(branchCommissionPaymentAllocations).values(
+            allocationsToCreate.map((allocation) => ({
+              ...allocation,
+              commissionPaymentId: paymentRow.id,
+            })) as any,
+          );
+        }
+
+        for (const update of accrualUpdates) {
+          await tx
+            .update(branchCommissionAccruals)
+            .set({
+              paidAmount: String(update.nextPaidAmount),
+              status: update.nextStatus,
+            } as any)
+            .where(and(
+              eq(branchCommissionAccruals.id, update.id),
+              eq(branchCommissionAccruals.branchId, data.branchId),
+            ));
+        }
+
+        await tx.insert(branchFinanceEntries).values({
+          branchId: data.branchId,
+          type: "expense",
+          category: "sales_commission",
+          concept: `Comision pagada a ${salesperson.name}${salesperson.lastName ? ` ${salesperson.lastName}` : ""}`.trim(),
+          amount: String(toFinanceAmount(data.amount)),
+          paymentMethod: data.paymentMethod,
+          clientUserId: null,
+          clientName: null,
+          notes: normalizeOptionalTextValue(data.notes),
+          entryDate: (data.paidAt ?? new Date()).toLocaleDateString("en-CA", { timeZone: BRANCH_TIMEZONE }),
+          source: "sales_commission_payment",
+          sourceId: paymentRow.id,
+          metadata: {
+            commissionPaymentId: paymentRow.id,
+            salespersonId: data.salespersonId,
+            salespersonName: `${salesperson.name}${salesperson.lastName ? ` ${salesperson.lastName}` : ""}`.trim(),
+            periodStart: data.periodStart ?? null,
+            periodEnd: data.periodEnd ?? null,
+            allocations: allocationsToCreate.map((allocation) => ({
+              commissionAccrualId: allocation.commissionAccrualId,
+              amountAllocated: Number(allocation.amountAllocated),
+            })),
+          },
+          createdBy: data.createdBy ?? null,
+        } as any);
+
+        const createdAllocations = await tx
+          .select()
+          .from(branchCommissionPaymentAllocations)
+          .where(and(
+            eq(branchCommissionPaymentAllocations.branchId, data.branchId),
+            eq(branchCommissionPaymentAllocations.commissionPaymentId, paymentRow.id),
+          ));
+
+        return this.mapBranchCommissionPaymentRow(
+          paymentRow,
+          createdAllocations.map((row) => this.mapBranchCommissionPaymentAllocationRow(row)),
+        );
+      });
+
+      return payment;
+    } catch (error: any) {
+      if (idempotencyKey && isPgUniqueViolation(error)) {
+        const existingPayment = await this.getBranchCommissionPaymentByIdempotencyKey(data.branchId, idempotencyKey);
+        if (existingPayment) {
+          return existingPayment;
+        }
+      }
+      throw error;
+    }
+  }
+
+  async getBranchSuppliers(branchId: string): Promise<BranchSupplierRow[]> {
+    const rows = await db
+      .select()
+      .from(branchSuppliers)
+      .where(and(
+        eq(branchSuppliers.branchId, branchId),
+        isNull(branchSuppliers.deletedAt),
+      ))
+      .orderBy(desc(branchSuppliers.isActive), asc(branchSuppliers.name), desc(branchSuppliers.createdAt));
+
+    return rows.map((row) => this.mapBranchSupplierRow(row));
+  }
+
+  async getBranchSupplierById(branchId: string, supplierId: string): Promise<BranchSupplierRow | undefined> {
+    const [row] = await db
+      .select()
+      .from(branchSuppliers)
+      .where(and(
+        eq(branchSuppliers.branchId, branchId),
+        eq(branchSuppliers.id, supplierId),
+        isNull(branchSuppliers.deletedAt),
+      ))
+      .limit(1);
+
+    return row ? this.mapBranchSupplierRow(row) : undefined;
+  }
+
+  async getBranchSupplierSummary(
+    branchId: string,
+    supplierId: string,
+  ): Promise<BranchSupplierSummaryRow | undefined> {
+    const supplier = await this.getBranchSupplierById(branchId, supplierId);
+    if (!supplier) return undefined;
+
+    const [summaryResult, topProductsResult, productCountResult] = await Promise.all([
+      db.execute(sql<{
+        totalPurchasedAmount: string | number | null;
+        purchasesCount: string | number | null;
+        lastPurchaseAt: Date | string | null;
+        receivedPurchasesCount: string | number | null;
+        pendingPurchasesCount: string | number | null;
+      }>`
+        SELECT
+          COALESCE(SUM(bp.total_amount), 0) AS "totalPurchasedAmount",
+          COUNT(*)::int AS "purchasesCount",
+          MAX(COALESCE(bp.received_at, bp.created_at)) AS "lastPurchaseAt",
+          COUNT(*) FILTER (WHERE bp.status = 'received')::int AS "receivedPurchasesCount",
+          COUNT(*) FILTER (WHERE bp.status IN ('draft', 'ordered', 'partially_received'))::int AS "pendingPurchasesCount"
+        FROM branch_purchases bp
+        WHERE bp.branch_id = ${branchId}
+          AND bp.supplier_id = ${supplierId}
+          AND bp.status <> 'cancelled'
+      `),
+      db.execute(sql<{
+        commercialProductId: string | null;
+        name: string | null;
+        unitsOrdered: string | number | null;
+        unitsReceived: string | number | null;
+        totalPurchasedAmount: string | number | null;
+      }>`
+        SELECT
+          bpi.commercial_product_id AS "commercialProductId",
+          MAX(bpi.name_snapshot) AS "name",
+          COALESCE(SUM(bpi.quantity_ordered), 0) AS "unitsOrdered",
+          COALESCE(SUM(bpi.quantity_received), 0) AS "unitsReceived",
+          COALESCE(SUM(bpi.line_total), 0) AS "totalPurchasedAmount"
+        FROM branch_purchase_items bpi
+        INNER JOIN branch_purchases bp ON bp.id = bpi.purchase_id
+        WHERE bp.branch_id = ${branchId}
+          AND bp.supplier_id = ${supplierId}
+          AND bp.status <> 'cancelled'
+        GROUP BY bpi.commercial_product_id
+        ORDER BY COALESCE(SUM(bpi.line_total), 0) DESC, MAX(bpi.name_snapshot) ASC
+        LIMIT 5
+      `),
+      db.execute(sql<{ total: string | number | null }>`
+        SELECT
+          COUNT(DISTINCT COALESCE(bpi.commercial_product_id::text, bpi.name_snapshot))::int AS total
+        FROM branch_purchase_items bpi
+        INNER JOIN branch_purchases bp ON bp.id = bpi.purchase_id
+        WHERE bp.branch_id = ${branchId}
+          AND bp.supplier_id = ${supplierId}
+          AND bp.status <> 'cancelled'
+      `),
+    ]);
+
+    const summaryRow = (summaryResult.rows?.[0] ?? null) as any;
+    const totalPurchasedAmount = toFinanceAmount(summaryRow?.totalPurchasedAmount);
+    const purchasesCount = Number(summaryRow?.purchasesCount ?? 0);
+
+    return {
+      supplierId: supplier.id,
+      supplierName: supplier.name,
+      totalPurchasedAmount,
+      purchasesCount,
+      averageTicketAmount: purchasesCount > 0 ? Number((totalPurchasedAmount / purchasesCount).toFixed(2)) : 0,
+      lastPurchaseAt: summaryRow?.lastPurchaseAt ?? null,
+      productsSuppliedCount: Number((productCountResult.rows?.[0] as any)?.total ?? 0),
+      receivedPurchasesCount: Number(summaryRow?.receivedPurchasesCount ?? 0),
+      pendingPurchasesCount: Number(summaryRow?.pendingPurchasesCount ?? 0),
+      topProducts: (topProductsResult.rows ?? []).map((row: any) => ({
+        commercialProductId: row.commercialProductId ?? null,
+        name: row.name || "Producto",
+        unitsOrdered: Number(row.unitsOrdered ?? 0),
+        unitsReceived: Number(row.unitsReceived ?? 0),
+        totalPurchasedAmount: toFinanceAmount(row.totalPurchasedAmount),
+      })),
+    };
+  }
+
+  async createBranchSupplier(data: InsertBranchSupplier): Promise<BranchSupplierRow> {
+    const [created] = await db.insert(branchSuppliers).values(data).returning();
+    return this.mapBranchSupplierRow(created);
+  }
+
+  async updateBranchSupplier(
+    branchId: string,
+    supplierId: string,
+    data: Partial<InsertBranchSupplier>,
+  ): Promise<BranchSupplierRow | undefined> {
+    const [updated] = await db
+      .update(branchSuppliers)
+      .set({
+        ...data,
+        updatedAt: new Date(),
+      } as any)
+      .where(and(
+        eq(branchSuppliers.branchId, branchId),
+        eq(branchSuppliers.id, supplierId),
+        isNull(branchSuppliers.deletedAt),
+      ))
+      .returning();
+
+    return updated ? this.mapBranchSupplierRow(updated) : undefined;
+  }
+
+  async softDeleteBranchSupplier(branchId: string, supplierId: string): Promise<boolean> {
+    const [deleted] = await db
+      .update(branchSuppliers)
+      .set({
+        deletedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(branchSuppliers.branchId, branchId),
+        eq(branchSuppliers.id, supplierId),
+        isNull(branchSuppliers.deletedAt),
+      ))
+      .returning({ id: branchSuppliers.id });
+
+    return !!deleted;
+  }
+
+  async getBranchPurchases(branchId: string, filters?: {
+    status?: string | null;
+    supplierId?: string | null;
+    from?: string | null;
+    to?: string | null;
+  }): Promise<BranchPurchaseRow[]> {
+    const whereClauses = [eq(branchPurchases.branchId, branchId)];
+
+    if (filters?.status) {
+      whereClauses.push(eq(branchPurchases.status, filters.status));
+    }
+    if (filters?.supplierId) {
+      whereClauses.push(eq(branchPurchases.supplierId, filters.supplierId));
+    }
+    if (filters?.from) {
+      whereClauses.push(gte(branchPurchases.purchaseDate, filters.from));
+    }
+    if (filters?.to) {
+      whereClauses.push(lte(branchPurchases.purchaseDate, filters.to));
+    }
+
+    const purchaseRows = await db
+      .select({
+        id: branchPurchases.id,
+        branchId: branchPurchases.branchId,
+        projectId: branchPurchases.projectId,
+        projectCode: branchCommercialProjects.code,
+        projectName: branchCommercialProjects.name,
+        folio: branchPurchases.folio,
+        supplierId: branchPurchases.supplierId,
+        supplierName: branchSuppliers.name,
+        status: branchPurchases.status,
+        purchaseDate: branchPurchases.purchaseDate,
+        expectedDate: branchPurchases.expectedDate,
+        receivedAt: branchPurchases.receivedAt,
+        paymentStatus: branchPurchases.paymentStatus,
+        paymentMethod: branchPurchases.paymentMethod,
+        subtotalAmount: branchPurchases.subtotalAmount,
+        discountAmount: branchPurchases.discountAmount,
+        taxMode: branchPurchases.taxMode,
+        taxRate: branchPurchases.taxRate,
+        subtotalBeforeTax: branchPurchases.subtotalBeforeTax,
+        taxableSubtotal: branchPurchases.taxableSubtotal,
+        taxTotal: branchPurchases.taxTotal,
+        grandTotal: branchPurchases.grandTotal,
+        totalAmount: branchPurchases.totalAmount,
+        paidAmount: branchPurchases.paidAmount,
+        reference: branchPurchases.reference,
+        notes: branchPurchases.notes,
+        createdBy: branchPurchases.createdBy,
+        cancelledAt: branchPurchases.cancelledAt,
+        createdAt: branchPurchases.createdAt,
+        updatedAt: branchPurchases.updatedAt,
+      })
+      .from(branchPurchases)
+      .leftJoin(branchCommercialProjects, and(
+        eq(branchPurchases.projectId, branchCommercialProjects.id),
+        eq(branchPurchases.branchId, branchCommercialProjects.branchId),
+      ))
+      .leftJoin(branchSuppliers, eq(branchPurchases.supplierId, branchSuppliers.id))
+      .where(and(...whereClauses))
+      .orderBy(desc(branchPurchases.purchaseDate), desc(branchPurchases.createdAt));
+
+    if (!purchaseRows.length) return [];
+
+    const purchaseIds = purchaseRows.map((row) => row.id);
+    const itemRows = await db
+      .select()
+      .from(branchPurchaseItems)
+      .where(inArray(branchPurchaseItems.purchaseId, purchaseIds));
+
+    const totalsByPurchaseId = new Map<string, { items: number; ordered: number; received: number }>();
+    for (const item of itemRows) {
+      const current = totalsByPurchaseId.get(item.purchaseId) ?? { items: 0, ordered: 0, received: 0 };
+      current.items += 1;
+      current.ordered += Number(item.quantityOrdered ?? 0);
+      current.received += Number(item.quantityReceived ?? 0);
+      totalsByPurchaseId.set(item.purchaseId, current);
+    }
+
+    return purchaseRows.map((row) => {
+      const totals = totalsByPurchaseId.get(row.id);
+      return this.mapBranchPurchaseRow({
+        ...row,
+        totalItems: totals?.items ?? 0,
+        totalUnitsOrdered: totals?.ordered ?? 0,
+        totalUnitsReceived: totals?.received ?? 0,
+      });
+    });
+  }
+
+  async getBranchPurchaseById(branchId: string, purchaseId: string): Promise<BranchPurchaseDetailRow | undefined> {
+    const [purchaseRow] = await db
+      .select({
+        id: branchPurchases.id,
+        branchId: branchPurchases.branchId,
+        projectId: branchPurchases.projectId,
+        projectCode: branchCommercialProjects.code,
+        projectName: branchCommercialProjects.name,
+        folio: branchPurchases.folio,
+        supplierId: branchPurchases.supplierId,
+        supplierName: branchSuppliers.name,
+        status: branchPurchases.status,
+        purchaseDate: branchPurchases.purchaseDate,
+        expectedDate: branchPurchases.expectedDate,
+        receivedAt: branchPurchases.receivedAt,
+        paymentStatus: branchPurchases.paymentStatus,
+        paymentMethod: branchPurchases.paymentMethod,
+        subtotalAmount: branchPurchases.subtotalAmount,
+        discountAmount: branchPurchases.discountAmount,
+        taxMode: branchPurchases.taxMode,
+        taxRate: branchPurchases.taxRate,
+        subtotalBeforeTax: branchPurchases.subtotalBeforeTax,
+        taxableSubtotal: branchPurchases.taxableSubtotal,
+        taxTotal: branchPurchases.taxTotal,
+        grandTotal: branchPurchases.grandTotal,
+        totalAmount: branchPurchases.totalAmount,
+        paidAmount: branchPurchases.paidAmount,
+        reference: branchPurchases.reference,
+        notes: branchPurchases.notes,
+        createdBy: branchPurchases.createdBy,
+        cancelledAt: branchPurchases.cancelledAt,
+        createdAt: branchPurchases.createdAt,
+        updatedAt: branchPurchases.updatedAt,
+      })
+      .from(branchPurchases)
+      .leftJoin(branchCommercialProjects, and(
+        eq(branchPurchases.projectId, branchCommercialProjects.id),
+        eq(branchPurchases.branchId, branchCommercialProjects.branchId),
+      ))
+      .leftJoin(branchSuppliers, eq(branchPurchases.supplierId, branchSuppliers.id))
+      .where(and(
+        eq(branchPurchases.branchId, branchId),
+        eq(branchPurchases.id, purchaseId),
+      ))
+      .limit(1);
+
+    if (!purchaseRow) return undefined;
+
+    const itemRows = await db
+      .select()
+      .from(branchPurchaseItems)
+      .where(eq(branchPurchaseItems.purchaseId, purchaseId))
+      .orderBy(asc(branchPurchaseItems.createdAt));
+
+    const items = itemRows.map((row) => this.mapBranchPurchaseItemRow(row));
+    const summary = this.mapBranchPurchaseRow({
+      ...purchaseRow,
+      totalItems: items.length,
+      totalUnitsOrdered: items.reduce((acc, item) => acc + item.quantityOrdered, 0),
+      totalUnitsReceived: items.reduce((acc, item) => acc + item.quantityReceived, 0),
+    });
+
+    return {
+      ...summary,
+      items,
+    };
+  }
+
+  async createBranchPurchase(data: {
+    purchase: InsertBranchPurchase;
+    items: InsertBranchPurchaseItem[];
+  }): Promise<BranchPurchaseDetailRow> {
+    if (!data.items.length) {
+      throw new Error("BRANCH_PURCHASE_REQUIRES_ITEMS");
+    }
+
+    const allowedStatuses = new Set(["draft", "ordered"]);
+    const requestedStatus = data.purchase.status?.trim() || "draft";
+    if (!allowedStatuses.has(requestedStatus)) {
+      throw new Error("BRANCH_PURCHASE_INVALID_STATUS");
+    }
+
+    const discountAmount = toFinanceAmount(data.purchase.discountAmount);
+    const requestedPaidAmount = toFinanceAmount(data.purchase.paidAmount);
+
+    const created = await db.transaction(async (tx) => {
+      let supplierId = data.purchase.supplierId ?? null;
+      const projectId = normalizeOptionalTextValue((data.purchase as any).projectId);
+      if (supplierId) {
+        const [supplier] = await tx
+          .select()
+          .from(branchSuppliers)
+          .where(and(
+            eq(branchSuppliers.id, supplierId),
+            eq(branchSuppliers.branchId, data.purchase.branchId),
+            isNull(branchSuppliers.deletedAt),
+          ))
+          .limit(1);
+
+        if (!supplier) {
+          throw new Error("BRANCH_PURCHASE_SUPPLIER_INVALID");
+        }
+      }
+
+      if (projectId) {
+        const project = await this.getAssignableBranchCommercialProjectTx(tx, data.purchase.branchId, projectId);
+        if (!project) {
+          throw new Error("BRANCH_PURCHASE_PROJECT_INVALID");
+        }
+      }
+
+      const requestedProductIds = data.items
+        .map((item) => item.commercialProductId)
+        .filter((value): value is string => typeof value === "string" && value.length > 0);
+      const productIds = Array.from(new Set(requestedProductIds));
+
+      if (requestedProductIds.length !== productIds.length) {
+        throw new Error("BRANCH_PURCHASE_DUPLICATE_PRODUCTS");
+      }
+
+      const productRows = productIds.length > 0
+        ? await tx
+          .select()
+          .from(branchCommercialProducts)
+          .where(and(
+            eq(branchCommercialProducts.branchId, data.purchase.branchId),
+            inArray(branchCommercialProducts.id, productIds),
+            isNull(branchCommercialProducts.deletedAt),
+          ))
+        : [];
+
+      const productMap = new Map(productRows.map((row) => [row.id, row]));
+
+      const normalizedPaymentMethod = typeof data.purchase.paymentMethod === "string" && data.purchase.paymentMethod.trim().length > 0
+        ? data.purchase.paymentMethod.trim()
+        : null;
+
+      if (!normalizedPaymentMethod && requestedPaidAmount > 0) {
+        throw new Error("BRANCH_PURCHASE_PAYMENT_REQUIRES_METHOD");
+      }
+
+      const normalizedItems = data.items.map((item) => {
+        const productId = item.commercialProductId ?? null;
+        if (!productId) {
+          throw new Error("BRANCH_PURCHASE_ITEM_PRODUCT_INVALID");
+        }
+
+        const product = productMap.get(productId);
+        if (!product) {
+          throw new Error("BRANCH_PURCHASE_ITEM_PRODUCT_INVALID");
+        }
+
+        const quantityOrdered = Number(item.quantityOrdered ?? 0);
+        const unitCost = toFinanceAmount(item.unitCost);
+        const lineTotal = Number((quantityOrdered * unitCost).toFixed(2));
+        const updateReferenceCost = Boolean((item as { updateReferenceCost?: boolean }).updateReferenceCost);
+
+        return {
+          product,
+          quantityOrdered,
+          unitCost,
+          lineTotal,
+          updateReferenceCost,
+        };
+      });
+
+      const subtotalAmount = Number(normalizedItems.reduce((sum, item) => sum + item.lineTotal, 0).toFixed(2));
+      const taxSnapshot = computeCommercialTaxSnapshot({
+        subtotalAmount,
+        discountAmount,
+        taxMode: (((data.purchase as any).taxMode ?? "tax_exempt") as CommercialTaxMode),
+        taxRate: toFinanceAmount((data.purchase as any).taxRate ?? 0),
+      });
+      const totalAmount = taxSnapshot.grandTotal;
+      if (taxSnapshot.grandTotal < 0) {
+        throw new Error("BRANCH_PURCHASE_TOTAL_NEGATIVE");
+      }
+      if (requestedPaidAmount > totalAmount) {
+        throw new Error("BRANCH_PURCHASE_PAID_EXCEEDS_TOTAL");
+      }
+
+      const paymentStatus = requestedPaidAmount <= 0
+        ? "unpaid"
+        : requestedPaidAmount >= totalAmount
+          ? "paid"
+          : "partial";
+
+      const [purchaseRow] = await tx
+        .insert(branchPurchases)
+        .values({
+          ...data.purchase,
+          projectId,
+          supplierId,
+          folio: data.purchase.folio?.trim() || generateBranchPurchaseFolio(),
+          status: requestedStatus,
+          paymentStatus,
+          subtotalAmount: subtotalAmount.toFixed(2),
+          discountAmount: discountAmount.toFixed(2),
+          taxMode: taxSnapshot.taxMode,
+          taxRate: taxSnapshot.taxRate.toFixed(2),
+          subtotalBeforeTax: taxSnapshot.subtotalBeforeTax.toFixed(2),
+          taxableSubtotal: taxSnapshot.taxableSubtotal.toFixed(2),
+          taxTotal: taxSnapshot.taxTotal.toFixed(2),
+          grandTotal: taxSnapshot.grandTotal.toFixed(2),
+          totalAmount: totalAmount.toFixed(2),
+          paidAmount: requestedPaidAmount.toFixed(2),
+          paymentMethod: normalizedPaymentMethod,
+          reference: data.purchase.reference ?? null,
+          notes: data.purchase.notes ?? null,
+        } as any)
+        .returning({
+          id: branchPurchases.id,
+          branchId: branchPurchases.branchId,
+        });
+
+      await tx.insert(branchPurchaseItems).values(
+        normalizedItems.map((item) => ({
+          purchaseId: purchaseRow.id,
+          branchId: purchaseRow.branchId,
+          commercialProductId: item.product.id,
+          nameSnapshot: item.product.name,
+          skuSnapshot: item.product.sku ?? null,
+          quantityOrdered: item.quantityOrdered,
+          quantityReceived: 0,
+          unitCost: item.unitCost.toFixed(2),
+          lineTotal: item.lineTotal.toFixed(2),
+          metadata: {
+            category: item.product.category,
+            usesInventory: item.product.usesInventory,
+            updateReferenceCost: item.updateReferenceCost,
+          },
+        })) as any,
+      );
+
+      for (const item of normalizedItems) {
+        if (!item.updateReferenceCost) continue;
+        await tx
+          .update(branchCommercialProducts)
+          .set({
+            costAmount: item.unitCost.toFixed(2),
+            updatedAt: new Date(),
+          })
+          .where(eq(branchCommercialProducts.id, item.product.id));
+      }
+
+      return purchaseRow;
+    });
+
+    return (await this.getBranchPurchaseById(created.branchId, created.id))!;
+  }
+
+  async receiveBranchPurchase(data: {
+    branchId: string;
+    purchaseId: string;
+    receivedBy?: string | null;
+    notes?: string | null;
+  }): Promise<BranchPurchaseDetailRow> {
+    await db.transaction(async (tx) => {
+      const lockedPurchase = await this.getLockedBranchPurchase(tx, data.branchId, data.purchaseId);
+      if (!lockedPurchase) {
+        throw new Error("BRANCH_PURCHASE_NOT_FOUND");
+      }
+      if (lockedPurchase.status === "cancelled") {
+        throw new Error("BRANCH_PURCHASE_CANNOT_RECEIVE_CANCELLED");
+      }
+      if (lockedPurchase.status === "received") {
+        throw new Error("BRANCH_PURCHASE_ALREADY_RECEIVED");
+      }
+
+      const itemRows = await tx
+        .select()
+        .from(branchPurchaseItems)
+        .where(eq(branchPurchaseItems.purchaseId, data.purchaseId))
+        .orderBy(asc(branchPurchaseItems.createdAt));
+
+      if (!itemRows.length) {
+        throw new Error("BRANCH_PURCHASE_REQUIRES_ITEMS");
+      }
+
+      for (const item of itemRows) {
+        const remainingQuantity = Math.max(0, Number(item.quantityOrdered ?? 0) - Number(item.quantityReceived ?? 0));
+        if (remainingQuantity <= 0) {
+          continue;
+        }
+
+        if (!item.commercialProductId) {
+          throw new Error("BRANCH_PURCHASE_ITEM_PRODUCT_INVALID");
+        }
+
+        const [product] = await tx
+          .select()
+          .from(branchCommercialProducts)
+          .where(and(
+            eq(branchCommercialProducts.id, item.commercialProductId),
+            eq(branchCommercialProducts.branchId, data.branchId),
+            isNull(branchCommercialProducts.deletedAt),
+          ))
+          .limit(1);
+
+        if (!product) {
+          throw new Error("BRANCH_PURCHASE_ITEM_PRODUCT_INVALID");
+        }
+
+        const itemUsesInventory = typeof (item.metadata as { usesInventory?: unknown } | null)?.usesInventory === "boolean"
+          ? Boolean((item.metadata as { usesInventory?: boolean }).usesInventory)
+          : product.usesInventory;
+
+        if (!itemUsesInventory) {
+          await tx
+            .update(branchPurchaseItems)
+            .set({
+              quantityReceived: item.quantityOrdered,
+            })
+            .where(eq(branchPurchaseItems.id, item.id));
+          continue;
+        }
+
+        let lockedBalance = await this.getLockedBranchInventoryBalance(tx, data.branchId, item.commercialProductId);
+        if (!lockedBalance) {
+          await tx.insert(branchInventoryBalances).values({
+            branchId: data.branchId,
+            commercialProductId: item.commercialProductId,
+            quantityOnHand: 0,
+            minimumStock: 0,
+            updatedBy: data.receivedBy ?? null,
+          } as any);
+
+          lockedBalance = await this.getLockedBranchInventoryBalance(tx, data.branchId, item.commercialProductId);
+        }
+
+        if (!lockedBalance) {
+          throw new Error("INVENTORY_NOT_INITIALIZED");
+        }
+
+        const quantityBefore = lockedBalance.quantityOnHand;
+        const quantityAfter = quantityBefore + remainingQuantity;
+
+        await tx
+          .update(branchInventoryBalances)
+          .set({
+            quantityOnHand: quantityAfter,
+            updatedBy: data.receivedBy ?? null,
+            updatedAt: new Date(),
+          })
+          .where(eq(branchInventoryBalances.id, lockedBalance.id));
+
+        await this.insertBranchInventoryMovementTx(tx, {
+          branchId: data.branchId,
+          commercialProductId: item.commercialProductId,
+          movementType: "purchase",
+          quantityDelta: remainingQuantity,
+          quantityBefore,
+          quantityAfter,
+          unitCostSnapshot: toFinanceAmount(item.unitCost),
+          reason: `Recepcion de compra ${lockedPurchase.folio}`,
+          notes: data.notes ?? null,
+          saleId: null,
+          saleItemId: null,
+          purchaseId: lockedPurchase.id,
+          purchaseItemId: item.id,
+          createdBy: data.receivedBy ?? null,
+          metadata: {
+            purchaseFolio: lockedPurchase.folio,
+          },
+        } as any);
+
+        await tx
+          .update(branchPurchaseItems)
+          .set({
+            quantityReceived: item.quantityOrdered,
+          })
+          .where(eq(branchPurchaseItems.id, item.id));
+      }
+
+      await tx
+        .update(branchPurchases)
+        .set({
+          status: "received",
+          receivedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(branchPurchases.id, lockedPurchase.id));
+    });
+
+    return (await this.getBranchPurchaseById(data.branchId, data.purchaseId))!;
+  }
+
+  async cancelBranchPurchase(branchId: string, purchaseId: string): Promise<BranchPurchaseDetailRow | undefined> {
+    const updated = await db.transaction(async (tx) => {
+      const lockedPurchase = await this.getLockedBranchPurchase(tx, branchId, purchaseId);
+      if (!lockedPurchase) {
+        throw new Error("BRANCH_PURCHASE_NOT_FOUND");
+      }
+      if (lockedPurchase.status !== "draft") {
+        throw new Error("BRANCH_PURCHASE_CANNOT_CANCEL");
+      }
+
+      const [purchase] = await tx
+        .update(branchPurchases)
+        .set({
+          status: "cancelled",
+          cancelledAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(branchPurchases.id, purchaseId))
+        .returning({ id: branchPurchases.id, branchId: branchPurchases.branchId });
+
+      return purchase;
+    });
+
+    if (!updated) return undefined;
+    return this.getBranchPurchaseById(updated.branchId, updated.id);
+  }
+
+  async createBranchCommercialProductInitialInventory(data: {
+    branchId: string;
+    commercialProductId: string;
+    quantity: number;
+    minimumStock: number;
+    unitCost?: number | null;
+    notes?: string | null;
+    createdBy?: string | null;
+  }): Promise<BranchInventorySummaryRow> {
+    await db.transaction(async (tx) => {
+      const product = await this.getBranchCommercialProductById(data.branchId, data.commercialProductId);
+      if (!product) throw new Error("COMMERCIAL_PRODUCT_NOT_FOUND");
+      if (!product.usesInventory) throw new Error("COMMERCIAL_PRODUCT_NOT_TRACKED");
+
+      const [existing] = await tx
+        .select()
+        .from(branchInventoryBalances)
+        .where(and(
+          eq(branchInventoryBalances.branchId, data.branchId),
+          eq(branchInventoryBalances.commercialProductId, data.commercialProductId),
+        ))
+        .limit(1);
+
+      if (existing) {
+        throw new Error("INVENTORY_ALREADY_INITIALIZED");
+      }
+
+      await tx.insert(branchInventoryBalances).values({
+        branchId: data.branchId,
+        commercialProductId: data.commercialProductId,
+        quantityOnHand: data.quantity,
+        minimumStock: data.minimumStock,
+        updatedBy: data.createdBy ?? null,
+      } as any);
+
+      await this.insertBranchInventoryMovementTx(tx, {
+        branchId: data.branchId,
+        commercialProductId: data.commercialProductId,
+        movementType: "initial",
+        quantityDelta: data.quantity,
+        quantityBefore: 0,
+        quantityAfter: data.quantity,
+        unitCostSnapshot: data.unitCost ?? product.costAmount ?? null,
+        reason: "Inventario inicial",
+        notes: data.notes ?? null,
+        saleId: null,
+        saleItemId: null,
+        createdBy: data.createdBy ?? null,
+        metadata: {
+          minimumStock: data.minimumStock,
+        },
+      } as any);
+    });
+
+    return this.getBranchCommercialProductInventory(data.branchId, data.commercialProductId);
+  }
+
+  async createBranchCommercialProductInventoryEntry(data: {
+    branchId: string;
+    commercialProductId: string;
+    quantity: number;
+    minimumStock?: number | null;
+    unitCost?: number | null;
+    reason: string;
+    notes?: string | null;
+    createdBy?: string | null;
+  }): Promise<BranchInventorySummaryRow> {
+    await db.transaction(async (tx) => {
+      const product = await this.getBranchCommercialProductById(data.branchId, data.commercialProductId);
+      if (!product) throw new Error("COMMERCIAL_PRODUCT_NOT_FOUND");
+      if (!product.usesInventory) throw new Error("COMMERCIAL_PRODUCT_NOT_TRACKED");
+
+      const lockedBalance = await this.getLockedBranchInventoryBalance(tx, data.branchId, data.commercialProductId);
+      if (!lockedBalance) throw new Error("INVENTORY_NOT_INITIALIZED");
+
+      const quantityBefore = lockedBalance.quantityOnHand;
+      const quantityAfter = quantityBefore + data.quantity;
+      const nextMinimumStock = data.minimumStock == null ? lockedBalance.minimumStock : data.minimumStock;
+
+      await tx
+        .update(branchInventoryBalances)
+        .set({
+          quantityOnHand: quantityAfter,
+          minimumStock: nextMinimumStock,
+          updatedBy: data.createdBy ?? null,
+          updatedAt: new Date(),
+        })
+        .where(eq(branchInventoryBalances.id, lockedBalance.id));
+
+      await this.insertBranchInventoryMovementTx(tx, {
+        branchId: data.branchId,
+        commercialProductId: data.commercialProductId,
+        movementType: "manual_entry",
+        quantityDelta: data.quantity,
+        quantityBefore,
+        quantityAfter,
+        unitCostSnapshot: data.unitCost ?? product.costAmount ?? null,
+        reason: data.reason,
+        notes: data.notes ?? null,
+        saleId: null,
+        saleItemId: null,
+        createdBy: data.createdBy ?? null,
+        metadata: {
+          minimumStock: nextMinimumStock,
+        },
+      } as any);
+    });
+
+    return this.getBranchCommercialProductInventory(data.branchId, data.commercialProductId);
+  }
+
+  async adjustBranchCommercialProductInventory(data: {
+    branchId: string;
+    commercialProductId: string;
+    newQuantity?: number | null;
+    quantityDelta?: number | null;
+    minimumStock?: number | null;
+    unitCost?: number | null;
+    reason: string;
+    notes?: string | null;
+    createdBy?: string | null;
+  }): Promise<BranchInventorySummaryRow> {
+    await db.transaction(async (tx) => {
+      const product = await this.getBranchCommercialProductById(data.branchId, data.commercialProductId);
+      if (!product) throw new Error("COMMERCIAL_PRODUCT_NOT_FOUND");
+      if (!product.usesInventory) throw new Error("COMMERCIAL_PRODUCT_NOT_TRACKED");
+
+      const lockedBalance = await this.getLockedBranchInventoryBalance(tx, data.branchId, data.commercialProductId);
+      if (!lockedBalance) throw new Error("INVENTORY_NOT_INITIALIZED");
+
+      const quantityBefore = lockedBalance.quantityOnHand;
+      const delta = data.newQuantity != null
+        ? data.newQuantity - quantityBefore
+        : Number(data.quantityDelta ?? 0);
+      const quantityAfter = data.newQuantity != null
+        ? data.newQuantity
+        : quantityBefore + delta;
+
+      if (quantityAfter < 0) {
+        throw new Error("INVENTORY_NEGATIVE_STOCK");
+      }
+      if (delta === 0) {
+        throw new Error("INVENTORY_NO_CHANGES");
+      }
+
+      const nextMinimumStock = data.minimumStock == null ? lockedBalance.minimumStock : data.minimumStock;
+
+      await tx
+        .update(branchInventoryBalances)
+        .set({
+          quantityOnHand: quantityAfter,
+          minimumStock: nextMinimumStock,
+          updatedBy: data.createdBy ?? null,
+          updatedAt: new Date(),
+        })
+        .where(eq(branchInventoryBalances.id, lockedBalance.id));
+
+      await this.insertBranchInventoryMovementTx(tx, {
+        branchId: data.branchId,
+        commercialProductId: data.commercialProductId,
+        movementType: delta > 0 ? "positive_adjustment" : "negative_adjustment",
+        quantityDelta: delta,
+        quantityBefore,
+        quantityAfter,
+        unitCostSnapshot: data.unitCost ?? product.costAmount ?? null,
+        reason: data.reason,
+        notes: data.notes ?? null,
+        saleId: null,
+        saleItemId: null,
+        createdBy: data.createdBy ?? null,
+        metadata: {
+          minimumStock: nextMinimumStock,
+          mode: data.newQuantity != null ? "set_quantity" : "delta",
+        },
+      } as any);
+    });
+
+    return this.getBranchCommercialProductInventory(data.branchId, data.commercialProductId);
+  }
+
+  async createBranchCommercialProductInventoryWaste(data: {
+    branchId: string;
+    commercialProductId: string;
+    quantity: number;
+    movementType: "waste" | "damaged";
+    reason: string;
+    notes?: string | null;
+    createdBy?: string | null;
+  }): Promise<BranchInventorySummaryRow> {
+    await db.transaction(async (tx) => {
+      const product = await this.getBranchCommercialProductById(data.branchId, data.commercialProductId);
+      if (!product) throw new Error("COMMERCIAL_PRODUCT_NOT_FOUND");
+      if (!product.usesInventory) throw new Error("COMMERCIAL_PRODUCT_NOT_TRACKED");
+
+      const lockedBalance = await this.getLockedBranchInventoryBalance(tx, data.branchId, data.commercialProductId);
+      if (!lockedBalance) throw new Error("INVENTORY_NOT_INITIALIZED");
+
+      const quantityBefore = lockedBalance.quantityOnHand;
+      if (quantityBefore < data.quantity) {
+        throw new Error("INVENTORY_INSUFFICIENT_STOCK");
+      }
+
+      const quantityAfter = quantityBefore - data.quantity;
+
+      await tx
+        .update(branchInventoryBalances)
+        .set({
+          quantityOnHand: quantityAfter,
+          updatedBy: data.createdBy ?? null,
+          updatedAt: new Date(),
+        })
+        .where(eq(branchInventoryBalances.id, lockedBalance.id));
+
+      await this.insertBranchInventoryMovementTx(tx, {
+        branchId: data.branchId,
+        commercialProductId: data.commercialProductId,
+        movementType: data.movementType,
+        quantityDelta: -data.quantity,
+        quantityBefore,
+        quantityAfter,
+        unitCostSnapshot: product.costAmount ?? null,
+        reason: data.reason,
+        notes: data.notes ?? null,
+        saleId: null,
+        saleItemId: null,
+        createdBy: data.createdBy ?? null,
+        metadata: null,
+      } as any);
+    });
+
+    return this.getBranchCommercialProductInventory(data.branchId, data.commercialProductId);
+  }
+
+  private async getActiveCommissionRulesForSaleTx(
+    tx: any,
+    branchId: string,
+    salespersonId: string,
+    localDate: string,
+  ): Promise<BranchCommissionRuleRow[]> {
+    const rows = await tx
+      .select()
+      .from(branchCommissionRules)
+      .where(and(
+        eq(branchCommissionRules.branchId, branchId),
+        eq(branchCommissionRules.salespersonId, salespersonId),
+        eq(branchCommissionRules.isActive, true),
+        isNull(branchCommissionRules.deletedAt),
+      ));
+
+    return rows
+      .map((row: BranchCommissionRule) => this.mapBranchCommissionRuleRow(row))
+      .filter((row: BranchCommissionRuleRow) => isRuleActiveForDate(row, localDate));
+  }
+
+  private chooseBestCommissionRule(
+    rules: BranchCommissionRuleRow[],
+    saleItem?: { commercialProductId: string | null; categorySnapshot: string | null } | null,
+  ): BranchCommissionRuleRow | null {
+    if (!rules.length) return null;
+    const candidates = rules.filter((rule) => {
+      if (!saleItem) {
+        return rule.ruleType === "percentage_all_sales" || rule.ruleType === "fixed_per_sale";
+      }
+      if (rule.ruleType === "percentage_product" || rule.ruleType === "fixed_product") {
+        return !!saleItem.commercialProductId && rule.commercialProductId === saleItem.commercialProductId;
+      }
+      if (rule.ruleType === "percentage_category") {
+        return !!saleItem.categorySnapshot && !!rule.category && saleItem.categorySnapshot.trim().toLowerCase() === rule.category.trim().toLowerCase();
+      }
+      return false;
+    });
+    if (!candidates.length) return null;
+
+    return [...candidates].sort((a, b) => {
+      const specificityDiff = (COMMISSION_RULE_SPECIFICITY[b.ruleType] ?? 0) - (COMMISSION_RULE_SPECIFICITY[a.ruleType] ?? 0);
+      if (specificityDiff !== 0) return specificityDiff;
+      if (b.priority !== a.priority) return b.priority - a.priority;
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    })[0] ?? null;
+  }
+
+  private async createCommissionAccrualsForSaleTx(
+    tx: any,
+    data: {
+      branchId: string;
+      saleId: string;
+      sellerId: string | null;
+      sellerNameSnapshot: string | null;
+      totalAmount: number;
+      items: BranchSaleItem[];
+    },
+  ): Promise<void> {
+    if (!data.sellerId) return;
+
+    const localDateParts = getMxDateParts(new Date());
+    const rules = await this.getActiveCommissionRulesForSaleTx(tx, data.branchId, data.sellerId, localDateParts.date);
+    if (!rules.length) return;
+
+    const saleLevelRules = rules.filter((rule) => rule.ruleType === "percentage_all_sales" || rule.ruleType === "fixed_per_sale");
+    const itemRules = rules.filter((rule) => rule.ruleType === "percentage_product" || rule.ruleType === "fixed_product" || rule.ruleType === "percentage_category");
+    const bonusRules = rules.filter((rule) => rule.ruleType === "bonus_monthly_goal");
+
+    const accrualsToCreate: InsertBranchCommissionAccrual[] = [];
+    let uncoveredBaseAmount = 0;
+    let hasSpecificRuleApplied = false;
+
+    for (const item of data.items) {
+      const bestItemRule = this.chooseBestCommissionRule(itemRules, {
+        commercialProductId: item.commercialProductId ?? null,
+        categorySnapshot: item.categorySnapshot ?? null,
+      });
+
+      const lineTotal = toFinanceAmount(item.lineTotalAmount);
+      const quantity = Number(item.quantity ?? 0);
+
+      if (!bestItemRule) {
+        uncoveredBaseAmount += lineTotal;
+        continue;
+      }
+
+      hasSpecificRuleApplied = true;
+      let commissionAmount = 0;
+      let rateSnapshot: number | null = null;
+      let fixedAmountSnapshot: number | null = null;
+
+      if (bestItemRule.ruleType === "percentage_product" || bestItemRule.ruleType === "percentage_category") {
+        rateSnapshot = bestItemRule.percentageRate ?? 0;
+        commissionAmount = Number((lineTotal * (rateSnapshot / 100)).toFixed(2));
+      } else if (bestItemRule.ruleType === "fixed_product") {
+        fixedAmountSnapshot = bestItemRule.fixedAmount ?? 0;
+        commissionAmount = Number((fixedAmountSnapshot * quantity).toFixed(2));
+      }
+
+      accrualsToCreate.push({
+        branchId: data.branchId,
+        salespersonId: data.sellerId,
+        saleId: data.saleId,
+        saleItemId: item.id,
+        commissionRuleId: bestItemRule.id,
+        accrualType: "sale",
+        referenceKey: `sale-item:${data.saleId}:${item.id}:rule:${bestItemRule.id}`,
+        periodMonth: localDateParts.monthKey,
+        status: "approved",
+        baseAmount: String(lineTotal) as any,
+        rateSnapshot: rateSnapshot == null ? null : String(rateSnapshot) as any,
+        fixedAmountSnapshot: fixedAmountSnapshot == null ? null : String(fixedAmountSnapshot) as any,
+        commissionAmount: String(commissionAmount) as any,
+        salespersonNameSnapshot: data.sellerNameSnapshot || "Vendedor",
+        ruleNameSnapshot: bestItemRule.name,
+        calculationSnapshot: {
+          ruleType: bestItemRule.ruleType,
+          quantity,
+          lineTotalAmount: lineTotal,
+          substitutedGeneralRule: true,
+        },
+        accruedAt: new Date(),
+        approvedAt: new Date(),
+        paidAmount: "0" as any,
+        reversedAt: null,
+        reversalReason: null,
+      });
+    }
+
+    const bestSaleRule = this.chooseBestCommissionRule(saleLevelRules, null);
+    if (bestSaleRule) {
+      const generalBaseAmount = bestSaleRule.ruleType === "percentage_all_sales"
+        ? Number(uncoveredBaseAmount.toFixed(2))
+        : ((uncoveredBaseAmount > 0 || !hasSpecificRuleApplied) ? toFinanceAmount(data.totalAmount) : 0);
+
+      if (generalBaseAmount > 0) {
+        let commissionAmount = 0;
+        let rateSnapshot: number | null = null;
+        let fixedAmountSnapshot: number | null = null;
+
+        if (bestSaleRule.ruleType === "percentage_all_sales") {
+          rateSnapshot = bestSaleRule.percentageRate ?? 0;
+          commissionAmount = Number((generalBaseAmount * (rateSnapshot / 100)).toFixed(2));
+        } else if (bestSaleRule.ruleType === "fixed_per_sale") {
+          fixedAmountSnapshot = bestSaleRule.fixedAmount ?? 0;
+          commissionAmount = Number(fixedAmountSnapshot.toFixed(2));
+        }
+
+        accrualsToCreate.push({
+          branchId: data.branchId,
+          salespersonId: data.sellerId,
+          saleId: data.saleId,
+          saleItemId: null,
+          commissionRuleId: bestSaleRule.id,
+          accrualType: "sale",
+          referenceKey: `sale:${data.saleId}:rule:${bestSaleRule.id}`,
+          periodMonth: localDateParts.monthKey,
+          status: "approved",
+          baseAmount: String(generalBaseAmount) as any,
+          rateSnapshot: rateSnapshot == null ? null : String(rateSnapshot) as any,
+          fixedAmountSnapshot: fixedAmountSnapshot == null ? null : String(fixedAmountSnapshot) as any,
+          commissionAmount: String(commissionAmount) as any,
+          salespersonNameSnapshot: data.sellerNameSnapshot || "Vendedor",
+          ruleNameSnapshot: bestSaleRule.name,
+          calculationSnapshot: {
+            ruleType: bestSaleRule.ruleType,
+            uncoveredBaseAmount,
+            totalAmount: toFinanceAmount(data.totalAmount),
+            specificRulesApplied: hasSpecificRuleApplied,
+          },
+          accruedAt: new Date(),
+          approvedAt: new Date(),
+          paidAmount: "0" as any,
+          reversedAt: null,
+          reversalReason: null,
+        });
+      }
+    }
+
+    if (bonusRules.length > 0) {
+      const [salesMonthRow] = await tx
+        .select({
+          totalSoldAmount: sql<number>`COALESCE(SUM(${branchSales.totalAmount}), 0)`.as("total_sold_amount"),
+        })
+        .from(branchSales)
+        .where(and(
+          eq(branchSales.branchId, data.branchId),
+          eq(branchSales.sellerId, data.sellerId),
+          ne(branchSales.status, "cancelled"),
+          sql`DATE(${branchSales.createdAt} AT TIME ZONE ${BRANCH_TIMEZONE}) >= ${localDateParts.monthKey + "-01"}`,
+          sql`DATE(${branchSales.createdAt} AT TIME ZONE ${BRANCH_TIMEZONE}) < ${getMonthRangeByKey(localDateParts.monthKey).toExclusive}`,
+        ))
+        .limit(1);
+
+      const totalSoldAmount = toFinanceAmount(salesMonthRow?.totalSoldAmount);
+      for (const bonusRule of bonusRules) {
+        if ((bonusRule.minimumGoalAmount ?? 0) <= 0 || (bonusRule.bonusAmount ?? 0) <= 0) continue;
+        if (totalSoldAmount + 0.0001 < (bonusRule.minimumGoalAmount ?? 0)) continue;
+
+        accrualsToCreate.push({
+          branchId: data.branchId,
+          salespersonId: data.sellerId,
+          saleId: data.saleId,
+          saleItemId: null,
+          commissionRuleId: bonusRule.id,
+          accrualType: "monthly_bonus",
+          referenceKey: `bonus:${bonusRule.id}:${localDateParts.monthKey}`,
+          periodMonth: localDateParts.monthKey,
+          status: "approved",
+          baseAmount: String(totalSoldAmount) as any,
+          rateSnapshot: null,
+          fixedAmountSnapshot: String(bonusRule.bonusAmount ?? 0) as any,
+          commissionAmount: String(bonusRule.bonusAmount ?? 0) as any,
+          salespersonNameSnapshot: data.sellerNameSnapshot || "Vendedor",
+          ruleNameSnapshot: bonusRule.name,
+          calculationSnapshot: {
+            ruleType: bonusRule.ruleType,
+            month: localDateParts.monthKey,
+            minimumGoalAmount: bonusRule.minimumGoalAmount,
+            totalSoldAmount,
+            triggeredBySaleId: data.saleId,
+          },
+          accruedAt: new Date(),
+          approvedAt: new Date(),
+          paidAmount: "0" as any,
+          reversedAt: null,
+          reversalReason: null,
+        });
+      }
+    }
+
+    if (!accrualsToCreate.length) return;
+
+    await tx
+      .insert(branchCommissionAccruals)
+      .values(accrualsToCreate as any)
+      .onConflictDoNothing({ target: [branchCommissionAccruals.branchId, branchCommissionAccruals.referenceKey] });
+  }
+
+  private async reverseCommissionAccrualsForSaleTx(
+    tx: any,
+    branchId: string,
+    saleId: string,
+    reason: string,
+  ): Promise<number> {
+    const result = await tx
+      .update(branchCommissionAccruals)
+      .set({
+        status: "reversed",
+        reversedAt: new Date(),
+        reversalReason: reason,
+      } as any)
+      .where(and(
+        eq(branchCommissionAccruals.branchId, branchId),
+        eq(branchCommissionAccruals.saleId, saleId),
+        inArray(branchCommissionAccruals.status, ["accrued", "approved"]),
+        isNull(branchCommissionAccruals.reversedAt),
+      ))
+      .returning({ id: branchCommissionAccruals.id });
+
+    return result.length;
+  }
+
+  async createBranchSale(data: {
+    sale: InsertBranchSale;
+    items: InsertBranchSaleItem[];
+    payments: InsertBranchSalePayment[];
+    finance?: {
+      source: string;
+      category?: string | null;
+      notes?: string | null;
+      entryDate?: string | null;
+      metadata?: any;
+      clientName?: string | null;
+    } | null;
+    inventoryAdjustment?: {
+      commercialProductId: string;
+      quantity: number;
+      unitCostSnapshot?: number | null;
+      createdBy?: string | null;
+      notes?: string | null;
+      metadata?: any;
+    } | null;
+    inventoryAdjustments?: Array<{
+      commercialProductId: string;
+      quantity: number;
+      unitCostSnapshot?: number | null;
+      createdBy?: string | null;
+      notes?: string | null;
+      metadata?: any;
+    }> | null;
+  }): Promise<BranchSaleRow> {
+    if (!data.items.length) {
+      throw new Error("BRANCH_SALE_REQUIRES_ITEMS");
+    }
+    if (!data.payments.length) {
+      throw new Error("BRANCH_SALE_REQUIRES_PAYMENTS");
+    }
+    const idempotencyKey = normalizeOptionalTextValue((data.sale as any).idempotencyKey);
+    if (idempotencyKey) {
+      const existingSale = await this.getBranchSaleByIdempotencyKey(data.sale.branchId, idempotencyKey);
+      if (existingSale) {
+        return existingSale;
+      }
+    }
+
+    const inventoryAdjustments = [
+      ...(data.inventoryAdjustments ?? []),
+      ...(data.inventoryAdjustment ? [data.inventoryAdjustment] : []),
+    ].filter(Boolean) as Array<{
+      commercialProductId: string;
+      quantity: number;
+      unitCostSnapshot?: number | null;
+      createdBy?: string | null;
+      notes?: string | null;
+      metadata?: any;
+    }>;
+
+    try {
+      const created = await db.transaction(async (tx) => {
+        let sellerId = data.sale.sellerId ?? null;
+        let sellerUserId = data.sale.sellerUserId ?? null;
+        let sellerNameSnapshot = data.sale.sellerNameSnapshot ?? null;
+        let sellerMetadata = data.sale.sellerMetadata ?? null;
+        const projectId = normalizeOptionalTextValue((data.sale as any).projectId);
+
+        if (projectId) {
+          const project = await this.getAssignableBranchCommercialProjectTx(tx, data.sale.branchId, projectId);
+          if (!project) {
+            throw new Error("BRANCH_SALE_PROJECT_INVALID");
+          }
+        }
+
+        if (sellerId) {
+          const [salesperson] = await tx
+            .select()
+            .from(branchSalespeople)
+            .where(and(
+              eq(branchSalespeople.id, sellerId),
+              eq(branchSalespeople.branchId, data.sale.branchId),
+              isNull(branchSalespeople.deletedAt),
+            ))
+            .limit(1);
+
+          if (!salesperson) {
+            throw new Error("BRANCH_SALESPERSON_INVALID");
+          }
+          if (!salesperson.isActive) {
+            throw new Error("BRANCH_SALESPERSON_INACTIVE");
+          }
+
+          sellerUserId = salesperson.userId ?? null;
+          sellerNameSnapshot = [salesperson.name, salesperson.lastName].filter(Boolean).join(" ").trim() || salesperson.name;
+          sellerMetadata = {
+            ...(sellerMetadata && typeof sellerMetadata === "object" ? sellerMetadata : {}),
+            employeeCode: salesperson.employeeCode ?? null,
+            roleLabel: salesperson.roleLabel ?? null,
+          };
+        } else {
+          sellerId = null;
+          sellerUserId = data.sale.sellerUserId ?? null;
+          sellerNameSnapshot = data.sale.sellerNameSnapshot ?? null;
+          sellerMetadata = data.sale.sellerMetadata ?? null;
+        }
+
+        const [saleRow] = await tx
+          .insert(branchSales)
+          .values({
+            ...data.sale,
+            idempotencyKey,
+            projectId,
+            sellerId,
+            sellerUserId,
+            sellerNameSnapshot,
+            sellerMetadata,
+            folio: data.sale.folio?.trim() || generateBranchSaleFolio(),
+            subtotalAmount: String(toFinanceAmount(data.sale.subtotalAmount)),
+            discountAmount: String(toFinanceAmount(data.sale.discountAmount)),
+            totalAmount: String(toFinanceAmount(data.sale.totalAmount)),
+            paidAmount: String(toFinanceAmount(data.sale.paidAmount)),
+            taxRate: (data.sale as any).taxRate == null ? null : String(toFinanceAmount((data.sale as any).taxRate)),
+            subtotalBeforeTax: (data.sale as any).subtotalBeforeTax == null ? null : String(toFinanceAmount((data.sale as any).subtotalBeforeTax)),
+            taxableSubtotal: (data.sale as any).taxableSubtotal == null ? null : String(toFinanceAmount((data.sale as any).taxableSubtotal)),
+            taxTotal: (data.sale as any).taxTotal == null ? null : String(toFinanceAmount((data.sale as any).taxTotal)),
+            grandTotal: (data.sale as any).grandTotal == null ? null : String(toFinanceAmount((data.sale as any).grandTotal)),
+          } as any)
+          .returning({
+            id: branchSales.id,
+            branchId: branchSales.branchId,
+            folio: branchSales.folio,
+          });
+
+        const createdItems = await tx.insert(branchSaleItems).values(
+          data.items.map((item) => ({
+            ...item,
+            saleId: saleRow.id,
+            branchId: saleRow.branchId,
+            unitPriceAmount: String(toFinanceAmount(item.unitPriceAmount)),
+            discountAmount: String(toFinanceAmount(item.discountAmount)),
+            costAmountSnapshot: String(toFinanceAmount(item.costAmountSnapshot)),
+            lineTotalAmount: String(toFinanceAmount(item.lineTotalAmount)),
+          })) as any,
+        ).returning();
+
+        const paymentRows = await tx.insert(branchSalePayments).values(
+          data.payments.map((payment) => ({
+            ...payment,
+            saleId: saleRow.id,
+            branchId: saleRow.branchId,
+            amount: String(toFinanceAmount(payment.amount)),
+          })) as any,
+        ).returning();
+
+        for (const adjustment of inventoryAdjustments) {
+          const quantity = adjustment.quantity;
+          const inventoryUpdate = await tx.execute(sql`
+            UPDATE branch_inventory_balances
+            SET
+              quantity_on_hand = quantity_on_hand - ${quantity},
+              updated_by = ${adjustment.createdBy ?? null},
+              updated_at = now()
+            WHERE branch_id = ${saleRow.branchId}
+              AND commercial_product_id = ${adjustment.commercialProductId}
+              AND quantity_on_hand >= ${quantity}
+            RETURNING
+              id,
+              quantity_on_hand + ${quantity} AS quantity_before,
+              quantity_on_hand AS quantity_after,
+              minimum_stock
+          `);
+
+          const updatedBalance = (inventoryUpdate as any)?.rows?.[0] ?? null;
+          if (!updatedBalance) {
+            const [balanceCheck] = await tx
+              .select()
+              .from(branchInventoryBalances)
+              .where(and(
+                eq(branchInventoryBalances.branchId, saleRow.branchId),
+                eq(branchInventoryBalances.commercialProductId, adjustment.commercialProductId),
+              ))
+              .limit(1);
+
+            throw new Error(balanceCheck ? "INVENTORY_INSUFFICIENT_STOCK" : "INVENTORY_NOT_INITIALIZED");
+          }
+
+          const linkedSaleItem = createdItems.find((item) => item.commercialProductId === adjustment.commercialProductId) ?? createdItems[0];
+
+          await this.insertBranchInventoryMovementTx(tx, {
+            branchId: saleRow.branchId,
+            commercialProductId: adjustment.commercialProductId,
+            movementType: "sale",
+            quantityDelta: -quantity,
+            quantityBefore: Number(updatedBalance.quantity_before ?? 0),
+            quantityAfter: Number(updatedBalance.quantity_after ?? 0),
+            unitCostSnapshot: adjustment.unitCostSnapshot ?? null,
+            reason: "Salida automatica por venta",
+            notes: adjustment.notes ?? null,
+            saleId: saleRow.id,
+            saleItemId: linkedSaleItem?.id ?? null,
+            createdBy: adjustment.createdBy ?? null,
+            metadata: adjustment.metadata ?? null,
+          } as any);
+        }
+
+        await this.createCommissionAccrualsForSaleTx(tx, {
+          branchId: saleRow.branchId,
+          saleId: saleRow.id,
+          sellerId,
+          sellerNameSnapshot,
+          totalAmount: toFinanceAmount(data.sale.totalAmount),
+          items: createdItems as BranchSaleItem[],
+        });
+
+        if (data.finance) {
+          const financeConcept = this.buildBranchSaleFinanceConcept(saleRow, createdItems, sellerNameSnapshot);
+          const financeEntryDate = data.finance.entryDate ?? getMxLocalDate();
+          for (const paymentRow of paymentRows) {
+            await tx.insert(branchFinanceEntries).values({
+              branchId: saleRow.branchId,
+              type: "income",
+              category: data.finance.category ?? "producto",
+              concept: financeConcept,
+              amount: String(toFinanceAmount(paymentRow.amount)),
+              paymentMethod: paymentRow.paymentMethod,
+              clientUserId: data.sale.clientUserId ?? null,
+              clientName: data.finance.clientName ?? null,
+              notes: data.finance.notes ?? normalizeOptionalTextValue(data.sale.notes),
+              entryDate: financeEntryDate,
+              source: data.finance.source,
+              sourceId: paymentRow.id,
+              metadata: {
+                saleId: saleRow.id,
+                salePaymentId: paymentRow.id,
+                folio: saleRow.folio,
+                sellerId,
+                sellerUserId,
+                sellerNameSnapshot,
+                items: createdItems.map((item) => ({
+                  saleItemId: item.id,
+                  commercialProductId: item.commercialProductId ?? null,
+                  name: item.nameSnapshot,
+                  category: item.categorySnapshot ?? null,
+                  quantity: item.quantity,
+                  unitPriceAmount: toFinanceAmount(item.unitPriceAmount),
+                  lineTotalAmount: toFinanceAmount(item.lineTotalAmount),
+                })),
+                ...(data.finance.metadata && typeof data.finance.metadata === "object" ? data.finance.metadata : {}),
+              },
+              createdBy: data.sale.createdBy ?? null,
+            } as any);
+          }
+        }
+
+        return saleRow;
+      });
+
+      return (await this.getBranchSaleById(created.branchId, created.id))!;
+    } catch (error: any) {
+      if (idempotencyKey && isPgUniqueViolation(error)) {
+        const existingSale = await this.getBranchSaleByIdempotencyKey(data.sale.branchId, idempotencyKey);
+        if (existingSale) {
+          return existingSale;
+        }
+      }
+      throw error;
+    }
+  }
+
   async getBranchServices(branchId: string): Promise<BranchServiceRow[]> {
     const services = await db
       .select()
@@ -4524,7 +11137,7 @@ export class DatabaseStorage implements IStorage {
     return Number(result?.count) || 0;
   }
 
-  async updateClient(userId: string, data: { name?: string; email?: string; lastName?: string | null; phone?: string | null; birthDate?: string | null; gender?: string | null; emergencyContactName?: string | null; emergencyContactPhone?: string | null; medicalNotes?: string | null; injuriesNotes?: string | null; medicalWarnings?: string | null; parqAccepted?: boolean; parqAcceptedDate?: string | null; avatarUrl?: string | null }): Promise<any> {
+  async updateClient(userId: string, data: { name?: string; email?: string | null; lastName?: string | null; phone?: string | null; birthDate?: string | null; gender?: string | null; emergencyContactName?: string | null; emergencyContactPhone?: string | null; medicalNotes?: string | null; injuriesNotes?: string | null; medicalWarnings?: string | null; parqAccepted?: boolean; parqAcceptedDate?: string | null; avatarUrl?: string | null }): Promise<any> {
     const updateData: any = {};
     if (data.name !== undefined) updateData.name = data.name;
     if (data.email !== undefined) updateData.email = data.email;
@@ -5852,19 +12465,33 @@ export class DatabaseStorage implements IStorage {
     return rows.map((row) => this.mapBranchFinanceEntryRow(row));
   }
 
-  async createBranchFinanceEntry(data: InsertBranchFinanceEntry): Promise<BranchFinanceEntryRow> {
-    const [created] = await db
-      .insert(branchFinanceEntries)
-      .values({
-        ...data,
-        amount: String(data.amount),
-      })
-      .returning({
-        id: branchFinanceEntries.id,
-        branchId: branchFinanceEntries.branchId,
-      });
+  async getBranchFinanceEntry(branchId: string, entryId: string): Promise<BranchFinanceEntryRow | undefined> {
+    return this.getBranchFinanceEntryById(branchId, entryId);
+  }
 
-    return (await this.getBranchFinanceEntryById(created.branchId, created.id))!;
+  async createBranchFinanceEntry(data: InsertBranchFinanceEntry): Promise<BranchFinanceEntryRow> {
+    try {
+      const [created] = await db
+        .insert(branchFinanceEntries)
+        .values({
+          ...data,
+          amount: String(data.amount),
+        })
+        .returning({
+          id: branchFinanceEntries.id,
+          branchId: branchFinanceEntries.branchId,
+        });
+
+      return (await this.getBranchFinanceEntryById(created.branchId, created.id))!;
+    } catch (error: any) {
+      if (isPgUniqueViolation(error) && data.source && data.sourceId) {
+        const existing = await this.getBranchFinanceEntryBySource(data.branchId, data.source, data.sourceId);
+        if (existing) {
+          return existing;
+        }
+      }
+      throw error;
+    }
   }
 
   async findBranchFinanceEntryBySource(
@@ -6288,7 +12915,12 @@ export class DatabaseStorage implements IStorage {
       .limit(1);
 
     const clientDisplayName = [user?.name, user?.lastName].filter(Boolean).join(" ").trim() || "Cliente";
-    const paidAtDate = data.paidAt ? formatDateOnly(new Date(data.paidAt)) : getMxLocalDate();
+    const paidAtDate =
+      typeof data.paidAt === "string" && /^\d{4}-\d{2}-\d{2}$/.test(data.paidAt)
+        ? data.paidAt
+        : data.paidAt
+          ? formatDateOnly(new Date(data.paidAt))
+          : getMxLocalDate();
 
     return this.createBranchFinanceEntry({
       branchId: data.branchId,

@@ -63,12 +63,14 @@ function FileUploadButton({
   uploading,
   label,
   testId,
+  className,
 }: {
   accept: string;
   onUpload: (file: File) => void;
   uploading: boolean;
   label: string;
   testId: string;
+  className?: string;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   return (
@@ -90,6 +92,7 @@ function FileUploadButton({
         size="sm"
         disabled={uploading}
         onClick={() => inputRef.current?.click()}
+        className={className}
         data-testid={testId}
       >
         {uploading ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Upload className="h-4 w-4 mr-1" />}
@@ -150,25 +153,26 @@ function ProfilePhotoSection() {
       </CardHeader>
       <CardContent>
         {profilePhoto ? (
-          <div className="flex items-center gap-4">
+          <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center">
             <img
               src={profilePhoto.url}
               alt="Perfil"
               className="h-24 w-24 rounded-lg object-cover border"
               data-testid="img-profile-photo"
             />
-            <div className="flex flex-col gap-2">
+            <div className="flex w-full flex-col gap-2 sm:w-auto">
               <FileUploadButton
                 accept="image/jpeg,image/png,image/webp"
                 onUpload={handleUpload}
                 uploading={uploading}
                 label="Cambiar"
                 testId="button-change-profile-photo"
+                className="w-full sm:w-auto"
               />
               <Button
                 variant="ghost"
                 size="sm"
-                className="text-destructive"
+                className="w-full text-destructive sm:w-auto"
                 onClick={() => deleteMutation.mutate(profilePhoto.id)}
                 disabled={deleteMutation.isPending}
                 data-testid="button-delete-profile-photo"
@@ -188,6 +192,7 @@ function ProfilePhotoSection() {
               uploading={uploading}
               label="Subir foto de perfil"
               testId="button-upload-profile-photo"
+              className="w-full sm:w-auto"
             />
           </div>
         )}
@@ -255,7 +260,7 @@ function FacilityPhotosSection() {
   return (
     <Card data-testid="card-facility-photos">
       <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <CardTitle className="text-base flex items-center gap-2">
             <ImagePlus className="h-4 w-4" />
             Fotos de Instalaciones
@@ -270,6 +275,7 @@ function FacilityPhotosSection() {
               uploading={uploading}
               label="Agregar"
               testId="button-add-facility-photo"
+              className="w-full sm:w-auto"
             />
           )}
         </div>
@@ -282,13 +288,13 @@ function FacilityPhotosSection() {
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             {facilityPhotos.map((photo, idx) => (
-              <div key={photo.id} className="relative group" data-testid={`facility-photo-${photo.id}`}>
+              <div key={photo.id} className="relative group overflow-hidden rounded-lg" data-testid={`facility-photo-${photo.id}`}>
                 <img
                   src={photo.url}
                   alt={`Instalación ${idx + 1}`}
                   className="h-28 w-full rounded-lg object-cover border"
                 />
-                <div className="absolute top-1 right-1 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                <div className="absolute inset-x-2 bottom-2 flex flex-wrap justify-end gap-1 opacity-100 transition-opacity md:inset-x-auto md:bottom-auto md:right-1 md:top-1 md:opacity-0 md:group-hover:opacity-100">
                   {idx > 0 && (
                     <Button size="icon" variant="secondary" className="h-6 w-6" onClick={() => movePhoto(idx, "up")} data-testid={`button-move-up-photo-${photo.id}`}>
                       <ArrowUp className="h-3 w-3" />
@@ -449,7 +455,7 @@ function PostsSection() {
   return (
     <Card data-testid="card-posts">
       <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <CardTitle className="text-base flex items-center gap-2">
             <FileText className="h-4 w-4" />
             Posts Fijos
@@ -458,7 +464,7 @@ function PostsSection() {
             </Badge>
           </CardTitle>
           {sortedPosts.length < 3 && (
-            <Button variant="outline" size="sm" onClick={openCreate} data-testid="button-create-post">
+            <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={openCreate} data-testid="button-create-post">
               <Plus className="h-4 w-4 mr-1" /> Nuevo
             </Button>
           )}
@@ -473,12 +479,12 @@ function PostsSection() {
           <div className="space-y-3">
             {sortedPosts.map((post, idx) => (
               <div key={post.id} className="border rounded-lg p-3 space-y-2" data-testid={`post-card-${post.id}`}>
-                <div className="flex items-start justify-between gap-2">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div className="flex-1 min-w-0">
-                    <h4 className="font-medium text-sm truncate" data-testid={`text-post-title-${post.id}`}>{post.title}</h4>
+                    <h4 className="break-words font-medium text-sm" data-testid={`text-post-title-${post.id}`}>{post.title}</h4>
                     <p className="text-xs text-muted-foreground line-clamp-2" data-testid={`text-post-content-${post.id}`}>{post.content}</p>
                   </div>
-                  <div className="flex items-center gap-1 shrink-0">
+                  <div className="flex flex-wrap items-center gap-1 shrink-0">
                     {idx > 0 && (
                       <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => movePost(idx, "up")} data-testid={`button-move-up-post-${post.id}`}>
                         <ArrowUp className="h-3 w-3" />
@@ -513,8 +519,8 @@ function PostsSection() {
       </CardContent>
 
       <Dialog open={dialogOpen} onOpenChange={(open) => !open && closeDialog()}>
-        <DialogContent data-testid="dialog-post">
-          <DialogHeader>
+        <DialogContent className="max-md:overflow-y-auto max-md:px-4 max-md:pb-[calc(env(safe-area-inset-bottom)+1rem)] max-md:pt-[calc(env(safe-area-inset-top)+1rem)]" data-testid="dialog-post">
+          <DialogHeader className="pr-10">
             <DialogTitle>{editing ? "Editar Post" : "Nuevo Post"}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
@@ -528,16 +534,17 @@ function PostsSection() {
             </div>
             <div>
               <Label>Media (opcional)</Label>
-              <div className="flex items-center gap-2 mt-1">
+              <div className="mt-1 flex flex-wrap items-center gap-2">
                 <FileUploadButton
                   accept="image/jpeg,image/png,image/webp,video/mp4,video/webm"
                   onUpload={handleMediaUpload}
                   uploading={uploadingMedia}
                   label="Subir imagen/video"
                   testId="button-upload-post-media"
+                  className="w-full sm:w-auto"
                 />
                 {mediaUrl && (
-                  <Button variant="ghost" size="sm" onClick={() => { setMediaUrl(""); setMediaType(""); }} data-testid="button-remove-post-media">
+                  <Button variant="ghost" size="sm" className="w-full sm:w-auto" onClick={() => { setMediaUrl(""); setMediaType(""); }} data-testid="button-remove-post-media">
                     <X className="h-4 w-4 mr-1" /> Quitar
                   </Button>
                 )}
@@ -553,7 +560,7 @@ function PostsSection() {
               )}
             </div>
           </div>
-          <DialogFooter>
+          <DialogFooter className="gap-2 border-t pt-4 max-md:sticky max-md:bottom-0 max-md:z-10 max-md:-mx-4 max-md:bg-background/95 max-md:px-4 max-md:pb-[calc(env(safe-area-inset-bottom)+0.5rem)] max-md:backdrop-blur">
             <Button variant="outline" onClick={closeDialog} data-testid="button-cancel-post">Cancelar</Button>
             <Button
               onClick={handleSubmit}
@@ -698,7 +705,7 @@ function ProductsSection() {
   return (
     <Card data-testid="card-products">
       <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <CardTitle className="text-base flex items-center gap-2">
             <ShoppingBag className="h-4 w-4" />
             Productos
@@ -708,7 +715,7 @@ function ProductsSection() {
               </Badge>
             )}
           </CardTitle>
-          <Button variant="outline" size="sm" onClick={openCreate} data-testid="button-create-product">
+          <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={openCreate} data-testid="button-create-product">
             <Plus className="h-4 w-4 mr-1" /> Nuevo
           </Button>
         </div>
@@ -730,9 +737,9 @@ function ProductsSection() {
                   </div>
                 )}
                 <div className="p-3">
-                  <div className="flex items-start justify-between gap-1">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div className="flex-1 min-w-0">
-                      <h4 className="font-medium text-sm truncate" data-testid={`text-product-name-${product.id}`}>{product.name}</h4>
+                      <h4 className="break-words font-medium text-sm" data-testid={`text-product-name-${product.id}`}>{product.name}</h4>
                       <p className="text-sm font-semibold text-primary" data-testid={`text-product-price-${product.id}`}>
                         ${(product.price / 100).toFixed(2)} MXN
                       </p>
@@ -740,7 +747,7 @@ function ProductsSection() {
                         <p className="text-xs text-muted-foreground line-clamp-2 mt-1">{product.description}</p>
                       )}
                     </div>
-                    <div className="flex items-center gap-0.5 shrink-0">
+                    <div className="flex flex-wrap items-center gap-0.5 shrink-0">
                       {idx > 0 && (
                         <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => moveProduct(idx, "up")} data-testid={`button-move-up-product-${product.id}`}>
                           <ArrowUp className="h-3 w-3" />
@@ -767,8 +774,8 @@ function ProductsSection() {
       </CardContent>
 
       <Dialog open={dialogOpen} onOpenChange={(open) => !open && closeDialog()}>
-        <DialogContent data-testid="dialog-product">
-          <DialogHeader>
+        <DialogContent className="max-md:overflow-y-auto max-md:px-4 max-md:pb-[calc(env(safe-area-inset-bottom)+1rem)] max-md:pt-[calc(env(safe-area-inset-top)+1rem)]" data-testid="dialog-product">
+          <DialogHeader className="pr-10">
             <DialogTitle>{editing ? "Editar Producto" : "Nuevo Producto"}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
@@ -786,16 +793,17 @@ function ProductsSection() {
             </div>
             <div>
               <Label>Imagen (opcional)</Label>
-              <div className="flex items-center gap-2 mt-1">
+              <div className="mt-1 flex flex-wrap items-center gap-2">
                 <FileUploadButton
                   accept="image/jpeg,image/png,image/webp"
                   onUpload={handleImageUpload}
                   uploading={uploadingImage}
                   label="Subir imagen"
                   testId="button-upload-product-image"
+                  className="w-full sm:w-auto"
                 />
                 {imageUrl && (
-                  <Button variant="ghost" size="sm" onClick={() => setImageUrl("")} data-testid="button-remove-product-image">
+                  <Button variant="ghost" size="sm" className="w-full sm:w-auto" onClick={() => setImageUrl("")} data-testid="button-remove-product-image">
                     <X className="h-4 w-4 mr-1" /> Quitar
                   </Button>
                 )}
@@ -805,7 +813,7 @@ function ProductsSection() {
               )}
             </div>
           </div>
-          <DialogFooter>
+          <DialogFooter className="gap-2 border-t pt-4 max-md:sticky max-md:bottom-0 max-md:z-10 max-md:-mx-4 max-md:bg-background/95 max-md:px-4 max-md:pb-[calc(env(safe-area-inset-bottom)+0.5rem)] max-md:backdrop-blur">
             <Button variant="outline" onClick={closeDialog} data-testid="button-cancel-product">Cancelar</Button>
             <Button
               onClick={handleSubmit}
@@ -914,7 +922,7 @@ function VideosSection() {
   return (
     <Card data-testid="card-videos">
       <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <CardTitle className="text-base flex items-center gap-2">
               <Video className="h-4 w-4" />
@@ -932,6 +940,7 @@ function VideosSection() {
               uploading={uploading}
               label="Agregar"
               testId="button-add-video"
+              className="w-full sm:w-auto"
             />
           ) : (
             <span className="text-xs text-muted-foreground" data-testid="text-videos-limit-reached">Límite alcanzado</span>
@@ -948,11 +957,11 @@ function VideosSection() {
             {sortedVideos.map((video, idx) => (
               <div key={video.id} className="border rounded-lg overflow-hidden" data-testid={`video-card-${video.id}`}>
                 <video src={video.url} controls className="w-full h-36 object-cover bg-black" data-testid={`video-player-${video.id}`} />
-                <div className="p-2 flex items-center justify-between">
-                  <span className="text-xs font-medium truncate flex-1" data-testid={`text-video-title-${video.id}`}>
+                <div className="flex flex-col gap-2 p-2 sm:flex-row sm:items-center sm:justify-between">
+                  <span className="text-xs font-medium break-words sm:truncate flex-1" data-testid={`text-video-title-${video.id}`}>
                     {video.title || "Sin título"}
                   </span>
-                  <div className="flex items-center gap-0.5 shrink-0">
+                  <div className="flex flex-wrap items-center gap-0.5 shrink-0">
                     {idx > 0 && (
                       <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => moveVideo(idx, "up")} data-testid={`button-move-up-video-${video.id}`}>
                         <ArrowUp className="h-3 w-3" />

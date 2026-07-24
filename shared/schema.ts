@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, pgEnum, doublePrecision, boolean, uniqueIndex, jsonb, integer, index, numeric, date } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, pgEnum, doublePrecision, boolean, uniqueIndex, jsonb, integer, index, numeric, date, foreignKey } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -31,7 +31,7 @@ export const users = pgTable("users", {
   id: varchar("id", { length: 36 })
     .primaryKey()
     .default(sql`gen_random_uuid()`),
-  email: text("email").notNull().unique(),
+  email: text("email"),
   passwordHash: text("password_hash").notNull(),
   role: userRoleEnum("role").notNull().default("CUSTOMER"),
   branchId: varchar("branch_id", { length: 36 }).references(() => branches.id),
@@ -690,6 +690,10 @@ export const createPlanSchema = z.object({
 
 export const assignPlanSchema = z.object({
   planId: z.string().min(1, "Se requiere un plan"),
+  startDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "La fecha de inicio no es válida")
+    .optional(),
 });
 
 export type MembershipPlan = typeof membershipPlans.$inferSelect;
@@ -698,7 +702,7 @@ export type InsertMembershipPlan = z.infer<typeof insertMembershipPlanSchema>;
 export const createClientSchema = z.object({
   name: z.string().min(1, "El nombre es obligatorio"),
   lastName: z.string().optional(),
-  email: z.string().email("Correo electrónico inválido"),
+  email: z.string().email("Correo electrónico inválido").nullable().optional().or(z.literal("")),
   phone: z.string().optional(),
   birthDate: z.string().optional(),
   gender: z.enum(["M", "F", "NE"]).optional(),
@@ -712,7 +716,7 @@ export const createClientSchema = z.object({
 
 export const updateClientSchema = z.object({
   name: z.string().min(1).optional(),
-  email: z.string().email().optional(),
+  email: z.string().email().nullable().optional().or(z.literal("")),
   lastName: z.string().nullable().optional(),
   phone: z.string().nullable().optional(),
   birthDate: z.string().nullable().optional(),
@@ -848,6 +852,479 @@ export const branchProducts = pgTable("branch_products", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
+export const branchCommercialProducts = pgTable("branch_commercial_products", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  name: text("name").notNull(),
+  category: text("category").notNull(),
+  description: text("description"),
+  photoUrl: text("photo_url"),
+  sku: text("sku"),
+  barcode: text("barcode"),
+  costAmount: numeric("cost_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  salePriceAmount: numeric("sale_price_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  isActive: boolean("is_active").notNull().default(true),
+  isPublicVisible: boolean("is_public_visible").notNull().default(false),
+  usesInventory: boolean("uses_inventory").notNull().default(false),
+  displayOrder: integer("display_order").notNull().default(0),
+  createdBy: varchar("created_by", { length: 36 }).references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+}, (table) => [
+  index("branch_commercial_products_branch_idx").on(table.branchId),
+  index("branch_commercial_products_active_idx").on(table.isActive),
+  index("branch_commercial_products_public_idx").on(table.isPublicVisible),
+  index("branch_commercial_products_deleted_at_idx").on(table.deletedAt),
+  index("branch_commercial_products_sku_idx").on(table.sku),
+  index("branch_commercial_products_barcode_idx").on(table.barcode),
+]);
+
+export const branchCommercialProjects = pgTable("branch_commercial_projects", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  code: text("code").notNull(),
+  name: text("name").notNull(),
+  description: text("description"),
+  customerUserId: varchar("customer_user_id", { length: 36 }).references(() => users.id, { onDelete: "set null" }),
+  status: text("status").notNull().default("draft"),
+  startDate: date("start_date").notNull(),
+  expectedEndDate: date("expected_end_date"),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  notes: text("notes"),
+  createdByUserId: varchar("created_by_user_id", { length: 36 }).references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+}, (table) => [
+  uniqueIndex("branch_commercial_projects_branch_code_unique").on(table.branchId, table.code),
+  uniqueIndex("branch_commercial_projects_branch_id_id_unique").on(table.branchId, table.id),
+  index("branch_commercial_projects_branch_status_deleted_idx").on(table.branchId, table.status, table.deletedAt),
+  index("branch_commercial_projects_branch_start_date_idx").on(table.branchId, table.startDate),
+  index("branch_commercial_projects_branch_customer_idx").on(table.branchId, table.customerUserId),
+]);
+
+export const branchSalespeople = pgTable("branch_salespeople", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  userId: varchar("user_id", { length: 36 }).references(() => users.id, { onDelete: "set null" }),
+  name: text("name").notNull(),
+  lastName: text("last_name"),
+  phone: text("phone"),
+  email: text("email"),
+  employeeCode: text("employee_code"),
+  roleLabel: text("role_label"),
+  monthlyGoalAmount: numeric("monthly_goal_amount", { precision: 12, scale: 2 }),
+  isActive: boolean("is_active").notNull().default(true),
+  notes: text("notes"),
+  createdBy: varchar("created_by", { length: 36 }).references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+}, (table) => [
+  index("branch_salespeople_branch_idx").on(table.branchId),
+  index("branch_salespeople_active_idx").on(table.isActive),
+  index("branch_salespeople_user_idx").on(table.userId),
+  index("branch_salespeople_deleted_at_idx").on(table.deletedAt),
+  index("branch_salespeople_name_idx").on(table.name),
+]);
+
+// Note: partial unique idempotency/source indexes for the commercial sales flow
+// live in migrations/0022_branch_sales_finance_idempotency.sql on purpose.
+// Keep that migration as the source of truth instead of trying to recreate them via db:push.
+export const branchSales = pgTable("branch_sales", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  projectId: varchar("project_id", { length: 36 }),
+  folio: text("folio").notNull(),
+  clientUserId: varchar("client_user_id", { length: 36 }).references(() => users.id, { onDelete: "set null" }),
+  sellerId: varchar("seller_id", { length: 36 }).references(() => branchSalespeople.id, { onDelete: "set null" }),
+  sellerUserId: varchar("seller_user_id", { length: 36 }).references(() => users.id, { onDelete: "set null" }),
+  sellerNameSnapshot: text("seller_name_snapshot"),
+  sellerMetadata: jsonb("seller_metadata"),
+  channel: text("channel").notNull().default("dashboard_products"),
+  status: text("status").notNull().default("completed"),
+  subtotalAmount: numeric("subtotal_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  discountAmount: numeric("discount_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  totalAmount: numeric("total_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  paidAmount: numeric("paid_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  taxMode: text("tax_mode"),
+  taxRate: numeric("tax_rate", { precision: 8, scale: 4 }),
+  subtotalBeforeTax: numeric("subtotal_before_tax", { precision: 12, scale: 2 }),
+  taxableSubtotal: numeric("taxable_subtotal", { precision: 12, scale: 2 }),
+  taxTotal: numeric("tax_total", { precision: 12, scale: 2 }),
+  grandTotal: numeric("grand_total", { precision: 12, scale: 2 }),
+  idempotencyKey: varchar("idempotency_key", { length: 120 }),
+  notes: text("notes"),
+  createdBy: varchar("created_by", { length: 36 }).references(() => users.id, { onDelete: "set null" }),
+  cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+  cancelledByUserId: varchar("cancelled_by_user_id", { length: 36 }).references(() => users.id, { onDelete: "set null" }),
+  cancellationReason: text("cancellation_reason"),
+  cancellationIdempotencyKey: varchar("cancellation_idempotency_key", { length: 120 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  foreignKey({
+    columns: [table.branchId, table.projectId],
+    foreignColumns: [branchCommercialProjects.branchId, branchCommercialProjects.id],
+    name: "branch_sales_branch_project_fk",
+  }).onDelete("restrict"),
+  uniqueIndex("branch_sales_branch_folio_unique").on(table.branchId, table.folio),
+  index("branch_sales_branch_idx").on(table.branchId),
+  index("branch_sales_branch_project_idx").on(table.branchId, table.projectId),
+  index("branch_sales_branch_project_status_idx").on(table.branchId, table.projectId, table.status),
+  index("branch_sales_created_at_idx").on(table.createdAt),
+  index("branch_sales_client_user_idx").on(table.clientUserId),
+  index("branch_sales_seller_idx").on(table.sellerId),
+  index("branch_sales_status_idx").on(table.status),
+]);
+
+export const branchSaleItems = pgTable("branch_sale_items", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  saleId: varchar("sale_id", { length: 36 })
+    .notNull()
+    .references(() => branchSales.id, { onDelete: "cascade" }),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  itemType: text("item_type").notNull(),
+  commercialProductId: varchar("commercial_product_id", { length: 36 }).references(() => branchCommercialProducts.id, { onDelete: "set null" }),
+  serviceId: varchar("service_id", { length: 36 }).references(() => branchServices.id, { onDelete: "set null" }),
+  planId: varchar("plan_id", { length: 36 }).references(() => membershipPlans.id, { onDelete: "set null" }),
+  nameSnapshot: text("name_snapshot").notNull(),
+  categorySnapshot: text("category_snapshot"),
+  quantity: integer("quantity").notNull(),
+  unitPriceAmount: numeric("unit_price_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  discountAmount: numeric("discount_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  costAmountSnapshot: numeric("cost_amount_snapshot", { precision: 12, scale: 2 }).notNull().default("0"),
+  lineTotalAmount: numeric("line_total_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  metadata: jsonb("metadata"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("branch_sale_items_sale_idx").on(table.saleId),
+  index("branch_sale_items_branch_idx").on(table.branchId),
+  index("branch_sale_items_commercial_product_idx").on(table.commercialProductId),
+  index("branch_sale_items_item_type_idx").on(table.itemType),
+]);
+
+export const branchSalePayments = pgTable("branch_sale_payments", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  saleId: varchar("sale_id", { length: 36 })
+    .notNull()
+    .references(() => branchSales.id, { onDelete: "cascade" }),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  paymentMethod: text("payment_method").notNull(),
+  amount: numeric("amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  reference: text("reference"),
+  paidAt: timestamp("paid_at", { withTimezone: true }).defaultNow().notNull(),
+  createdBy: varchar("created_by", { length: 36 }).references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("branch_sale_payments_sale_idx").on(table.saleId),
+  index("branch_sale_payments_branch_idx").on(table.branchId),
+  index("branch_sale_payments_paid_at_idx").on(table.paidAt),
+]);
+
+export const branchCommissionRules = pgTable("branch_commission_rules", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  salespersonId: varchar("salesperson_id", { length: 36 })
+    .notNull()
+    .references(() => branchSalespeople.id),
+  name: text("name").notNull(),
+  ruleType: text("rule_type").notNull(),
+  percentageRate: numeric("percentage_rate", { precision: 8, scale: 4 }),
+  fixedAmount: numeric("fixed_amount", { precision: 12, scale: 2 }),
+  commercialProductId: varchar("commercial_product_id", { length: 36 }).references(() => branchCommercialProducts.id, { onDelete: "set null" }),
+  category: text("category"),
+  minimumGoalAmount: numeric("minimum_goal_amount", { precision: 12, scale: 2 }),
+  bonusAmount: numeric("bonus_amount", { precision: 12, scale: 2 }),
+  priority: integer("priority").notNull().default(0),
+  isActive: boolean("is_active").notNull().default(true),
+  validFrom: date("valid_from"),
+  validUntil: date("valid_until"),
+  createdBy: varchar("created_by", { length: 36 }).references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+}, (table) => [
+  index("branch_commission_rules_branch_idx").on(table.branchId),
+  index("branch_commission_rules_salesperson_idx").on(table.salespersonId),
+  index("branch_commission_rules_active_idx").on(table.isActive),
+  index("branch_commission_rules_deleted_at_idx").on(table.deletedAt),
+  index("branch_commission_rules_type_idx").on(table.ruleType),
+  index("branch_commission_rules_product_idx").on(table.commercialProductId),
+]);
+
+export const branchCommissionAccruals = pgTable("branch_commission_accruals", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  salespersonId: varchar("salesperson_id", { length: 36 })
+    .notNull()
+    .references(() => branchSalespeople.id),
+  saleId: varchar("sale_id", { length: 36 }).references(() => branchSales.id, { onDelete: "set null" }),
+  saleItemId: varchar("sale_item_id", { length: 36 }).references(() => branchSaleItems.id, { onDelete: "set null" }),
+  commissionRuleId: varchar("commission_rule_id", { length: 36 }).references(() => branchCommissionRules.id, { onDelete: "set null" }),
+  accrualType: text("accrual_type").notNull().default("sale"),
+  referenceKey: text("reference_key").notNull(),
+  periodMonth: text("period_month"),
+  status: text("status").notNull().default("approved"),
+  baseAmount: numeric("base_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  rateSnapshot: numeric("rate_snapshot", { precision: 8, scale: 4 }),
+  fixedAmountSnapshot: numeric("fixed_amount_snapshot", { precision: 12, scale: 2 }),
+  commissionAmount: numeric("commission_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  salespersonNameSnapshot: text("salesperson_name_snapshot").notNull(),
+  ruleNameSnapshot: text("rule_name_snapshot"),
+  calculationSnapshot: jsonb("calculation_snapshot"),
+  accruedAt: timestamp("accrued_at", { withTimezone: true }).defaultNow().notNull(),
+  approvedAt: timestamp("approved_at", { withTimezone: true }),
+  paidAmount: numeric("paid_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  reversedAt: timestamp("reversed_at", { withTimezone: true }),
+  reversalReason: text("reversal_reason"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("branch_commission_accruals_branch_reference_unique").on(table.branchId, table.referenceKey),
+  index("branch_commission_accruals_branch_idx").on(table.branchId),
+  index("branch_commission_accruals_salesperson_idx").on(table.salespersonId),
+  index("branch_commission_accruals_sale_idx").on(table.saleId),
+  index("branch_commission_accruals_status_idx").on(table.status),
+  index("branch_commission_accruals_accrued_at_idx").on(table.accruedAt),
+  index("branch_commission_accruals_period_month_idx").on(table.periodMonth),
+]);
+
+export const branchCommissionPayments = pgTable("branch_commission_payments", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  salespersonId: varchar("salesperson_id", { length: 36 })
+    .notNull()
+    .references(() => branchSalespeople.id),
+  amount: numeric("amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  paymentMethod: text("payment_method").notNull(),
+  idempotencyKey: varchar("idempotency_key", { length: 120 }),
+  reference: text("reference"),
+  notes: text("notes"),
+  periodStart: date("period_start"),
+  periodEnd: date("period_end"),
+  paidAt: timestamp("paid_at", { withTimezone: true }).defaultNow().notNull(),
+  createdBy: varchar("created_by", { length: 36 }).references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("branch_commission_payments_branch_idx").on(table.branchId),
+  index("branch_commission_payments_salesperson_idx").on(table.salespersonId),
+  index("branch_commission_payments_paid_at_idx").on(table.paidAt),
+]);
+
+export const branchCommissionPaymentAllocations = pgTable("branch_commission_payment_allocations", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  commissionPaymentId: varchar("commission_payment_id", { length: 36 })
+    .notNull()
+    .references(() => branchCommissionPayments.id, { onDelete: "cascade" }),
+  commissionAccrualId: varchar("commission_accrual_id", { length: 36 })
+    .notNull()
+    .references(() => branchCommissionAccruals.id, { onDelete: "cascade" }),
+  amountAllocated: numeric("amount_allocated", { precision: 12, scale: 2 }).notNull().default("0"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("branch_commission_allocations_payment_accrual_unique").on(table.commissionPaymentId, table.commissionAccrualId),
+  index("branch_commission_allocations_branch_idx").on(table.branchId),
+  index("branch_commission_allocations_payment_idx").on(table.commissionPaymentId),
+  index("branch_commission_allocations_accrual_idx").on(table.commissionAccrualId),
+]);
+
+export const branchInventoryBalances = pgTable("branch_inventory_balances", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  commercialProductId: varchar("commercial_product_id", { length: 36 })
+    .notNull()
+    .references(() => branchCommercialProducts.id),
+  quantityOnHand: integer("quantity_on_hand").notNull().default(0),
+  minimumStock: integer("minimum_stock").notNull().default(0),
+  updatedBy: varchar("updated_by", { length: 36 }).references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("branch_inventory_balances_branch_product_unique").on(table.branchId, table.commercialProductId),
+  index("branch_inventory_balances_branch_idx").on(table.branchId),
+  index("branch_inventory_balances_product_idx").on(table.commercialProductId),
+]);
+
+export const branchSuppliers = pgTable("branch_suppliers", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  name: text("name").notNull(),
+  contactName: text("contact_name"),
+  phone: text("phone"),
+  email: text("email"),
+  taxId: text("tax_id"),
+  address: text("address"),
+  paymentTerms: text("payment_terms"),
+  notes: text("notes"),
+  isActive: boolean("is_active").notNull().default(true),
+  createdBy: varchar("created_by", { length: 36 }).references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+}, (table) => [
+  index("branch_suppliers_branch_idx").on(table.branchId),
+  index("branch_suppliers_active_idx").on(table.isActive),
+  index("branch_suppliers_deleted_at_idx").on(table.deletedAt),
+  index("branch_suppliers_name_idx").on(table.name),
+]);
+
+export const branchPurchases = pgTable("branch_purchases", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  projectId: varchar("project_id", { length: 36 }),
+  folio: text("folio").notNull(),
+  supplierId: varchar("supplier_id", { length: 36 }).references(() => branchSuppliers.id, { onDelete: "set null" }),
+  status: text("status").notNull().default("draft"),
+  purchaseDate: date("purchase_date").notNull(),
+  expectedDate: date("expected_date"),
+  receivedAt: timestamp("received_at", { withTimezone: true }),
+  paymentStatus: text("payment_status").notNull().default("unpaid"),
+  paymentMethod: text("payment_method"),
+  subtotalAmount: numeric("subtotal_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  discountAmount: numeric("discount_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  taxMode: text("tax_mode"),
+  taxRate: numeric("tax_rate", { precision: 8, scale: 4 }),
+  subtotalBeforeTax: numeric("subtotal_before_tax", { precision: 12, scale: 2 }),
+  taxableSubtotal: numeric("taxable_subtotal", { precision: 12, scale: 2 }),
+  taxTotal: numeric("tax_total", { precision: 12, scale: 2 }),
+  grandTotal: numeric("grand_total", { precision: 12, scale: 2 }),
+  totalAmount: numeric("total_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  paidAmount: numeric("paid_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  reference: text("reference"),
+  notes: text("notes"),
+  createdBy: varchar("created_by", { length: 36 }).references(() => users.id, { onDelete: "set null" }),
+  cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  foreignKey({
+    columns: [table.branchId, table.projectId],
+    foreignColumns: [branchCommercialProjects.branchId, branchCommercialProjects.id],
+    name: "branch_purchases_branch_project_fk",
+  }).onDelete("restrict"),
+  uniqueIndex("branch_purchases_branch_folio_unique").on(table.branchId, table.folio),
+  index("branch_purchases_branch_idx").on(table.branchId),
+  index("branch_purchases_branch_project_idx").on(table.branchId, table.projectId),
+  index("branch_purchases_branch_project_status_idx").on(table.branchId, table.projectId, table.status),
+  index("branch_purchases_supplier_idx").on(table.supplierId),
+  index("branch_purchases_status_idx").on(table.status),
+  index("branch_purchases_payment_status_idx").on(table.paymentStatus),
+  index("branch_purchases_purchase_date_idx").on(table.purchaseDate),
+  index("branch_purchases_created_at_idx").on(table.createdAt),
+]);
+
+export const branchPurchaseItems = pgTable("branch_purchase_items", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  purchaseId: varchar("purchase_id", { length: 36 })
+    .notNull()
+    .references(() => branchPurchases.id, { onDelete: "cascade" }),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  commercialProductId: varchar("commercial_product_id", { length: 36 }).references(() => branchCommercialProducts.id, { onDelete: "set null" }),
+  nameSnapshot: text("name_snapshot").notNull(),
+  skuSnapshot: text("sku_snapshot"),
+  quantityOrdered: integer("quantity_ordered").notNull(),
+  quantityReceived: integer("quantity_received").notNull().default(0),
+  unitCost: numeric("unit_cost", { precision: 12, scale: 2 }).notNull().default("0"),
+  lineTotal: numeric("line_total", { precision: 12, scale: 2 }).notNull().default("0"),
+  metadata: jsonb("metadata"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("branch_purchase_items_purchase_idx").on(table.purchaseId),
+  index("branch_purchase_items_branch_idx").on(table.branchId),
+  index("branch_purchase_items_commercial_product_idx").on(table.commercialProductId),
+]);
+
+export const branchInventoryMovements = pgTable("branch_inventory_movements", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  commercialProductId: varchar("commercial_product_id", { length: 36 })
+    .notNull()
+    .references(() => branchCommercialProducts.id),
+  movementType: text("movement_type").notNull(),
+  quantityDelta: integer("quantity_delta").notNull(),
+  quantityBefore: integer("quantity_before").notNull(),
+  quantityAfter: integer("quantity_after").notNull(),
+  unitCostSnapshot: numeric("unit_cost_snapshot", { precision: 12, scale: 2 }),
+  reason: text("reason").notNull(),
+  notes: text("notes"),
+  saleId: varchar("sale_id", { length: 36 }).references(() => branchSales.id, { onDelete: "set null" }),
+  saleItemId: varchar("sale_item_id", { length: 36 }).references(() => branchSaleItems.id, { onDelete: "set null" }),
+  purchaseId: varchar("purchase_id", { length: 36 }).references(() => branchPurchases.id, { onDelete: "set null" }),
+  purchaseItemId: varchar("purchase_item_id", { length: 36 }).references(() => branchPurchaseItems.id, { onDelete: "set null" }),
+  createdBy: varchar("created_by", { length: 36 }).references(() => users.id, { onDelete: "set null" }),
+  metadata: jsonb("metadata"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("branch_inventory_movements_branch_idx").on(table.branchId),
+  index("branch_inventory_movements_product_idx").on(table.commercialProductId),
+  index("branch_inventory_movements_type_idx").on(table.movementType),
+  index("branch_inventory_movements_created_at_idx").on(table.createdAt),
+  index("branch_inventory_movements_sale_idx").on(table.saleId),
+  index("branch_inventory_movements_purchase_idx").on(table.purchaseId),
+]);
+
 export const branchServices = pgTable("branch_services", {
   id: varchar("id", { length: 36 })
     .primaryKey()
@@ -938,6 +1415,95 @@ export const insertBranchProductSchema = createInsertSchema(branchProducts).omit
   createdAt: true,
 });
 
+export const insertBranchCommercialProductSchema = createInsertSchema(branchCommercialProducts).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  deletedAt: true,
+});
+
+export const insertBranchCommercialProjectSchema = createInsertSchema(branchCommercialProjects).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  deletedAt: true,
+});
+
+export const insertBranchSalespersonSchema = createInsertSchema(branchSalespeople).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  deletedAt: true,
+});
+
+export const insertBranchSaleSchema = createInsertSchema(branchSales).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const insertBranchSaleItemSchema = createInsertSchema(branchSaleItems).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertBranchSalePaymentSchema = createInsertSchema(branchSalePayments).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertBranchCommissionRuleSchema = createInsertSchema(branchCommissionRules).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  deletedAt: true,
+});
+
+export const insertBranchCommissionAccrualSchema = createInsertSchema(branchCommissionAccruals).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertBranchCommissionPaymentSchema = createInsertSchema(branchCommissionPayments).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertBranchCommissionPaymentAllocationSchema = createInsertSchema(branchCommissionPaymentAllocations).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertBranchInventoryBalanceSchema = createInsertSchema(branchInventoryBalances).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const insertBranchSupplierSchema = createInsertSchema(branchSuppliers).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  deletedAt: true,
+});
+
+export const insertBranchPurchaseSchema = createInsertSchema(branchPurchases).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  cancelledAt: true,
+});
+
+export const insertBranchPurchaseItemSchema = createInsertSchema(branchPurchaseItems).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertBranchInventoryMovementSchema = createInsertSchema(branchInventoryMovements).omit({
+  id: true,
+  createdAt: true,
+});
+
 export const insertBranchServiceSchema = createInsertSchema(branchServices).omit({
   id: true,
   createdAt: true,
@@ -963,6 +1529,36 @@ export type BranchPost = typeof branchPosts.$inferSelect;
 export type InsertBranchPost = z.infer<typeof insertBranchPostSchema>;
 export type BranchProduct = typeof branchProducts.$inferSelect;
 export type InsertBranchProduct = z.infer<typeof insertBranchProductSchema>;
+export type BranchCommercialProduct = typeof branchCommercialProducts.$inferSelect;
+export type InsertBranchCommercialProduct = z.infer<typeof insertBranchCommercialProductSchema>;
+export type BranchCommercialProject = typeof branchCommercialProjects.$inferSelect;
+export type InsertBranchCommercialProject = z.infer<typeof insertBranchCommercialProjectSchema>;
+export type BranchSalesperson = typeof branchSalespeople.$inferSelect;
+export type InsertBranchSalesperson = z.infer<typeof insertBranchSalespersonSchema>;
+export type BranchSale = typeof branchSales.$inferSelect;
+export type InsertBranchSale = z.infer<typeof insertBranchSaleSchema>;
+export type BranchSaleItem = typeof branchSaleItems.$inferSelect;
+export type InsertBranchSaleItem = z.infer<typeof insertBranchSaleItemSchema>;
+export type BranchSalePayment = typeof branchSalePayments.$inferSelect;
+export type InsertBranchSalePayment = z.infer<typeof insertBranchSalePaymentSchema>;
+export type BranchCommissionRule = typeof branchCommissionRules.$inferSelect;
+export type InsertBranchCommissionRule = z.infer<typeof insertBranchCommissionRuleSchema>;
+export type BranchCommissionAccrual = typeof branchCommissionAccruals.$inferSelect;
+export type InsertBranchCommissionAccrual = z.infer<typeof insertBranchCommissionAccrualSchema>;
+export type BranchCommissionPayment = typeof branchCommissionPayments.$inferSelect;
+export type InsertBranchCommissionPayment = z.infer<typeof insertBranchCommissionPaymentSchema>;
+export type BranchCommissionPaymentAllocation = typeof branchCommissionPaymentAllocations.$inferSelect;
+export type InsertBranchCommissionPaymentAllocation = z.infer<typeof insertBranchCommissionPaymentAllocationSchema>;
+export type BranchInventoryBalance = typeof branchInventoryBalances.$inferSelect;
+export type InsertBranchInventoryBalance = z.infer<typeof insertBranchInventoryBalanceSchema>;
+export type BranchSupplier = typeof branchSuppliers.$inferSelect;
+export type InsertBranchSupplier = z.infer<typeof insertBranchSupplierSchema>;
+export type BranchPurchase = typeof branchPurchases.$inferSelect;
+export type InsertBranchPurchase = z.infer<typeof insertBranchPurchaseSchema>;
+export type BranchPurchaseItem = typeof branchPurchaseItems.$inferSelect;
+export type InsertBranchPurchaseItem = z.infer<typeof insertBranchPurchaseItemSchema>;
+export type BranchInventoryMovement = typeof branchInventoryMovements.$inferSelect;
+export type InsertBranchInventoryMovement = z.infer<typeof insertBranchInventoryMovementSchema>;
 export type BranchService = typeof branchServices.$inferSelect;
 export type InsertBranchService = z.infer<typeof insertBranchServiceSchema>;
 export type BranchServiceSaleOption = typeof branchServiceSaleOptions.$inferSelect;
@@ -1361,6 +1957,7 @@ export const branchFinanceExpenseCategories = [
   "profesor",
   "mantenimiento",
   "publicidad",
+  "sales_commission",
   "otro",
 ] as const;
 export const branchFinancePaymentMethodValues = [
@@ -1414,6 +2011,84 @@ export const branchServiceSaleOptionTypeValues = [
   "day_pass",
   "gift_card",
   "especial",
+] as const;
+export const branchSaleStatusValues = [
+  "draft",
+  "completed",
+  "cancelled",
+] as const;
+export const branchCommercialProjectStatusValues = [
+  "draft",
+  "active",
+  "completed",
+  "cancelled",
+  "archived",
+] as const;
+export const branchSaleChannelValues = [
+  "dashboard_products",
+  "dashboard_manual",
+  "pos_future",
+] as const;
+export const branchSaleTaxModeValues = [
+  "tax_included",
+  "tax_added",
+  "tax_exempt",
+] as const;
+export const branchCommissionRuleTypeValues = [
+  "percentage_all_sales",
+  "fixed_per_sale",
+  "percentage_product",
+  "fixed_product",
+  "percentage_category",
+  "bonus_monthly_goal",
+] as const;
+export const branchCommissionAccrualTypeValues = [
+  "sale",
+  "monthly_bonus",
+] as const;
+export const branchCommissionAccrualStatusValues = [
+  "accrued",
+  "approved",
+  "partially_paid",
+  "paid",
+  "reversed",
+] as const;
+export const branchSaleItemTypeValues = [
+  "commercial_product",
+  "service",
+  "plan",
+  "other",
+] as const;
+export const branchInventoryMovementTypeValues = [
+  "initial",
+  "manual_entry",
+  "positive_adjustment",
+  "negative_adjustment",
+  "purchase",
+  "sale",
+  "sale_cancellation",
+  "return",
+  "waste",
+  "damaged",
+] as const;
+export const branchInventoryStatusValues = [
+  "not_tracked",
+  "uninitialized",
+  "available",
+  "low_stock",
+  "out_of_stock",
+] as const;
+export const branchPurchaseStatusValues = [
+  "draft",
+  "ordered",
+  "partially_received",
+  "received",
+  "cancelled",
+] as const;
+export const branchPurchasePaymentStatusValues = [
+  "unpaid",
+  "partial",
+  "paid",
 ] as const;
 
 export const createBranchFinanceEntrySchema = z.object({
@@ -1478,6 +2153,155 @@ export const createBranchStaffClassLogSchema = z.object({
   notes: z.string().max(500, "Maximo 500 caracteres").nullable().optional(),
 });
 
+export const createBranchSalespersonSchema = z.object({
+  userId: z.string().min(1).nullable().optional(),
+  name: z.string().min(1, "El nombre es obligatorio").max(120, "Maximo 120 caracteres"),
+  lastName: z.string().max(120, "Maximo 120 caracteres").nullable().optional(),
+  phone: z.string().max(40, "Maximo 40 caracteres").nullable().optional(),
+  email: z.string().email("Correo invalido").max(160, "Maximo 160 caracteres").nullable().optional().or(z.literal("")),
+  employeeCode: z.string().max(60, "Maximo 60 caracteres").nullable().optional(),
+  roleLabel: z.string().max(120, "Maximo 120 caracteres").nullable().optional(),
+  monthlyGoalAmount: z.coerce.number().min(0, "La meta no puede ser negativa").nullable().optional(),
+  notes: z.string().max(500, "Maximo 500 caracteres").nullable().optional(),
+  isActive: z.boolean().optional(),
+});
+
+export const updateBranchSalespersonSchema = createBranchSalespersonSchema.partial().refine(
+  (data) => Object.keys(data).length > 0,
+  { message: "Debes enviar al menos un campo para actualizar" },
+);
+
+const branchCommissionRuleDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Formato YYYY-MM-DD");
+
+const branchCommissionRuleSchemaBase = z.object({
+  name: z.string().min(1, "El nombre es obligatorio").max(160, "Maximo 160 caracteres"),
+  ruleType: z.enum(branchCommissionRuleTypeValues),
+  percentageRate: z.coerce.number().min(0, "El porcentaje no puede ser negativo").max(100, "El porcentaje no puede ser mayor a 100").nullable().optional(),
+  fixedAmount: z.coerce.number().min(0, "El monto fijo no puede ser negativo").nullable().optional(),
+  commercialProductId: z.string().min(1).nullable().optional(),
+  category: z.string().max(120, "Maximo 120 caracteres").nullable().optional(),
+  minimumGoalAmount: z.coerce.number().min(0, "La meta minima no puede ser negativa").nullable().optional(),
+  bonusAmount: z.coerce.number().min(0, "El bono no puede ser negativo").nullable().optional(),
+  priority: z.coerce.number().int().min(0, "La prioridad no puede ser negativa").max(9999, "Prioridad demasiado alta").optional(),
+  isActive: z.boolean().optional(),
+  validFrom: branchCommissionRuleDateSchema.nullable().optional(),
+  validUntil: branchCommissionRuleDateSchema.nullable().optional(),
+});
+
+function validateBranchCommissionRule(data: {
+  ruleType?: string;
+  percentageRate?: number | null;
+  fixedAmount?: number | null;
+  commercialProductId?: string | null;
+  category?: string | null;
+  minimumGoalAmount?: number | null;
+  bonusAmount?: number | null;
+  validFrom?: string | null;
+  validUntil?: string | null;
+}, ctx: z.RefinementCtx) {
+  const requiresPercentage = data.ruleType === "percentage_all_sales" || data.ruleType === "percentage_product" || data.ruleType === "percentage_category";
+  const requiresFixed = data.ruleType === "fixed_per_sale" || data.ruleType === "fixed_product";
+  const requiresProduct = data.ruleType === "percentage_product" || data.ruleType === "fixed_product";
+  const requiresCategory = data.ruleType === "percentage_category";
+  const requiresBonus = data.ruleType === "bonus_monthly_goal";
+
+  if (requiresPercentage && (data.percentageRate == null || Number.isNaN(data.percentageRate))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["percentageRate"], message: "Esta regla requiere un porcentaje" });
+  }
+  if (requiresFixed && (data.fixedAmount == null || Number.isNaN(data.fixedAmount))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["fixedAmount"], message: "Esta regla requiere un monto fijo" });
+  }
+  if (requiresProduct && !data.commercialProductId) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["commercialProductId"], message: "Selecciona un producto para esta regla" });
+  }
+  if (requiresCategory && !data.category?.trim()) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["category"], message: "Especifica la categoria para esta regla" });
+  }
+  if (requiresBonus) {
+    if (data.minimumGoalAmount == null || Number.isNaN(data.minimumGoalAmount)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["minimumGoalAmount"], message: "La regla de bono requiere una meta minima" });
+    }
+    if (data.bonusAmount == null || Number.isNaN(data.bonusAmount)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["bonusAmount"], message: "La regla de bono requiere un monto de bono" });
+    }
+  }
+  if (data.validFrom && data.validUntil && data.validUntil < data.validFrom) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["validUntil"], message: "La fecha final no puede ser anterior a la inicial" });
+  }
+}
+
+export const createBranchCommissionRuleSchema = branchCommissionRuleSchemaBase.superRefine((data, ctx) => {
+  validateBranchCommissionRule(data, ctx);
+});
+
+export const updateBranchCommissionRuleSchema = branchCommissionRuleSchemaBase.partial().superRefine((data, ctx) => {
+  if (Object.keys(data).length === 0) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Debes enviar al menos un campo para actualizar" });
+    return;
+  }
+  validateBranchCommissionRule(data, ctx);
+});
+
+export const createBranchCommissionPaymentSchema = z.object({
+  amount: z.coerce.number().positive("El pago debe ser mayor a 0"),
+  paymentMethod: z.enum(branchFinancePaymentMethodValues),
+  idempotencyKey: z.string().trim().min(8, "Idempotency key invalida").max(120, "Maximo 120 caracteres").optional(),
+  reference: z.string().max(160, "Maximo 160 caracteres").nullable().optional(),
+  notes: z.string().max(500, "Maximo 500 caracteres").nullable().optional(),
+  periodStart: branchCommissionRuleDateSchema.nullable().optional(),
+  periodEnd: branchCommissionRuleDateSchema.nullable().optional(),
+  accrualIds: z.array(z.string().min(1)).optional(),
+}).superRefine((data, ctx) => {
+  if (data.periodStart && data.periodEnd && data.periodEnd < data.periodStart) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["periodEnd"], message: "La fecha final no puede ser anterior a la inicial" });
+  }
+});
+
+export const createBranchSupplierSchema = z.object({
+  name: z.string().min(1, "El nombre es obligatorio").max(160, "Maximo 160 caracteres"),
+  contactName: z.string().max(160, "Maximo 160 caracteres").nullable().optional(),
+  phone: z.string().max(40, "Maximo 40 caracteres").nullable().optional(),
+  email: z.string().email("Correo invalido").max(160, "Maximo 160 caracteres").nullable().optional().or(z.literal("")),
+  taxId: z.string().max(40, "Maximo 40 caracteres").nullable().optional(),
+  address: z.string().max(240, "Maximo 240 caracteres").nullable().optional(),
+  paymentTerms: z.string().max(160, "Maximo 160 caracteres").nullable().optional(),
+  notes: z.string().max(500, "Maximo 500 caracteres").nullable().optional(),
+  isActive: z.boolean().optional(),
+});
+
+export const updateBranchSupplierSchema = createBranchSupplierSchema.partial().refine(
+  (data) => Object.keys(data).length > 0,
+  { message: "Debes enviar al menos un campo para actualizar" },
+);
+
+export const createBranchPurchaseItemInputSchema = z.object({
+  commercialProductId: z.string().min(1, "El producto es obligatorio"),
+  quantityOrdered: z.coerce.number().int().min(1, "La cantidad debe ser mayor a 0"),
+  unitCost: z.coerce.number().min(0, "El costo no puede ser negativo"),
+  updateReferenceCost: z.boolean().optional(),
+});
+
+export const createBranchPurchaseSchema = z.object({
+  projectId: z.string().min(1).nullable().optional(),
+  supplierId: z.string().min(1).nullable().optional(),
+  status: z.enum(branchPurchaseStatusValues).optional(),
+  purchaseDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Formato YYYY-MM-DD"),
+  expectedDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Formato YYYY-MM-DD").nullable().optional(),
+  paymentStatus: z.enum(branchPurchasePaymentStatusValues).optional(),
+  paymentMethod: z.enum(branchFinancePaymentMethodValues).nullable().optional(),
+  paidAmount: z.coerce.number().min(0, "El pago no puede ser negativo").optional(),
+  discountAmount: z.coerce.number().min(0, "El descuento no puede ser negativo").optional(),
+  taxMode: z.enum(branchSaleTaxModeValues).default("tax_exempt"),
+  taxRate: z.coerce.number().min(0, "La tasa de IVA no puede ser negativa").max(100, "La tasa de IVA no puede ser mayor a 100").default(16),
+  reference: z.string().max(120, "Maximo 120 caracteres").nullable().optional(),
+  notes: z.string().max(500, "Maximo 500 caracteres").nullable().optional(),
+  items: z.array(createBranchPurchaseItemInputSchema).min(1, "Debes agregar al menos un producto"),
+});
+
+export const receiveBranchPurchaseSchema = z.object({
+  notes: z.string().max(500, "Maximo 500 caracteres").nullable().optional(),
+});
+
 export const createBranchServiceSchema = z.object({
   name: z.string().min(1, "El nombre es obligatorio").max(160, "Maximo 160 caracteres"),
   category: z.string().min(1, "La categoria es obligatoria").max(120, "Maximo 120 caracteres"),
@@ -1494,6 +2318,137 @@ export const updateBranchServiceSchema = createBranchServiceSchema.partial().ref
   (data) => Object.keys(data).length > 0,
   { message: "Debes enviar al menos un campo para actualizar" },
 );
+
+export const createBranchCommercialProductSchema = z.object({
+  name: z.string().min(1, "El nombre es obligatorio").max(160, "Maximo 160 caracteres"),
+  category: z.string().min(1, "La categoria es obligatoria").max(120, "Maximo 120 caracteres"),
+  description: z.string().max(1000, "Maximo 1000 caracteres").nullable().optional(),
+  photoUrl: z.string().max(2048, "URL demasiado larga").nullable().optional(),
+  sku: z.string().max(80, "Maximo 80 caracteres").nullable().optional(),
+  barcode: z.string().max(120, "Maximo 120 caracteres").nullable().optional(),
+  costAmount: z.coerce.number().min(0, "El costo no puede ser negativo"),
+  salePriceAmount: z.coerce.number().min(0, "El precio de venta no puede ser negativo"),
+  isActive: z.boolean().optional(),
+  isPublicVisible: z.boolean().optional(),
+  usesInventory: z.boolean().optional(),
+  displayOrder: z.coerce.number().int().min(0).optional(),
+});
+
+export const updateBranchCommercialProductSchema = createBranchCommercialProductSchema.partial().refine(
+  (data) => Object.keys(data).length > 0,
+  { message: "Debes enviar al menos un campo para actualizar" },
+);
+
+export const createBranchSaleProductSchema = z.object({
+  quantity: z.coerce.number().int().min(1, "Debes registrar al menos una unidad").max(9999, "Cantidad demasiado grande"),
+  clientUserId: z.string().min(1).nullable().optional(),
+  sellerId: z.string().min(1).nullable().optional(),
+  projectId: z.string().min(1).nullable().optional(),
+  paymentMethod: z.enum(branchFinancePaymentMethodValues),
+  idempotencyKey: z.string().trim().min(8, "Idempotency key invalida").max(120, "Maximo 120 caracteres").optional(),
+  discountAmount: z.coerce.number().min(0, "El descuento no puede ser negativo").default(0),
+  taxMode: z.enum(branchSaleTaxModeValues).default("tax_exempt"),
+  taxRate: z.coerce.number().min(0, "La tasa de IVA no puede ser negativa").max(100, "La tasa de IVA no puede ser mayor a 100").default(16),
+  notes: z.string().max(500, "Maximo 500 caracteres").nullable().optional(),
+  paymentReference: z.string().max(160, "Maximo 160 caracteres").nullable().optional(),
+});
+
+export const createBranchCheckoutItemSchema = z.object({
+  commercialProductId: z.string().min(1, "El producto es obligatorio"),
+  quantity: z.coerce.number().int().min(1, "Debes registrar al menos una unidad").max(9999, "Cantidad demasiado grande"),
+});
+
+export const createBranchCheckoutPaymentSchema = z.object({
+  paymentMethod: z.enum(branchFinancePaymentMethodValues),
+  amount: z.coerce.number().positive("El monto debe ser mayor a 0"),
+  reference: z.string().max(160, "Maximo 160 caracteres").nullable().optional(),
+});
+
+export const createBranchCheckoutSchema = z.object({
+  items: z.array(createBranchCheckoutItemSchema).min(1, "Debes agregar al menos un producto"),
+  clientUserId: z.string().min(1).nullable().optional(),
+  sellerId: z.string().min(1).nullable().optional(),
+  projectId: z.string().min(1).nullable().optional(),
+  discountAmount: z.coerce.number().min(0, "El descuento no puede ser negativo").default(0),
+  taxMode: z.enum(branchSaleTaxModeValues).default("tax_exempt"),
+  taxRate: z.coerce.number().min(0, "La tasa de IVA no puede ser negativa").max(100, "La tasa de IVA no puede ser mayor a 100").default(16),
+  notes: z.string().max(500, "Maximo 500 caracteres").nullable().optional(),
+  payments: z.array(createBranchCheckoutPaymentSchema).min(1, "Debes registrar al menos un pago"),
+  idempotencyKey: z.string().trim().min(8, "Idempotency key invalida").max(120, "Maximo 120 caracteres"),
+});
+
+export const cancelBranchSaleSchema = z.object({
+  reason: z.string().trim().min(3, "El motivo es obligatorio").max(500, "Maximo 500 caracteres"),
+  idempotencyKey: z.string().trim().min(8, "Idempotency key invalida").max(120, "Maximo 120 caracteres"),
+});
+
+export const createBranchCommercialProjectSchema = z.object({
+  name: z.string().min(1, "El nombre es obligatorio").max(160, "Maximo 160 caracteres"),
+  description: z.string().max(1000, "Maximo 1000 caracteres").nullable().optional(),
+  customerUserId: z.string().min(1).nullable().optional(),
+  status: z.enum(branchCommercialProjectStatusValues).default("draft"),
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Formato YYYY-MM-DD"),
+  expectedEndDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Formato YYYY-MM-DD").nullable().optional(),
+  notes: z.string().max(1000, "Maximo 1000 caracteres").nullable().optional(),
+});
+
+export const updateBranchCommercialProjectSchema = createBranchCommercialProjectSchema.partial().refine(
+  (data) => Object.keys(data).length > 0,
+  { message: "Debes enviar al menos un campo para actualizar" },
+);
+
+export const linkBranchCommercialProjectSaleSchema = z.object({
+  saleId: z.string().min(1, "La venta es obligatoria"),
+});
+
+export const linkBranchCommercialProjectPurchaseSchema = z.object({
+  purchaseId: z.string().min(1, "La compra es obligatoria"),
+});
+
+export const createBranchCommercialProjectFromSaleSchema = z.object({
+  saleId: z.string().min(1, "La venta es obligatoria"),
+  name: z.string().min(1, "El nombre es obligatorio").max(160, "Maximo 160 caracteres").optional(),
+  description: z.string().max(1000, "Maximo 1000 caracteres").nullable().optional(),
+  notes: z.string().max(1000, "Maximo 1000 caracteres").nullable().optional(),
+  expectedEndDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Formato YYYY-MM-DD").nullable().optional(),
+});
+
+export const createBranchInventoryInitialSchema = z.object({
+  quantity: z.coerce.number().int().min(0, "La cantidad inicial no puede ser negativa").max(1000000, "Cantidad demasiado grande"),
+  minimumStock: z.coerce.number().int().min(0, "La existencia minima no puede ser negativa").max(1000000, "Cantidad demasiado grande").default(0),
+  unitCost: z.coerce.number().min(0, "El costo unitario no puede ser negativo").nullable().optional(),
+  notes: z.string().max(500, "Maximo 500 caracteres").nullable().optional(),
+});
+
+export const createBranchInventoryEntrySchema = z.object({
+  quantity: z.coerce.number().int().min(1, "Debes registrar al menos una unidad").max(1000000, "Cantidad demasiado grande"),
+  minimumStock: z.coerce.number().int().min(0, "La existencia minima no puede ser negativa").max(1000000, "Cantidad demasiado grande").nullable().optional(),
+  unitCost: z.coerce.number().min(0, "El costo unitario no puede ser negativo").nullable().optional(),
+  reason: z.string().min(1, "El motivo es obligatorio").max(160, "Maximo 160 caracteres"),
+  notes: z.string().max(500, "Maximo 500 caracteres").nullable().optional(),
+});
+
+export const createBranchInventoryAdjustmentSchema = z.object({
+  newQuantity: z.coerce.number().int().min(0, "La nueva cantidad no puede ser negativa").max(1000000, "Cantidad demasiado grande").nullable().optional(),
+  quantityDelta: z.coerce.number().int().min(-1000000, "Ajuste demasiado grande").max(1000000, "Ajuste demasiado grande").nullable().optional(),
+  minimumStock: z.coerce.number().int().min(0, "La existencia minima no puede ser negativa").max(1000000, "Cantidad demasiado grande").nullable().optional(),
+  unitCost: z.coerce.number().min(0, "El costo unitario no puede ser negativo").nullable().optional(),
+  reason: z.string().min(1, "El motivo es obligatorio").max(160, "Maximo 160 caracteres"),
+  notes: z.string().max(500, "Maximo 500 caracteres").nullable().optional(),
+}).refine(
+  (data) => (data.newQuantity != null ? 1 : 0) + (data.quantityDelta != null ? 1 : 0) === 1,
+  { message: "Debes enviar una nueva cantidad o una diferencia, pero no ambas" },
+).refine(
+  (data) => data.quantityDelta == null || data.quantityDelta !== 0,
+  { message: "La diferencia no puede ser 0" },
+);
+
+export const createBranchInventoryWasteSchema = z.object({
+  quantity: z.coerce.number().int().min(1, "Debes registrar al menos una unidad").max(1000000, "Cantidad demasiado grande"),
+  movementType: z.enum(["waste", "damaged"]).default("waste"),
+  reason: z.string().min(1, "El motivo es obligatorio").max(160, "Maximo 160 caracteres"),
+  notes: z.string().max(500, "Maximo 500 caracteres").nullable().optional(),
+});
 
 const branchServiceSaleOptionBaseSchema = z.object({
   serviceId: z.string().min(1, "El servicio es obligatorio"),

@@ -135,8 +135,8 @@ function ClassSlotCard({
   return (
     <Card className={`${isFullscreen ? "bg-gray-900 border-gray-700" : ""}`} data-testid={`tv-class-${slot.id}`}>
       <CardHeader className={`pb-2 ${isFullscreen ? "px-6 pt-4" : ""}`}>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-wrap items-center gap-3">
             <Badge variant={isFullscreen ? "outline" : "secondary"} className={`text-xs ${isFullscreen ? "border-gray-600 text-gray-300" : ""}`} data-testid={`badge-tv-time-${slot.id}`}>
               {slot.startTime} - {slot.endTime}
             </Badge>
@@ -144,7 +144,7 @@ function ClassSlotCard({
               {slot.name}
             </CardTitle>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <Badge variant={slot.summary.attended > 0 ? "default" : "outline"} className={`text-xs ${isFullscreen ? "border-gray-600" : ""}`} data-testid={`badge-tv-attendance-${slot.id}`}>
               {slot.summary.attended}/{slot.summary.total} asistieron
             </Badge>
@@ -324,8 +324,8 @@ export default function TvModeTab() {
       className={`${isFullscreen ? "bg-gray-950 min-h-screen p-6 overflow-auto" : ""}`}
       data-testid="tv-mode-container"
     >
-      <div className={`flex items-center justify-between mb-4 ${isFullscreen ? "px-2" : ""}`}>
-        <div className="flex items-center gap-2">
+      <div className={`mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between ${isFullscreen ? "px-2" : ""}`}>
+        <div className="flex items-center gap-2 overflow-x-auto pb-1">
           <Button size="icon" variant={isFullscreen ? "outline" : "ghost"} className={`h-8 w-8 ${isFullscreen ? "border-gray-700 text-gray-300" : ""}`} onClick={prevDay} data-testid="button-tv-prev-day">
             <ChevronLeft className="h-4 w-4" />
           </Button>
@@ -337,7 +337,7 @@ export default function TvModeTab() {
           </Button>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
           {(tvData?.length ?? 0) > 0 && (
             <div className={`text-sm ${isFullscreen ? "text-gray-400" : "text-muted-foreground"}`} data-testid="text-tv-summary">
               {totalAttended}/{totalStudents} alumnos · {tvData?.length} clases
@@ -347,7 +347,7 @@ export default function TvModeTab() {
             variant={isFullscreen ? "outline" : "secondary"}
             size="sm"
             onClick={toggleFullscreen}
-            className={isFullscreen ? "border-gray-700 text-gray-300" : ""}
+            className={`${isFullscreen ? "border-gray-700 text-gray-300" : ""} w-full sm:w-auto`}
             data-testid="button-tv-fullscreen"
           >
             {isFullscreen ? <Minimize className="h-4 w-4 mr-1" /> : <Maximize className="h-4 w-4 mr-1" />}
@@ -391,8 +391,8 @@ export default function TvModeTab() {
       {content}
 
       <Dialog open={!!routineDialog} onOpenChange={(open) => !open && setRoutineDialog(null)}>
-        <DialogContent data-testid="dialog-routine">
-          <DialogHeader>
+        <DialogContent className="max-md:overflow-y-auto max-md:px-4 max-md:pb-[calc(env(safe-area-inset-bottom)+1rem)] max-md:pt-[calc(env(safe-area-inset-top)+1rem)]" data-testid="dialog-routine">
+          <DialogHeader className="pr-10">
             <DialogTitle>Rutina — {routineDialog?.name}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
@@ -408,7 +408,7 @@ export default function TvModeTab() {
             </div>
             <div>
               <Label>Imagen (opcional)</Label>
-              <div className="flex items-center gap-2 mt-1">
+              <div className="mt-1 flex flex-wrap items-center gap-2">
                 <input
                   type="file"
                   accept="image/jpeg,image/png,image/webp"
@@ -424,6 +424,7 @@ export default function TvModeTab() {
                 <Button
                   variant="outline"
                   size="sm"
+                  className="w-full sm:w-auto"
                   disabled={uploadingImage}
                   onClick={() => document.getElementById("routine-image-input")?.click()}
                   data-testid="button-upload-routine-image"
@@ -432,7 +433,7 @@ export default function TvModeTab() {
                   Subir imagen
                 </Button>
                 {routineImage && (
-                  <Button variant="ghost" size="sm" onClick={() => setRoutineImage("")} data-testid="button-remove-routine-image">
+                  <Button variant="ghost" size="sm" className="w-full sm:w-auto" onClick={() => setRoutineImage("")} data-testid="button-remove-routine-image">
                     <X className="h-4 w-4 mr-1" /> Quitar
                   </Button>
                 )}
@@ -442,7 +443,7 @@ export default function TvModeTab() {
               )}
             </div>
           </div>
-          <DialogFooter>
+          <DialogFooter className="gap-2 border-t pt-4 max-md:sticky max-md:bottom-0 max-md:z-10 max-md:-mx-4 max-md:bg-background/95 max-md:px-4 max-md:pb-[calc(env(safe-area-inset-bottom)+0.5rem)] max-md:backdrop-blur">
             <Button variant="outline" onClick={() => setRoutineDialog(null)} data-testid="button-cancel-routine">Cancelar</Button>
             <Button onClick={saveRoutine} disabled={routineMutation.isPending} data-testid="button-save-routine">
               {routineMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-1" />}

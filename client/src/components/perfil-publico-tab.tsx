@@ -200,7 +200,7 @@ function BasicProfileSection() {
             Opcional. Se muestra en tu perfil público como resumen rápido.
           </p>
         </div>
-        <Button onClick={handleSave} disabled={saving} data-testid="button-save-profile">
+        <Button className="w-full sm:w-auto" onClick={handleSave} disabled={saving} data-testid="button-save-profile">
           {saving ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Save className="h-4 w-4 mr-1" />}
           Guardar
         </Button>
@@ -294,6 +294,7 @@ function GallerySection() {
               <Button
                 variant="outline"
                 size="sm"
+                className="w-full sm:w-auto"
                 disabled={uploading}
                 onClick={() => inputRef.current?.click()}
                 data-testid="button-add-gallery-photo"
@@ -313,13 +314,13 @@ function GallerySection() {
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             {facilityPhotos.map((photo, idx) => (
-              <div key={photo.id} className="relative group" data-testid={`gallery-photo-${photo.id}`}>
+              <div key={photo.id} className="relative group overflow-hidden rounded-md" data-testid={`gallery-photo-${photo.id}`}>
                 <img
                   src={photo.url}
                   alt={`Galería ${idx + 1}`}
                   className="h-28 w-full rounded-md object-cover border"
                 />
-                <div className="absolute top-1 right-1 flex gap-1 invisible group-hover:visible">
+                <div className="absolute inset-x-2 bottom-2 flex flex-wrap justify-end gap-1 visible md:inset-x-auto md:bottom-auto md:right-1 md:top-1 md:invisible md:group-hover:visible">
                   {idx > 0 && (
                     <Button size="icon" variant="secondary" onClick={() => movePhoto(idx, "up")} data-testid={`button-gallery-up-${photo.id}`}>
                       <ArrowUp className="h-3 w-3" />
@@ -451,7 +452,7 @@ function LocationSection() {
         {locations.map((loc, idx) => (
           <div key={idx} className="space-y-3">
             {idx > 0 && <div className="border-t pt-1" />}
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="text-sm font-semibold text-muted-foreground">
                 {idx === 0 ? "Ubicación principal" : "Segunda ubicación"}
               </span>
@@ -499,6 +500,7 @@ function LocationSection() {
               <Button
                 variant="outline"
                 size="sm"
+                className="w-full sm:w-auto"
                 onClick={() => window.open(loc.googleMapsUrl, "_blank")}
                 data-testid={idx === 0 ? "button-preview-maps" : `button-preview-maps-${idx}`}
               >
@@ -506,7 +508,7 @@ function LocationSection() {
                 Ver en Google Maps
               </Button>
             )}
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <Label>Latitud</Label>
                 <Input
@@ -555,7 +557,7 @@ function LocationSection() {
           </Button>
         )}
 
-        <Button onClick={handleSave} disabled={saving} data-testid="button-save-location">
+        <Button className="w-full sm:w-auto" onClick={handleSave} disabled={saving} data-testid="button-save-location">
           {saving ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Save className="h-4 w-4 mr-1" />}
           Guardar
         </Button>
@@ -608,10 +610,10 @@ function HoursSection() {
           return (
             <div
               key={day}
-              className="flex items-center gap-3 flex-wrap"
+              className="flex flex-col gap-3 rounded-xl border border-border/60 p-3 sm:flex-row sm:items-center sm:border-0 sm:p-0"
               data-testid={`hours-row-${day}`}
             >
-              <div className="w-24 flex items-center gap-2">
+              <div className="flex w-full items-center gap-2 sm:w-24">
                 <Switch
                   checked={dayData.open}
                   onCheckedChange={(val) => updateDay(day, "open", val)}
@@ -620,12 +622,12 @@ function HoursSection() {
                 <span className="text-sm font-medium">{(DAY_LABELS_MAP[day] || day).slice(0, 3)}</span>
               </div>
               {dayData.open ? (
-                <div className="flex items-center gap-2">
+                <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
                   <Input
                     type="time"
                     value={dayData.from}
                     onChange={(e) => updateDay(day, "from", e.target.value)}
-                    className="w-28"
+                    className="w-full sm:w-28"
                     data-testid={`input-from-${day}`}
                   />
                   <span className="text-sm text-muted-foreground">a</span>
@@ -633,7 +635,7 @@ function HoursSection() {
                     type="time"
                     value={dayData.to}
                     onChange={(e) => updateDay(day, "to", e.target.value)}
-                    className="w-28"
+                    className="w-full sm:w-28"
                     data-testid={`input-to-${day}`}
                   />
                 </div>
@@ -645,7 +647,7 @@ function HoursSection() {
             </div>
           );
         })}
-        <Button onClick={handleSave} disabled={saving} className="mt-2" data-testid="button-save-hours">
+        <Button onClick={handleSave} disabled={saving} className="mt-2 w-full sm:w-auto" data-testid="button-save-hours">
           {saving ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Save className="h-4 w-4 mr-1" />}
           Guardar Horarios
         </Button>
@@ -806,7 +808,7 @@ function ServicesProductsSection() {
               </Badge>
             )}
           </CardTitle>
-          <Button variant="outline" size="sm" onClick={openCreate} data-testid="button-create-service">
+          <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={openCreate} data-testid="button-create-service">
             <Plus className="h-4 w-4 mr-1" /> Nuevo
           </Button>
         </div>
@@ -842,7 +844,7 @@ function ServicesProductsSection() {
                   )}
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-sm font-medium truncate" data-testid={`text-service-name-${product.id}`}>
+                      <span className="text-sm font-medium break-words sm:truncate" data-testid={`text-service-name-${product.id}`}>
                         {product.name}
                       </span>
                       <Badge variant="secondary" className="text-xs" data-testid={`badge-type-${product.id}`}>
@@ -862,7 +864,7 @@ function ServicesProductsSection() {
                     </p>
                   </div>
                 </div>
-                <div className="flex items-center gap-1 shrink-0">
+                <div className="flex w-full flex-wrap items-center gap-1 shrink-0 sm:w-auto">
                   <Button
                     size="icon"
                     variant="ghost"
@@ -902,8 +904,8 @@ function ServicesProductsSection() {
       </CardContent>
 
       <Dialog open={dialogOpen} onOpenChange={(open) => !open && closeDialog()}>
-        <DialogContent data-testid="dialog-service">
-          <DialogHeader>
+        <DialogContent className="max-md:overflow-y-auto max-md:px-4 max-md:pb-[calc(env(safe-area-inset-bottom)+1rem)] max-md:pt-[calc(env(safe-area-inset-top)+1rem)]" data-testid="dialog-service">
+          <DialogHeader className="pr-10">
             <DialogTitle>{editing ? "Editar" : "Nuevo"} Servicio / Producto</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
@@ -963,8 +965,8 @@ function ServicesProductsSection() {
                 data-testid="input-service-description"
               />
             </div>
-            <div className="flex items-center justify-between rounded-md border p-3">
-              <div>
+            <div className="flex flex-col gap-3 rounded-md border p-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
                 <Label className="text-sm">Visible en el perfil público</Label>
                 <p className="text-xs text-muted-foreground">Puedes ocultarlo sin borrar el producto o servicio.</p>
               </div>
@@ -972,7 +974,7 @@ function ServicesProductsSection() {
             </div>
             <div>
               <Label>Imagen (opcional)</Label>
-              <div className="flex items-center gap-2 mt-1">
+              <div className="mt-1 flex flex-wrap items-center gap-2">
                 <input
                   ref={inputRef}
                   type="file"
@@ -987,6 +989,7 @@ function ServicesProductsSection() {
                 <Button
                   variant="outline"
                   size="sm"
+                  className="w-full sm:w-auto"
                   disabled={uploadingImage}
                   onClick={() => inputRef.current?.click()}
                   data-testid="button-upload-service-image"
@@ -995,7 +998,7 @@ function ServicesProductsSection() {
                   Subir imagen
                 </Button>
                 {imageUrl && (
-                  <Button variant="ghost" size="sm" onClick={() => setImageUrl("")} data-testid="button-remove-service-image">
+                  <Button variant="ghost" size="sm" className="w-full sm:w-auto" onClick={() => setImageUrl("")} data-testid="button-remove-service-image">
                     <X className="h-4 w-4 mr-1" /> Quitar
                   </Button>
                 )}
@@ -1005,7 +1008,7 @@ function ServicesProductsSection() {
               )}
             </div>
           </div>
-          <DialogFooter>
+          <DialogFooter className="gap-2 border-t pt-4 max-md:sticky max-md:bottom-0 max-md:z-10 max-md:-mx-4 max-md:bg-background/95 max-md:px-4 max-md:pb-[calc(env(safe-area-inset-bottom)+0.5rem)] max-md:backdrop-blur">
             <Button variant="outline" onClick={closeDialog} data-testid="button-cancel-service">
               Cancelar
             </Button>
@@ -1118,7 +1121,7 @@ function ReviewsSummarySection() {
                 ({totalReviews} {totalReviews === 1 ? "reseña" : "reseñas"})
               </span>
             </div>
-            <div className="space-y-2 max-h-80 overflow-y-auto">
+            <div className="space-y-2 max-h-80 overflow-y-auto max-md:max-h-none max-md:overflow-visible">
               {reviews.slice(0, 8).map((review) => (
                 <div
                   key={review.id}

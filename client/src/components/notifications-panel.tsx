@@ -12,8 +12,13 @@ import {
   Clock,
   Loader2,
   MessageCircle,
+  Package2,
+  ShoppingCart,
   Trash2,
+  Trophy,
+  Truck,
   UserPlus,
+  Wallet,
   XCircle,
 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -29,6 +34,7 @@ import {
 } from "@/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 export type NotificationItem = {
   id: string;
@@ -69,6 +75,14 @@ function formatNotificationDate(date: string) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function formatCurrencyMx(amount: number) {
+  return new Intl.NumberFormat("es-MX", {
+    style: "currency",
+    currency: "MXN",
+    minimumFractionDigits: 2,
+  }).format(amount || 0);
 }
 
 function formatRelativeNotificationDate(date: string) {
@@ -230,6 +244,118 @@ function getNotificationCopy(notification: NotificationItem) {
     };
   }
 
+  if (notification.type === "inventory_low_stock" || notification.type === "inventory_out_of_stock") {
+    const data = getNotificationData(notification);
+    const hasProductName = typeof data.productName === "string" && data.productName.trim().length > 0;
+    const productName = hasProductName ? data.productName.trim() : notification.title;
+    const quantityOnHand = typeof data.quantityOnHand === "number" ? data.quantityOnHand : Number(data.quantityOnHand ?? 0);
+    const minimumStock = typeof data.minimumStock === "number" ? data.minimumStock : Number(data.minimumStock ?? 0);
+
+    return {
+      title: hasProductName
+        ? (
+          notification.type === "inventory_out_of_stock"
+            ? `Sin existencias de ${productName}`
+            : `${productName} quedó con ${quantityOnHand} unidades`
+        )
+        : notification.title,
+      lines: [
+        notification.type === "inventory_out_of_stock"
+          ? `Stock mínimo ${minimumStock}`
+          : `Mínimo configurado ${minimumStock}`,
+        "Revisa inventario comercial",
+      ],
+    };
+  }
+
+  if (notification.type === "commercial_first_purchase") {
+    const data = getNotificationData(notification);
+    const hasClientName = typeof data.clientName === "string" && data.clientName.trim().length > 0;
+    const clientName = hasClientName ? data.clientName.trim() : null;
+    const salesCount = typeof data.salesCount === "number" ? data.salesCount : Number(data.salesCount ?? 0);
+    const totalSpentAmount = typeof data.totalSpentAmount === "number" ? data.totalSpentAmount : Number(data.totalSpentAmount ?? 0);
+
+    return {
+      title: clientName ? `Primera compra de ${clientName}` : notification.title,
+      lines: [
+        `${formatCurrencyMx(totalSpentAmount)} · ${salesCount} venta${salesCount === 1 ? "" : "s"}`,
+      ],
+    };
+  }
+
+  if (notification.type === "sales_goal_reached") {
+    const data = getNotificationData(notification);
+    const hasSalespersonName = typeof data.salespersonName === "string" && data.salespersonName.trim().length > 0;
+    const salespersonName = hasSalespersonName ? data.salespersonName.trim() : null;
+    const totalSoldAmount = typeof data.totalSoldAmount === "number" ? data.totalSoldAmount : Number(data.totalSoldAmount ?? 0);
+    const monthlyGoalAmount = typeof data.monthlyGoalAmount === "number" ? data.monthlyGoalAmount : Number(data.monthlyGoalAmount ?? 0);
+
+    return {
+      title: salespersonName ? `Meta alcanzada por ${salespersonName}` : notification.title,
+      lines: [
+        `${formatCurrencyMx(totalSoldAmount)} vendidos`,
+        monthlyGoalAmount > 0 ? `Meta ${formatCurrencyMx(monthlyGoalAmount)}` : "Meta del mes cumplida",
+      ],
+    };
+  }
+
+  if (notification.type === "commercial_large_sale") {
+    const data = getNotificationData(notification);
+    const clientName = typeof data.clientDisplayName === "string" && data.clientDisplayName.trim().length > 0
+      ? data.clientDisplayName.trim()
+      : "Venta comercial";
+    const sellerName = typeof data.sellerName === "string" && data.sellerName.trim().length > 0
+      ? data.sellerName.trim()
+      : null;
+    const totalAmount = typeof data.totalAmount === "number" ? data.totalAmount : Number(data.totalAmount ?? 0);
+    const folio = typeof data.folio === "string" && data.folio.trim().length > 0 ? data.folio.trim() : null;
+
+    return {
+      title: `${clientName} registró una venta importante`,
+      lines: [
+        [folio, formatCurrencyMx(totalAmount)].filter(Boolean).join(" · "),
+        sellerName ? `Atendió ${sellerName}` : "Venta comercial completada",
+      ],
+    };
+  }
+
+  if (notification.type === "purchase_received") {
+    const data = getNotificationData(notification);
+    const folio = typeof data.folio === "string" && data.folio.trim().length > 0 ? data.folio.trim() : "Compra";
+    const supplierName = typeof data.supplierName === "string" && data.supplierName.trim().length > 0
+      ? data.supplierName.trim()
+      : "Proveedor";
+    const totalAmount = typeof data.totalAmount === "number" ? data.totalAmount : Number(data.totalAmount ?? 0);
+
+    return {
+      title: `${folio} recibida`,
+      lines: [
+        supplierName,
+        formatCurrencyMx(totalAmount),
+      ],
+    };
+  }
+
+  if (notification.type === "commission_pending") {
+    const data = getNotificationData(notification);
+    const hasSalespersonName = typeof data.salespersonName === "string" && data.salespersonName.trim().length > 0;
+    const salespersonName = hasSalespersonName ? data.salespersonName.trim() : null;
+    const pendingAmount = typeof data.pendingCommissionAmount === "number"
+      ? data.pendingCommissionAmount
+      : Number(data.pendingCommissionAmount ?? 0);
+    const generatedAmount = typeof data.generatedCommissionAmount === "number"
+      ? data.generatedCommissionAmount
+      : Number(data.generatedCommissionAmount ?? 0);
+
+    return {
+      title: salespersonName ? `Comisión pendiente de ${salespersonName}` : notification.title,
+      lines: [
+        `${formatCurrencyMx(pendingAmount)} pendiente`,
+        generatedAmount > 0 ? `${formatCurrencyMx(generatedAmount)} generada en el mes` : "Revisa el cierre del mes",
+      ],
+    };
+  }
+
   return {
     title: notification.title,
     lines: notification.message ? [notification.message] : [],
@@ -318,6 +444,76 @@ function getNotificationMeta(notification: NotificationItem) {
     };
   }
 
+  if (notification.type === "inventory_low_stock") {
+    return {
+      icon: Package2,
+      iconClassName: "text-amber-500",
+      accentClassName: "border-amber-200 bg-amber-50/70 dark:border-amber-900/50 dark:bg-amber-950/25",
+      actionLabel: "Ver producto",
+      eyebrow: "Stock bajo",
+    };
+  }
+
+  if (notification.type === "inventory_out_of_stock") {
+    return {
+      icon: AlertTriangle,
+      iconClassName: "text-rose-500",
+      accentClassName: "border-rose-200 bg-rose-50/70 dark:border-rose-900/50 dark:bg-rose-950/25",
+      actionLabel: "Abrir inventario",
+      eyebrow: "Producto agotado",
+    };
+  }
+
+  if (notification.type === "commercial_first_purchase") {
+    return {
+      icon: ShoppingCart,
+      iconClassName: "text-emerald-500",
+      accentClassName: "border-emerald-200 bg-emerald-50/70 dark:border-emerald-900/50 dark:bg-emerald-950/25",
+      actionLabel: "Ver cliente",
+      eyebrow: "Primera compra",
+    };
+  }
+
+  if (notification.type === "sales_goal_reached") {
+    return {
+      icon: Trophy,
+      iconClassName: "text-violet-500",
+      accentClassName: "border-violet-200 bg-violet-50/70 dark:border-violet-900/50 dark:bg-violet-950/25",
+      actionLabel: "Ver vendedor",
+      eyebrow: "Meta mensual",
+    };
+  }
+
+  if (notification.type === "commercial_large_sale") {
+    return {
+      icon: Wallet,
+      iconClassName: "text-emerald-500",
+      accentClassName: "border-emerald-200 bg-emerald-50/70 dark:border-emerald-900/50 dark:bg-emerald-950/25",
+      actionLabel: "Ver venta",
+      eyebrow: "Venta importante",
+    };
+  }
+
+  if (notification.type === "purchase_received") {
+    return {
+      icon: Truck,
+      iconClassName: "text-sky-500",
+      accentClassName: "border-sky-200 bg-sky-50/70 dark:border-sky-900/50 dark:bg-sky-950/25",
+      actionLabel: "Ver compra",
+      eyebrow: "Compra recibida",
+    };
+  }
+
+  if (notification.type === "commission_pending") {
+    return {
+      icon: Wallet,
+      iconClassName: "text-amber-500",
+      accentClassName: "border-amber-200 bg-amber-50/70 dark:border-amber-900/50 dark:bg-amber-950/25",
+      actionLabel: "Ver vendedor",
+      eyebrow: "Comisión pendiente",
+    };
+  }
+
   return {
     icon: Bell,
     iconClassName: "text-slate-500",
@@ -386,7 +582,7 @@ function NotificationList({
   }
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3 overflow-x-hidden">
       {notifications.map((notification) => {
         const data = getNotificationData(notification);
         const meta = getNotificationMeta(notification);
@@ -400,7 +596,11 @@ function NotificationList({
         );
         const canOpenClient = Boolean(
           onOpenClient &&
-          (notification.type === "booking_created" || notification.type === "booking_cancelled") &&
+          (
+            notification.type === "booking_created" ||
+            notification.type === "booking_cancelled" ||
+            notification.type === "commercial_first_purchase"
+          ) &&
           (
             (typeof data.clientUserId === "string" && data.clientUserId.trim().length > 0) ||
             (typeof data.userId === "string" && data.userId.trim().length > 0)
@@ -410,12 +610,12 @@ function NotificationList({
         return (
           <div
             key={notification.id}
-            className={`rounded-2xl border p-3 transition-colors ${meta.accentClassName} ${
+            className={`max-w-full overflow-hidden rounded-2xl border p-3 transition-colors ${meta.accentClassName} ${
               notification.isRead ? "opacity-90" : "shadow-sm"
             }`}
             data-testid={`${testIdPrefix}-item-${notification.id}`}
           >
-            <div className="flex items-start gap-3">
+            <div className="flex min-w-0 items-start gap-3">
               <div className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-white/80 dark:bg-slate-900/60`}>
                 <Icon className={`h-4 w-4 ${meta.iconClassName}`} />
               </div>
@@ -441,18 +641,18 @@ function NotificationList({
                   }}
                   className={onOpen ? "cursor-pointer" : undefined}
                 >
-                  <p className="text-sm font-semibold leading-snug text-foreground">{copy.title}</p>
+                  <p className="break-words text-sm font-semibold leading-snug text-foreground">{copy.title}</p>
                   <div className="mt-1 space-y-1">
                     {copy.lines.map((line, index) => (
-                      <p key={`${notification.id}-line-${index}`} className="text-sm text-muted-foreground">
+                      <p key={`${notification.id}-line-${index}`} className="break-words text-sm text-muted-foreground">
                         {line}
                       </p>
                     ))}
                   </div>
                 </div>
 
-                <div className={`flex flex-wrap items-center justify-between gap-2 ${compact ? "pt-0.5" : "pt-1"}`}>
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                <div className={`flex flex-col gap-2 ${compact ? "pt-0.5" : "pt-1"} sm:flex-row sm:items-center sm:justify-between`}>
+                  <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
                     <span className="flex items-center gap-1">
                       <Clock className="h-3 w-3" />
                       {formatRelativeNotificationDate(notification.createdAt)}
@@ -460,9 +660,10 @@ function NotificationList({
                     {!compact && <span>{formatNotificationDate(notification.createdAt)}</span>}
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-1.5">
+                  <div className="flex w-full flex-wrap items-center gap-1.5 sm:w-auto sm:justify-end">
                     {onOpen && (
                       <Button
+                        className="w-full justify-center sm:w-auto"
                         size="sm"
                         variant="outline"
                         onClick={(event) => {
@@ -477,6 +678,7 @@ function NotificationList({
                     )}
                     {canOpenClient && (
                       <Button
+                        className="w-full justify-center sm:w-auto"
                         size="sm"
                         variant="outline"
                         onClick={(event) => {
@@ -490,9 +692,9 @@ function NotificationList({
                     )}
                     {canWhatsApp && (
                       <Button
+                        className="w-full justify-center border-green-200 text-green-700 hover:bg-green-50 dark:border-green-900/50 dark:text-green-300 dark:hover:bg-green-950/20 sm:w-auto"
                         size="sm"
                         variant="outline"
-                        className="border-green-200 text-green-700 hover:bg-green-50 dark:border-green-900/50 dark:text-green-300 dark:hover:bg-green-950/20"
                         onClick={(event) => {
                           event.stopPropagation();
                           onWhatsApp?.(notification);
@@ -505,6 +707,7 @@ function NotificationList({
                     )}
                     {!notification.isRead && (
                       <Button
+                        className="w-full justify-center sm:w-auto"
                         size="sm"
                         variant="ghost"
                         onClick={(event) => {
@@ -518,6 +721,7 @@ function NotificationList({
                       </Button>
                     )}
                     <Button
+                      className="w-full justify-center sm:w-auto"
                       size="sm"
                       variant="ghost"
                       onClick={(event) => {
@@ -559,6 +763,7 @@ export default function NotificationsPanel({
   onOpenClientNotification?: (notification: NotificationItem) => void;
   pollingMs?: number;
 }) {
+  const isMobile = useIsMobile();
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [filter, setFilter] = useState<NotificationFilter>("all");
@@ -783,6 +988,25 @@ export default function NotificationsPanel({
             )}
           </CardContent>
         </Card>
+      ) : isMobile ? (
+        <Button
+          variant="ghost"
+          size="icon"
+          className="relative rounded-full border border-border/60 bg-background/80 shadow-sm"
+          onClick={() => {
+            setIsDialogOpen(true);
+            void summaryQuery.refetch();
+            void fullNotificationsQuery.refetch();
+          }}
+          data-testid={`${testIdPrefix}-bell-trigger`}
+        >
+          <Bell className="h-4 w-4" />
+          {unreadCount > 0 && (
+            <span className="absolute -right-1.5 -top-1.5 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-destructive px-1.5 text-[10px] font-semibold text-destructive-foreground">
+              {unreadCount > 99 ? "99+" : unreadCount}
+            </span>
+          )}
+        </Button>
       ) : (
         <Popover
           open={isPopoverOpen}
@@ -871,7 +1095,7 @@ export default function NotificationsPanel({
           }
         }}
       >
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+        <DialogContent className="flex h-full max-h-none max-w-none flex-col overflow-hidden rounded-none p-4 sm:p-6 md:h-auto md:max-h-[90vh] md:max-w-4xl md:rounded-lg">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Bell className="h-4 w-4" />
@@ -883,9 +1107,10 @@ export default function NotificationsPanel({
             </DialogDescription>
           </DialogHeader>
 
-          <div className="flex items-center justify-between gap-3 flex-wrap">
-            <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className="flex flex-wrap items-center gap-2">
               <Button
+                className="w-full justify-center sm:w-auto"
                 type="button"
                 size="sm"
                 variant={filter === "all" ? "default" : "outline"}
@@ -895,6 +1120,7 @@ export default function NotificationsPanel({
                 Todas ({totalCount})
               </Button>
               <Button
+                className="w-full justify-center sm:w-auto"
                 type="button"
                 size="sm"
                 variant={filter === "unread" ? "default" : "outline"}
@@ -904,6 +1130,7 @@ export default function NotificationsPanel({
                 No leídas ({unreadCount})
               </Button>
               <Button
+                className="w-full justify-center sm:w-auto"
                 type="button"
                 size="sm"
                 variant={filter === "read" ? "default" : "outline"}
@@ -914,8 +1141,9 @@ export default function NotificationsPanel({
               </Button>
             </div>
 
-            <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
               <Button
+                className="w-full justify-center sm:w-auto"
                 variant="outline"
                 size="sm"
                 onClick={() => readAllMutation.mutate()}
@@ -925,6 +1153,7 @@ export default function NotificationsPanel({
                 Marcar todas como leídas
               </Button>
               <Button
+                className="w-full justify-center sm:w-auto"
                 variant="outline"
                 size="sm"
                 onClick={() => deleteReadMutation.mutate()}
@@ -935,6 +1164,7 @@ export default function NotificationsPanel({
                 Eliminar leídas
               </Button>
               <Button
+                className="w-full justify-center sm:w-auto"
                 variant="destructive"
                 size="sm"
                 onClick={() => deleteAllMutation.mutate()}
@@ -947,7 +1177,7 @@ export default function NotificationsPanel({
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto pr-1">
+          <div className="flex-1 overflow-y-auto overflow-x-hidden pr-1">
             {fullNotificationsQuery.isLoading ? (
               <div className="space-y-3">
                 {[1, 2, 3, 4].map((item) => (
@@ -974,10 +1204,11 @@ export default function NotificationsPanel({
             )}
           </div>
 
-          <div className="flex items-center justify-between gap-3 pt-2 border-t">
+          <div className="flex flex-col gap-3 border-t pt-2 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-sm text-muted-foreground">Página {page}</p>
-            <div className="flex items-center gap-2">
+            <div className="flex w-full items-center gap-2 sm:w-auto">
               <Button
+                className="flex-1 justify-center sm:flex-none"
                 variant="outline"
                 size="sm"
                 onClick={() => setPage((current) => Math.max(current - 1, 1))}
@@ -988,6 +1219,7 @@ export default function NotificationsPanel({
                 Anterior
               </Button>
               <Button
+                className="flex-1 justify-center sm:flex-none"
                 variant="outline"
                 size="sm"
                 onClick={() => setPage((current) => current + 1)}

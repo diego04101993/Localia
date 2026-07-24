@@ -165,8 +165,8 @@ function PlanFormDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
+      <DialogContent className="sm:max-w-lg max-md:overflow-y-auto max-md:px-4 max-md:pb-[calc(env(safe-area-inset-bottom)+1rem)] max-md:pt-[calc(env(safe-area-inset-top)+1rem)]">
+        <DialogHeader className="pr-10">
           <DialogTitle>{isEdit ? "Editar servicio o plan" : "Crear servicio o plan"}</DialogTitle>
           <DialogDescription className="hidden">
             {isEdit ? "Modifica los detalles del plan" : "Define un nuevo plan de membresía para tus clientes"}
@@ -331,7 +331,7 @@ function PlanFormDialog({
             </div>
           )}
 
-          <DialogFooter>
+          <DialogFooter className="gap-2 border-t pt-4 max-md:sticky max-md:bottom-0 max-md:z-10 max-md:-mx-4 max-md:bg-background/95 max-md:px-4 max-md:pb-[calc(env(safe-area-inset-bottom)+0.5rem)] max-md:backdrop-blur">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} data-testid="button-cancel-plan">
               Cancelar
             </Button>
@@ -413,8 +413,8 @@ function QuickChargeDialog({
         onOpenChange(nextOpen);
       }}
     >
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
+      <DialogContent className="sm:max-w-lg max-md:overflow-y-auto max-md:px-4 max-md:pb-[calc(env(safe-area-inset-bottom)+1rem)] max-md:pt-[calc(env(safe-area-inset-top)+1rem)]">
+        <DialogHeader className="pr-10">
           <DialogTitle>Cobrar servicio individual</DialogTitle>
           <DialogDescription className="hidden">
             Registra un cobro rápido sin crear ni renovar una membresía.
@@ -506,7 +506,7 @@ function QuickChargeDialog({
           </div>
         )}
 
-        <DialogFooter>
+        <DialogFooter className="gap-2 border-t pt-4 max-md:sticky max-md:bottom-0 max-md:z-10 max-md:-mx-4 max-md:bg-background/95 max-md:px-4 max-md:pb-[calc(env(safe-area-inset-bottom)+0.5rem)] max-md:backdrop-blur">
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)} data-testid="button-cancel-quick-charge">
             Cancelar
           </Button>
@@ -567,8 +567,8 @@ export default function MembresiasTab() {
   const inactivePlans = (plans || []).filter((p) => !p.isActive);
 
   return (
-    <div className="space-y-6">
-      <div className="rounded-3xl border bg-card/70 p-5 shadow-sm">
+    <div className="space-y-4 md:space-y-6">
+      <div className="rounded-2xl border bg-card/70 p-4 shadow-sm md:rounded-3xl md:p-5">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="space-y-3">
             <Badge variant="secondary" className="w-fit">Lo que vendes</Badge>
@@ -586,7 +586,7 @@ export default function MembresiasTab() {
               <Badge variant="secondary">Próximamente: promoción</Badge>
             </div>
           </div>
-          <Button size="sm" onClick={() => setShowCreateDialog(true)} data-testid="button-create-offering">
+          <Button size="sm" className="w-full sm:w-auto" onClick={() => setShowCreateDialog(true)} data-testid="button-create-offering">
             <Plus className="h-4 w-4 mr-1" />
             Crear servicio o plan
           </Button>
@@ -640,10 +640,10 @@ export default function MembresiasTab() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {activePlans.map((plan) => (
               <Card key={plan.id} data-testid={`card-plan-${plan.id}`}>
-                <CardContent className="p-4 space-y-3">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <h4 className="font-semibold" data-testid={`text-plan-name-${plan.id}`}>{plan.name}</h4>
+                <CardContent className="min-w-0 p-4 space-y-3">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0 flex-1">
+                      <h4 className="break-words font-semibold" data-testid={`text-plan-name-${plan.id}`}>{plan.name}</h4>
                       <p className="text-xl font-bold text-primary mt-1" data-testid={`text-plan-price-${plan.id}`}>
                         {formatPrice(plan.price)}
                       </p>
@@ -653,7 +653,7 @@ export default function MembresiasTab() {
                   {plan.description && (
                     <p className="text-sm text-muted-foreground">{plan.description}</p>
                   )}
-                  <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                  <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
                     <span className="flex items-center gap-1">
                       <Calendar className="h-3 w-3" />
                       {getCycleLabel(plan.cycleMonths ?? 1)}
@@ -682,10 +682,11 @@ export default function MembresiasTab() {
                       </Badge>
                     )}
                   </div>
-                  <div className="flex gap-2 pt-1">
+                  <div className="grid grid-cols-2 gap-2 pt-1 sm:flex sm:flex-wrap sm:items-center">
                     {(plan.cycleMonths ?? 1) === 0 && plan.isActive && (
                       <Button
                         size="sm"
+                        className="w-full sm:w-auto"
                         onClick={() => setQuickChargePlan(plan)}
                         data-testid={`button-quick-charge-plan-${plan.id}`}
                       >
@@ -696,6 +697,7 @@ export default function MembresiasTab() {
                     <Button
                       variant="outline"
                       size="sm"
+                      className="w-full sm:w-auto"
                       onClick={() => setEditingPlan(plan)}
                       data-testid={`button-edit-plan-${plan.id}`}
                     >
@@ -705,6 +707,7 @@ export default function MembresiasTab() {
                     <Button
                       variant="ghost"
                       size="sm"
+                      className={`${(plan.cycleMonths ?? 1) === 0 ? "col-span-2" : ""} w-full sm:w-auto`}
                       onClick={() => deactivateMutation.mutate(plan.id)}
                       disabled={deactivateMutation.isPending}
                       data-testid={`button-deactivate-plan-${plan.id}`}
@@ -724,21 +727,22 @@ export default function MembresiasTab() {
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 {inactivePlans.map((plan) => (
                   <Card key={plan.id} className="opacity-60" data-testid={`card-plan-${plan.id}`}>
-                    <CardContent className="p-4 space-y-2">
-                      <div className="flex items-start justify-between">
-                        <div>
-                          <h4 className="font-semibold" data-testid={`text-plan-name-${plan.id}`}>{plan.name}</h4>
+                    <CardContent className="min-w-0 p-4 space-y-2">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="min-w-0 flex-1">
+                          <h4 className="break-words font-semibold" data-testid={`text-plan-name-${plan.id}`}>{plan.name}</h4>
                           <p className="text-lg font-bold mt-1">{formatPrice(plan.price)}</p>
                         </div>
                         <Badge variant="secondary" data-testid={`badge-plan-status-${plan.id}`}>Desactivado</Badge>
                       </div>
-                      <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                      <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
                         <span>{getCycleLabel(plan.cycleMonths ?? 1)}</span>
                         <span>{plan.classLimit ? `${plan.classLimit} usos incluidos` : "Ilimitado"}</span>
                       </div>
                       <Button
                         variant="outline"
                         size="sm"
+                        className="w-full sm:w-auto"
                         onClick={() => reactivateMutation.mutate(plan.id)}
                         disabled={reactivateMutation.isPending}
                         data-testid={`button-reactivate-plan-${plan.id}`}

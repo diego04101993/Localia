@@ -62,7 +62,7 @@ interface BookingEntry {
   bookingDate: string;
   status: string;
   userName: string;
-  userEmail: string;
+  userEmail: string | null;
   className: string;
   startTime: string;
   endTime: string;
@@ -73,7 +73,7 @@ interface ClassBookingDetail {
   userId: string;
   status: string;
   userName: string;
-  userEmail: string;
+  userEmail: string | null;
   userPhone?: string | null;
   clientOrigin?: string | null;
   clientOriginLabel?: string | null;
@@ -96,7 +96,7 @@ interface ClassBookingResponse {
 interface ClientInfo {
   userId: string;
   name: string;
-  email: string;
+  email: string | null;
   clientStatus?: string;
   classesRemaining?: number | null;
   classesTotal?: number | null;
@@ -196,11 +196,11 @@ function ClassFormDialog({
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/branch/classes"] });
-      toast({ title: isEdit ? "Clase actualizada" : "Clase creada" });
+      toast({ title: isEdit ? "Horario actualizado" : "Reservación creada" });
       onOpenChange(false);
     },
     onError: (err: any) => {
-      toast({ title: "Error", description: err.message || "Error al guardar clase", variant: "destructive" });
+      toast({ title: "Error", description: err.message || "Error al guardar el horario", variant: "destructive" });
     },
   });
 
@@ -222,9 +222,9 @@ function ClassFormDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{isEdit ? "Editar clase" : "Crear clase"}</DialogTitle>
+          <DialogTitle>{isEdit ? "Editar horario" : "Nueva reservación"}</DialogTitle>
           <DialogDescription>
-            {isEdit ? "Modifica los detalles de la clase" : "Define una nueva clase recurrente en tu horario semanal"}
+            {isEdit ? "Modifica los detalles del horario" : "Define un nuevo horario recurrente para tus citas o clases"}
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -245,12 +245,12 @@ function ClassFormDialog({
               id="class-description"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="Descripción de la clase (opcional)"
+              placeholder="Descripción del servicio o clase (opcional)"
               className="min-h-[60px]"
               data-testid="input-class-description"
             />
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             <div className="space-y-2">
               <Label>Día de la semana *</Label>
               <Select value={dayOfWeek} onValueChange={setDayOfWeek}>
@@ -265,7 +265,7 @@ function ClassFormDialog({
               </Select>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="class-capacity">Capacidad *</Label>
+              <Label htmlFor="class-capacity">Cupo *</Label>
               <Input
                 id="class-capacity"
                 type="number"
@@ -278,7 +278,7 @@ function ClassFormDialog({
               />
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="class-start">Hora inicio *</Label>
               <Input
@@ -303,12 +303,12 @@ function ClassFormDialog({
             </div>
           </div>
           <div className="space-y-2">
-            <Label htmlFor="class-instructor">Instructor</Label>
+            <Label htmlFor="class-instructor">Responsable</Label>
             <Input
               id="class-instructor"
               value={instructorName}
               onChange={(e) => setInstructorName(e.target.value)}
-              placeholder="Nombre del instructor (opcional)"
+              placeholder="Nombre del responsable (opcional)"
               data-testid="input-class-instructor"
             />
           </div>
@@ -387,7 +387,7 @@ function BookClientDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Reservar cliente</DialogTitle>
+          <DialogTitle>Nueva reservación</DialogTitle>
           <DialogDescription>
             {classSchedule.name} — {DAY_NAMES[classSchedule.dayOfWeek]} {classSchedule.startTime}-{classSchedule.endTime} — {bookingDate}
           </DialogDescription>
@@ -395,7 +395,7 @@ function BookClientDialog({
         <div className="space-y-4">
           <div className="flex items-center gap-2">
             <Badge variant={spotsLeft > 0 ? "default" : "destructive"} data-testid="badge-spots-left">
-              {spotsLeft > 0 ? `${spotsLeft} lugares disponibles` : "Clase llena"}
+              {spotsLeft > 0 ? `${spotsLeft} cupos disponibles` : "Cupo lleno"}
             </Badge>
           </div>
           {spotsLeft > 0 ? (
@@ -409,7 +409,7 @@ function BookClientDialog({
                   <SelectContent>
                     {availableClients.map((c) => (
                       <SelectItem key={c.userId} value={c.userId}>
-                        {c.name} ({c.email})
+                        {c.name} ({c.email || "Sin correo"})
                         {c.clientStatus === "frozen" ? " ❄️" : c.clientStatus === "inactive" ? " ⏸️" : ""}
                       </SelectItem>
                     ))}
@@ -426,7 +426,7 @@ function BookClientDialog({
                     )}
                     {selectedClient.classesRemaining !== null && selectedClient.classesRemaining !== undefined ? (
                       <Badge variant={selectedClient.classesRemaining > 0 ? "secondary" : "destructive"}>
-                        {selectedClient.classesRemaining} clases restantes
+                        {selectedClient.classesRemaining} usos restantes
                       </Badge>
                     ) : selectedClient.planName ? (
                       <Badge variant="secondary">Ilimitadas</Badge>
@@ -443,10 +443,10 @@ function BookClientDialog({
                     </p>
                   )}
                   {clientNoClasses && (
-                    <p className="text-xs text-red-500 mt-1">Sin clases disponibles — asigna un plan primero</p>
+                    <p className="text-xs text-red-500 mt-1">Sin usos disponibles — asigna un servicio o plan primero</p>
                   )}
                   {clientExpired && (
-                    <p className="text-xs text-red-500 mt-1">Membresía vencida — renueva para reservar</p>
+                    <p className="text-xs text-red-500 mt-1">Servicio o plan vencido — renueva para reservar</p>
                   )}
                 </div>
               )}
@@ -572,7 +572,7 @@ function ClassDayDetail({
   return (
     <Card data-testid={`card-class-detail-${classSchedule.id}`}>
       <CardHeader className="pb-2">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
             <CardTitle className="text-base" data-testid={`text-class-detail-name-${classSchedule.id}`}>
               {classSchedule.name}
@@ -582,7 +582,7 @@ function ClassDayDetail({
               {classSchedule.instructorName && ` · ${classSchedule.instructorName}`}
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex w-full flex-wrap items-center gap-2 md:w-auto md:justify-end">
             <Badge variant={spotsLeft > 0 ? "secondary" : "destructive"} data-testid={`badge-capacity-${classSchedule.id}`}>
               <Users className="h-3 w-3 mr-1" />
               {activeBookings.length}/{classSchedule.capacity}
@@ -590,6 +590,7 @@ function ClassDayDetail({
             <Button
               size="sm"
               variant="outline"
+              className="w-full justify-center md:w-auto"
               onClick={() => setShowBookDialog(true)}
               disabled={spotsLeft <= 0}
               data-testid={`button-book-client-${classSchedule.id}`}
@@ -625,24 +626,24 @@ function ClassDayDetail({
                 data-testid={`booking-row-${b.id}`}
                 data-booking-row-id={b.id}
               >
-                <div className="flex items-start justify-between gap-3">
+                <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                   <div className="flex min-w-0 items-start gap-2">
                     <User className="mt-0.5 h-3.5 w-3.5 text-muted-foreground" />
                     <div className="min-w-0">
                       <span className="text-sm font-medium" data-testid={`text-booking-name-${b.id}`}>{b.userName}</span>
-                      <p className="truncate text-xs text-muted-foreground">{b.userEmail}</p>
+                      <p className="break-all text-xs text-muted-foreground">{b.userEmail || "Sin correo registrado"}</p>
                       <p className="mt-1 text-[11px] text-muted-foreground">
                         {b.planStatusLabel || "Sin servicio o plan"} · {b.clientOriginLabel || "Origen no disponible"}
                       </p>
                     </div>
                   </div>
-                  <div className="flex flex-wrap items-center justify-end gap-1">
+                  <div className="flex w-full flex-wrap items-center gap-1 md:w-auto md:justify-end">
                   {b.status === "confirmed" && (
                     <>
                       <Button
                         size="sm"
                         variant="ghost"
-                        className="h-7 px-2 text-green-600"
+                        className="h-7 flex-1 px-2 text-green-600 md:flex-none"
                         onClick={() => statusMutation.mutate({ bookingId: b.id, status: "attended" })}
                         disabled={statusMutation.isPending}
                         data-testid={`button-attend-${b.id}`}
@@ -653,7 +654,7 @@ function ClassDayDetail({
                       <Button
                         size="sm"
                         variant="ghost"
-                        className="h-7 px-2 text-orange-500"
+                        className="h-7 flex-1 px-2 text-orange-500 md:flex-none"
                         onClick={() => statusMutation.mutate({ bookingId: b.id, status: "no_show" })}
                         disabled={statusMutation.isPending}
                         data-testid={`button-noshow-${b.id}`}
@@ -663,7 +664,7 @@ function ClassDayDetail({
                       <Button
                         size="sm"
                         variant="ghost"
-                        className="h-7 px-2 text-red-500"
+                        className="h-7 flex-1 px-2 text-red-500 md:flex-none"
                         onClick={() => statusMutation.mutate({ bookingId: b.id, status: "cancelled" })}
                         disabled={statusMutation.isPending}
                         data-testid={`button-cancel-booking-${b.id}`}
@@ -794,7 +795,7 @@ function CopyWeekDialog({
         <DialogHeader>
           <DialogTitle>Copiar horario</DialogTitle>
           <DialogDescription>
-            Copia todas las clases activas de un día a otro. No se duplicarán clases con el mismo nombre y horario.
+            Copia todos los horarios activos de un día a otro. No se duplicarán horarios con el mismo nombre y horario.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
@@ -881,7 +882,7 @@ export default function ReservasTab({
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/branch/classes"] });
-      toast({ title: "Clase desactivada" });
+      toast({ title: "Horario desactivado" });
     },
     onError: (err: any) => {
       toast({ title: "Error", description: err.message || "Error al desactivar", variant: "destructive" });
@@ -895,7 +896,7 @@ export default function ReservasTab({
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/branch/classes"] });
-      toast({ title: "Clase reactivada" });
+      toast({ title: "Horario reactivado" });
     },
     onError: (err: any) => {
       toast({ title: "Error", description: err.message || "Error al reactivar", variant: "destructive" });
@@ -981,15 +982,16 @@ export default function ReservasTab({
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between flex-wrap gap-2">
+    <div className="space-y-6 overflow-x-hidden">
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
-          <h3 className="font-semibold text-lg" data-testid="text-reservas-title">Reservas y Calendario</h3>
-          <p className="text-sm text-muted-foreground">Gestiona clases y reservas de tus clientes</p>
+          <h3 className="font-semibold text-lg" data-testid="text-reservas-title">Agenda y reservaciones</h3>
+          <p className="text-sm text-muted-foreground">Gestiona horarios, cupos y reservaciones de tus clientes</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex w-full flex-col gap-2 md:w-auto md:flex-row md:items-center">
           <Button
             size="sm"
+            className="w-full justify-center md:w-auto"
             variant={viewMode === "calendar" ? "default" : "outline"}
             onClick={() => setViewMode("calendar")}
             data-testid="button-view-calendar"
@@ -999,44 +1001,92 @@ export default function ReservasTab({
           </Button>
           <Button
             size="sm"
+            className="w-full justify-center md:w-auto"
             variant={viewMode === "classes" ? "default" : "outline"}
             onClick={() => setViewMode("classes")}
             data-testid="button-view-classes"
           >
             <Clock className="h-4 w-4 mr-1" />
-            Clases
+            Horarios
           </Button>
-          <Button size="sm" variant="outline" onClick={() => setShowCopyDialog(true)} data-testid="button-copy-week">
+          <Button className="w-full justify-center md:w-auto" size="sm" variant="outline" onClick={() => setShowCopyDialog(true)} data-testid="button-copy-week">
             <Copy className="h-4 w-4 mr-1" />
             Copiar horario
           </Button>
-          <Button size="sm" onClick={() => setShowCreateDialog(true)} data-testid="button-create-class">
+          <Button className="w-full justify-center md:w-auto" size="sm" onClick={() => setShowCreateDialog(true)} data-testid="button-create-class">
             <Plus className="h-4 w-4 mr-1" />
-            Nueva clase
+            Nueva reservación
           </Button>
         </div>
       </div>
 
       {viewMode === "calendar" ? (
         <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <Button size="sm" variant="ghost" onClick={prevWeek} data-testid="button-prev-week">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <Button className="hidden md:inline-flex" size="sm" variant="ghost" onClick={prevWeek} data-testid="button-prev-week">
               <ChevronLeft className="h-4 w-4" />
             </Button>
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium" data-testid="text-week-range">
+            <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-start">
+              <span className="min-w-0 text-center text-sm font-medium" data-testid="text-week-range">
                 {weekDates[0].toLocaleDateString("es-MX", { day: "numeric", month: "short" })} — {weekDates[6].toLocaleDateString("es-MX", { day: "numeric", month: "short", year: "numeric" })}
               </span>
-              <Button size="sm" variant="outline" onClick={goToToday} data-testid="button-today">
+              <Button className="w-full justify-center md:w-auto md:shrink-0" size="sm" variant="outline" onClick={goToToday} data-testid="button-today">
                 Hoy
               </Button>
             </div>
-            <Button size="sm" variant="ghost" onClick={nextWeek} data-testid="button-next-week">
+            <Button className="hidden md:inline-flex" size="sm" variant="ghost" onClick={nextWeek} data-testid="button-next-week">
               <ChevronRight className="h-4 w-4" />
             </Button>
           </div>
 
-          <div className="grid grid-cols-7 gap-1">
+          <div className="flex items-center justify-between gap-2 md:hidden">
+            <Button size="sm" variant="ghost" onClick={prevWeek} data-testid="button-prev-week-mobile">
+              <ChevronLeft className="mr-1 h-4 w-4" />
+              Semana anterior
+            </Button>
+            <Button size="sm" variant="ghost" onClick={nextWeek} data-testid="button-next-week-mobile">
+              Semana siguiente
+              <ChevronRight className="ml-1 h-4 w-4" />
+            </Button>
+          </div>
+
+          <div className="-mx-1 overflow-x-auto pb-1 md:hidden">
+            <div className="flex w-max gap-2 px-1">
+              {weekDates.map((date, i) => {
+                const dow = date.getDay();
+                const dayClasses = activeClasses.filter(c => c.dayOfWeek === dow);
+                const isSelected = formatDateStr(date) === formatDateStr(selectedDate);
+                const todayMark = isToday(date);
+
+                return (
+                  <button
+                    key={`mobile-${i}`}
+                    onClick={() => setSelectedDate(new Date(date))}
+                    className={`min-w-[84px] rounded-2xl border px-3 py-2 text-left transition-colors ${
+                      isSelected
+                        ? "border-primary bg-primary/5 ring-1 ring-primary"
+                        : "border-border hover:border-primary/50"
+                    }`}
+                    data-testid={`calendar-day-mobile-${formatDateStr(date)}`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className={`text-[11px] font-medium ${todayMark ? "text-primary" : "text-muted-foreground"}`}>
+                        {DAY_NAMES_SHORT[dow]}
+                      </span>
+                      <span className={`text-sm font-bold ${todayMark ? "text-primary" : ""}`}>
+                        {date.getDate()}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      {dayClasses.length > 0 ? `${dayClasses.length} horario${dayClasses.length === 1 ? "" : "s"}` : "Sin horarios"}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="hidden grid-cols-7 gap-1 md:grid">
             {weekDates.map((date, i) => {
               const dow = date.getDay();
               const dayClasses = activeClasses.filter(c => c.dayOfWeek === dow);
@@ -1076,7 +1126,7 @@ export default function ReservasTab({
                       <p className="text-[10px] text-muted-foreground">+{dayClasses.length - 3} más</p>
                     )}
                     {dayClasses.length === 0 && (
-                      <p className="text-[10px] text-muted-foreground italic">Sin clases</p>
+                      <p className="text-[10px] text-muted-foreground italic">Sin horarios</p>
                     )}
                   </div>
                 </button>
@@ -1104,7 +1154,7 @@ export default function ReservasTab({
               <Card>
                 <CardContent className="p-4">
                   <p className="text-sm text-muted-foreground text-center py-6" data-testid="empty-day-classes">
-                    No hay clases programadas para este día
+                    No hay horarios programados para este día
                   </p>
                 </CardContent>
               </Card>
@@ -1156,13 +1206,13 @@ export default function ReservasTab({
               <CardContent className="p-4">
                 <div className="text-center py-12" data-testid="empty-classes">
                   <Calendar className="h-12 w-12 text-muted-foreground/30 mx-auto mb-4" />
-                  <h3 className="font-semibold text-lg mb-1">Sin clases</h3>
+                  <h3 className="font-semibold text-lg mb-1">Sin horarios</h3>
                   <p className="text-sm text-muted-foreground max-w-md mx-auto">
-                    Crea tu primera clase para comenzar a recibir reservas.
+                    Crea tu primer horario para comenzar a recibir reservaciones.
                   </p>
                   <Button size="sm" className="mt-4" onClick={() => setShowCreateDialog(true)} data-testid="button-empty-create-class">
                     <Plus className="h-4 w-4 mr-1" />
-                    Nueva clase
+                    Nueva reservación
                   </Button>
                 </div>
               </CardContent>
@@ -1189,7 +1239,7 @@ export default function ReservasTab({
                       <div className="flex items-center gap-3 text-xs text-muted-foreground">
                         <span className="flex items-center gap-1">
                           <Users className="h-3 w-3" />
-                          {cls.capacity} lugares
+                          {cls.capacity} cupos
                         </span>
                         {cls.instructorName && (
                           <span className="flex items-center gap-1">
@@ -1198,10 +1248,11 @@ export default function ReservasTab({
                           </span>
                         )}
                       </div>
-                      <div className="flex gap-2 pt-1">
+                      <div className="flex flex-col gap-2 pt-1 sm:flex-row">
                         <Button
                           variant="outline"
                           size="sm"
+                          className="w-full justify-center sm:w-auto"
                           onClick={() => setEditingClass(cls)}
                           data-testid={`button-edit-class-${cls.id}`}
                         >
@@ -1211,6 +1262,7 @@ export default function ReservasTab({
                         <Button
                           variant="ghost"
                           size="sm"
+                          className="w-full justify-center sm:w-auto"
                           onClick={() => deactivateMutation.mutate(cls.id)}
                           disabled={deactivateMutation.isPending}
                           data-testid={`button-deactivate-class-${cls.id}`}
@@ -1226,7 +1278,7 @@ export default function ReservasTab({
 
               {inactiveClasses.length > 0 && (
                 <div>
-                  <h4 className="text-sm font-medium text-muted-foreground mb-2">Clases desactivadas</h4>
+                  <h4 className="text-sm font-medium text-muted-foreground mb-2">Horarios desactivados</h4>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     {inactiveClasses.map((cls) => (
                       <Card key={cls.id} className="opacity-60" data-testid={`card-class-${cls.id}`}>
@@ -1271,10 +1323,10 @@ export default function ReservasTab({
           {bookingHistory && bookingHistory.length > 0 ? (
             <div className="space-y-2 max-h-72 overflow-y-auto">
               {bookingHistory.map((item) => (
-                <div key={item.id} className="flex items-start justify-between gap-3 rounded-md border p-3 text-sm">
+                <div key={item.id} className="flex flex-col gap-2 rounded-md border p-3 text-sm md:flex-row md:items-start md:justify-between">
                   <div className="min-w-0">
                     <p className="font-medium">
-                      {item.className || "Clase"} · {reservationAuditActionLabel(item.action)}
+                      {item.className || "Horario"} · {reservationAuditActionLabel(item.action)}
                     </p>
                     <p className="text-xs text-muted-foreground">
                       {[item.customerName, item.customerLastName].filter(Boolean).join(" ") || "Cliente"} · {item.actorRole} · {item.source}

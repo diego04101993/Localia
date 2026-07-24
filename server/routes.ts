@@ -6,7 +6,10 @@ import crypto from "crypto";
 import path from "path";
 import fs from "fs";
 import multer from "multer";
+import sharp from "sharp";
 import { storage } from "./storage";
+import { db } from "./db";
+import { and, count, eq, ne, or } from "drizzle-orm";
 import {
   getBranchClientIdentityControl,
   isCrmPlaceholderEmail,
@@ -21,6 +24,7 @@ import {
   markNotificationRead,
   notifyBranchCustomerJoinedFromApp,
   syncBirthdayTodayNotifications,
+  syncCommercialNotifications,
 } from "./notifications";
 import { dispatchPushFromSystemEvent } from "./push";
 import {
@@ -92,12 +96,47 @@ import {
   createBranchStaffMemberSchema,
   updateBranchStaffMemberSchema,
   createBranchStaffClassLogSchema,
+  createBranchSalespersonSchema,
+  updateBranchSalespersonSchema,
+  createBranchCommissionRuleSchema,
+  updateBranchCommissionRuleSchema,
+  createBranchCommissionPaymentSchema,
+  createBranchCommercialProductSchema,
+  createBranchSupplierSchema,
+  updateBranchSupplierSchema,
+  createBranchCommercialProjectSchema,
+  updateBranchCommercialProjectSchema,
+  createBranchCommercialProjectFromSaleSchema,
+  linkBranchCommercialProjectSaleSchema,
+  linkBranchCommercialProjectPurchaseSchema,
+  createBranchPurchaseSchema,
+  receiveBranchPurchaseSchema,
+  createBranchSaleProductSchema,
+  createBranchCheckoutSchema,
+  cancelBranchSaleSchema,
+  createBranchInventoryInitialSchema,
+  createBranchInventoryEntrySchema,
+  createBranchInventoryAdjustmentSchema,
+  createBranchInventoryWasteSchema,
+  updateBranchCommercialProductSchema,
   createBranchServiceSchema,
   updateBranchServiceSchema,
   createBranchServiceSaleOptionSchema,
   updateBranchServiceSaleOptionSchema,
   branchFinancePaymentMethodValues,
   upsertBranchMonthlyBillingSchema,
+} from "@shared/schema";
+import {
+  branches,
+  users,
+  classSchedules,
+  branchPhotos,
+  branchPosts,
+  branchProducts,
+  branchCommercialProducts,
+  branchVideos,
+  branchAnnouncements,
+  promotions,
 } from "@shared/schema";
 import { z } from "zod";
 import { normalizeSearchText } from "./search-utils";
@@ -109,9 +148,10 @@ const membershipFinancePayloadSchema = z.object({
 const assignPlanWithFinanceSchema = assignPlanSchema.extend({
   paymentMethod: z.enum(branchFinancePaymentMethodValues).nullable().optional(),
 });
+const AUTOMATED_FINANCE_SOURCES = new Set(["commercial_sale", "sales_commission_payment"]);
 const updateBranchClientGlobalSchema = z.object({
   name: z.string().min(1, "El nombre es obligatorio").max(120, "Maximo 120 caracteres").optional(),
-  email: z.string().email("Correo invalido").optional(),
+  email: z.string().email("Correo invalido").nullable().optional().or(z.literal("")),
   lastName: z.string().nullable().optional(),
   phone: z.string().nullable().optional(),
   birthDate: z.string().nullable().optional(),
@@ -185,6 +225,69 @@ function deleteLocalUploadFiles(fileUrls: Array<string | null | undefined>): num
   return deletedCount;
 }
 
+async function countUploadUrlReferences(
+  fileUrl: string | null | undefined,
+  options?: { ignoreCommercialProductId?: string | null },
+): Promise<number> {
+  const normalizedUrl = typeof fileUrl === "string" ? fileUrl.trim() : "";
+  if (!normalizedUrl || !resolveLocalUploadPath(normalizedUrl)) {
+    return 0;
+  }
+
+  const ignoreCommercialProductId = options?.ignoreCommercialProductId?.trim() || null;
+  const commercialProductWhere = ignoreCommercialProductId
+    ? and(eq(branchCommercialProducts.photoUrl, normalizedUrl), ne(branchCommercialProducts.id, ignoreCommercialProductId))
+    : eq(branchCommercialProducts.photoUrl, normalizedUrl);
+
+  const [
+    branchRows,
+    userRows,
+    classRows,
+    photoRows,
+    postRows,
+    legacyProductRows,
+    commercialProductRows,
+    videoRows,
+    announcementRows,
+    promotionRows,
+  ] = await Promise.all([
+    db.select({ total: count() }).from(branches).where(eq(branches.coverImageUrl, normalizedUrl)),
+    db.select({ total: count() }).from(users).where(eq(users.avatarUrl, normalizedUrl)),
+    db.select({ total: count() }).from(classSchedules).where(eq(classSchedules.routineImageUrl, normalizedUrl)),
+    db.select({ total: count() }).from(branchPhotos).where(eq(branchPhotos.url, normalizedUrl)),
+    db.select({ total: count() }).from(branchPosts).where(eq(branchPosts.mediaUrl, normalizedUrl)),
+    db.select({ total: count() }).from(branchProducts).where(eq(branchProducts.imageUrl, normalizedUrl)),
+    db.select({ total: count() }).from(branchCommercialProducts).where(commercialProductWhere),
+    db.select({ total: count() }).from(branchVideos).where(or(eq(branchVideos.url, normalizedUrl), eq(branchVideos.thumbnailUrl, normalizedUrl))),
+    db.select({ total: count() }).from(branchAnnouncements).where(eq(branchAnnouncements.imageUrl, normalizedUrl)),
+    db.select({ total: count() }).from(promotions).where(eq(promotions.imageUrl, normalizedUrl)),
+  ]);
+
+  return [
+    branchRows,
+    userRows,
+    classRows,
+    photoRows,
+    postRows,
+    legacyProductRows,
+    commercialProductRows,
+    videoRows,
+    announcementRows,
+    promotionRows,
+  ].reduce((sum, rows) => sum + Number(rows[0]?.total ?? 0), 0);
+}
+
+async function deleteLocalUploadFileIfUnreferenced(
+  fileUrl: string | null | undefined,
+  options?: { ignoreCommercialProductId?: string | null },
+) {
+  const references = await countUploadUrlReferences(fileUrl, options);
+  if (references > 0) {
+    return 0;
+  }
+  return deleteLocalUploadFiles([fileUrl]);
+}
+
 const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
 const ALLOWED_VIDEO_TYPES = ["video/mp4", "video/webm"];
 const ALLOWED_TYPES = [...ALLOWED_IMAGE_TYPES, ...ALLOWED_VIDEO_TYPES];
@@ -213,6 +316,18 @@ const upload = multer({
   },
 });
 
+const uploadCommercialProductImage = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_FILE_SIZE },
+  fileFilter: (_req, file, cb) => {
+    if (ALLOWED_IMAGE_TYPES.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error(`Tipo de archivo no permitido: ${file.mimetype}. Solo se aceptan jpg, png o webp`));
+    }
+  },
+});
+
 const MAX_VIDEO_SIZE = 25 * 1024 * 1024; // 25 MB
 
 const uploadVideo = multer({
@@ -226,6 +341,35 @@ const uploadVideo = multer({
     }
   },
 });
+
+async function optimizeCommercialProductImage(file: Express.Multer.File) {
+  const metadata = await sharp(file.buffer, { failOn: "error", limitInputPixels: 40_000_000 }).metadata();
+  if (!metadata.format || !["jpeg", "png", "webp"].includes(metadata.format)) {
+    throw new Error("UNSUPPORTED_IMAGE_FORMAT");
+  }
+
+  const filename = `${Date.now()}-${crypto.randomBytes(6).toString("hex")}.webp`;
+  const filePath = path.join(uploadsDir, filename);
+  const buffer = await sharp(file.buffer, { failOn: "error", limitInputPixels: 40_000_000 })
+    .rotate()
+    .resize({
+      width: 1200,
+      height: 1200,
+      fit: "inside",
+      withoutEnlargement: true,
+    })
+    .webp({ quality: 82, effort: 4 })
+    .toBuffer();
+
+  fs.writeFileSync(filePath, buffer);
+
+  return {
+    url: `/uploads/${filename}`,
+    width: metadata.width ?? null,
+    height: metadata.height ?? null,
+    optimized: true,
+  };
+}
 
 function generateSecurePassword(length = 16): string {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%";
@@ -257,6 +401,99 @@ function normalizeMxPhone(value: unknown): string | null {
 }
 
 const normalizeMxPhoneLike = normalizeMxPhone;
+
+function roundMoney(value: number) {
+  return Number(value.toFixed(2));
+}
+
+type BranchSaleTaxMode = "tax_included" | "tax_added" | "tax_exempt";
+
+type BranchSaleTaxSnapshot = {
+  taxMode: BranchSaleTaxMode;
+  taxRate: number;
+  subtotalBeforeTax: number;
+  taxableSubtotal: number;
+  taxTotal: number;
+  grandTotal: number;
+};
+
+function computeBranchSaleTaxSnapshot(params: {
+  subtotalAmount: number;
+  discountAmount: number;
+  taxMode: BranchSaleTaxMode;
+  taxRate: number;
+}): BranchSaleTaxSnapshot {
+  const subtotalAmount = roundMoney(Math.max(0, params.subtotalAmount || 0));
+  const discountAmount = roundMoney(Math.max(0, params.discountAmount || 0));
+  const discountedSubtotal = roundMoney(Math.max(0, subtotalAmount - discountAmount));
+  const safeMode = params.taxMode;
+  const safeRate = safeMode === "tax_exempt" ? 0 : roundMoney(Math.max(0, params.taxRate || 0));
+  const taxFactor = safeRate > 0 ? safeRate / 100 : 0;
+
+  if (safeMode === "tax_included" && taxFactor > 0) {
+    const subtotalBeforeTax = roundMoney(subtotalAmount / (1 + taxFactor));
+    const taxableSubtotal = roundMoney(discountedSubtotal / (1 + taxFactor));
+    const taxTotal = roundMoney(discountedSubtotal - taxableSubtotal);
+
+    return {
+      taxMode: safeMode,
+      taxRate: safeRate,
+      subtotalBeforeTax,
+      taxableSubtotal,
+      taxTotal,
+      grandTotal: discountedSubtotal,
+    };
+  }
+
+  if (safeMode === "tax_added" && taxFactor > 0) {
+    const subtotalBeforeTax = subtotalAmount;
+    const taxableSubtotal = discountedSubtotal;
+    const taxTotal = roundMoney(taxableSubtotal * taxFactor);
+
+    return {
+      taxMode: safeMode,
+      taxRate: safeRate,
+      subtotalBeforeTax,
+      taxableSubtotal,
+      taxTotal,
+      grandTotal: roundMoney(taxableSubtotal + taxTotal),
+    };
+  }
+
+  return {
+    taxMode: safeMode,
+    taxRate: 0,
+    subtotalBeforeTax: subtotalAmount,
+    taxableSubtotal: discountedSubtotal,
+    taxTotal: 0,
+    grandTotal: discountedSubtotal,
+  };
+}
+
+function allocateBranchSaleLineRevenue(params: {
+  discountedLineTotals: number[];
+  taxMode: BranchSaleTaxMode;
+  taxRate: number;
+  taxableSubtotal: number;
+}) {
+  const normalizedLines = params.discountedLineTotals.map((value) => roundMoney(Math.max(0, value || 0)));
+  if (params.taxMode !== "tax_included" || params.taxRate <= 0) {
+    return normalizedLines;
+  }
+
+  const taxFactor = params.taxRate / 100;
+  let remainingNet = roundMoney(Math.max(0, params.taxableSubtotal));
+
+  return normalizedLines.map((lineAmount, index) => {
+    if (index === normalizedLines.length - 1) {
+      return roundMoney(Math.max(0, remainingNet));
+    }
+
+    const lineNet = roundMoney(lineAmount / (1 + taxFactor));
+    remainingNet = roundMoney(Math.max(0, remainingNet - lineNet));
+    return lineNet;
+  });
+}
 
 function normalizeComparableName(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -576,6 +813,46 @@ function getMxIsoDate(date = new Date()): string {
   return date.toLocaleDateString("en-CA", { timeZone: "America/Mexico_City" });
 }
 
+function parseMxIsoDateInput(value: string): Date | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return null;
+  }
+
+  const [yearText, monthText, dayText] = value.split("-");
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const parsed = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+
+  if (
+    Number.isNaN(parsed.getTime()) ||
+    parsed.getUTCFullYear() !== year ||
+    parsed.getUTCMonth() !== month - 1 ||
+    parsed.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
+  return parsed;
+}
+
+function addCalendarMonthsFromMxIsoDate(value: string, months: number): Date | null {
+  const parsed = parseMxIsoDateInput(value);
+  if (!parsed) return null;
+
+  if (months === 0) {
+    return parsed;
+  }
+
+  const result = new Date(parsed.getTime());
+  const dayOfMonth = result.getUTCDate();
+  result.setUTCMonth(result.getUTCMonth() + months);
+  if (result.getUTCDate() !== dayOfMonth) {
+    result.setUTCDate(0);
+  }
+  return result;
+}
+
 function calculatePlanExpirationDate(plan: { cycleMonths: number | null; durationDays?: number | null }, from = new Date()): Date {
   if ((plan.cycleMonths ?? 1) === 0) {
     const result = new Date(from);
@@ -584,6 +861,22 @@ function calculatePlanExpirationDate(plan: { cycleMonths: number | null; duratio
   }
 
   return addCalendarMonths(from, plan.cycleMonths ?? 1);
+}
+
+function calculatePlanExpirationDateFromMxIsoDate(
+  plan: { cycleMonths: number | null; durationDays?: number | null },
+  startDate: string,
+): Date | null {
+  const parsed = parseMxIsoDateInput(startDate);
+  if (!parsed) return null;
+
+  if ((plan.cycleMonths ?? 1) === 0) {
+    const result = new Date(parsed.getTime());
+    result.setUTCDate(result.getUTCDate() + Math.max(plan.durationDays ?? 1, 1));
+    return result;
+  }
+
+  return addCalendarMonthsFromMxIsoDate(startDate, plan.cycleMonths ?? 1);
 }
 
 function normalizeSearchKeywords(value: unknown): string | null | undefined {
@@ -891,9 +1184,9 @@ const createBranchWithAdminSchema = z.object({
 
 const updateSuperAdminBranchSchema = z.object({
   name: z.string().min(1, "El nombre es obligatorio").optional(),
-  slug: z.string().min(1, "El slug es obligatorio").regex(/^[a-z0-9-]+$/, "Solo letras minÃºsculas, nÃºmeros y guiones").optional(),
+  slug: z.string().min(1, "El slug es obligatorio").regex(/^[a-z0-9-]+$/, "Solo letras minúsculas, números y guiones").optional(),
   status: z.enum(["active", "suspended", "blacklisted"]).optional(),
-  category: z.string().min(1, "La categorÃ­a es obligatoria").optional(),
+  category: z.string().min(1, "La categoría es obligatoria").optional(),
   subcategory: z.string().nullable().optional(),
   searchKeywords: z.string().nullable().optional(),
 });
@@ -916,6 +1209,12 @@ const deleteCurrentUserSchema = z.object({
 
 const destructiveDeleteConfirmationSchema = z.object({
   confirmationText: z.string().min(1, "La confirmación es obligatoria"),
+});
+
+const branchPurgeRequestSchema = z.object({
+  confirmationName: z.string().min(1, "El nombre de la sucursal es obligatorio"),
+  confirmationPhrase: z.string().min(1, "La frase de confirmacion es obligatoria"),
+  reason: z.string().trim().min(5, "La razon es obligatoria").max(500, "Maximo 500 caracteres"),
 });
 
 export async function registerRoutes(
@@ -953,6 +1252,32 @@ export async function registerRoutes(
       const url = `/uploads/${req.file.filename}`;
       console.log(`[UPLOAD] File uploaded: ${url} by ${(req.user as any).email}`);
       res.json({ url });
+    });
+  });
+
+  app.post("/api/branch/commercial-products/upload", requireBranchAdmin, (req, res) => {
+    uploadCommercialProductImage.single("file")(req, res, async (err) => {
+      if (err) {
+        if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+          return res.status(400).json({ message: "La imagen excede el tamano maximo de 10MB" });
+        }
+        return res.status(400).json({ message: err.message || "Error al subir la imagen del producto" });
+      }
+
+      if (!req.file) {
+        return res.status(400).json({ message: "No se proporciono ninguna imagen" });
+      }
+
+      try {
+        const optimized = await optimizeCommercialProductImage(req.file);
+        res.json(optimized);
+      } catch (optimizationError: any) {
+        if (optimizationError instanceof Error && optimizationError.message === "UNSUPPORTED_IMAGE_FORMAT") {
+          return res.status(400).json({ message: "La imagen debe ser jpg, png o webp real" });
+        }
+        console.error("[COMMERCIAL_PRODUCT_UPLOAD]", optimizationError?.stack || optimizationError);
+        return res.status(400).json({ message: "No se pudo optimizar la imagen del producto" });
+      }
     });
   });
 
@@ -1398,9 +1723,12 @@ if (!user) {
       // Send verification email (async, don't block response)
       const verifyToken = crypto.randomBytes(32).toString("hex");
       const verifyExpires = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-      storage.setEmailVerificationToken(newUser.id, verifyToken, verifyExpires).then(() =>
-        sendEmailVerificationEmail(newUser.email, verifyToken)
-      ).catch(e => console.error("[REGISTER] email verify send failed:", e));
+      const registrationEmail = newUser.email;
+      if (registrationEmail) {
+        storage.setEmailVerificationToken(newUser.id, verifyToken, verifyExpires).then(() =>
+          sendEmailVerificationEmail(registrationEmail, verifyToken)
+        ).catch(e => console.error("[REGISTER] email verify send failed:", e));
+      }
 
       await createSystemEventSafe({
         eventType: "customer_registered",
@@ -1469,6 +1797,7 @@ if (!user) {
       const token = crypto.randomBytes(32).toString("hex");
       const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString(); // 30 min
       await storage.createPasswordResetToken(user.id, token, expiresAt);
+      if (!user.email) return res.json(GENERIC_OK);
       await sendPasswordResetEmail(user.email, token);
       return res.json(GENERIC_OK);
     } catch (err) {
@@ -1760,6 +2089,10 @@ if (!user) {
         (actor.role === "BRANCH_ADMIN" || actor.role === "SUPER_ADMIN")
       ) {
         await syncBirthdayTodayNotifications({
+          branchId: actor.branchId,
+          actorUserId: actor.id,
+        });
+        await syncCommercialNotifications({
           branchId: actor.branchId,
           actorUserId: actor.id,
         });
@@ -2202,37 +2535,131 @@ if (!user) {
     res.json(deleted);
   });
 
-  app.delete("/api/superadmin/branches/:id/hard", requireRole("SUPER_ADMIN"), async (req, res) => {
-    const actor = req.user as any;
+  app.get("/api/superadmin/branches/:id/purge-estimate", requireRole("SUPER_ADMIN"), async (req, res) => {
     const branchId = getStringParam(req.params.id);
-    const parsed = destructiveDeleteConfirmationSchema.safeParse(req.body ?? {});
-
-    if (!parsed.success) {
-      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
-    }
-
-    if (parsed.data.confirmationText.trim() !== "ELIMINAR SUCURSAL") {
-      return res.status(400).json({ message: "Escribe ELIMINAR SUCURSAL para confirmar" });
-    }
 
     try {
+      const branch = await storage.getBranch(branchId);
+      if (!branch) {
+        return res.status(404).json({ message: "Sucursal no encontrada" });
+      }
+
+      const estimate = await storage.estimateBranchPurge(branchId);
+      const estimateSnapshot = estimate ?? { counts: {}, uploadCount: 0 };
+      res.json({
+        branchId,
+        branchName: branch.name,
+        estimate,
+      });
+    } catch (err: any) {
+      console.error("[SUPERADMIN_BRANCH_PURGE_ESTIMATE]", err.stack || err);
+      res.status(500).json({ message: "Error al calcular la purga de la sucursal" });
+    }
+  });
+
+  app.delete("/api/superadmin/branches/:id/purge", requireRole("SUPER_ADMIN"), async (req, res) => {
+    const actor = req.user as any;
+    const branchId = getStringParam(req.params.id);
+
+    try {
+      const branch = await storage.getBranch(branchId);
+      if (!branch) {
+        return res.json({
+          success: true,
+          alreadyPurged: true,
+          branchId,
+          message: "La sucursal ya no existe",
+        });
+      }
+
+      const parsed = branchPurgeRequestSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Datos inválidos", errors: parsed.error.flatten() });
+      }
+
+      const confirmationName = parsed.data.confirmationName.trim();
+      const confirmationPhrase = parsed.data.confirmationPhrase.trim();
+      const reason = parsed.data.reason.trim();
+
+      if (confirmationName !== branch.name.trim()) {
+        return res.status(400).json({ message: "El nombre de confirmación no coincide con la sucursal" });
+      }
+
+      if (confirmationPhrase !== "ELIMINAR DEFINITIVAMENTE") {
+        return res.status(400).json({ message: "Escribe ELIMINAR DEFINITIVAMENTE para confirmar" });
+      }
+
+      const estimate = await storage.estimateBranchPurge(branchId);
+      const estimateSnapshot = estimate ?? { counts: {}, uploadCount: 0 };
       const result = await storage.hardDeleteBranch(branchId);
+
       if (!result.deleted) {
-        return res.status(404).json({ message: result.reason || "Sucursal no encontrada" });
+        return res.json({
+          success: true,
+          alreadyPurged: true,
+          branchId,
+          message: result.reason || "La sucursal ya no existe",
+        });
       }
 
       const deletedUploadCount = deleteLocalUploadFiles(result.uploadUrls);
+      const pendingUploadDeleteCount = Math.max(result.uploadUrls.length - deletedUploadCount, 0);
+      const externalCleanupWarnings: string[] = [];
 
-      await storage.createAuditLog({
-        actorUserId: actor.id,
-        action: "DELETE_BRANCH_HARD",
-        branchId,
-        metadata: {
-          branchName: result.branchName,
-          deletedAdminCount: result.deletedAdminCount,
-          deletedUploadCount,
-        },
-      });
+      if (pendingUploadDeleteCount > 0) {
+        externalCleanupWarnings.push(`Quedaron ${pendingUploadDeleteCount} archivo(s) pendientes de limpieza local.`);
+      }
+
+      let firebaseDeleteAttemptedCount = 0;
+      let firebaseDeletedCount = 0;
+      const firebaseDeleteWarnings: string[] = [];
+
+      for (const firebaseUid of result.deletedAdminFirebaseUids) {
+        firebaseDeleteAttemptedCount += 1;
+        try {
+          const firebaseResult = await deleteFirebaseUserByUid(firebaseUid);
+          if (firebaseResult === "deleted" || firebaseResult === "not_found") {
+            firebaseDeletedCount += 1;
+          }
+        } catch (firebaseErr: any) {
+          firebaseDeleteWarnings.push(`${firebaseUid}: ${firebaseErr?.message || "Error desconocido"}`);
+          console.error(
+            `[SUPERADMIN_BRANCH_PURGE] Firebase delete failed for branch ${branchId} uid ${firebaseUid}:`,
+            firebaseErr?.stack || firebaseErr,
+          );
+        }
+      }
+
+      if (firebaseDeleteWarnings.length > 0) {
+        externalCleanupWarnings.push(`Quedaron ${firebaseDeleteWarnings.length} cuenta(s) de Firebase con limpieza pendiente.`);
+      }
+
+      try {
+        await storage.createAuditLog({
+          actorUserId: actor.id,
+          action: "DELETE_BRANCH_PURGE",
+          metadata: {
+            branchId,
+            branchName: result.branchName,
+            reason,
+            estimatedCounts: estimateSnapshot.counts,
+            estimatedUploadCount: estimateSnapshot.uploadCount,
+            deletedAdminCount: result.deletedAdminCount,
+            deletedAdminFirebaseAttemptedCount: firebaseDeleteAttemptedCount,
+            deletedAdminFirebaseSuccessCount: firebaseDeletedCount,
+            firebaseDeleteWarnings,
+            deletedUploadCount,
+            pendingUploadDeleteCount,
+            externalCleanupWarnings,
+          },
+        });
+      } catch (auditErr: any) {
+        externalCleanupWarnings.push("La sucursal se purgó de la base de datos, pero no se pudo registrar la auditoría final.");
+        console.error(
+          `[SUPERADMIN_BRANCH_PURGE] Audit log failed after DB purge for branch ${branchId}:`,
+          auditErr?.stack || auditErr,
+        );
+      }
 
       res.json({
         success: true,
@@ -2240,11 +2667,29 @@ if (!user) {
         branchName: result.branchName,
         deletedAdminCount: result.deletedAdminCount,
         deletedUploadCount,
+        pendingUploadDeleteCount,
+        firebaseDeleteAttemptedCount,
+        firebaseDeletedCount,
+        firebaseDeleteWarnings,
+        externalCleanupWarnings,
+        estimate: estimateSnapshot,
+        message: externalCleanupWarnings.length > 0
+          ? "La sucursal se eliminó de la base de datos. Quedó limpieza externa pendiente."
+          : "Sucursal eliminada definitivamente",
       });
     } catch (err: any) {
-      console.error("[SUPERADMIN_HARD_DELETE_BRANCH]", err.stack || err);
+      console.error(
+        `[SUPERADMIN_BRANCH_PURGE] phase=${err?.purgePhase || "UNKNOWN"}`,
+        err?.stack || err,
+      );
       res.status(500).json({ message: "Error al eliminar definitivamente la sucursal" });
     }
+  });
+
+  app.delete("/api/superadmin/branches/:id/hard", requireRole("SUPER_ADMIN"), async (req, res) => {
+    res.status(410).json({
+      message: "Este endpoint legacy ya no esta disponible. Usa /api/superadmin/branches/:id/purge con confirmacion reforzada.",
+    });
   });
 
   // Get branch admin
@@ -3075,6 +3520,22 @@ if (!user) {
     }
   });
 
+  app.get("/api/branch/commercial-dashboard", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const month = normalizeOptionalText(req.query.month);
+    if (month && !/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ message: "El mes debe tener formato YYYY-MM" });
+    }
+
+    try {
+      const metrics = await storage.getBranchCommercialDashboard(actor.branchId, month);
+      res.json(metrics);
+    } catch (err: any) {
+      console.error("[BRANCH_COMMERCIAL_DASHBOARD]", err.stack || err);
+      res.status(500).json({ message: "Error al obtener rendimiento comercial" });
+    }
+  });
+
   // Branch admins (list)
   app.get("/api/superadmin/branches/:id/admins", requireRole("SUPER_ADMIN"), async (req, res) => {
     const admins = await storage.getBranchAdmins(req.params.id as string);
@@ -3547,6 +4008,14 @@ if (!user) {
     }
 
     try {
+      const existingEntry = await storage.getBranchFinanceEntry(user.branchId, entryId);
+      if (!existingEntry) {
+        return res.status(404).json({ message: "Movimiento no encontrado" });
+      }
+      if (existingEntry.source && AUTOMATED_FINANCE_SOURCES.has(existingEntry.source)) {
+        return res.status(409).json({ message: "Este movimiento se administra automaticamente desde su origen y no puede editarse manualmente" });
+      }
+
       const data = parsed.data;
       let clientUserId = data.clientUserId === undefined ? undefined : (normalizeOptionalText(data.clientUserId) ?? null);
       let clientName = data.clientName === undefined ? undefined : (normalizeOptionalText(data.clientName) ?? null);
@@ -3595,7 +4064,16 @@ if (!user) {
   app.delete("/api/branch/finance/entries/:id", requireBranchAdmin, async (req, res) => {
     const user = req.user as any;
     try {
-      const deleted = await storage.softDeleteBranchFinanceEntry(user.branchId, getStringParam(req.params.id));
+      const entryId = getStringParam(req.params.id);
+      const existingEntry = await storage.getBranchFinanceEntry(user.branchId, entryId);
+      if (!existingEntry) {
+        return res.status(404).json({ message: "Movimiento no encontrado" });
+      }
+      if (existingEntry.source && AUTOMATED_FINANCE_SOURCES.has(existingEntry.source)) {
+        return res.status(409).json({ message: "Este movimiento se administra automaticamente desde su origen y no puede eliminarse manualmente" });
+      }
+
+      const deleted = await storage.softDeleteBranchFinanceEntry(user.branchId, entryId);
       if (!deleted) {
         return res.status(404).json({ message: "Movimiento no encontrado" });
       }
@@ -3604,7 +4082,7 @@ if (!user) {
         actorUserId: user.id,
         action: "DELETE_FINANCE_ENTRY",
         branchId: user.branchId,
-        metadata: { entryId: getStringParam(req.params.id) },
+        metadata: { entryId },
       });
 
       res.json({ success: true });
@@ -3985,6 +4463,31 @@ if (!user) {
     }
   });
 
+  app.get("/api/branch/clients/:id/commercial-history", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const clientId = getStringParam(req.params.id);
+    const filter =
+      req.query.filter === "products" ||
+      req.query.filter === "services" ||
+      req.query.filter === "current_month"
+        ? req.query.filter
+        : "all";
+    const rawPage = typeof req.query.page === "string" ? Number.parseInt(req.query.page, 10) : 1;
+    const rawLimit = typeof req.query.limit === "string" ? Number.parseInt(req.query.limit, 10) : 10;
+
+    try {
+      const history = await storage.getBranchClientCommercialHistory(actor.branchId, clientId, {
+        filter,
+        page: Number.isFinite(rawPage) ? rawPage : 1,
+        limit: Number.isFinite(rawLimit) ? rawLimit : 10,
+      });
+      res.json(history);
+    } catch (err: any) {
+      console.error("[BRANCH_CLIENT_COMMERCIAL_HISTORY]", err?.stack || err);
+      res.status(500).json({ message: "Error al obtener actividad comercial del cliente" });
+    }
+  });
+
   app.get("/api/branch/clients/:id", requireBranchAdmin, async (req, res) => {
     const user = req.user as any;
     const clientId = req.params.id as string;
@@ -4192,6 +4695,8 @@ if (!user) {
     }
 
     try {
+      const normalizedEmail = normalizeComparableEmail(result.data.email);
+      const normalizedPhoneText = normalizeOptionalText(result.data.phone) ?? null;
       const privateProfilePayload = buildBranchClientPrivateProfilePayload({
         emergencyContactName: result.data.emergencyContactName,
         emergencyContactPhone: result.data.emergencyContactPhone,
@@ -4217,7 +4722,7 @@ if (!user) {
         : duplicateMatches.possibleMatches;
       const strongMatch = filteredStrongMatches.length > 0 ? chooseBestBranchClientMatch(filteredStrongMatches) : null;
       const possibleMatch = filteredPossibleMatches.length > 0 ? chooseBestBranchClientMatch(filteredPossibleMatches) : null;
-      const existingByEmail = await storage.getUserByEmail(result.data.email);
+      const existingByEmail = normalizedEmail ? await storage.getUserByEmail(normalizedEmail) : undefined;
       if (existingByEmail && existingByEmail.role !== "CUSTOMER") {
         return res.status(409).json({
           message: "Ese correo ya esta vinculado a una cuenta administrativa",
@@ -4235,7 +4740,7 @@ if (!user) {
           action: "DUPLICATE_CLIENT_PREVENTED",
           branchId: actor.branchId,
           metadata: {
-            incomingEmail: result.data.email,
+            incomingEmail: normalizedEmail,
             normalizedPhone: incomingIdentity.phone,
             candidateUserIds: phoneMatches.map((client) => client.userId),
             duplicateType: "phone",
@@ -4247,7 +4752,7 @@ if (!user) {
           duplicateType: "phone",
           candidateCount: phoneMatches.length,
           candidates: phoneMatches.map((client) => buildBranchClientDuplicateSummary(client)),
-          message: "Ya existen varios clientes con ese telÃ©fono en esta sucursal. RevÃ­salo manualmente antes de crear otro.",
+          message: "Ya existen varios clientes con ese teléfono en esta sucursal. Revísalo manualmente antes de crear otro.",
         });
       }
       }
@@ -4267,7 +4772,7 @@ if (!user) {
             action: "CREATE_CLIENT_CONFIRMED_PHONE_DUPLICATE",
             branchId: actor.branchId,
             metadata: {
-              incomingEmail: result.data.email,
+              incomingEmail: normalizedEmail,
               candidateUserId: phoneMatch.candidate.userId,
               normalizedPhone: incomingIdentity.phone,
             },
@@ -4283,7 +4788,7 @@ if (!user) {
               candidate: phoneMatch.candidate,
               candidateCount: 1,
               canReuseExisting: false,
-              message: "Ese telÃ©fono ya pertenece a un cliente existente y el correo ingresado ya estÃ¡ ligado a otra cuenta. RevÃ­salo manualmente antes de continuar.",
+              message: "Ese teléfono ya pertenece a un cliente existente y el correo ingresado ya está ligado a otra cuenta. Revísalo manualmente antes de continuar.",
             });
           }
 
@@ -4292,7 +4797,7 @@ if (!user) {
             ? getMissingClientFieldUpdates(matchedUser, {
                 name: result.data.name,
                 lastName: result.data.lastName,
-                email: result.data.email,
+                email: normalizedEmail,
                 phone: result.data.phone,
                 birthDate: result.data.birthDate,
                 gender: result.data.gender,
@@ -4316,7 +4821,7 @@ if (!user) {
             action: "DUPLICATE_CLIENT_REUSED",
             branchId: actor.branchId,
             metadata: {
-              incomingEmail: result.data.email,
+              incomingEmail: normalizedEmail,
               candidateUserId: phoneMatch.candidate.userId,
               targetUserId: matchedUser.id,
               strongReasons: ["phone"],
@@ -4337,7 +4842,7 @@ if (!user) {
           action: "DUPLICATE_CLIENT_PREVENTED",
           branchId: actor.branchId,
           metadata: {
-            incomingEmail: result.data.email,
+            incomingEmail: normalizedEmail,
             candidateUserId: phoneMatch.candidate.userId,
             candidateCount: 1,
             strongReasons: ["phone"],
@@ -4351,7 +4856,7 @@ if (!user) {
           candidateCount: 1,
           canReuseExisting: false,
           canCreateAnyway: true,
-          message: "Este telÃ©fono ya parece estar registrado en tu sucursal.",
+          message: "Este teléfono ya parece estar registrado en tu sucursal.",
         });
       }
       }
@@ -4388,7 +4893,7 @@ if (!user) {
             ? getMissingClientFieldUpdates(currentUser, {
                 name: result.data.name,
                 lastName: result.data.lastName,
-                email: result.data.email,
+                email: normalizedEmail,
                 phone: result.data.phone,
                 birthDate: result.data.birthDate,
                 gender: result.data.gender,
@@ -4412,7 +4917,7 @@ if (!user) {
             action: "DUPLICATE_CLIENT_REUSED",
             branchId: actor.branchId,
             metadata: {
-              incomingEmail: result.data.email,
+              incomingEmail: normalizedEmail,
               candidateUserId: strongMatch.candidate.userId,
               targetUserId: currentUser.id,
               strongReasons: strongMatch.strongReasons,
@@ -4432,7 +4937,7 @@ if (!user) {
           action: "DUPLICATE_CLIENT_PREVENTED",
           branchId: actor.branchId,
           metadata: {
-            incomingEmail: result.data.email,
+            incomingEmail: normalizedEmail,
             candidateUserId: strongMatch.candidate.userId,
             candidateCount: duplicateMatches.strongMatches.length,
             strongReasons: strongMatch.strongReasons,
@@ -4459,7 +4964,7 @@ if (!user) {
           action: "DUPLICATE_CLIENT_PREVENTED",
           branchId: actor.branchId,
           metadata: {
-            incomingEmail: result.data.email,
+            incomingEmail: normalizedEmail,
             candidateUserId: possibleMatch.candidate.userId,
             duplicateType: "possible",
             conflictingFields: possibleMatch.conflictingFields,
@@ -4479,7 +4984,7 @@ if (!user) {
           action: "CREATE_CLIENT_CONFIRMED_POSSIBLE_DUPLICATE",
           branchId: actor.branchId,
           metadata: {
-            incomingEmail: result.data.email,
+            incomingEmail: normalizedEmail,
             candidateUserId: possibleMatch.candidate.userId,
             conflictingFields: possibleMatch.conflictingFields,
           },
@@ -4493,7 +4998,7 @@ if (!user) {
           ? getMissingClientFieldUpdates(existing, {
               name: result.data.name,
               lastName: result.data.lastName,
-              email: result.data.email,
+              email: normalizedEmail,
               phone: result.data.phone,
               birthDate: result.data.birthDate,
               gender: result.data.gender,
@@ -4543,12 +5048,12 @@ if (!user) {
       const hash = await bcrypt.hash(plainPassword, 10);
 
       const newUser = await storage.createUser({
-        email: result.data.email,
+        email: normalizedEmail,
         passwordHash: hash,
         role: "CUSTOMER",
         name: result.data.name,
         lastName: result.data.lastName || null,
-        phone: result.data.phone || null,
+        phone: normalizedPhoneText,
         birthDate: result.data.birthDate || null,
         gender: result.data.gender || null,
       } as any);
@@ -4577,12 +5082,13 @@ if (!user) {
         },
       });
 
-      console.log(`[CREATE_CLIENT] Created new client ${newUser.email} for branch ${actor.branchId}`);
+      console.log(`[CREATE_CLIENT] Created new client ${newUser.email ?? "sin-correo"} for branch ${actor.branchId}`);
       res.status(201).json({
         userId: newUser.id,
         email: newUser.email,
         name: newUser.name,
-        password: plainPassword,
+        message: newUser.email ? "Cliente creado" : "Cliente creado sin correo registrado",
+        ...(newUser.email ? { password: plainPassword } : {}),
       });
     } catch (err: any) {
       console.error(`[CREATE_CLIENT] Error:`, err.stack || err);
@@ -4639,15 +5145,17 @@ if (!user) {
           });
         }
 
+        const normalizedEmail = normalizeComparableEmail(globalPayload.email);
+
         if (
           globalPayload.email !== undefined &&
-          normalizeComparableEmail(globalPayload.email) !== normalizeComparableEmail(currentUser.email)
+          normalizedEmail !== normalizeComparableEmail(currentUser.email)
         ) {
-          const existingByEmail = await storage.getUserByEmail(globalPayload.email);
+          const existingByEmail = normalizedEmail ? await storage.getUserByEmail(normalizedEmail) : undefined;
           if (existingByEmail && existingByEmail.id !== clientId) {
             return res.status(409).json({
               code: "DUPLICATE_CLIENT",
-              message: "Ese correo ya estÃ¡ registrado por otro usuario",
+              message: "Ese correo ya está registrado por otro usuario",
             });
           }
         }
@@ -4655,7 +5163,7 @@ if (!user) {
         if (globalPayload.phone !== undefined) {
           const normalizedPhone = normalizeMxPhone(globalPayload.phone);
           if (globalPayload.phone && !normalizedPhone) {
-            return res.status(400).json({ message: "El telÃ©fono no tiene un formato vÃ¡lido" });
+            return res.status(400).json({ message: "El teléfono no tiene un formato válido" });
           }
 
           const branchClients = await storage.getBranchClients(actor.branchId, true);
@@ -4663,21 +5171,21 @@ if (!user) {
           if (phoneMatches.length > 1) {
             return res.status(409).json({
               code: "AMBIGUOUS_DUPLICATE",
-              message: "Ya existen varios clientes con ese telÃ©fono en esta sucursal. Revisa la base antes de guardarlo.",
+              message: "Ya existen varios clientes con ese teléfono en esta sucursal. Revisa la base antes de guardarlo.",
             });
           }
           if (phoneMatches.length === 1) {
             return res.status(409).json({
               code: "DUPLICATE_CLIENT",
               candidate: buildBranchClientDuplicateSummary(phoneMatches[0]),
-              message: "Ese telÃ©fono ya estÃ¡ registrado por otro cliente de esta sucursal.",
+              message: "Ese teléfono ya está registrado por otro cliente de esta sucursal.",
             });
           }
         }
 
         updatedUser = await storage.updateClient(clientId, {
           ...(globalPayload.name !== undefined && { name: globalPayload.name }),
-          ...(globalPayload.email !== undefined && { email: globalPayload.email.trim().toLowerCase() }),
+          ...(globalPayload.email !== undefined && { email: normalizedEmail ?? null }),
           ...(globalPayload.lastName !== undefined && { lastName: globalPayload.lastName }),
           ...(globalPayload.phone !== undefined && { phone: globalPayload.phone }),
           ...(globalPayload.birthDate !== undefined && { birthDate: globalPayload.birthDate }),
@@ -5291,7 +5799,7 @@ if (!user) {
     const actor = req.user as any;
     const membershipId = req.params.id as string;
     try {
-      const { planId, paymentMethod } = assignPlanWithFinanceSchema.parse(req.body);
+      const { planId, paymentMethod, startDate } = assignPlanWithFinanceSchema.parse(req.body);
 
       const plan = await storage.getPlan(planId);
       if (!plan || plan.branchId !== actor.branchId) {
@@ -5307,11 +5815,29 @@ if (!user) {
         return res.status(404).json({ message: "Membresía no encontrada" });
       }
 
+      const effectiveStartDate = startDate ?? getMxIsoDate();
+      const todayMx = getMxIsoDate();
+      if (effectiveStartDate > todayMx) {
+        return res.status(400).json({ message: "La fecha de inicio no puede estar en el futuro" });
+      }
+
+      const startDateValue = parseMxIsoDateInput(effectiveStartDate);
+      if (!startDateValue) {
+        return res.status(400).json({ message: "La fecha de inicio no es válida" });
+      }
+
       const classesRemaining = plan.classLimit ?? null;
       const classesTotal = plan.classLimit ?? null;
-      const expiresAt = calculatePlanExpirationDate(plan, new Date());
+      const expiresAt = calculatePlanExpirationDateFromMxIsoDate(plan, effectiveStartDate);
 
-      const membership = await storage.assignPlanToMembership(membershipId, planId, classesRemaining, classesTotal, expiresAt);
+      const membership = await storage.assignPlanToMembership(
+        membershipId,
+        planId,
+        classesRemaining,
+        classesTotal,
+        expiresAt,
+        startDateValue,
+      );
       if (!membership) {
         return res.status(404).json({ message: "Membresía no encontrada" });
       }
@@ -5325,7 +5851,14 @@ if (!user) {
         actorUserId: actor.id,
         action: "ASSIGN_PLAN",
         branchId: actor.branchId,
-        metadata: { membershipId, planId, planName: plan.name, cancelledBookings: cancelled },
+        metadata: {
+          membershipId,
+          planId,
+          planName: plan.name,
+          startDate: effectiveStartDate,
+          expiresAt: membership.expiresAt ? new Date(membership.expiresAt).toISOString() : null,
+          cancelledBookings: cancelled,
+        },
       });
 
       if (plan.price > 0) {
@@ -5337,7 +5870,7 @@ if (!user) {
             planId: plan.id,
             planName: plan.name,
             amount: plan.price / 100,
-            paidAt: membership.paidAt,
+            paidAt: effectiveStartDate,
             expiresAt: membership.expiresAt,
             paymentMethod: normalizeOptionalText(paymentMethod) ?? null,
             createdBy: actor.id,
@@ -5448,7 +5981,7 @@ if (!user) {
       res.json(renewed);
     } catch (err: any) {
       if (err.name === "ZodError") {
-        return res.status(400).json({ message: err.errors[0]?.message || "Datos invÃ¡lidos" });
+        return res.status(400).json({ message: err.errors[0]?.message || "Datos inválidos" });
       }
       console.error(`[RENEW] Error:`, err.stack || err);
       res.status(500).json({ message: "Error al renovar membresía" });
@@ -5876,7 +6409,7 @@ if (!user) {
       return res.json({ ...result.updated, lateCancellation: result.lateCancellation, classesRemaining: null });
     } catch (err: any) {
       if (err.name === "ZodError") {
-        return res.status(400).json({ message: err.errors[0]?.message || "Datos invÃ¡lidos" });
+        return res.status(400).json({ message: err.errors[0]?.message || "Datos inválidos" });
       }
       console.error("[BOOKINGS] Error updating status (safe handler):", err.stack || err);
       return res.status(500).json({ message: "Error al actualizar reserva" });
@@ -6652,6 +7185,2069 @@ if (!user) {
     } catch (err: any) {
       console.error(`[PRODUCTS] Error reordering:`, err.stack || err);
       res.status(500).json({ message: "Error al reordenar productos" });
+    }
+  });
+
+  app.get("/api/branch/salespeople", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const status = normalizeOptionalText(req.query.status);
+      const salespeople = await storage.getBranchSalespeople(actor.branchId, {
+        isActive: status === "active" ? true : status === "inactive" ? false : null,
+      });
+      res.json(salespeople);
+    } catch (err: any) {
+      console.error("[SALESPEOPLE] Error listing:", err?.stack || err);
+      res.status(500).json({ message: "Error al obtener vendedores" });
+    }
+  });
+
+  app.post("/api/branch/salespeople", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const parsed = createBranchSalespersonSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const data = parsed.data;
+      let linkedUserId: string | null = normalizeOptionalText(data.userId) ?? null;
+      if (linkedUserId) {
+        const linkedUser = await storage.getUser(linkedUserId);
+        if (!linkedUser || linkedUser.branchId !== actor.branchId) {
+          return res.status(400).json({ message: "El usuario vinculado no pertenece a esta sucursal" });
+        }
+      }
+
+      const salesperson = await storage.createBranchSalesperson({
+        branchId: actor.branchId,
+        userId: linkedUserId,
+        name: data.name.trim(),
+        lastName: normalizeOptionalText(data.lastName) ?? null,
+        phone: normalizeOptionalText(data.phone) ?? null,
+        email: normalizeOptionalText(data.email) ?? null,
+        employeeCode: normalizeOptionalText(data.employeeCode) ?? null,
+        roleLabel: normalizeOptionalText(data.roleLabel) ?? null,
+        monthlyGoalAmount: data.monthlyGoalAmount == null ? null : data.monthlyGoalAmount.toFixed(2),
+        isActive: data.isActive ?? true,
+        notes: normalizeOptionalText(data.notes) ?? null,
+        createdBy: actor.id,
+      } as any);
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "CREATE_BRANCH_SALESPERSON",
+        branchId: actor.branchId,
+        metadata: { salespersonId: salesperson.id, name: salesperson.name, userId: salesperson.userId },
+      });
+
+      res.status(201).json(salesperson);
+    } catch (err: any) {
+      console.error("[SALESPEOPLE] Error creating:", err?.stack || err);
+      res.status(500).json({ message: "Error al crear vendedor" });
+    }
+  });
+
+  app.patch("/api/branch/salespeople/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const salespersonId = getStringParam(req.params.id);
+    const parsed = updateBranchSalespersonSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const data = parsed.data;
+      let linkedUserId: string | null | undefined = data.userId === undefined
+        ? undefined
+        : normalizeOptionalText(data.userId) ?? null;
+      if (linkedUserId) {
+        const linkedUser = await storage.getUser(linkedUserId);
+        if (!linkedUser || linkedUser.branchId !== actor.branchId) {
+          return res.status(400).json({ message: "El usuario vinculado no pertenece a esta sucursal" });
+        }
+      }
+
+      const salesperson = await storage.updateBranchSalesperson(actor.branchId, salespersonId, {
+        ...(data.userId !== undefined ? { userId: linkedUserId } : {}),
+        ...(data.name !== undefined ? { name: data.name.trim() } : {}),
+        ...(data.lastName !== undefined ? { lastName: normalizeOptionalText(data.lastName) ?? null } : {}),
+        ...(data.phone !== undefined ? { phone: normalizeOptionalText(data.phone) ?? null } : {}),
+        ...(data.email !== undefined ? { email: normalizeOptionalText(data.email) ?? null } : {}),
+        ...(data.employeeCode !== undefined ? { employeeCode: normalizeOptionalText(data.employeeCode) ?? null } : {}),
+        ...(data.roleLabel !== undefined ? { roleLabel: normalizeOptionalText(data.roleLabel) ?? null } : {}),
+        ...(data.monthlyGoalAmount !== undefined ? { monthlyGoalAmount: data.monthlyGoalAmount == null ? null : data.monthlyGoalAmount.toFixed(2) } : {}),
+        ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
+        ...(data.notes !== undefined ? { notes: normalizeOptionalText(data.notes) ?? null } : {}),
+      } as any);
+
+      if (!salesperson) {
+        return res.status(404).json({ message: "Vendedor no encontrado" });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "UPDATE_BRANCH_SALESPERSON",
+        branchId: actor.branchId,
+        metadata: { salespersonId: salesperson.id, name: salesperson.name },
+      });
+
+      res.json(salesperson);
+    } catch (err: any) {
+      console.error("[SALESPEOPLE] Error updating:", err?.stack || err);
+      res.status(500).json({ message: "Error al actualizar vendedor" });
+    }
+  });
+
+  app.delete("/api/branch/salespeople/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const salespersonId = getStringParam(req.params.id);
+    try {
+      const existing = await storage.getBranchSalespersonById(actor.branchId, salespersonId);
+      if (!existing) {
+        return res.status(404).json({ message: "Vendedor no encontrado" });
+      }
+
+      const deleted = await storage.softDeleteBranchSalesperson(actor.branchId, salespersonId);
+      if (!deleted) {
+        return res.status(404).json({ message: "Vendedor no encontrado" });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "DELETE_BRANCH_SALESPERSON",
+        branchId: actor.branchId,
+        metadata: { salespersonId: existing.id, name: existing.name },
+      });
+
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("[SALESPEOPLE] Error deleting:", err?.stack || err);
+      res.status(500).json({ message: "Error al eliminar vendedor" });
+    }
+  });
+
+  app.get("/api/branch/salespeople/ranking", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const month = normalizeOptionalText(req.query.month);
+    if (month && !/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ message: "El mes debe tener formato YYYY-MM" });
+    }
+
+    try {
+      const ranking = await storage.getBranchSalespeopleRanking(actor.branchId, month);
+      res.json(ranking);
+    } catch (err: any) {
+      console.error("[SALESPEOPLE] Error loading ranking:", err?.stack || err);
+      res.status(500).json({ message: "Error al obtener el ranking mensual" });
+    }
+  });
+
+  app.get("/api/branch/salespeople/:id/summary", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const salespersonId = getStringParam(req.params.id);
+    const month = normalizeOptionalText(req.query.month);
+    if (month && !/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ message: "El mes debe tener formato YYYY-MM" });
+    }
+
+    try {
+      const summary = await storage.getBranchSalespersonCommissionSummary(actor.branchId, salespersonId, month);
+      if (!summary) {
+        return res.status(404).json({ message: "Vendedor no encontrado" });
+      }
+      res.json(summary);
+    } catch (err: any) {
+      console.error("[SALESPEOPLE] Error loading summary:", err?.stack || err);
+      res.status(500).json({ message: "Error al obtener el resumen del vendedor" });
+    }
+  });
+
+  app.get("/api/branch/salespeople/:id/sales", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const salespersonId = getStringParam(req.params.id);
+    const month = normalizeOptionalText(req.query.month);
+    if (month && !/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ message: "El mes debe tener formato YYYY-MM" });
+    }
+
+    try {
+      const salesperson = await storage.getBranchSalespersonById(actor.branchId, salespersonId);
+      if (!salesperson) {
+        return res.status(404).json({ message: "Vendedor no encontrado" });
+      }
+
+      const sales = await storage.getBranchSalespersonSales(actor.branchId, salespersonId, month);
+      res.json(sales);
+    } catch (err: any) {
+      console.error("[SALESPEOPLE] Error loading sales:", err?.stack || err);
+      res.status(500).json({ message: "Error al obtener las ventas del vendedor" });
+    }
+  });
+
+  app.get("/api/branch/salespeople/:id/commission-summary", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const salespersonId = getStringParam(req.params.id);
+    const month = normalizeOptionalText(req.query.month);
+    if (month && !/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ message: "El mes debe tener formato YYYY-MM" });
+    }
+
+    try {
+      const summary = await storage.getBranchSalespersonCommissionSummary(actor.branchId, salespersonId, month);
+      if (!summary) {
+        return res.status(404).json({ message: "Vendedor no encontrado" });
+      }
+      res.json(summary);
+    } catch (err: any) {
+      console.error("[SALESPEOPLE] Error loading commission summary:", err?.stack || err);
+      res.status(500).json({ message: "Error al obtener el resumen de comisiones" });
+    }
+  });
+
+  app.get("/api/branch/salespeople/:id/commission-rules", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const salespersonId = getStringParam(req.params.id);
+
+    try {
+      const salesperson = await storage.getBranchSalespersonById(actor.branchId, salespersonId);
+      if (!salesperson) {
+        return res.status(404).json({ message: "Vendedor no encontrado" });
+      }
+      const rules = await storage.getBranchCommissionRules(actor.branchId, salespersonId);
+      res.json(rules);
+    } catch (err: any) {
+      console.error("[SALESPEOPLE] Error loading commission rules:", err?.stack || err);
+      res.status(500).json({ message: "Error al obtener las reglas de comision" });
+    }
+  });
+
+  app.post("/api/branch/salespeople/:id/commission-rules", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const salespersonId = getStringParam(req.params.id);
+    const parsed = createBranchCommissionRuleSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const salesperson = await storage.getBranchSalespersonById(actor.branchId, salespersonId);
+      if (!salesperson) {
+        return res.status(404).json({ message: "Vendedor no encontrado" });
+      }
+
+      const data = parsed.data;
+      const commercialProductId = normalizeOptionalText(data.commercialProductId) ?? null;
+      if (commercialProductId) {
+        const product = await storage.getBranchCommercialProductById(actor.branchId, commercialProductId);
+        if (!product) {
+          return res.status(400).json({ message: "El producto seleccionado no pertenece a esta sucursal" });
+        }
+      }
+
+      const rule = await storage.createBranchCommissionRule({
+        branchId: actor.branchId,
+        salespersonId,
+        name: data.name.trim(),
+        ruleType: data.ruleType,
+        percentageRate: data.percentageRate == null ? null : data.percentageRate.toFixed(4),
+        fixedAmount: data.fixedAmount == null ? null : data.fixedAmount.toFixed(2),
+        commercialProductId,
+        category: normalizeOptionalText(data.category) ?? null,
+        minimumGoalAmount: data.minimumGoalAmount == null ? null : data.minimumGoalAmount.toFixed(2),
+        bonusAmount: data.bonusAmount == null ? null : data.bonusAmount.toFixed(2),
+        priority: data.priority ?? 0,
+        isActive: data.isActive ?? true,
+        validFrom: data.validFrom ?? null,
+        validUntil: data.validUntil ?? null,
+        createdBy: actor.id,
+      } as any);
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "CREATE_BRANCH_COMMISSION_RULE",
+        branchId: actor.branchId,
+        metadata: { salespersonId, ruleId: rule.id, ruleType: rule.ruleType, name: rule.name },
+      });
+
+      res.status(201).json(rule);
+    } catch (err: any) {
+      console.error("[SALESPEOPLE] Error creating commission rule:", err?.stack || err);
+      res.status(500).json({ message: "Error al crear la regla de comision" });
+    }
+  });
+
+  app.patch("/api/branch/commission-rules/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const ruleId = getStringParam(req.params.id);
+    const parsed = updateBranchCommissionRuleSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const existingRule = await storage.getBranchCommissionRuleById(actor.branchId, ruleId);
+      if (!existingRule) {
+        return res.status(404).json({ message: "Regla no encontrada" });
+      }
+
+      const data = parsed.data;
+      const commercialProductId = data.commercialProductId === undefined
+        ? undefined
+        : (normalizeOptionalText(data.commercialProductId) ?? null);
+      if (commercialProductId) {
+        const product = await storage.getBranchCommercialProductById(actor.branchId, commercialProductId);
+        if (!product) {
+          return res.status(400).json({ message: "El producto seleccionado no pertenece a esta sucursal" });
+        }
+      }
+
+      const rule = await storage.updateBranchCommissionRule(actor.branchId, ruleId, {
+        ...(data.name !== undefined ? { name: data.name.trim() } : {}),
+        ...(data.ruleType !== undefined ? { ruleType: data.ruleType } : {}),
+        ...(data.percentageRate !== undefined ? { percentageRate: data.percentageRate == null ? null : data.percentageRate.toFixed(4) } : {}),
+        ...(data.fixedAmount !== undefined ? { fixedAmount: data.fixedAmount == null ? null : data.fixedAmount.toFixed(2) } : {}),
+        ...(data.commercialProductId !== undefined ? { commercialProductId } : {}),
+        ...(data.category !== undefined ? { category: normalizeOptionalText(data.category) ?? null } : {}),
+        ...(data.minimumGoalAmount !== undefined ? { minimumGoalAmount: data.minimumGoalAmount == null ? null : data.minimumGoalAmount.toFixed(2) } : {}),
+        ...(data.bonusAmount !== undefined ? { bonusAmount: data.bonusAmount == null ? null : data.bonusAmount.toFixed(2) } : {}),
+        ...(data.priority !== undefined ? { priority: data.priority } : {}),
+        ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
+        ...(data.validFrom !== undefined ? { validFrom: data.validFrom ?? null } : {}),
+        ...(data.validUntil !== undefined ? { validUntil: data.validUntil ?? null } : {}),
+      } as any);
+
+      if (!rule) {
+        return res.status(404).json({ message: "Regla no encontrada" });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "UPDATE_BRANCH_COMMISSION_RULE",
+        branchId: actor.branchId,
+        metadata: { ruleId: rule.id, salespersonId: rule.salespersonId, ruleType: rule.ruleType, name: rule.name },
+      });
+
+      res.json(rule);
+    } catch (err: any) {
+      console.error("[SALESPEOPLE] Error updating commission rule:", err?.stack || err);
+      res.status(500).json({ message: "Error al actualizar la regla de comision" });
+    }
+  });
+
+  app.delete("/api/branch/commission-rules/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const ruleId = getStringParam(req.params.id);
+
+    try {
+      const existingRule = await storage.getBranchCommissionRuleById(actor.branchId, ruleId);
+      if (!existingRule) {
+        return res.status(404).json({ message: "Regla no encontrada" });
+      }
+
+      const deleted = await storage.softDeleteBranchCommissionRule(actor.branchId, ruleId);
+      if (!deleted) {
+        return res.status(404).json({ message: "Regla no encontrada" });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "DELETE_BRANCH_COMMISSION_RULE",
+        branchId: actor.branchId,
+        metadata: { ruleId: existingRule.id, salespersonId: existingRule.salespersonId, name: existingRule.name },
+      });
+
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("[SALESPEOPLE] Error deleting commission rule:", err?.stack || err);
+      res.status(500).json({ message: "Error al eliminar la regla de comision" });
+    }
+  });
+
+  app.get("/api/branch/salespeople/:id/commissions", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const salespersonId = getStringParam(req.params.id);
+    const month = normalizeOptionalText(req.query.month);
+    if (month && !/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ message: "El mes debe tener formato YYYY-MM" });
+    }
+
+    try {
+      const salesperson = await storage.getBranchSalespersonById(actor.branchId, salespersonId);
+      if (!salesperson) {
+        return res.status(404).json({ message: "Vendedor no encontrado" });
+      }
+
+      const commissions = await storage.getBranchSalespersonCommissions(actor.branchId, salespersonId, month);
+      res.json(commissions);
+    } catch (err: any) {
+      console.error("[SALESPEOPLE] Error loading commissions:", err?.stack || err);
+      res.status(500).json({ message: "Error al obtener las comisiones" });
+    }
+  });
+
+  app.get("/api/branch/salespeople/:id/commission-payments", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const salespersonId = getStringParam(req.params.id);
+    const month = normalizeOptionalText(req.query.month);
+    if (month && !/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ message: "El mes debe tener formato YYYY-MM" });
+    }
+
+    try {
+      const salesperson = await storage.getBranchSalespersonById(actor.branchId, salespersonId);
+      if (!salesperson) {
+        return res.status(404).json({ message: "Vendedor no encontrado" });
+      }
+
+      const payments = await storage.getBranchSalespersonCommissionPayments(actor.branchId, salespersonId, month);
+      res.json(payments);
+    } catch (err: any) {
+      console.error("[SALESPEOPLE] Error loading commission payments:", err?.stack || err);
+      res.status(500).json({ message: "Error al obtener los pagos de comision" });
+    }
+  });
+
+  app.get("/api/branch/commission-payments/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const paymentId = getStringParam(req.params.id);
+
+    try {
+      const payment = await storage.getBranchCommissionPaymentById(actor.branchId, paymentId);
+      if (!payment) {
+        return res.status(404).json({ message: "Pago de comision no encontrado" });
+      }
+      res.json(payment);
+    } catch (err: any) {
+      console.error("[BRANCH_COMMISSION_PAYMENT_DETAIL]", err?.stack || err);
+      res.status(500).json({ message: "Error al obtener el detalle del pago de comision" });
+    }
+  });
+
+  app.post("/api/branch/salespeople/:id/commission-payments", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const salespersonId = getStringParam(req.params.id);
+    const parsed = createBranchCommissionPaymentSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const payment = await storage.createBranchSalespersonCommissionPayment({
+        branchId: actor.branchId,
+        salespersonId,
+        amount: parsed.data.amount,
+        paymentMethod: parsed.data.paymentMethod,
+        idempotencyKey: normalizeOptionalText(parsed.data.idempotencyKey) ?? null,
+        reference: normalizeOptionalText(parsed.data.reference) ?? null,
+        notes: normalizeOptionalText(parsed.data.notes) ?? null,
+        periodStart: parsed.data.periodStart ?? null,
+        periodEnd: parsed.data.periodEnd ?? null,
+        accrualIds: parsed.data.accrualIds?.length ? parsed.data.accrualIds : null,
+        createdBy: actor.id,
+      });
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "CREATE_BRANCH_COMMISSION_PAYMENT",
+        branchId: actor.branchId,
+        metadata: {
+          salespersonId,
+          paymentId: payment.id,
+          amount: payment.amount,
+          paymentMethod: payment.paymentMethod,
+          allocations: payment.allocations?.map((allocation) => ({
+            accrualId: allocation.commissionAccrualId,
+            amountAllocated: allocation.amountAllocated,
+          })) ?? [],
+        },
+      });
+
+      res.status(201).json(payment);
+    } catch (err: any) {
+      if (err instanceof Error) {
+        if (err.message === "BRANCH_SALESPERSON_NOT_FOUND") {
+          return res.status(404).json({ message: "Vendedor no encontrado" });
+        }
+        if (err.message === "BRANCH_COMMISSION_NOTHING_TO_PAY") {
+          return res.status(409).json({ message: "No hay comisiones pendientes para pagar" });
+        }
+        if (err.message === "BRANCH_COMMISSION_PAYMENT_EXCEEDS_PENDING") {
+          return res.status(409).json({ message: "El pago supera el saldo pendiente del vendedor" });
+        }
+        if (err.message === "BRANCH_COMMISSION_PAYMENT_ALLOCATION_INCOMPLETE") {
+          return res.status(409).json({ message: "No se pudo asignar completamente el pago a comisiones pendientes" });
+        }
+      }
+
+      console.error("[SALESPEOPLE] Error creating commission payment:", err?.stack || err);
+      res.status(500).json({ message: "Error al registrar el pago de comision" });
+    }
+  });
+
+  app.get("/api/branch/suppliers", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const suppliers = await storage.getBranchSuppliers(actor.branchId);
+      res.json(suppliers);
+    } catch (err: any) {
+      console.error("[SUPPLIERS] Error listing:", err?.stack || err);
+      res.status(500).json({ message: "Error al obtener proveedores" });
+    }
+  });
+
+  app.get("/api/branch/suppliers/:id/summary", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const supplierId = getStringParam(req.params.id);
+
+    try {
+      const summary = await storage.getBranchSupplierSummary(actor.branchId, supplierId);
+      if (!summary) {
+        return res.status(404).json({ message: "Proveedor no encontrado" });
+      }
+      res.json(summary);
+    } catch (err: any) {
+      console.error("[SUPPLIERS] Error loading summary:", err?.stack || err);
+      res.status(500).json({ message: "Error al obtener el resumen del proveedor" });
+    }
+  });
+
+  app.post("/api/branch/suppliers", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const parsed = createBranchSupplierSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const data = parsed.data;
+      const supplier = await storage.createBranchSupplier({
+        branchId: actor.branchId,
+        name: data.name.trim(),
+        contactName: normalizeOptionalText(data.contactName) ?? null,
+        phone: normalizeOptionalText(data.phone) ?? null,
+        email: normalizeOptionalText(data.email) ?? null,
+        taxId: normalizeOptionalText(data.taxId) ?? null,
+        address: normalizeOptionalText(data.address) ?? null,
+        paymentTerms: normalizeOptionalText(data.paymentTerms) ?? null,
+        notes: normalizeOptionalText(data.notes) ?? null,
+        isActive: data.isActive ?? true,
+        createdBy: actor.id,
+      } as any);
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "CREATE_BRANCH_SUPPLIER",
+        branchId: actor.branchId,
+        metadata: { supplierId: supplier.id, name: supplier.name },
+      });
+
+      res.status(201).json(supplier);
+    } catch (err: any) {
+      console.error("[SUPPLIERS] Error creating:", err?.stack || err);
+      res.status(500).json({ message: "Error al crear proveedor" });
+    }
+  });
+
+  app.patch("/api/branch/suppliers/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const supplierId = getStringParam(req.params.id);
+    const parsed = updateBranchSupplierSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const data = parsed.data;
+      const supplier = await storage.updateBranchSupplier(actor.branchId, supplierId, {
+        ...(data.name !== undefined ? { name: data.name.trim() } : {}),
+        ...(data.contactName !== undefined ? { contactName: normalizeOptionalText(data.contactName) ?? null } : {}),
+        ...(data.phone !== undefined ? { phone: normalizeOptionalText(data.phone) ?? null } : {}),
+        ...(data.email !== undefined ? { email: normalizeOptionalText(data.email) ?? null } : {}),
+        ...(data.taxId !== undefined ? { taxId: normalizeOptionalText(data.taxId) ?? null } : {}),
+        ...(data.address !== undefined ? { address: normalizeOptionalText(data.address) ?? null } : {}),
+        ...(data.paymentTerms !== undefined ? { paymentTerms: normalizeOptionalText(data.paymentTerms) ?? null } : {}),
+        ...(data.notes !== undefined ? { notes: normalizeOptionalText(data.notes) ?? null } : {}),
+        ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
+      } as any);
+
+      if (!supplier) {
+        return res.status(404).json({ message: "Proveedor no encontrado" });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "UPDATE_BRANCH_SUPPLIER",
+        branchId: actor.branchId,
+        metadata: { supplierId: supplier.id, name: supplier.name },
+      });
+
+      res.json(supplier);
+    } catch (err: any) {
+      console.error("[SUPPLIERS] Error updating:", err?.stack || err);
+      res.status(500).json({ message: "Error al actualizar proveedor" });
+    }
+  });
+
+  app.delete("/api/branch/suppliers/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const supplierId = getStringParam(req.params.id);
+    try {
+      const existing = await storage.getBranchSupplierById(actor.branchId, supplierId);
+      if (!existing) {
+        return res.status(404).json({ message: "Proveedor no encontrado" });
+      }
+
+      const deleted = await storage.softDeleteBranchSupplier(actor.branchId, supplierId);
+      if (!deleted) {
+        return res.status(404).json({ message: "Proveedor no encontrado" });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "DELETE_BRANCH_SUPPLIER",
+        branchId: actor.branchId,
+        metadata: { supplierId: existing.id, name: existing.name },
+      });
+
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("[SUPPLIERS] Error deleting:", err?.stack || err);
+      res.status(500).json({ message: "Error al eliminar proveedor" });
+    }
+  });
+
+  app.get("/api/branch/commercial-projects", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const projectsPage = await storage.getBranchCommercialProjects(actor.branchId, {
+        page: Number.parseInt(String(req.query.page ?? "1"), 10) || 1,
+        pageSize: Number.parseInt(String(req.query.pageSize ?? "25"), 10) || 25,
+        search: normalizeOptionalText(req.query.search) ?? null,
+        status: normalizeOptionalText(req.query.status) ?? null,
+        customerId: normalizeOptionalText(req.query.customerId) ?? null,
+        dateFrom: normalizeOptionalText(req.query.dateFrom) ?? null,
+        dateTo: normalizeOptionalText(req.query.dateTo) ?? null,
+        sort: typeof req.query.sort === "string" ? req.query.sort as any : null,
+        includeArchived: String(req.query.includeArchived ?? "").toLowerCase() === "true",
+      });
+      res.json(projectsPage);
+    } catch (err: any) {
+      console.error("[COMMERCIAL_PROJECTS] Error listing:", err?.stack || err);
+      res.status(500).json({ message: "Error al obtener proyectos comerciales" });
+    }
+  });
+
+  app.get("/api/branch/commercial-projects/options", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const projects = await storage.getBranchCommercialProjectOptions(actor.branchId);
+      res.json(projects);
+    } catch (err: any) {
+      console.error("[COMMERCIAL_PROJECTS] Error listing options:", err?.stack || err);
+      res.status(500).json({ message: "Error al obtener opciones de proyecto" });
+    }
+  });
+
+  app.get("/api/branch/commercial-projects/linkable-sales", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const salesPage = await storage.getBranchCommercialProjectLinkableSales(actor.branchId, {
+        page: Number.parseInt(String(req.query.page ?? "1"), 10) || 1,
+        pageSize: Number.parseInt(String(req.query.pageSize ?? "25"), 10) || 25,
+        search: normalizeOptionalText(req.query.search) ?? null,
+        dateFrom: normalizeOptionalText(req.query.dateFrom) ?? null,
+        dateTo: normalizeOptionalText(req.query.dateTo) ?? null,
+      });
+      res.json(salesPage);
+    } catch (err: any) {
+      console.error("[COMMERCIAL_PROJECTS] Error listing linkable sales:", err?.stack || err);
+      res.status(500).json({ message: "Error al obtener ventas vinculables" });
+    }
+  });
+
+  app.get("/api/branch/commercial-projects/linkable-purchases", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const purchasesPage = await storage.getBranchCommercialProjectLinkablePurchases(actor.branchId, {
+        page: Number.parseInt(String(req.query.page ?? "1"), 10) || 1,
+        pageSize: Number.parseInt(String(req.query.pageSize ?? "25"), 10) || 25,
+        search: normalizeOptionalText(req.query.search) ?? null,
+        dateFrom: normalizeOptionalText(req.query.dateFrom) ?? null,
+        dateTo: normalizeOptionalText(req.query.dateTo) ?? null,
+      });
+      res.json(purchasesPage);
+    } catch (err: any) {
+      console.error("[COMMERCIAL_PROJECTS] Error listing linkable purchases:", err?.stack || err);
+      res.status(500).json({ message: "Error al obtener compras vinculables" });
+    }
+  });
+
+  app.get("/api/branch/commercial-projects/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const projectId = getStringParam(req.params.id);
+    try {
+      const project = await storage.getBranchCommercialProjectById(actor.branchId, projectId);
+      if (!project) {
+        return res.status(404).json({ message: "Proyecto comercial no encontrado" });
+      }
+      res.json(project);
+    } catch (err: any) {
+      console.error("[COMMERCIAL_PROJECTS] Error loading detail:", err?.stack || err);
+      res.status(500).json({ message: "Error al obtener el proyecto comercial" });
+    }
+  });
+
+  app.post("/api/branch/commercial-projects", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const parsed = createBranchCommercialProjectSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const data = parsed.data;
+      const project = await storage.createBranchCommercialProject({
+        branchId: actor.branchId,
+        name: data.name.trim(),
+        description: normalizeOptionalText(data.description) ?? null,
+        customerUserId: normalizeOptionalText(data.customerUserId) ?? null,
+        status: data.status,
+        startDate: data.startDate,
+        expectedEndDate: normalizeOptionalText(data.expectedEndDate) ?? null,
+        notes: normalizeOptionalText(data.notes) ?? null,
+        createdByUserId: actor.id,
+      } as any);
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "CREATE_BRANCH_COMMERCIAL_PROJECT",
+        branchId: actor.branchId,
+        metadata: {
+          projectId: project.id,
+          code: project.code,
+          name: project.name,
+          status: project.status,
+        },
+      });
+
+      res.status(201).json(project);
+    } catch (err: any) {
+      if (err instanceof Error && err.message === "BRANCH_COMMERCIAL_PROJECT_CODE_COLLISION") {
+        return res.status(409).json({ message: "No se pudo generar un folio unico del proyecto. Intenta de nuevo." });
+      }
+      if (err instanceof Error && err.message === "BRANCH_COMMERCIAL_PROJECT_CUSTOMER_INVALID") {
+        return res.status(400).json({ message: "El cliente seleccionado no pertenece a esta sucursal" });
+      }
+      console.error("[COMMERCIAL_PROJECTS] Error creating:", err?.stack || err);
+      res.status(500).json({ message: "Error al crear el proyecto comercial" });
+    }
+  });
+
+  app.post("/api/branch/commercial-projects/from-sale", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const parsed = createBranchCommercialProjectFromSaleSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const data = parsed.data;
+      const project = await storage.createBranchCommercialProjectFromSale({
+        branchId: actor.branchId,
+        saleId: data.saleId,
+        name: normalizeOptionalText(data.name) ?? null,
+        description: normalizeOptionalText(data.description) ?? null,
+        notes: normalizeOptionalText(data.notes) ?? null,
+        expectedEndDate: normalizeOptionalText(data.expectedEndDate) ?? null,
+        createdByUserId: actor.id,
+      });
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "CREATE_BRANCH_COMMERCIAL_PROJECT_FROM_SALE",
+        branchId: actor.branchId,
+        metadata: {
+          projectId: project.id,
+          saleId: data.saleId,
+          code: project.code,
+          name: project.name,
+        },
+      });
+
+      res.status(201).json(project);
+    } catch (err: any) {
+      if (err instanceof Error) {
+        if (err.message === "BRANCH_COMMERCIAL_PROJECT_CODE_COLLISION") {
+          return res.status(409).json({ message: "No se pudo generar un folio unico del proyecto. Intenta de nuevo." });
+        }
+        if (err.message === "BRANCH_COMMERCIAL_PROJECT_SALE_NOT_FOUND") {
+          return res.status(404).json({ message: "La venta no pertenece a esta sucursal o no existe" });
+        }
+        if (err.message === "BRANCH_COMMERCIAL_PROJECT_SALE_ALREADY_LINKED") {
+          return res.status(409).json({ message: "Esta venta ya esta vinculada a otro proyecto" });
+        }
+      }
+
+      console.error("[COMMERCIAL_PROJECTS] Error creating from sale:", err?.stack || err);
+      res.status(500).json({ message: "Error al crear el proyecto desde la venta" });
+    }
+  });
+
+  app.patch("/api/branch/commercial-projects/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const projectId = getStringParam(req.params.id);
+    const parsed = updateBranchCommercialProjectSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const data = parsed.data;
+      const project = await storage.updateBranchCommercialProject(actor.branchId, projectId, {
+        ...(data.name !== undefined ? { name: data.name.trim() } : {}),
+        ...(data.description !== undefined ? { description: normalizeOptionalText(data.description) ?? null } : {}),
+        ...(data.customerUserId !== undefined ? { customerUserId: normalizeOptionalText(data.customerUserId) ?? null } : {}),
+        ...(data.status !== undefined ? { status: data.status } : {}),
+        ...(data.startDate !== undefined ? { startDate: data.startDate } : {}),
+        ...(data.expectedEndDate !== undefined ? { expectedEndDate: normalizeOptionalText(data.expectedEndDate) ?? null } : {}),
+        ...(data.notes !== undefined ? { notes: normalizeOptionalText(data.notes) ?? null } : {}),
+      } as any);
+
+      if (!project) {
+        return res.status(404).json({ message: "Proyecto comercial no encontrado" });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "UPDATE_BRANCH_COMMERCIAL_PROJECT",
+        branchId: actor.branchId,
+        metadata: {
+          projectId: project.id,
+          code: project.code,
+          name: project.name,
+          status: project.status,
+        },
+      });
+
+      res.json(project);
+    } catch (err: any) {
+      if (err instanceof Error && err.message === "BRANCH_COMMERCIAL_PROJECT_CUSTOMER_INVALID") {
+        return res.status(400).json({ message: "El cliente seleccionado no pertenece a esta sucursal" });
+      }
+      console.error("[COMMERCIAL_PROJECTS] Error updating:", err?.stack || err);
+      res.status(500).json({ message: "Error al actualizar el proyecto comercial" });
+    }
+  });
+
+  app.post("/api/branch/commercial-projects/:id/link-sale", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const projectId = getStringParam(req.params.id);
+    const parsed = linkBranchCommercialProjectSaleSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const project = await storage.linkBranchSaleToCommercialProject(actor.branchId, projectId, parsed.data.saleId);
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "LINK_BRANCH_SALE_TO_COMMERCIAL_PROJECT",
+        branchId: actor.branchId,
+        metadata: {
+          projectId,
+          saleId: parsed.data.saleId,
+        },
+      });
+      res.json(project);
+    } catch (err: any) {
+      if (err instanceof Error) {
+        if (err.message === "BRANCH_COMMERCIAL_PROJECT_NOT_FOUND") {
+          return res.status(404).json({ message: "Proyecto comercial no encontrado" });
+        }
+        if (err.message === "BRANCH_COMMERCIAL_PROJECT_NOT_ASSIGNABLE") {
+          return res.status(409).json({ message: "No puedes vincular ventas a un proyecto completado, cancelado o archivado" });
+        }
+        if (err.message === "BRANCH_COMMERCIAL_PROJECT_SALE_NOT_FOUND") {
+          return res.status(404).json({ message: "La venta no pertenece a esta sucursal o no existe" });
+        }
+        if (err.message === "BRANCH_COMMERCIAL_PROJECT_SALE_ALREADY_LINKED") {
+          return res.status(409).json({ message: "Esta venta ya esta vinculada a otro proyecto" });
+        }
+      }
+
+      console.error("[COMMERCIAL_PROJECTS] Error linking sale:", err?.stack || err);
+      res.status(500).json({ message: "Error al vincular la venta al proyecto" });
+    }
+  });
+
+  app.post("/api/branch/commercial-projects/:id/link-purchase", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const projectId = getStringParam(req.params.id);
+    const parsed = linkBranchCommercialProjectPurchaseSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const project = await storage.linkBranchPurchaseToCommercialProject(actor.branchId, projectId, parsed.data.purchaseId);
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "LINK_BRANCH_PURCHASE_TO_COMMERCIAL_PROJECT",
+        branchId: actor.branchId,
+        metadata: {
+          projectId,
+          purchaseId: parsed.data.purchaseId,
+        },
+      });
+      res.json(project);
+    } catch (err: any) {
+      if (err instanceof Error) {
+        if (err.message === "BRANCH_COMMERCIAL_PROJECT_NOT_FOUND") {
+          return res.status(404).json({ message: "Proyecto comercial no encontrado" });
+        }
+        if (err.message === "BRANCH_COMMERCIAL_PROJECT_NOT_ASSIGNABLE") {
+          return res.status(409).json({ message: "No puedes vincular compras a un proyecto completado, cancelado o archivado" });
+        }
+        if (err.message === "BRANCH_COMMERCIAL_PROJECT_PURCHASE_NOT_FOUND") {
+          return res.status(404).json({ message: "La compra no pertenece a esta sucursal o no existe" });
+        }
+        if (err.message === "BRANCH_COMMERCIAL_PROJECT_PURCHASE_ALREADY_LINKED") {
+          return res.status(409).json({ message: "Esta compra ya esta vinculada a otro proyecto" });
+        }
+      }
+
+      console.error("[COMMERCIAL_PROJECTS] Error linking purchase:", err?.stack || err);
+      res.status(500).json({ message: "Error al vincular la compra al proyecto" });
+    }
+  });
+
+  app.get("/api/branch/purchases", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const purchases = await storage.getBranchPurchases(actor.branchId, {
+        status: normalizeOptionalText(req.query.status) ?? null,
+        supplierId: normalizeOptionalText(req.query.supplierId) ?? null,
+        from: normalizeOptionalText(req.query.from) ?? null,
+        to: normalizeOptionalText(req.query.to) ?? null,
+      });
+      res.json(purchases);
+    } catch (err: any) {
+      console.error("[PURCHASES] Error listing:", err?.stack || err);
+      res.status(500).json({ message: "Error al obtener compras" });
+    }
+  });
+
+  app.get("/api/branch/purchases/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const purchaseId = getStringParam(req.params.id);
+    try {
+      const purchase = await storage.getBranchPurchaseById(actor.branchId, purchaseId);
+      if (!purchase) {
+        return res.status(404).json({ message: "Compra no encontrada" });
+      }
+      res.json(purchase);
+    } catch (err: any) {
+      console.error("[PURCHASES] Error loading detail:", err?.stack || err);
+      res.status(500).json({ message: "Error al obtener la compra" });
+    }
+  });
+
+  app.post("/api/branch/purchases", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const parsed = createBranchPurchaseSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const data = parsed.data;
+      const purchase = await storage.createBranchPurchase({
+        purchase: {
+          branchId: actor.branchId,
+          supplierId: normalizeOptionalText(data.supplierId) ?? null,
+          projectId: normalizeOptionalText(data.projectId) ?? null,
+          status: data.status ?? "draft",
+          purchaseDate: data.purchaseDate,
+          expectedDate: normalizeOptionalText(data.expectedDate) ?? null,
+          paymentStatus: data.paymentStatus ?? "unpaid",
+          paymentMethod: normalizeOptionalText(data.paymentMethod) ?? null,
+          paidAmount: (data.paidAmount ?? 0).toFixed(2),
+          discountAmount: (data.discountAmount ?? 0).toFixed(2),
+          taxMode: data.taxMode,
+          taxRate: data.taxRate.toFixed(2),
+          reference: normalizeOptionalText(data.reference) ?? null,
+          notes: normalizeOptionalText(data.notes) ?? null,
+          createdBy: actor.id,
+        } as any,
+        items: data.items.map((item) => ({
+          branchId: actor.branchId,
+          commercialProductId: item.commercialProductId,
+          quantityOrdered: item.quantityOrdered,
+          unitCost: item.unitCost.toFixed(2),
+        })) as any,
+      });
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "CREATE_BRANCH_PURCHASE",
+        branchId: actor.branchId,
+        metadata: {
+          purchaseId: purchase.id,
+          folio: purchase.folio,
+          supplierId: purchase.supplierId,
+          totalAmount: purchase.totalAmount,
+          status: purchase.status,
+        },
+      });
+
+      res.status(201).json(purchase);
+    } catch (err: any) {
+      if (err instanceof Error) {
+        if (err.message === "BRANCH_PURCHASE_REQUIRES_ITEMS") {
+          return res.status(400).json({ message: "Debes agregar al menos un producto" });
+        }
+        if (err.message === "BRANCH_PURCHASE_INVALID_STATUS") {
+          return res.status(400).json({ message: "Solo puedes crear compras como borrador o pedidas" });
+        }
+        if (err.message === "BRANCH_PURCHASE_SUPPLIER_INVALID") {
+          return res.status(400).json({ message: "El proveedor no pertenece a esta sucursal" });
+        }
+        if (err.message === "BRANCH_PURCHASE_PROJECT_INVALID") {
+          return res.status(400).json({ message: "El proyecto seleccionado no pertenece a esta sucursal o no esta disponible" });
+        }
+        if (err.message === "BRANCH_COMMERCIAL_PROJECT_NOT_ASSIGNABLE") {
+          return res.status(409).json({ message: "No puedes usar un proyecto completado, cancelado o archivado" });
+        }
+        if (err.message === "BRANCH_PURCHASE_ITEM_PRODUCT_INVALID") {
+          return res.status(400).json({ message: "Uno o más productos no pertenecen a esta sucursal" });
+        }
+        if (err.message === "BRANCH_PURCHASE_ITEM_PRODUCT_NOT_TRACKED") {
+          return res.status(400).json({ message: "Solo puedes comprar productos que usan inventario" });
+        }
+        if (err.message === "BRANCH_PURCHASE_DUPLICATE_PRODUCTS") {
+          return res.status(400).json({ message: "No puedes repetir el mismo producto en la compra. Combina cantidades o elimina el duplicado." });
+        }
+        if (err.message === "BRANCH_PURCHASE_PAYMENT_REQUIRES_METHOD") {
+          return res.status(400).json({ message: "Selecciona un método de pago o deja el pago registrado en cero." });
+        }
+        if (err.message === "BRANCH_PURCHASE_TOTAL_NEGATIVE") {
+          return res.status(400).json({ message: "El descuento no puede dejar el total en negativo" });
+        }
+        if (err.message === "BRANCH_PURCHASE_PAID_EXCEEDS_TOTAL") {
+          return res.status(400).json({ message: "El pago registrado no puede ser mayor al total de la compra" });
+        }
+      }
+
+      console.error("[PURCHASES] Error creating:", err?.stack || err);
+      res.status(500).json({ message: "Error al crear compra" });
+    }
+  });
+
+  app.post("/api/branch/purchases/:id/receive", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const purchaseId = getStringParam(req.params.id);
+    const parsed = receiveBranchPurchaseSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const purchase = await storage.receiveBranchPurchase({
+        branchId: actor.branchId,
+        purchaseId,
+        receivedBy: actor.id,
+        notes: normalizeOptionalText(parsed.data.notes) ?? null,
+      });
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "RECEIVE_BRANCH_PURCHASE",
+        branchId: actor.branchId,
+        metadata: {
+          purchaseId: purchase.id,
+          folio: purchase.folio,
+          totalUnitsReceived: purchase.totalUnitsReceived,
+        },
+      });
+
+      res.json(purchase);
+    } catch (err: any) {
+      if (err instanceof Error) {
+        if (err.message === "BRANCH_PURCHASE_NOT_FOUND") {
+          return res.status(404).json({ message: "Compra no encontrada" });
+        }
+        if (err.message === "BRANCH_PURCHASE_ALREADY_RECEIVED") {
+          return res.status(409).json({ message: "Esta compra ya fue recibida" });
+        }
+        if (err.message === "BRANCH_PURCHASE_CANNOT_RECEIVE_CANCELLED") {
+          return res.status(409).json({ message: "No puedes recibir una compra cancelada" });
+        }
+        if (err.message === "BRANCH_PURCHASE_ITEM_PRODUCT_INVALID") {
+          return res.status(400).json({ message: "Uno o más productos de la compra ya no son válidos para esta sucursal" });
+        }
+        if (err.message === "BRANCH_PURCHASE_ITEM_PRODUCT_NOT_TRACKED") {
+          return res.status(400).json({ message: "La compra contiene un producto que ya no usa inventario" });
+        }
+      }
+
+      console.error("[PURCHASES] Error receiving:", err?.stack || err);
+      res.status(500).json({ message: "Error al recibir la mercancía" });
+    }
+  });
+
+  app.post("/api/branch/purchases/:id/cancel", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const purchaseId = getStringParam(req.params.id);
+    try {
+      const purchase = await storage.cancelBranchPurchase(actor.branchId, purchaseId);
+      if (!purchase) {
+        return res.status(404).json({ message: "Compra no encontrada" });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "CANCEL_BRANCH_PURCHASE",
+        branchId: actor.branchId,
+        metadata: { purchaseId: purchase.id, folio: purchase.folio },
+      });
+
+      res.json(purchase);
+    } catch (err: any) {
+      if (err instanceof Error && err.message === "BRANCH_PURCHASE_CANNOT_CANCEL") {
+        return res.status(409).json({ message: "Solo puedes cancelar compras en borrador" });
+      }
+      if (err instanceof Error && err.message === "BRANCH_PURCHASE_NOT_FOUND") {
+        return res.status(404).json({ message: "Compra no encontrada" });
+      }
+      console.error("[PURCHASES] Error cancelling:", err?.stack || err);
+      res.status(500).json({ message: "Error al cancelar la compra" });
+    }
+  });
+
+  app.get("/api/branch/commercial-products", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const products = await storage.getBranchCommercialProducts(actor.branchId);
+      res.json(products);
+    } catch (err: any) {
+      console.error("[COMMERCIAL_PRODUCTS] Error listing:", err.stack || err);
+      res.status(500).json({ message: "Error al obtener productos comerciales" });
+    }
+  });
+
+  app.get("/api/branch/commercial-products/page", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const page = await storage.getBranchCommercialProductsPage(actor.branchId, {
+        page: Number.parseInt(String(req.query.page ?? "1"), 10) || 1,
+        pageSize: Number.parseInt(String(req.query.pageSize ?? "25"), 10) || 25,
+        search: typeof req.query.search === "string" ? req.query.search : null,
+        status: typeof req.query.status === "string" ? req.query.status as any : null,
+        category: typeof req.query.category === "string" ? req.query.category : null,
+        inventoryMode: typeof req.query.inventoryMode === "string" ? req.query.inventoryMode as any : null,
+        publicMode: typeof req.query.publicMode === "string" ? req.query.publicMode as any : null,
+        sort: typeof req.query.sort === "string" ? req.query.sort as any : null,
+      });
+      res.json(page);
+    } catch (err: any) {
+      console.error("[COMMERCIAL_PRODUCTS_PAGE] Error listing:", err?.stack || err);
+      res.status(500).json({ message: "Error al obtener la pagina de productos comerciales" });
+    }
+  });
+
+  app.post("/api/branch/commercial-products", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const parsed = createBranchCommercialProductSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const data = parsed.data;
+      const existing = await storage.getBranchCommercialProducts(actor.branchId);
+      const product = await storage.createBranchCommercialProduct({
+        branchId: actor.branchId,
+        name: data.name.trim(),
+        category: data.category.trim(),
+        description: normalizeOptionalText(data.description) ?? null,
+        photoUrl: normalizeOptionalText(data.photoUrl) ?? null,
+        sku: normalizeOptionalText(data.sku) ?? null,
+        barcode: normalizeOptionalText(data.barcode) ?? null,
+        costAmount: data.costAmount.toFixed(2),
+        salePriceAmount: data.salePriceAmount.toFixed(2),
+        isActive: data.isActive ?? true,
+        isPublicVisible: data.isPublicVisible ?? false,
+        usesInventory: data.usesInventory ?? false,
+        displayOrder: data.displayOrder ?? existing.length,
+        createdBy: actor.id,
+      } as any);
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "CREATE_COMMERCIAL_PRODUCT",
+        branchId: actor.branchId,
+        metadata: { commercialProductId: product.id, name: product.name },
+      });
+
+      res.status(201).json(product);
+    } catch (err: any) {
+      console.error("[COMMERCIAL_PRODUCTS] Error creating:", err.stack || err);
+      res.status(500).json({ message: "Error al crear producto comercial" });
+    }
+  });
+
+  app.patch("/api/branch/commercial-products/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const productId = getStringParam(req.params.id);
+    const parsed = updateBranchCommercialProductSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const data = parsed.data;
+      const existing = await storage.getBranchCommercialProductById(actor.branchId, productId);
+      if (!existing) {
+        return res.status(404).json({ message: "Producto comercial no encontrado" });
+      }
+
+      const nextPhotoUrl = data.photoUrl !== undefined ? normalizeOptionalText(data.photoUrl) ?? null : undefined;
+      const updated = await storage.updateBranchCommercialProduct(actor.branchId, productId, {
+        ...(data.name !== undefined ? { name: data.name.trim() } : {}),
+        ...(data.category !== undefined ? { category: data.category.trim() } : {}),
+        ...(data.description !== undefined ? { description: normalizeOptionalText(data.description) ?? null } : {}),
+        ...(data.photoUrl !== undefined ? { photoUrl: nextPhotoUrl } : {}),
+        ...(data.sku !== undefined ? { sku: normalizeOptionalText(data.sku) ?? null } : {}),
+        ...(data.barcode !== undefined ? { barcode: normalizeOptionalText(data.barcode) ?? null } : {}),
+        ...(data.costAmount !== undefined ? { costAmount: data.costAmount.toFixed(2) } : {}),
+        ...(data.salePriceAmount !== undefined ? { salePriceAmount: data.salePriceAmount.toFixed(2) } : {}),
+        ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
+        ...(data.isPublicVisible !== undefined ? { isPublicVisible: data.isPublicVisible } : {}),
+        ...(data.usesInventory !== undefined ? { usesInventory: data.usesInventory } : {}),
+        ...(data.displayOrder !== undefined ? { displayOrder: data.displayOrder } : {}),
+      } as any);
+
+      if (!updated) {
+        return res.status(404).json({ message: "Producto comercial no encontrado" });
+      }
+
+      if (data.photoUrl !== undefined && existing.photoUrl && existing.photoUrl !== updated.photoUrl) {
+        await deleteLocalUploadFileIfUnreferenced(existing.photoUrl, { ignoreCommercialProductId: productId });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "UPDATE_COMMERCIAL_PRODUCT",
+        branchId: actor.branchId,
+        metadata: { commercialProductId: updated.id, name: updated.name },
+      });
+
+      res.json(updated);
+    } catch (err: any) {
+      console.error("[COMMERCIAL_PRODUCTS] Error updating:", err.stack || err);
+      res.status(500).json({ message: "Error al actualizar producto comercial" });
+    }
+  });
+
+  app.delete("/api/branch/commercial-products/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const productId = getStringParam(req.params.id);
+    try {
+      const existing = await storage.getBranchCommercialProducts(actor.branchId);
+      const product = existing.find((item) => item.id === productId);
+      if (!product) {
+        return res.status(404).json({ message: "Producto comercial no encontrado" });
+      }
+
+      const deleted = await storage.softDeleteBranchCommercialProduct(actor.branchId, productId);
+      if (!deleted) {
+        return res.status(404).json({ message: "Producto comercial no encontrado" });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "DELETE_COMMERCIAL_PRODUCT",
+        branchId: actor.branchId,
+        metadata: { commercialProductId: product.id, name: product.name },
+      });
+
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("[COMMERCIAL_PRODUCTS] Error deleting:", err.stack || err);
+      res.status(500).json({ message: "Error al eliminar producto comercial" });
+    }
+  });
+
+  app.get("/api/branch/commercial-products/:id/performance", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const productId = getStringParam(req.params.id);
+    const from = parseDateQueryValue(req.query.from);
+    const to = parseDateQueryValue(req.query.to);
+
+    try {
+      const performance = await storage.getBranchCommercialProductPerformance(actor.branchId, productId, {
+        from: from ?? null,
+        to: to ?? null,
+      });
+      if (!performance) {
+        return res.status(404).json({ message: "Producto comercial no encontrado" });
+      }
+      res.json(performance);
+    } catch (err: any) {
+      console.error("[COMMERCIAL_PRODUCTS_PERFORMANCE]", err?.stack || err);
+      res.status(500).json({ message: "Error al obtener el desempeño del producto" });
+    }
+  });
+
+  app.get("/api/branch/commercial-products/:id/inventory", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const productId = getStringParam(req.params.id);
+
+    try {
+      const inventory = await storage.getBranchCommercialProductInventory(actor.branchId, productId);
+      res.json(inventory);
+    } catch (err: any) {
+      if (err instanceof Error && err.message === "COMMERCIAL_PRODUCT_NOT_FOUND") {
+        return res.status(404).json({ message: "Producto comercial no encontrado" });
+      }
+      console.error("[COMMERCIAL_PRODUCTS_INVENTORY_GET]", err?.stack || err);
+      res.status(500).json({ message: "Error al obtener inventario del producto" });
+    }
+  });
+
+  app.get("/api/branch/commercial-products/:id/inventory/movements", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const productId = getStringParam(req.params.id);
+    const limit = Number.parseInt(String(req.query.limit ?? "50"), 10);
+
+    try {
+      const product = await storage.getBranchCommercialProductById(actor.branchId, productId);
+      if (!product) {
+        return res.status(404).json({ message: "Producto comercial no encontrado" });
+      }
+
+      const movements = await storage.getBranchCommercialProductInventoryMovements(actor.branchId, productId, limit);
+      res.json(movements);
+    } catch (err: any) {
+      console.error("[COMMERCIAL_PRODUCTS_INVENTORY_MOVEMENTS]", err?.stack || err);
+      res.status(500).json({ message: "Error al obtener movimientos de inventario" });
+    }
+  });
+
+  app.post("/api/branch/commercial-products/:id/inventory/initial", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const productId = getStringParam(req.params.id);
+    const parsed = createBranchInventoryInitialSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const summary = await storage.createBranchCommercialProductInitialInventory({
+        branchId: actor.branchId,
+        commercialProductId: productId,
+        quantity: parsed.data.quantity,
+        minimumStock: parsed.data.minimumStock,
+        unitCost: parsed.data.unitCost ?? null,
+        notes: normalizeOptionalText(parsed.data.notes) ?? null,
+        createdBy: actor.id,
+      });
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "CREATE_COMMERCIAL_PRODUCT_INITIAL_INVENTORY",
+        branchId: actor.branchId,
+        metadata: {
+          commercialProductId: productId,
+          quantity: parsed.data.quantity,
+          minimumStock: parsed.data.minimumStock,
+        },
+      });
+
+      res.status(201).json(summary);
+    } catch (err: any) {
+      if (err instanceof Error) {
+        if (err.message === "COMMERCIAL_PRODUCT_NOT_FOUND") {
+          return res.status(404).json({ message: "Producto comercial no encontrado" });
+        }
+        if (err.message === "COMMERCIAL_PRODUCT_NOT_TRACKED") {
+          return res.status(400).json({ message: "Este producto no usa inventario" });
+        }
+        if (err.message === "INVENTORY_ALREADY_INITIALIZED") {
+          return res.status(409).json({ message: "Este producto ya tiene inventario inicial configurado" });
+        }
+      }
+
+      console.error("[COMMERCIAL_PRODUCTS_INVENTORY_INITIAL_CREATE]", err?.stack || err);
+      res.status(500).json({ message: "Error al configurar el inventario inicial" });
+    }
+  });
+
+  app.post("/api/branch/commercial-products/:id/inventory/entry", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const productId = getStringParam(req.params.id);
+    const parsed = createBranchInventoryEntrySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const summary = await storage.createBranchCommercialProductInventoryEntry({
+        branchId: actor.branchId,
+        commercialProductId: productId,
+        quantity: parsed.data.quantity,
+        minimumStock: parsed.data.minimumStock ?? null,
+        unitCost: parsed.data.unitCost ?? null,
+        reason: parsed.data.reason.trim(),
+        notes: normalizeOptionalText(parsed.data.notes) ?? null,
+        createdBy: actor.id,
+      });
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "CREATE_COMMERCIAL_PRODUCT_INVENTORY_ENTRY",
+        branchId: actor.branchId,
+        metadata: {
+          commercialProductId: productId,
+          quantity: parsed.data.quantity,
+          reason: parsed.data.reason.trim(),
+        },
+      });
+
+      res.status(201).json(summary);
+    } catch (err: any) {
+      if (err instanceof Error) {
+        if (err.message === "COMMERCIAL_PRODUCT_NOT_FOUND") {
+          return res.status(404).json({ message: "Producto comercial no encontrado" });
+        }
+        if (err.message === "COMMERCIAL_PRODUCT_NOT_TRACKED") {
+          return res.status(400).json({ message: "Este producto no usa inventario" });
+        }
+        if (err.message === "BRANCH_SALE_PROJECT_INVALID") {
+          return res.status(400).json({ message: "El proyecto seleccionado no pertenece a esta sucursal o no esta disponible" });
+        }
+        if (err.message === "BRANCH_COMMERCIAL_PROJECT_NOT_ASSIGNABLE") {
+          return res.status(409).json({ message: "No puedes usar un proyecto completado, cancelado o archivado" });
+        }
+        if (err.message === "INVENTORY_NOT_INITIALIZED") {
+          return res.status(400).json({ message: "Primero configura el inventario inicial del producto" });
+        }
+      }
+
+      console.error("[COMMERCIAL_PRODUCTS_INVENTORY_ENTRY_CREATE]", err?.stack || err);
+      res.status(500).json({ message: "Error al registrar la entrada de inventario" });
+    }
+  });
+
+  app.post("/api/branch/commercial-products/:id/inventory/adjust", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const productId = getStringParam(req.params.id);
+    const parsed = createBranchInventoryAdjustmentSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const summary = await storage.adjustBranchCommercialProductInventory({
+        branchId: actor.branchId,
+        commercialProductId: productId,
+        newQuantity: parsed.data.newQuantity ?? null,
+        quantityDelta: parsed.data.quantityDelta ?? null,
+        minimumStock: parsed.data.minimumStock ?? null,
+        unitCost: parsed.data.unitCost ?? null,
+        reason: parsed.data.reason.trim(),
+        notes: normalizeOptionalText(parsed.data.notes) ?? null,
+        createdBy: actor.id,
+      });
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "ADJUST_COMMERCIAL_PRODUCT_INVENTORY",
+        branchId: actor.branchId,
+        metadata: {
+          commercialProductId: productId,
+          newQuantity: parsed.data.newQuantity ?? null,
+          quantityDelta: parsed.data.quantityDelta ?? null,
+          reason: parsed.data.reason.trim(),
+        },
+      });
+
+      res.status(201).json(summary);
+    } catch (err: any) {
+      if (err instanceof Error) {
+        if (err.message === "COMMERCIAL_PRODUCT_NOT_FOUND") {
+          return res.status(404).json({ message: "Producto comercial no encontrado" });
+        }
+        if (err.message === "COMMERCIAL_PRODUCT_NOT_TRACKED") {
+          return res.status(400).json({ message: "Este producto no usa inventario" });
+        }
+        if (err.message === "INVENTORY_NOT_INITIALIZED") {
+          return res.status(400).json({ message: "Primero configura el inventario inicial del producto" });
+        }
+        if (err.message === "INVENTORY_NEGATIVE_STOCK") {
+          return res.status(400).json({ message: "El ajuste no puede dejar el inventario en negativo" });
+        }
+        if (err.message === "INVENTORY_NO_CHANGES") {
+          return res.status(400).json({ message: "El ajuste no genera cambios en la existencia actual" });
+        }
+      }
+
+      console.error("[COMMERCIAL_PRODUCTS_INVENTORY_ADJUST]", err?.stack || err);
+      res.status(500).json({ message: "Error al ajustar el inventario" });
+    }
+  });
+
+  app.post("/api/branch/commercial-products/:id/inventory/waste", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const productId = getStringParam(req.params.id);
+    const parsed = createBranchInventoryWasteSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const summary = await storage.createBranchCommercialProductInventoryWaste({
+        branchId: actor.branchId,
+        commercialProductId: productId,
+        quantity: parsed.data.quantity,
+        movementType: parsed.data.movementType,
+        reason: parsed.data.reason.trim(),
+        notes: normalizeOptionalText(parsed.data.notes) ?? null,
+        createdBy: actor.id,
+      });
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "CREATE_COMMERCIAL_PRODUCT_INVENTORY_WASTE",
+        branchId: actor.branchId,
+        metadata: {
+          commercialProductId: productId,
+          quantity: parsed.data.quantity,
+          movementType: parsed.data.movementType,
+          reason: parsed.data.reason.trim(),
+        },
+      });
+
+      res.status(201).json(summary);
+    } catch (err: any) {
+      if (err instanceof Error) {
+        if (err.message === "COMMERCIAL_PRODUCT_NOT_FOUND") {
+          return res.status(404).json({ message: "Producto comercial no encontrado" });
+        }
+        if (err.message === "COMMERCIAL_PRODUCT_NOT_TRACKED") {
+          return res.status(400).json({ message: "Este producto no usa inventario" });
+        }
+        if (err.message === "INVENTORY_NOT_INITIALIZED") {
+          return res.status(400).json({ message: "Primero configura el inventario inicial del producto" });
+        }
+        if (err.message === "INVENTORY_INSUFFICIENT_STOCK") {
+          return res.status(409).json({ message: "No hay existencia suficiente para registrar esa salida" });
+        }
+      }
+
+      console.error("[COMMERCIAL_PRODUCTS_INVENTORY_WASTE_CREATE]", err?.stack || err);
+      res.status(500).json({ message: "Error al registrar la merma o dano" });
+    }
+  });
+
+  app.get("/api/branch/sales/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const saleId = getStringParam(req.params.id);
+
+    try {
+      const sale = await storage.getBranchSaleDetail(actor.branchId, saleId);
+      if (!sale) {
+        return res.status(404).json({ message: "Venta no encontrada" });
+      }
+      res.json(sale);
+    } catch (err: any) {
+      console.error("[BRANCH_SALE_DETAIL]", err?.stack || err);
+      res.status(500).json({ message: "Error al obtener el detalle de la venta" });
+    }
+  });
+
+  app.post("/api/branch/sales/:id/cancel", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const saleId = getStringParam(req.params.id);
+    const parsed = cancelBranchSaleSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const sale = await storage.cancelBranchSale({
+        branchId: actor.branchId,
+        saleId,
+        reason: parsed.data.reason,
+        cancelledByUserId: actor.id,
+        idempotencyKey: parsed.data.idempotencyKey,
+      });
+
+      if (!sale) {
+        return res.status(404).json({ message: "Venta no encontrada" });
+      }
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "CANCEL_BRANCH_SALE",
+        branchId: actor.branchId,
+        metadata: {
+          saleId: sale.id,
+          folio: sale.folio,
+          reason: parsed.data.reason,
+          idempotencyKey: parsed.data.idempotencyKey,
+          cancelledAt: sale.cancelledAt,
+          sellerId: sale.sellerId ?? null,
+          clientUserId: sale.clientUserId ?? null,
+          totalAmount: sale.totalAmount,
+        },
+      });
+
+      res.json(sale);
+    } catch (err: any) {
+      if (err instanceof Error) {
+        if (err.message === "BRANCH_SALE_ALREADY_CANCELLED") {
+          return res.status(409).json({ message: "Esta venta ya fue cancelada" });
+        }
+        if (err.message === "BRANCH_SALE_CANCELLATION_KEY_REUSED") {
+          return res.status(409).json({ message: "Esta idempotency key ya fue usada para cancelar otra venta de la sucursal" });
+        }
+        if (err.message === "BRANCH_SALE_COMMISSION_ALREADY_PAID") {
+          return res.status(409).json({ message: "No se puede cancelar esta venta porque una comision asociada ya fue pagada total o parcialmente. Primero debe resolverse el ajuste de comision." });
+        }
+        if (err.message === "BRANCH_SALE_NOT_CANCELLABLE") {
+          return res.status(409).json({ message: "Solo las ventas completadas pueden cancelarse" });
+        }
+        if (err.message === "BRANCH_SALE_CANCELLATION_INVALID") {
+          return res.status(400).json({ message: "Faltan datos para cancelar la venta" });
+        }
+      }
+
+      console.error("[BRANCH_SALE_CANCEL]", err?.stack || err);
+      res.status(500).json({ message: "Error al cancelar la venta" });
+    }
+  });
+
+  app.post("/api/branch/sales/checkout", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const parsed = createBranchCheckoutSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      let clientProfile: any = null;
+      if (parsed.data.clientUserId) {
+        clientProfile = await storage.getClientProfile(parsed.data.clientUserId, actor.branchId);
+        if (!clientProfile) {
+          return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+        }
+      }
+
+      const productQuantities = new Map<string, number>();
+      for (const item of parsed.data.items) {
+        productQuantities.set(item.commercialProductId, (productQuantities.get(item.commercialProductId) ?? 0) + item.quantity);
+      }
+
+      const productIds = Array.from(productQuantities.keys());
+      const productRows = await Promise.all(productIds.map((id) => storage.getBranchCommercialProductById(actor.branchId, id)));
+      const products = productRows.filter(Boolean);
+      if (products.length !== productIds.length) {
+        return res.status(404).json({ message: "Uno o varios productos comerciales no existen en esta sucursal" });
+      }
+      if (products.some((product) => !product!.isActive)) {
+        return res.status(400).json({ message: "Uno o varios productos estan inactivos y no pueden cobrarse" });
+      }
+
+      const subtotalAmount = roundMoney(products.reduce((sum, product) => {
+        const quantity = productQuantities.get(product!.id) ?? 0;
+        return sum + (product!.salePriceAmount * quantity);
+      }, 0));
+      const discountAmount = roundMoney(parsed.data.discountAmount);
+      if (discountAmount > subtotalAmount) {
+        return res.status(400).json({ message: "El descuento no puede ser mayor al subtotal" });
+      }
+
+      const taxSnapshot = computeBranchSaleTaxSnapshot({
+        subtotalAmount,
+        discountAmount,
+        taxMode: parsed.data.taxMode,
+        taxRate: parsed.data.taxRate,
+      });
+      const grandTotal = taxSnapshot.grandTotal;
+      const paymentTotal = roundMoney(parsed.data.payments.reduce((sum, payment) => sum + payment.amount, 0));
+      if (Math.abs(paymentTotal - grandTotal) > 0.009) {
+        return res.status(400).json({ message: "La suma de pagos debe ser igual al total de la venta" });
+      }
+
+      let remainingDiscount = discountAmount;
+      const lineDrafts = products.map((product, index) => {
+        const quantity = productQuantities.get(product!.id) ?? 0;
+        const lineSubtotal = roundMoney(product!.salePriceAmount * quantity);
+        const lineDiscount = index === products.length - 1
+          ? remainingDiscount
+          : roundMoney(subtotalAmount > 0 ? (discountAmount * lineSubtotal) / subtotalAmount : 0);
+        remainingDiscount = roundMoney(remainingDiscount - lineDiscount);
+
+        return {
+          product,
+          quantity,
+          lineSubtotal,
+          lineDiscount,
+          discountedLineTotal: roundMoney(lineSubtotal - lineDiscount),
+        };
+      });
+
+      const lineRevenueTotals = allocateBranchSaleLineRevenue({
+        discountedLineTotals: lineDrafts.map((draft) => draft.discountedLineTotal),
+        taxMode: taxSnapshot.taxMode,
+        taxRate: taxSnapshot.taxRate,
+        taxableSubtotal: taxSnapshot.taxableSubtotal,
+      });
+
+      const items = lineDrafts.map((draft, index) => {
+        const product = draft.product!;
+
+        return {
+          branchId: actor.branchId,
+          itemType: "commercial_product",
+          commercialProductId: product!.id,
+          serviceId: null,
+          planId: null,
+          nameSnapshot: product!.name,
+          categorySnapshot: product!.category,
+          quantity: draft.quantity,
+          unitPriceAmount: product!.salePriceAmount,
+          discountAmount: draft.lineDiscount,
+          costAmountSnapshot: product!.costAmount,
+          lineTotalAmount: lineRevenueTotals[index] ?? draft.discountedLineTotal,
+          metadata: {
+            productSnapshot: {
+              sku: product!.sku ?? null,
+              barcode: product!.barcode ?? null,
+              photoUrl: product!.photoUrl ?? null,
+              usesInventory: product!.usesInventory,
+              isPublicVisible: product!.isPublicVisible,
+            },
+            fiscalSnapshot: {
+              taxMode: taxSnapshot.taxMode,
+              taxRate: taxSnapshot.taxRate,
+              discountedLineTotal: draft.discountedLineTotal,
+            },
+          },
+        };
+      });
+
+      const inventoryAdjustments = products
+        .filter((product) => product!.usesInventory)
+        .map((product) => ({
+          commercialProductId: product!.id,
+          quantity: productQuantities.get(product!.id) ?? 0,
+          unitCostSnapshot: product!.costAmount,
+          createdBy: actor.id,
+          notes: normalizeOptionalText(parsed.data.notes) ?? null,
+          metadata: {
+            channel: "pos_future",
+            discountAmount,
+          },
+        }));
+
+      const clientDisplayName = clientProfile
+        ? `${clientProfile.name}${clientProfile.lastName ? ` ${clientProfile.lastName}` : ""}`.trim()
+        : null;
+
+      const sale = await storage.createBranchSale({
+        sale: {
+          branchId: actor.branchId,
+          clientUserId: parsed.data.clientUserId ?? null,
+          sellerId: normalizeOptionalText(parsed.data.sellerId) ?? null,
+          projectId: normalizeOptionalText(parsed.data.projectId) ?? null,
+          sellerUserId: null,
+          sellerNameSnapshot: null,
+          sellerMetadata: null,
+          channel: "pos_future",
+          status: "completed",
+          subtotalAmount,
+          discountAmount,
+          totalAmount: grandTotal,
+          paidAmount: paymentTotal,
+          taxMode: taxSnapshot.taxMode,
+          taxRate: taxSnapshot.taxRate,
+          subtotalBeforeTax: taxSnapshot.subtotalBeforeTax,
+          taxableSubtotal: taxSnapshot.taxableSubtotal,
+          taxTotal: taxSnapshot.taxTotal,
+          grandTotal: taxSnapshot.grandTotal,
+          idempotencyKey: parsed.data.idempotencyKey,
+          notes: normalizeOptionalText(parsed.data.notes) ?? null,
+          createdBy: actor.id,
+        } as any,
+        items: items as any,
+        payments: parsed.data.payments.map((payment) => ({
+          branchId: actor.branchId,
+          paymentMethod: payment.paymentMethod,
+          amount: roundMoney(payment.amount),
+          reference: normalizeOptionalText(payment.reference) ?? null,
+          createdBy: actor.id,
+        })) as any,
+        inventoryAdjustments,
+        finance: {
+          source: "commercial_sale",
+          category: "producto",
+          notes: normalizeOptionalText(parsed.data.notes) ?? "Ingreso automatico por venta comercial",
+          metadata: {
+            channel: "pos_future",
+            paymentCount: parsed.data.payments.length,
+            taxMode: taxSnapshot.taxMode,
+            taxRate: taxSnapshot.taxRate,
+            subtotalBeforeTax: taxSnapshot.subtotalBeforeTax,
+            taxableSubtotal: taxSnapshot.taxableSubtotal,
+            taxTotal: taxSnapshot.taxTotal,
+            grandTotal: taxSnapshot.grandTotal,
+          },
+          clientName: clientDisplayName,
+        },
+      });
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "CREATE_BRANCH_CHECKOUT_SALE",
+        branchId: actor.branchId,
+        metadata: {
+          saleId: sale.id,
+          folio: sale.folio,
+          clientUserId: parsed.data.clientUserId ?? null,
+          sellerId: normalizeOptionalText(parsed.data.sellerId) ?? null,
+          subtotalAmount,
+          discountAmount,
+          subtotalBeforeTax: taxSnapshot.subtotalBeforeTax,
+          taxableSubtotal: taxSnapshot.taxableSubtotal,
+          taxTotal: taxSnapshot.taxTotal,
+          grandTotal: taxSnapshot.grandTotal,
+          totalAmount: grandTotal,
+          paymentTotal,
+          itemCount: items.length,
+          paymentCount: parsed.data.payments.length,
+          financeLinked: true,
+          taxMode: taxSnapshot.taxMode,
+          taxRate: taxSnapshot.taxRate,
+          idempotencyKey: parsed.data.idempotencyKey,
+        },
+      });
+
+      res.status(201).json(sale);
+    } catch (err: any) {
+      if (err instanceof Error) {
+        if (err.message === "BRANCH_SALESPERSON_INVALID") {
+          return res.status(404).json({ message: "Vendedor no encontrado en esta sucursal" });
+        }
+        if (err.message === "BRANCH_SALESPERSON_INACTIVE") {
+          return res.status(400).json({ message: "El vendedor esta inactivo" });
+        }
+        if (err.message === "BRANCH_SALE_PROJECT_INVALID") {
+          return res.status(400).json({ message: "El proyecto seleccionado no pertenece a esta sucursal o no esta disponible" });
+        }
+        if (err.message === "BRANCH_COMMERCIAL_PROJECT_NOT_ASSIGNABLE") {
+          return res.status(409).json({ message: "No puedes usar un proyecto completado, cancelado o archivado" });
+        }
+        if (err.message === "INVENTORY_NOT_INITIALIZED") {
+          return res.status(400).json({ message: "Uno o varios productos requieren inventario inicial antes de cobrarse" });
+        }
+        if (err.message === "INVENTORY_INSUFFICIENT_STOCK") {
+          return res.status(409).json({ message: "No hay existencia suficiente para completar la venta" });
+        }
+      }
+
+      console.error("[BRANCH_CHECKOUT_CREATE]", err?.stack || err);
+      res.status(500).json({ message: "Error al completar la venta" });
+    }
+  });
+
+  app.post("/api/branch/commercial-products/:id/sale", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const productId = getStringParam(req.params.id);
+    const parsed = createBranchSaleProductSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const product = await storage.getBranchCommercialProductById(actor.branchId, productId);
+      if (!product) {
+        return res.status(404).json({ message: "Producto comercial no encontrado" });
+      }
+      if (!product.isActive) {
+        return res.status(400).json({ message: "Este producto esta inactivo y no puede venderse" });
+      }
+
+      let clientProfile: any = null;
+      if (parsed.data.clientUserId) {
+        clientProfile = await storage.getClientProfile(parsed.data.clientUserId, actor.branchId);
+        if (!clientProfile) {
+          return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+        }
+      }
+
+      const quantity = parsed.data.quantity;
+      const subtotalAmount = Number((product.salePriceAmount * quantity).toFixed(2));
+      const discountAmount = Number(parsed.data.discountAmount.toFixed(2));
+      if (discountAmount > subtotalAmount) {
+        return res.status(400).json({ message: "El descuento no puede ser mayor al subtotal" });
+      }
+
+      const taxSnapshot = computeBranchSaleTaxSnapshot({
+        subtotalAmount,
+        discountAmount,
+        taxMode: parsed.data.taxMode,
+        taxRate: parsed.data.taxRate,
+      });
+      const totalAmount = taxSnapshot.grandTotal;
+      const notes = normalizeOptionalText(parsed.data.notes) ?? null;
+      const paymentReference = normalizeOptionalText(parsed.data.paymentReference) ?? null;
+      const clientDisplayName = clientProfile ? `${clientProfile.name}${clientProfile.lastName ? ` ${clientProfile.lastName}` : ""}`.trim() : null;
+
+      const sale = await storage.createBranchSale({
+        sale: {
+          branchId: actor.branchId,
+          clientUserId: parsed.data.clientUserId ?? null,
+          sellerId: normalizeOptionalText(parsed.data.sellerId) ?? null,
+          projectId: normalizeOptionalText(parsed.data.projectId) ?? null,
+          sellerUserId: null,
+          sellerNameSnapshot: null,
+          sellerMetadata: null,
+          channel: "dashboard_products",
+          status: "completed",
+          subtotalAmount,
+          discountAmount,
+          totalAmount,
+          paidAmount: totalAmount,
+          taxMode: taxSnapshot.taxMode,
+          taxRate: taxSnapshot.taxRate,
+          subtotalBeforeTax: taxSnapshot.subtotalBeforeTax,
+          taxableSubtotal: taxSnapshot.taxableSubtotal,
+          taxTotal: taxSnapshot.taxTotal,
+          grandTotal: taxSnapshot.grandTotal,
+          idempotencyKey: parsed.data.idempotencyKey ?? null,
+          notes,
+          createdBy: actor.id,
+        } as any,
+        items: [{
+          branchId: actor.branchId,
+          itemType: "commercial_product",
+          commercialProductId: product.id,
+          serviceId: null,
+          planId: null,
+          nameSnapshot: product.name,
+          categorySnapshot: product.category,
+          quantity,
+          unitPriceAmount: product.salePriceAmount,
+          discountAmount,
+          costAmountSnapshot: product.costAmount,
+          lineTotalAmount: taxSnapshot.taxableSubtotal,
+          metadata: {
+            productSnapshot: {
+              sku: product.sku ?? null,
+              barcode: product.barcode ?? null,
+              photoUrl: product.photoUrl ?? null,
+              usesInventory: product.usesInventory,
+              isPublicVisible: product.isPublicVisible,
+            },
+            fiscalSnapshot: {
+              taxMode: taxSnapshot.taxMode,
+              taxRate: taxSnapshot.taxRate,
+              discountedLineTotal: roundMoney(subtotalAmount - discountAmount),
+            },
+          },
+        } as any],
+        payments: [{
+          branchId: actor.branchId,
+          paymentMethod: parsed.data.paymentMethod,
+          amount: totalAmount,
+          reference: paymentReference,
+          createdBy: actor.id,
+        } as any],
+        inventoryAdjustment: product.usesInventory ? {
+          commercialProductId: product.id,
+          quantity,
+          unitCostSnapshot: product.costAmount,
+          createdBy: actor.id,
+          notes,
+          metadata: {
+            channel: "dashboard_products",
+            discountAmount,
+          },
+        } : null,
+        finance: {
+          source: "commercial_sale",
+          category: "producto",
+          notes: notes ?? "Ingreso automatico por venta comercial",
+          metadata: {
+            channel: "dashboard_products",
+            taxMode: taxSnapshot.taxMode,
+            taxRate: taxSnapshot.taxRate,
+            subtotalBeforeTax: taxSnapshot.subtotalBeforeTax,
+            taxableSubtotal: taxSnapshot.taxableSubtotal,
+            taxTotal: taxSnapshot.taxTotal,
+            grandTotal: taxSnapshot.grandTotal,
+          },
+          clientName: clientDisplayName,
+        },
+      });
+
+      await storage.createAuditLog({
+        actorUserId: actor.id,
+        action: "CREATE_BRANCH_SALE",
+        branchId: actor.branchId,
+        metadata: {
+          saleId: sale.id,
+          folio: sale.folio,
+          productId: product.id,
+          productName: product.name,
+          quantity,
+          subtotalAmount,
+          discountAmount,
+          subtotalBeforeTax: taxSnapshot.subtotalBeforeTax,
+          taxableSubtotal: taxSnapshot.taxableSubtotal,
+          taxTotal: taxSnapshot.taxTotal,
+          grandTotal: taxSnapshot.grandTotal,
+          totalAmount,
+          paymentMethod: parsed.data.paymentMethod,
+          clientUserId: parsed.data.clientUserId ?? null,
+          sellerId: parsed.data.sellerId ?? null,
+          sellerNameSnapshot: sale.sellerNameSnapshot ?? null,
+          clientDisplayName,
+          channel: "dashboard_products",
+          financeLinked: true,
+          taxMode: taxSnapshot.taxMode,
+          taxRate: taxSnapshot.taxRate,
+          idempotencyKey: parsed.data.idempotencyKey ?? null,
+        },
+      });
+
+      res.status(201).json(sale);
+    } catch (err: any) {
+      if (err instanceof Error) {
+        if (err.message === "BRANCH_SALESPERSON_INVALID") {
+          return res.status(400).json({ message: "El vendedor seleccionado no pertenece a esta sucursal" });
+        }
+        if (err.message === "BRANCH_SALESPERSON_INACTIVE") {
+          return res.status(409).json({ message: "El vendedor seleccionado está inactivo" });
+        }
+        if (err.message === "BRANCH_SALE_PROJECT_INVALID") {
+          return res.status(400).json({ message: "El proyecto seleccionado no pertenece a esta sucursal o no esta disponible" });
+        }
+        if (err.message === "BRANCH_COMMERCIAL_PROJECT_NOT_ASSIGNABLE") {
+          return res.status(409).json({ message: "No puedes usar un proyecto completado, cancelado o archivado" });
+        }
+        if (err.message === "INVENTORY_NOT_INITIALIZED") {
+          return res.status(400).json({ message: "Este producto requiere inventario inicial antes de venderse" });
+        }
+        if (err.message === "INVENTORY_INSUFFICIENT_STOCK") {
+          return res.status(409).json({ message: "No hay inventario suficiente para completar la venta" });
+        }
+      }
+      console.error("[COMMERCIAL_PRODUCTS_SALE_CREATE]", err.stack || err);
+      res.status(500).json({ message: "Error al registrar la venta del producto" });
     }
   });
 
@@ -7536,7 +10132,7 @@ if (!user) {
       });
     } catch (err: any) {
       console.error("[SEARCH_FILTERS]", err.stack || err);
-      res.status(500).json({ message: "Error al obtener filtros de bÃºsqueda" });
+      res.status(500).json({ message: "Error al obtener filtros de búsqueda" });
     }
   });
 

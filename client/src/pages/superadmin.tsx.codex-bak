@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+﻿import { useEffect, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -209,15 +209,15 @@ type BranchPurgeResult = {
 const BRANCH_PURGE_COUNT_LABELS: Record<string, string> = {
   Schedules: "Horarios",
   FinanceEntries: "Movimientos de Caja",
-  Memberships: "Membresías",
+  Memberships: "MembresÃ­as",
   LegacyProducts: "Productos anteriores",
   ClientCrm: "Expedientes CRM",
   AdminUsers: "Administradores",
-  Photos: "Fotografías",
+  Photos: "FotografÃ­as",
   Bookings: "Reservas",
-  MembershipPlans: "Planes de membresía",
+  MembershipPlans: "Planes de membresÃ­a",
   Posts: "Publicaciones",
-  Reviews: "Reseñas",
+  Reviews: "ReseÃ±as",
   Notifications: "Notificaciones",
   Promotions: "Promociones",
   Videos: "Videos",
@@ -234,12 +234,12 @@ const BRANCH_PURGE_COUNT_LABELS: Record<string, string> = {
   RecurringExpenses: "Gastos fijos",
   StaffMembers: "Profesores y empleados",
   StaffClassLogs: "Registro de clases",
-  NotificationsJobs: "Jobs de notificación",
+  NotificationsJobs: "Jobs de notificaciÃ³n",
   MonthlyBilling: "Igualas mensuales",
 };
 
 function getBranchPurgeCountLabel(key: string) {
-  return BRANCH_PURGE_COUNT_LABELS[key] ?? key;
+  return BRANCH_PURGE_COUNT_LABELS[key]  key;
 }
 type CatalogCategoryRow = {
   key: string;
@@ -316,33 +316,6 @@ type PlatformMetricsResponse = {
     branchName: string;
     totalReservations: number;
   }>;
-};
-const EMPTY_SEARCH_METRICS: SearchMetricsResponse = {
-  topQueries: [],
-  zeroResultQueries: [],
-  topCategories: [],
-};
-
-const EMPTY_PLATFORM_METRICS: PlatformMetricsResponse = {
-  totalAppUsers: 0,
-  activeBranches: 0,
-  totalSearches: 0,
-  zeroResultSearches: 0,
-  reservationStats: {
-    created: 0,
-    cancelled: 0,
-    attended: 0,
-    noShow: 0,
-  },
-  mostActiveBranches: [],
-};
-
-const EMPTY_CUSTOMER_APP_OVERVIEW: CustomerAppOverview = {
-  total: 0,
-  active: 0,
-  blocked: 0,
-  recent: 0,
-  pendingReports: 0,
 };
 type ReviewReportRecord = {
   id: string;
@@ -459,15 +432,15 @@ const SYSTEM_EVENT_LABELS: Record<string, string> = {
   customer_registered: "Cliente registrado",
   booking_created: "Reserva creada",
   booking_cancelled: "Reserva cancelada",
-  promotion_created: "Promoción creada",
-  review_created: "Reseña creada",
+  promotion_created: "Promocion creada",
+  review_created: "ReseÃ±a creada",
   customer_reported: "Cliente reportado",
   customer_blocked_global: "Bloqueo global",
   customer_blocked_local: "Bloqueo local",
 };
 
 function getCategoryLabel(category: string | null) {
-  return BRANCH_CATEGORIES.find((item) => item.value === category)?.label || category || "Sin categoría";
+  return BRANCH_CATEGORIES.find((item) => item.value === category).label || category || "Sin categoria";
 }
 
 function getSubcategoryPlaceholder(category: string) {
@@ -478,8 +451,8 @@ function extractErrorMessage(err: any, fallback: string): string {
   try {
     const msg = err.message || "";
     const statusMatch = msg.match(/^(\d{3}):\s*/);
-    const statusCode = statusMatch ? statusMatch[1] : "";
-    const body = statusMatch ? msg.substring(statusMatch[0].length) : msg;
+    const statusCode = statusMatch  statusMatch[1] : "";
+    const body = statusMatch  msg.substring(statusMatch[0].length) : msg;
 
     let message = fallback;
 
@@ -493,10 +466,10 @@ function extractErrorMessage(err: any, fallback: string): string {
     }
 
     if (statusCode === "403") {
-      return `Acceso denegado (${statusCode}). Tu sesión puede haber expirado. Recarga la página.`;
+      return `Acceso denegado (${statusCode}). Tu sesiÃ³n puede haber expirado. Recarga la pÃ¡gina.`;
     }
     if (statusCode === "401") {
-      return `No autenticado (${statusCode}). Inicia sesión nuevamente.`;
+      return `No autenticado (${statusCode}). Inicia sesiÃ³n nuevamente.`;
     }
     if (statusCode && statusCode !== "200") {
       return `${message} (${statusCode})`;
@@ -552,11 +525,11 @@ function invalidateMonthlyBilling() {
 }
 
 function customerFullName(customer: { name: string; lastName: string | null }) {
-  return customer.lastName ? `${customer.name} ${customer.lastName}` : customer.name;
+  return customer.lastName  `${customer.name} ${customer.lastName}` : customer.name;
 }
 
 function formatShortDate(date: string | null) {
-  if (!date) return "—";
+  if (!date) return "â€”";
   return new Date(date).toLocaleDateString("es-MX", {
     year: "numeric",
     month: "short",
@@ -565,7 +538,7 @@ function formatShortDate(date: string | null) {
 }
 
 function formatShortDateTime(date: string | null) {
-  if (!date) return "—";
+  if (!date) return "â€”";
   return new Date(date).toLocaleString("es-MX", {
     year: "numeric",
     month: "short",
@@ -688,7 +661,7 @@ function DeleteBranchDialog({ branch }: { branch: Branch }) {
         <DialogHeader>
           <DialogTitle>Eliminar sucursal</DialogTitle>
           <DialogDescription>
-            Esto ocultará la sucursal y bloqueará el acceso. Los datos no se borrarán permanentemente.
+            Esto ocultarÃ¡ la sucursal y bloquearÃ¡ el acceso. Los datos no se borrarÃ¡n permanentemente.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4 py-2">
@@ -726,7 +699,7 @@ function HardDeleteBranchDialog({ branch }: { branch: Branch }) {
   const [reason, setReason] = useState("");
   const { toast } = useToast();
   const {
-    data: purgeEstimate = { branchId: branch.id, branchName: branch.name, estimate: { counts: {}, uploadCount: 0 } },
+    data: purgeEstimate,
     isLoading: isLoadingPurgeEstimate,
     isError: hasPurgeEstimateError,
   } = useQuery<BranchPurgeEstimateResponse>({
@@ -757,7 +730,7 @@ function HardDeleteBranchDialog({ branch }: { branch: Branch }) {
       toast({
         title: "Sucursal eliminada definitivamente",
         description: result.externalCleanupWarnings.length
-          ? result.externalCleanupWarnings.join(" ")
+           result.externalCleanupWarnings.join(" ")
           : result.message,
       });
       invalidateBranches();
@@ -813,14 +786,14 @@ function HardDeleteBranchDialog({ branch }: { branch: Branch }) {
           <div className="rounded-lg border bg-muted/30 p-3">
             <div className="flex items-center justify-between gap-2">
               <p className="text-sm font-medium">Estimaci&oacute;n de purga</p>
-              {isLoadingPurgeEstimate ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : null}
+              {isLoadingPurgeEstimate  <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : null}
             </div>
-            {hasPurgeEstimateError ? (
+            {hasPurgeEstimateError  (
               <p className="mt-2 text-sm text-destructive">No se pudo calcular el conteo previo. Cierra y vuelve a intentar.</p>
             ) : (
               <div className="mt-3 space-y-3">
                 <div className="grid gap-2 sm:grid-cols-2">
-                  {Object.entries(purgeEstimate.estimate.counts ?? {})
+                  {Object.entries(purgeEstimate.estimate.counts  {})
                     .filter(([, value]) => value > 0)
                     .sort((a, b) => b[1] - a[1])
                     .slice(0, 12)
@@ -833,12 +806,12 @@ function HardDeleteBranchDialog({ branch }: { branch: Branch }) {
                 </div>
                 <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
                   <span>
-                    Archivos detectados: <strong className="text-foreground">{purgeEstimate.estimate.uploadCount ?? 0}</strong>
+                    Archivos detectados: <strong className="text-foreground">{purgeEstimate.estimate.uploadCount  0}</strong>
                   </span>
                   <span>
                     Registros estimados:{" "}
                     <strong className="text-foreground">
-                      {Object.values(purgeEstimate.estimate.counts ?? {}).reduce((sum, value) => sum + value, 0)}
+                      {Object.values(purgeEstimate.estimate.counts  {}).reduce((sum, value) => sum + value, 0)}
                     </strong>
                   </span>
                 </div>
@@ -963,7 +936,7 @@ function HardDeleteCustomerDialog({
         <DialogHeader>
           <DialogTitle>Eliminar cliente definitivamente</DialogTitle>
           <DialogDescription>
-            Esta acción borra la cuenta app, membresías, reservas, favoritos, notificaciones y datos relacionados. No se puede deshacer.
+            Esta acciÃ³n borra la cuenta app, membresÃ­as, reservas, favoritos, notificaciones y datos relacionados. No se puede deshacer.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4 py-2">
@@ -1089,7 +1062,7 @@ function EditBranchDialog({
         <DialogHeader>
           <DialogTitle>Editar sucursal</DialogTitle>
           <DialogDescription>
-            Actualiza los datos visibles y de catálogo sin afectar los contratos actuales de la app.
+            Actualiza los datos visibles y de catÃ¡logo sin afectar los contratos actuales de la app.
           </DialogDescription>
         </DialogHeader>
 
@@ -1117,7 +1090,7 @@ function EditBranchDialog({
 
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
-              <Label>Categoría</Label>
+              <Label>CategorÃ­a</Label>
               <Select
                 value={category}
                 onValueChange={(value) => {
@@ -1126,7 +1099,7 @@ function EditBranchDialog({
                 }}
               >
                 <SelectTrigger data-testid="select-edit-branch-category">
-                  <SelectValue placeholder="Selecciona una categoría" />
+                  <SelectValue placeholder="Selecciona una categorÃ­a" />
                 </SelectTrigger>
                 <SelectContent>
                   {categories.map((item) => (
@@ -1138,13 +1111,13 @@ function EditBranchDialog({
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>Subcategoría</Label>
-              <Select value={subcategory || "none"} onValueChange={(value) => setSubcategory(value === "none" ? "" : value)}>
+              <Label>SubcategorÃ­a</Label>
+              <Select value={subcategory || "none"} onValueChange={(value) => setSubcategory(value === "none"  "" : value)}>
                 <SelectTrigger data-testid="select-edit-branch-subcategory">
-                  <SelectValue placeholder="Subcategoría opcional" />
+                  <SelectValue placeholder="SubcategorÃ­a opcional" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="none">Sin subcategoría</SelectItem>
+                  <SelectItem value="none">Sin subcategorÃ­a</SelectItem>
                   {subcategory &&
                     !availableSubcategories.some((item) => item.label === subcategory) && (
                       <SelectItem value={subcategory}>
@@ -1159,14 +1132,14 @@ function EditBranchDialog({
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground">
-                Si el catálogo tiene especialidades para esta categoría, se muestran aquí automáticamente.
+                Si el catÃ¡logo tiene especialidades para esta categorÃ­a, se muestran aquÃ­ automÃ¡ticamente.
               </p>
             </div>
           </div>
 
           <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_220px]">
             <div className="space-y-2">
-              <Label>Palabras clave de búsqueda</Label>
+              <Label>Palabras clave de bÃºsqueda</Label>
               <Textarea
                 value={searchKeywords}
                 onChange={(e) => setSearchKeywords(e.target.value)}
@@ -1175,7 +1148,7 @@ function EditBranchDialog({
                 data-testid="textarea-edit-branch-keywords"
               />
               <p className="text-xs text-muted-foreground">
-                Ayudan a que la app encuentre la sucursal aunque el usuario escriba distinto. Sepáralas por comas.
+                Ayudan a que la app encuentre la sucursal aunque el usuario escriba distinto. SepÃ¡ralas por comas.
               </p>
             </div>
             <div className="space-y-2">
@@ -1196,7 +1169,7 @@ function EditBranchDialog({
               <div className="rounded-lg border bg-muted/30 p-3 text-xs text-muted-foreground">
                 <p className="font-medium text-foreground">Admin actual</p>
                 <p>{adminEmail || "Sin admin asignado"}</p>
-                <p className="mt-1">La gestión de correo y admin sigue disponible en el botón dedicado de admin.</p>
+                <p className="mt-1">La gestiÃ³n de correo y admin sigue disponible en el botÃ³n dedicado de admin.</p>
               </div>
             </div>
           </div>
@@ -1225,7 +1198,7 @@ function EditBranchDialog({
   );
 }
 
-function ResetPasswordDialog({ branch, hasAdmin }: { branch: Branch; hasAdmin?: boolean }) {
+function ResetPasswordDialog({ branch, hasAdmin }: { branch: Branch; hasAdmin: boolean }) {
   const [open, setOpen] = useState(false);
   const [result, setResult] = useState<{ email: string; password: string; name: string } | null>(null);
   const { toast } = useToast();
@@ -1238,7 +1211,7 @@ function ResetPasswordDialog({ branch, hasAdmin }: { branch: Branch; hasAdmin?: 
     onSuccess: (data) => {
       setResult(data);
       invalidateBranches();
-      toast({ title: "Contraseña reseteada" });
+      toast({ title: "ContraseÃ±a reseteada" });
     },
     onError: (err: any) => {
       toast({ title: "Error", description: extractErrorMessage(err, "No hay admin para esta sucursal"), variant: "destructive" });
@@ -1248,7 +1221,7 @@ function ResetPasswordDialog({ branch, hasAdmin }: { branch: Branch; hasAdmin?: 
   const r = result;
   function copyAll() {
     if (!r) return;
-    navigator.clipboard.writeText(`Email: ${r.email}\nContraseña: ${r.password}`);
+    navigator.clipboard.writeText(`Email: ${r.email}\nContraseÃ±a: ${r.password}`);
     toast({ title: "Copiado al portapapeles" });
   }
 
@@ -1256,11 +1229,11 @@ function ResetPasswordDialog({ branch, hasAdmin }: { branch: Branch; hasAdmin?: 
     if (!r) return;
     const origin = window.location.origin;
     const text = [
-      `Reset de contraseña - ${branch.name}`,
+      `Reset de contraseÃ±a - ${branch.name}`,
       `==================================`,
       `Login: ${origin}/`,
       `Email: ${r.email}`,
-      `Nueva contraseña: ${r.password}`,
+      `Nueva contraseÃ±a: ${r.password}`,
       `==================================`,
     ].join("\n");
     const blob = new Blob([text], { type: "text/plain" });
@@ -1282,22 +1255,22 @@ function ResetPasswordDialog({ branch, hasAdmin }: { branch: Branch; hasAdmin?: 
                 <KeyRound className="h-4 w-4" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>{hasAdmin === false ? "Primero crea o asigna un admin" : "Reset contraseña admin"}</TooltipContent>
+            <TooltipContent>{hasAdmin === false  "Primero crea o asigna un admin" : "Reset contraseÃ±a admin"}</TooltipContent>
           </Tooltip>
         </span>
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Reset contraseña admin</DialogTitle>
+          <DialogTitle>Reset contraseÃ±a admin</DialogTitle>
           <DialogDescription>
-            Se generará una nueva contraseña segura para el administrador de {branch.name}.
+            Se generarÃ¡ una nueva contraseÃ±a segura para el administrador de {branch.name}.
           </DialogDescription>
         </DialogHeader>
-        {result ? (
+        {result  (
           <div className="space-y-3 py-2">
             <div className="p-3 bg-muted rounded-md space-y-2 text-sm">
               <p><strong>Email:</strong> {result.email}</p>
-              <p><strong>Nueva contraseña:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{result.password}</code></p>
+              <p><strong>Nueva contraseÃ±a:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{result.password}</code></p>
             </div>
             <div className="flex gap-2">
               <Button onClick={copyAll} className="flex-1" data-testid="button-copy-reset">
@@ -1315,7 +1288,7 @@ function ResetPasswordDialog({ branch, hasAdmin }: { branch: Branch; hasAdmin?: 
             <Button variant="outline" onClick={() => setOpen(false)} data-testid="button-cancel-reset">Cancelar</Button>
             <Button onClick={() => mutation.mutate()} disabled={mutation.isPending} data-testid="button-confirm-reset">
               {mutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
-              Generar nueva contraseña
+              Generar nueva contraseÃ±a
             </Button>
           </DialogFooter>
         )}
@@ -1362,17 +1335,17 @@ function AdminDialog({ branch, onAdminChanged }: { branch: Branch; onAdminChange
   });
 
   const createMutation = useMutation({
-    mutationFn: async (data: { email: string; name: string; password?: string; reassign: boolean }) => {
+    mutationFn: async (data: { email: string; name: string; password: string; reassign: boolean }) => {
       const resp = await apiRequest("POST", `/api/superadmin/branches/${branch.id}/admin`, data);
       return resp.json();
     },
     onSuccess: (result) => {
       setCreatedCreds({ email: result.admin.email, password: result.password, reassigned: result.reassigned });
       setShowReassign(false);
-      toast({ title: result.reassigned ? "Admin reasignado" : "Admin creado" });
+      toast({ title: result.reassigned  "Admin reasignado" : "Admin creado" });
       queryClient.invalidateQueries({ queryKey: ["/api/superadmin/branches", branch.id, "admin"] });
       invalidateBranches();
-      onAdminChanged?.();
+      onAdminChanged.();
     },
     onError: (err: any) => {
       const errorMsg = extractErrorMessage(err, "Error al crear admin");
@@ -1426,29 +1399,29 @@ function AdminDialog({ branch, onAdminChanged }: { branch: Branch; onAdminChange
           <DialogDescription>Gestiona el administrador de esta sucursal.</DialogDescription>
         </DialogHeader>
 
-        {loadingAdmin ? (
+        {loadingAdmin  (
           <div className="space-y-2 py-4">
             <Skeleton className="h-4 w-48" />
             <Skeleton className="h-4 w-32" />
           </div>
-        ) : createdCreds ? (
+        ) : createdCreds  (
           <div className="space-y-3 py-2">
-            {createdCreds.reassigned ? (
+            {createdCreds.reassigned  (
               <div className="p-3 bg-muted rounded-md space-y-2 text-sm">
                 <p className="font-semibold text-green-600">Usuario reasignado como admin</p>
                 <p><strong>Email:</strong> {createdCreds.email}</p>
-                <p className="text-xs text-muted-foreground">El usuario conserva su contraseña actual.</p>
+                <p className="text-xs text-muted-foreground">El usuario conserva su contraseÃ±a actual.</p>
               </div>
             ) : (
               <>
                 <div className="p-3 bg-muted rounded-md space-y-2 text-sm">
                   <p><strong>Email:</strong> {createdCreds.email}</p>
-                  <p><strong>Contraseña:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{createdCreds.password}</code></p>
+                  <p><strong>ContraseÃ±a:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{createdCreds.password}</code></p>
                 </div>
                 <Button
                   className="w-full"
                   onClick={() => {
-                    navigator.clipboard.writeText(`Email: ${createdCreds.email}\nContraseña: ${createdCreds.password}`);
+                    navigator.clipboard.writeText(`Email: ${createdCreds.email}\nContraseÃ±a: ${createdCreds.password}`);
                     toast({ title: "Copiado" });
                   }}
                   data-testid="button-copy-new-admin"
@@ -1459,7 +1432,7 @@ function AdminDialog({ branch, onAdminChanged }: { branch: Branch; onAdminChange
               </>
             )}
           </div>
-        ) : admin ? (
+        ) : admin  (
           <div className="space-y-4 py-2">
             <div>
               <Label className="text-sm">Nombre</Label>
@@ -1500,7 +1473,7 @@ function AdminDialog({ branch, onAdminChanged }: { branch: Branch; onAdminChange
               <Input
                 value={newAdminName}
                 onChange={(e) => setNewAdminName(e.target.value)}
-                placeholder="Juan Pérez"
+                placeholder="Juan PÃ©rez"
                 className="mt-1"
                 data-testid="input-new-admin-name"
               />
@@ -1518,12 +1491,12 @@ function AdminDialog({ branch, onAdminChanged }: { branch: Branch; onAdminChange
             </div>
             {!showReassign && (
               <div>
-                <Label className="text-sm">Contraseña</Label>
+                <Label className="text-sm">ContraseÃ±a</Label>
                 <div className="flex gap-1 mt-1">
                   <div className="relative flex-1">
                     <Input
-                      type={showNewPw ? "text" : "password"}
-                      placeholder="Dejar vacío para autogenerar"
+                      type={showNewPw  "text" : "password"}
+                      placeholder="Dejar vacÃ­o para autogenerar"
                       value={newAdminPassword}
                       onChange={(e) => setNewAdminPassword(e.target.value)}
                       data-testid="input-new-admin-password"
@@ -1535,7 +1508,7 @@ function AdminDialog({ branch, onAdminChanged }: { branch: Branch; onAdminChange
                       className="absolute right-0 top-0"
                       onClick={() => setShowNewPw(!showNewPw)}
                     >
-                      {showNewPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      {showNewPw  <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                     </Button>
                   </div>
                   <Button
@@ -1558,7 +1531,7 @@ function AdminDialog({ branch, onAdminChanged }: { branch: Branch; onAdminChange
             )}
             <DialogFooter className="flex gap-2">
               <Button variant="outline" onClick={() => setOpen(false)} data-testid="button-cancel-create-admin">Cancelar</Button>
-              {showReassign ? (
+              {showReassign  (
                 <Button
                   disabled={createMutation.isPending || !newAdminEmail}
                   onClick={() => createMutation.mutate({ email: newAdminEmail, name: newAdminName || `Admin ${branch.name}`, reassign: true })}
@@ -1570,7 +1543,7 @@ function AdminDialog({ branch, onAdminChanged }: { branch: Branch; onAdminChange
               ) : (
                 <Button
                   disabled={createMutation.isPending || !newAdminEmail}
-                  onClick={() => createMutation.mutate({ email: newAdminEmail, name: newAdminName || `Admin ${branch.name}`, password: newAdminPassword || undefined, reassign: false })}
+                  onClick={() => createMutation.mutate({ email: newAdminEmail, name: newAdminName || `Admin ${branch.name}`, password: newAdminPassword || undefined })}
                   data-testid="button-create-admin"
                 >
                   {createMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
@@ -1585,7 +1558,7 @@ function AdminDialog({ branch, onAdminChanged }: { branch: Branch; onAdminChange
   );
 }
 
-function ImpersonateButton({ branch, hasAdmin }: { branch: Branch; hasAdmin?: boolean }) {
+function ImpersonateButton({ branch, hasAdmin }: { branch: Branch; hasAdmin: boolean }) {
   const { toast } = useToast();
   const { refetch } = useAuth();
   const [, setLocation] = useLocation();
@@ -1618,15 +1591,15 @@ function ImpersonateButton({ branch, hasAdmin }: { branch: Branch; hasAdmin?: bo
           disabled={mutation.isPending || hasAdmin === false}
           data-testid={`button-impersonate-${branch.id}`}
         >
-          {mutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserCheck className="h-4 w-4" />}
+          {mutation.isPending  <Loader2 className="h-4 w-4 animate-spin" /> : <UserCheck className="h-4 w-4" />}
         </Button>
       </TooltipTrigger>
-      <TooltipContent>{hasAdmin === false ? "Primero crea o asigna un admin" : "Entrar como admin"}</TooltipContent>
+      <TooltipContent>{hasAdmin === false  "Primero crea o asigna un admin" : "Entrar como admin"}</TooltipContent>
     </Tooltip>
   );
 }
 
-function ResendWelcomeButton({ branch, hasAdmin }: { branch: Branch; hasAdmin?: boolean }) {
+function ResendWelcomeButton({ branch, hasAdmin }: { branch: Branch; hasAdmin: boolean }) {
   const [open, setOpen] = useState(false);
   const { toast } = useToast();
 
@@ -1650,7 +1623,7 @@ function ResendWelcomeButton({ branch, hasAdmin }: { branch: Branch; hasAdmin?: 
     retry: false,
   });
 
-  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const origin = typeof window !== "undefined"  window.location.origin : "";
 
   function getLinks(slug: string) {
     return {
@@ -1669,18 +1642,18 @@ function ResendWelcomeButton({ branch, hasAdmin }: { branch: Branch; hasAdmin?: 
       `Paquete de bienvenida - ${pkg.branchName}`,
       ``,
       `URLs importantes:`,
-      `• Página pública (para clientes): ${links.publicUrl}`,
-      `• Marketplace: ${links.marketplace}`,
-      `• Favoritos: ${links.favorites}`,
-      `• Login (admin): ${links.login}`,
-      `• Dashboard (requiere login): ${links.dashboard}`,
+      `  PÃ¡gina pÃºblica (para clientes): ${links.publicUrl}`,
+      `  Marketplace: ${links.marketplace}`,
+      `  Favoritos: ${links.favorites}`,
+      `  Login (admin): ${links.login}`,
+      `  Dashboard (requiere login): ${links.dashboard}`,
     ];
     if (pkg.adminEmail) {
-      lines.push(``, `Admin:`, `• Email: ${pkg.adminEmail}`);
-      if (pkg.adminName) lines.push(`• Nombre: ${pkg.adminName}`);
-      lines.push(`• (Contraseña no incluida — usa "Reset contraseña" si necesitas regenerarla)`);
+      lines.push(``, `Admin:`, `  Email: ${pkg.adminEmail}`);
+      if (pkg.adminName) lines.push(`  Nombre: ${pkg.adminName}`);
+      lines.push(`  (ContraseÃ±a no incluida â€” usa "Reset contraseÃ±a" si necesitas regenerarla)`);
     } else {
-      lines.push(``, `AVISO: No hay admin asignado aún.`);
+      lines.push(``, `AVISO: No hay admin asignado aÃºn.`);
     }
     navigator.clipboard.writeText(lines.join("\n"));
     toast({ title: "Paquete de bienvenida copiado" });
@@ -1694,16 +1667,16 @@ function ResendWelcomeButton({ branch, hasAdmin }: { branch: Branch; hasAdmin?: 
       `==================================`,
       ``,
       `URLs importantes:`,
-      `• Página pública: ${links.publicUrl}`,
-      `• Marketplace: ${links.marketplace}`,
-      `• Favoritos: ${links.favorites}`,
-      `• Login: ${links.login}`,
-      `• Dashboard: ${links.dashboard}`,
+      `  PÃ¡gina pÃºblica: ${links.publicUrl}`,
+      `  Marketplace: ${links.marketplace}`,
+      `  Favoritos: ${links.favorites}`,
+      `  Login: ${links.login}`,
+      `  Dashboard: ${links.dashboard}`,
     ];
     if (pkg.adminEmail) {
-      lines.push(``, `Admin:`, `• Email: ${pkg.adminEmail}`);
-      if (pkg.adminName) lines.push(`• Nombre: ${pkg.adminName}`);
-      lines.push(`• (Contraseña no incluida)`);
+      lines.push(``, `Admin:`, `  Email: ${pkg.adminEmail}`);
+      if (pkg.adminName) lines.push(`  Nombre: ${pkg.adminName}`);
+      lines.push(`  (ContraseÃ±a no incluida)`);
     } else {
       lines.push(``, `Sin admin asignado.`);
     }
@@ -1736,14 +1709,14 @@ function ResendWelcomeButton({ branch, hasAdmin }: { branch: Branch; hasAdmin?: 
           <DialogTitle>Paquete de bienvenida</DialogTitle>
           <DialogDescription>URLs y datos de la sucursal. Puedes copiar o descargar.</DialogDescription>
         </DialogHeader>
-        {isError ? (
+        {isError  (
           <div className="py-4 text-center space-y-2">
             <p className="text-sm text-destructive font-medium">No se pudo cargar el paquete de bienvenida</p>
             <p className="text-xs text-muted-foreground">
               {extractErrorMessage(error, "Error desconocido")}
             </p>
           </div>
-        ) : isLoading || !pkg ? (
+        ) : isLoading || !pkg  (
           <div className="space-y-2 py-4">
             <Skeleton className="h-4 w-48" />
             <Skeleton className="h-4 w-32" />
@@ -1754,17 +1727,17 @@ function ResendWelcomeButton({ branch, hasAdmin }: { branch: Branch; hasAdmin?: 
             <div className="p-3 bg-muted rounded-md space-y-2 text-sm">
               <p className="font-semibold">{pkg.branchName}</p>
               <div className="space-y-1 pt-1">
-                <p><strong>URL pública:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{getLinks(pkg.branchSlug).publicUrl}</code></p>
+                <p><strong>URL pÃºblica:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{getLinks(pkg.branchSlug).publicUrl}</code></p>
                 <p><strong>Marketplace:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{getLinks(pkg.branchSlug).marketplace}</code></p>
                 <p><strong>Favoritos:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{getLinks(pkg.branchSlug).favorites}</code></p>
                 <p><strong>Login:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{getLinks(pkg.branchSlug).login}</code></p>
                 <p><strong>Dashboard:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{getLinks(pkg.branchSlug).dashboard}</code></p>
               </div>
-              {pkg.adminEmail ? (
+              {pkg.adminEmail  (
                 <div className="border-t pt-2 mt-2 space-y-1">
                   <p><strong>Email admin:</strong> {pkg.adminEmail}</p>
                   {pkg.adminName && <p><strong>Nombre:</strong> {pkg.adminName}</p>}
-                  <p className="text-xs text-muted-foreground">La contraseña no se muestra. Usa "Reset contraseña" si necesitas regenerarla.</p>
+                  <p className="text-xs text-muted-foreground">La contraseÃ±a no se muestra. Usa "Reset contraseÃ±a" si necesitas regenerarla.</p>
                 </div>
               ) : (
                 <div className="border-t pt-2 mt-2">
@@ -1801,7 +1774,7 @@ function CredentialsModal({
   const { toast } = useToast();
   if (!data) return null;
 
-  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const origin = typeof window !== "undefined"  window.location.origin : "";
   const d = data;
 
   const links = {
@@ -1817,15 +1790,15 @@ function CredentialsModal({
       `Paquete de bienvenida - ${d.branchName}`,
       ``,
       `URLs importantes:`,
-      `• Página pública (para clientes): ${links.publicUrl}`,
-      `• Marketplace: ${links.marketplace}`,
-      `• Favoritos: ${links.favorites}`,
-      `• Login (admin): ${links.login}`,
-      `• Dashboard (requiere login): ${links.dashboard}`,
+      `  PÃ¡gina pÃºblica (para clientes): ${links.publicUrl}`,
+      `  Marketplace: ${links.marketplace}`,
+      `  Favoritos: ${links.favorites}`,
+      `  Login (admin): ${links.login}`,
+      `  Dashboard (requiere login): ${links.dashboard}`,
       ``,
       `Credenciales del administrador:`,
-      `• Email: ${d.adminEmail}`,
-      `• Contraseña: ${d.adminPassword}`,
+      `  Email: ${d.adminEmail}`,
+      `  ContraseÃ±a: ${d.adminPassword}`,
     ].join("\n");
     navigator.clipboard.writeText(text);
     toast({ title: "Paquete de bienvenida copiado" });
@@ -1837,15 +1810,15 @@ function CredentialsModal({
       `==================================`,
       ``,
       `URLs importantes:`,
-      `• Página pública: ${links.publicUrl}`,
-      `• Marketplace: ${links.marketplace}`,
-      `• Favoritos: ${links.favorites}`,
-      `• Login: ${links.login}`,
-      `• Dashboard: ${links.dashboard}`,
+      `  PÃ¡gina pÃºblica: ${links.publicUrl}`,
+      `  Marketplace: ${links.marketplace}`,
+      `  Favoritos: ${links.favorites}`,
+      `  Login: ${links.login}`,
+      `  Dashboard: ${links.dashboard}`,
       ``,
       `Credenciales del administrador:`,
-      `• Email: ${d.adminEmail}`,
-      `• Contraseña: ${d.adminPassword}`,
+      `  Email: ${d.adminEmail}`,
+      `  ContraseÃ±a: ${d.adminPassword}`,
       ``,
       `==================================`,
     ].join("\n");
@@ -1863,13 +1836,13 @@ function CredentialsModal({
       <DialogContent className="max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Sucursal creada exitosamente</DialogTitle>
-          <DialogDescription>Guarda esta información antes de cerrar.</DialogDescription>
+          <DialogDescription>Guarda esta informaciÃ³n antes de cerrar.</DialogDescription>
         </DialogHeader>
         <div className="space-y-3 py-2">
           <div className="p-3 bg-muted rounded-md space-y-2 text-sm">
             <p className="font-semibold">{d.branchName}</p>
             <div className="space-y-1 pt-1">
-              <p><strong>URL pública:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{links.publicUrl}</code></p>
+              <p><strong>URL pÃºblica:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{links.publicUrl}</code></p>
               <p><strong>Marketplace:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{links.marketplace}</code></p>
               <p><strong>Favoritos:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{links.favorites}</code></p>
               <p><strong>Login (admin):</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{links.login}</code></p>
@@ -1877,7 +1850,7 @@ function CredentialsModal({
             </div>
             <div className="border-t pt-2 mt-2 space-y-1">
               <p><strong>Email admin:</strong> {d.adminEmail}</p>
-              <p><strong>Contraseña:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{d.adminPassword}</code></p>
+              <p><strong>ContraseÃ±a:</strong> <code className="text-xs bg-background px-1 py-0.5 rounded">{d.adminPassword}</code></p>
             </div>
           </div>
           <div className="flex gap-2">
@@ -1929,8 +1902,8 @@ function CreateBranchDialog() {
         name: data.name,
         slug: data.slug,
         category,
-        subcategory: (data.subcategory ?? "").trim() || undefined,
-        searchKeywords: (data.searchKeywords ?? "").trim() || undefined,
+        subcategory: data.subcategory.trim() || undefined,
+        searchKeywords: data.searchKeywords.trim() || undefined,
         createAdmin,
       };
       if (createAdmin) {
@@ -1971,7 +1944,7 @@ function CreateBranchDialog() {
       toast({
         title: "Error",
         description: err.message.includes("409")
-          ? "Ese slug o correo ya existe"
+           "Ese slug o correo ya existe"
           : "No se pudo crear la sucursal",
         variant: "destructive",
       });
@@ -2037,7 +2010,7 @@ function CreateBranchDialog() {
                 )}
               />
               <div>
-                <Label className="text-sm font-medium">Categoría</Label>
+                <Label className="text-sm font-medium">CategorÃ­a</Label>
                 <Select value={category} onValueChange={setCategory}>
                   <SelectTrigger className="mt-1" data-testid="select-category">
                     <SelectValue />
@@ -2105,7 +2078,7 @@ function CreateBranchDialog() {
                     <div>
                       <Label className="text-sm">Nombre del admin</Label>
                       <Input
-                        placeholder="Juan Pérez"
+                        placeholder="Juan PÃ©rez"
                         value={adminName}
                         onChange={(e) => setAdminName(e.target.value)}
                         className="mt-1"
@@ -2124,12 +2097,12 @@ function CreateBranchDialog() {
                       />
                     </div>
                     <div>
-                      <Label className="text-sm">Contraseña</Label>
+                      <Label className="text-sm">ContraseÃ±a</Label>
                       <div className="flex gap-1 mt-1">
                         <div className="relative flex-1">
                           <Input
-                            type={showPw ? "text" : "password"}
-                            placeholder="Dejar vacío para autogenerar"
+                            type={showPw  "text" : "password"}
+                            placeholder="Dejar vacÃ­o para autogenerar"
                             value={adminPassword}
                             onChange={(e) => setAdminPassword(e.target.value)}
                             data-testid="input-admin-password"
@@ -2141,7 +2114,7 @@ function CreateBranchDialog() {
                             className="absolute right-0 top-0"
                             onClick={() => setShowPw(!showPw)}
                           >
-                            {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                            {showPw  <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                           </Button>
                         </div>
                         <Button
@@ -2196,7 +2169,7 @@ const ACTION_LABELS: Record<string, string> = {
   UPDATE_STATUS: "Cambiar estado",
   DELETE_BRANCH: "Eliminar sucursal",
   DELETE_BRANCH_PURGE: "Purga total de sucursal",
-  RESET_ADMIN_PASSWORD: "Reset contraseña",
+  RESET_ADMIN_PASSWORD: "Reset contraseÃ±a",
   UPDATE_ADMIN: "Editar admin",
   REASSIGN_ADMIN: "Reasignar admin",
   CREATE_ADMIN: "Crear admin",
@@ -2237,9 +2210,9 @@ function AuditLogPanel() {
         const meta = (log.metadata || {}) as Record<string, any>;
         let detail = "";
         if (meta.branchName) detail = meta.branchName;
-        if (meta.oldStatus && meta.newStatus) detail = `${meta.oldStatus} → ${meta.newStatus}`;
+        if (meta.oldStatus && meta.newStatus) detail = `${meta.oldStatus} â†’ ${meta.newStatus}`;
         if (meta.adminEmail) detail = meta.adminEmail;
-        if (meta.newEmail) detail = `${meta.oldEmail} → ${meta.newEmail}`;
+        if (meta.newEmail) detail = `${meta.oldEmail} â†’ ${meta.newEmail}`;
 
         return (
           <div key={log.id} className="flex gap-3 items-start p-2 rounded-md hover-elevate" data-testid={`audit-log-${log.id}`}>
@@ -2312,7 +2285,7 @@ function SystemEventsPanel() {
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 flex-wrap">
               <Badge variant="secondary" className="text-xs">{systemEventLabel(event.eventType)}</Badge>
-              <Badge variant={event.status === "processed" ? "default" : "outline"} className="text-xs">
+              <Badge variant={event.status === "processed"  "default" : "outline"} className="text-xs">
                 {event.status}
               </Badge>
             </div>
@@ -2331,7 +2304,7 @@ function SystemEventsPanel() {
 
 function formatJsonTextarea(value: any) {
   try {
-    return JSON.stringify(value ?? {}, null, 2);
+    return JSON.stringify(value  {}, null, 2);
   } catch {
     return "{}";
   }
@@ -2346,22 +2319,22 @@ const FRIENDLY_CATALOG_SETTINGS: Record<string, {
 }> = {
   "search.default_radius_km": {
     title: "Radio default",
-    description: "Cuando alguien usa “Cerca de mí”, se buscarán negocios dentro de este radio inicial.",
-    fieldLabel: "Kilómetros por defecto",
+    description: "Cuando alguien usa â€œCerca de mÃ­â€, se buscarÃ¡n negocios dentro de este radio inicial.",
+    fieldLabel: "KilÃ³metros por defecto",
     min: 1,
     step: 1,
   },
   "search.max_radius_km": {
-    title: "Radio máximo",
-    description: "Evita búsquedas demasiado grandes y lentas al limitar el alcance máximo.",
-    fieldLabel: "Kilómetros máximos",
+    title: "Radio mÃ¡ximo",
+    description: "Evita bÃºsquedas demasiado grandes y lentas al limitar el alcance mÃ¡ximo.",
+    fieldLabel: "KilÃ³metros mÃ¡ximos",
     min: 1,
     step: 1,
   },
   "search.suggestions_limit": {
-    title: "Límite de sugerencias",
-    description: "Cantidad máxima de sugerencias visibles mientras la persona escribe en el buscador.",
-    fieldLabel: "Número de sugerencias",
+    title: "LÃ­mite de sugerencias",
+    description: "Cantidad mÃ¡xima de sugerencias visibles mientras la persona escribe en el buscador.",
+    fieldLabel: "NÃºmero de sugerencias",
     min: 1,
     step: 1,
   },
@@ -2446,13 +2419,13 @@ function CatalogCategoryEditor({ item }: { item: CatalogCategoryRow }) {
   const { toast } = useToast();
   const [label, setLabel] = useState(item.label);
   const [icon, setIcon] = useState(item.icon || "");
-  const [displayOrder, setDisplayOrder] = useState(String(item.displayOrder ?? 0));
+  const [displayOrder, setDisplayOrder] = useState(String(item.displayOrder  0));
   const [isActive, setIsActive] = useState(item.isActive);
 
   useEffect(() => {
     setLabel(item.label);
     setIcon(item.icon || "");
-    setDisplayOrder(String(item.displayOrder ?? 0));
+    setDisplayOrder(String(item.displayOrder  0));
     setIsActive(item.isActive);
   }, [item.key, item.label, item.icon, item.displayOrder, item.isActive]);
 
@@ -2468,10 +2441,10 @@ function CatalogCategoryEditor({ item }: { item: CatalogCategoryRow }) {
     },
     onSuccess: () => {
       invalidateCatalog();
-      toast({ title: "Categoría actualizada" });
+      toast({ title: "CategorÃ­a actualizada" });
     },
     onError: (err: any) => {
-      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo actualizar la categoría"), variant: "destructive" });
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo actualizar la categorÃ­a"), variant: "destructive" });
     },
   });
 
@@ -2483,11 +2456,11 @@ function CatalogCategoryEditor({ item }: { item: CatalogCategoryRow }) {
             <Badge variant="outline" className="font-mono text-[11px] uppercase tracking-wide">
               {item.key}
             </Badge>
-            <Badge variant={isActive ? "default" : "secondary"}>
-              {isActive ? "Activa" : "Inactiva"}
+            <Badge variant={isActive  "default" : "secondary"}>
+              {isActive  "Activa" : "Inactiva"}
             </Badge>
           </div>
-          <p className="text-sm text-muted-foreground">Edita la etiqueta visible, el icono y el orden del catálogo global.</p>
+          <p className="text-sm text-muted-foreground">Edita la etiqueta visible, el icono y el orden del catÃ¡logo global.</p>
         </div>
         <div className="flex items-center gap-3 self-start">
           <div className="flex items-center gap-2 rounded-full border px-3 py-1.5">
@@ -2504,10 +2477,10 @@ function CatalogCategoryEditor({ item }: { item: CatalogCategoryRow }) {
       <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1.2fr)_120px]">
         <div className="space-y-2">
           <Label>Etiqueta</Label>
-          <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Doctor / Clínica" />
+          <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Doctor / ClÃ­nica" />
         </div>
         <div className="space-y-2">
-          <Label>Ícono</Label>
+          <Label>Ãcono</Label>
           <Input value={icon} onChange={(e) => setIcon(e.target.value)} placeholder="stethoscope" />
         </div>
         <div className="space-y-2">
@@ -2529,13 +2502,13 @@ function CatalogSubcategoryEditor({
   const { toast } = useToast();
   const [label, setLabel] = useState(item.label);
   const [categoryKey, setCategoryKey] = useState(item.categoryKey);
-  const [displayOrder, setDisplayOrder] = useState(String(item.displayOrder ?? 0));
+  const [displayOrder, setDisplayOrder] = useState(String(item.displayOrder  0));
   const [isActive, setIsActive] = useState(item.isActive);
 
   useEffect(() => {
     setLabel(item.label);
     setCategoryKey(item.categoryKey);
-    setDisplayOrder(String(item.displayOrder ?? 0));
+    setDisplayOrder(String(item.displayOrder  0));
     setIsActive(item.isActive);
   }, [item.id, item.label, item.categoryKey, item.displayOrder, item.isActive]);
 
@@ -2551,10 +2524,10 @@ function CatalogSubcategoryEditor({
     },
     onSuccess: () => {
       invalidateCatalog();
-      toast({ title: "Subcategoría actualizada" });
+      toast({ title: "SubcategorÃ­a actualizada" });
     },
     onError: (err: any) => {
-      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo actualizar la subcategoría"), variant: "destructive" });
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo actualizar la subcategorÃ­a"), variant: "destructive" });
     },
   });
 
@@ -2562,7 +2535,7 @@ function CatalogSubcategoryEditor({
     <div className="grid gap-3 rounded-lg border p-3 md:grid-cols-[1.1fr_1fr_120px_120px_auto]">
       <Select value={categoryKey} onValueChange={setCategoryKey}>
         <SelectTrigger>
-          <SelectValue placeholder="Categoría" />
+          <SelectValue placeholder="CategorÃ­a" />
         </SelectTrigger>
         <SelectContent>
           {categories.map((category) => (
@@ -2572,7 +2545,7 @@ function CatalogSubcategoryEditor({
           ))}
         </SelectContent>
       </Select>
-      <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Subcategoría" />
+      <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="SubcategorÃ­a" />
       <Input type="number" value={displayOrder} onChange={(e) => setDisplayOrder(e.target.value)} placeholder="Orden" />
       <div className="flex items-center gap-2">
         <Switch checked={isActive} onCheckedChange={setIsActive} />
@@ -2602,7 +2575,7 @@ function CatalogSettingEditor({ item }: { item: AppSettingRow }) {
       try {
         parsed = JSON.parse(draft);
       } catch {
-        throw new Error("El JSON no es válido");
+        throw new Error("El JSON no es vÃ¡lido");
       }
       const resp = await apiRequest("PATCH", `/api/superadmin/settings/${encodeURIComponent(item.key)}`, {
         valueJson: parsed,
@@ -2624,7 +2597,7 @@ function CatalogSettingEditor({ item }: { item: AppSettingRow }) {
       <div className="flex items-center justify-between gap-3">
         <div>
           <p className="font-medium">{item.key}</p>
-          <p className="text-xs text-muted-foreground">Scope: {item.scope} · Actualizado {formatShortDateTime(item.updatedAt)}</p>
+          <p className="text-xs text-muted-foreground">Scope: {item.scope} Â· Actualizado {formatShortDateTime(item.updatedAt)}</p>
         </div>
         <Button size="sm" onClick={() => mutation.mutate()} disabled={mutation.isPending}>
           {mutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
@@ -2656,37 +2629,37 @@ function CatalogPanel() {
   const [newKeywordSubcategoryId, setNewKeywordSubcategoryId] = useState("");
   const [newKeywordValue, setNewKeywordValue] = useState("");
 
-  const { data: categories = [], isLoading: categoriesLoading } = useQuery<CatalogCategoryRow[]>({
+  const { data: categories, isLoading: categoriesLoading } = useQuery<CatalogCategoryRow[]>({
     queryKey: ["/api/superadmin/catalog/categories"],
     queryFn: () => fetchJson("/api/superadmin/catalog/categories"),
   });
 
-  const { data: subcategories = [], isLoading: subcategoriesLoading } = useQuery<CatalogSubcategoryRow[]>({
+  const { data: subcategories, isLoading: subcategoriesLoading } = useQuery<CatalogSubcategoryRow[]>({
     queryKey: ["/api/superadmin/catalog/subcategories"],
     queryFn: () => fetchJson("/api/superadmin/catalog/subcategories"),
   });
 
-  const { data: keywords = [], isLoading: keywordsLoading } = useQuery<CatalogKeywordRow[]>({
+  const { data: keywords, isLoading: keywordsLoading } = useQuery<CatalogKeywordRow[]>({
     queryKey: ["/api/superadmin/catalog/keywords"],
     queryFn: () => fetchJson("/api/superadmin/catalog/keywords"),
   });
 
-  const { data: settings = [], isLoading: settingsLoading } = useQuery<AppSettingRow[]>({
+  const { data: settings, isLoading: settingsLoading } = useQuery<AppSettingRow[]>({
     queryKey: ["/api/superadmin/settings"],
     queryFn: () => fetchJson("/api/superadmin/settings"),
   });
 
-  const { data: metrics = EMPTY_SEARCH_METRICS } = useQuery<SearchMetricsResponse>({
+  const { data: metrics } = useQuery<SearchMetricsResponse>({
     queryKey: ["/api/superadmin/search-metrics"],
     queryFn: () => fetchJson("/api/superadmin/search-metricslimit=8"),
   });
 
-  const { data: platformMetrics = EMPTY_PLATFORM_METRICS } = useQuery<PlatformMetricsResponse>({
+  const { data: platformMetrics } = useQuery<PlatformMetricsResponse>({
     queryKey: ["/api/superadmin/platform-metrics"],
     queryFn: () => fetchJson("/api/superadmin/platform-metrics"),
   });
 
-  const { data: searchLogs = [] } = useQuery<SearchLogRecord[]>({
+  const { data: searchLogs } = useQuery<SearchLogRecord[]>({
     queryKey: ["/api/superadmin/search-logs"],
     queryFn: () => fetchJson("/api/superadmin/search-logslimit=20"),
   });
@@ -2707,10 +2680,10 @@ function CatalogPanel() {
       setNewCategoryIcon("");
       setNewCategoryOrder("0");
       invalidateCatalog();
-      toast({ title: "Categoría creada" });
+      toast({ title: "CategorÃ­a creada" });
     },
     onError: (err: any) => {
-      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo crear la categoría"), variant: "destructive" });
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo crear la categorÃ­a"), variant: "destructive" });
     },
   });
 
@@ -2727,10 +2700,10 @@ function CatalogPanel() {
       setNewSubcategoryLabel("");
       setNewSubcategoryOrder("0");
       invalidateCatalog();
-      toast({ title: "Subcategoría creada" });
+      toast({ title: "SubcategorÃ­a creada" });
     },
     onError: (err: any) => {
-      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo crear la subcategoría"), variant: "destructive" });
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo crear la subcategorÃ­a"), variant: "destructive" });
     },
   });
 
@@ -2738,7 +2711,7 @@ function CatalogPanel() {
     mutationFn: async () => {
       const resolvedCategoryKey =
         newKeywordCategoryKey ||
-        subcategories.find((subcategory) => subcategory.id === newKeywordSubcategoryId)?.categoryKey ||
+        subcategories.find((subcategory) => subcategory.id === newKeywordSubcategoryId).categoryKey ||
         null;
 
       const resp = await apiRequest("POST", "/api/superadmin/catalog/keywords", {
@@ -2774,7 +2747,7 @@ function CatalogPanel() {
   });
 
   const availableSubcategories = (subcategories || []).filter((subcategory) =>
-    newKeywordCategoryKey ? subcategory.categoryKey === newKeywordCategoryKey : true,
+    newKeywordCategoryKey  subcategory.categoryKey === newKeywordCategoryKey : true,
   );
 
   return (
@@ -2784,7 +2757,7 @@ function CatalogPanel() {
           <CardContent className="p-4 space-y-4">
             <div className="flex items-center gap-2">
               <FolderTree className="h-5 w-5 text-primary" />
-              <h2 className="font-semibold text-lg">Categorías</h2>
+              <h2 className="font-semibold text-lg">CategorÃ­as</h2>
             </div>
             <div className="grid gap-3 md:grid-cols-4">
               <Input value={newCategoryKey} onChange={(e) => setNewCategoryKey(e.target.value)} placeholder="Clave" />
@@ -2803,7 +2776,7 @@ function CatalogPanel() {
               </div>
             </div>
             <div className="space-y-3">
-              {categoriesLoading ? (
+              {categoriesLoading  (
                 <Skeleton className="h-24 w-full" />
               ) : (
                 (categories || []).map((item) => <CatalogCategoryEditor key={item.key} item={item} />)
@@ -2816,12 +2789,12 @@ function CatalogPanel() {
           <CardContent className="p-4 space-y-4">
             <div className="flex items-center gap-2">
               <FolderTree className="h-5 w-5 text-primary" />
-              <h2 className="font-semibold text-lg">Subcategorías</h2>
+              <h2 className="font-semibold text-lg">SubcategorÃ­as</h2>
             </div>
             <div className="grid gap-3 md:grid-cols-4">
               <Select value={newSubcategoryCategoryKey} onValueChange={setNewSubcategoryCategoryKey}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Categoría" />
+                  <SelectValue placeholder="CategorÃ­a" />
                 </SelectTrigger>
                 <SelectContent>
                   {(categories || []).map((category) => (
@@ -2831,7 +2804,7 @@ function CatalogPanel() {
                   ))}
                 </SelectContent>
               </Select>
-              <Input value={newSubcategoryLabel} onChange={(e) => setNewSubcategoryLabel(e.target.value)} placeholder="Subcategoría" />
+              <Input value={newSubcategoryLabel} onChange={(e) => setNewSubcategoryLabel(e.target.value)} placeholder="SubcategorÃ­a" />
               <Input type="number" value={newSubcategoryOrder} onChange={(e) => setNewSubcategoryOrder(e.target.value)} placeholder="Orden" />
               <Button
                 onClick={() => createSubcategoryMutation.mutate()}
@@ -2843,7 +2816,7 @@ function CatalogPanel() {
               </Button>
             </div>
             <div className="space-y-3">
-              {subcategoriesLoading ? (
+              {subcategoriesLoading  (
                 <Skeleton className="h-24 w-full" />
               ) : (
                 (subcategories || []).map((item) => (
@@ -2866,7 +2839,7 @@ function CatalogPanel() {
               <Select
                 value={newKeywordCategoryKey || "all"}
                 onValueChange={(value) => {
-                  const next = value === "all" ? "" : value;
+                  const next = value === "all"  "" : value;
                   setNewKeywordCategoryKey(next);
                   if (newKeywordSubcategoryId) {
                     const current = subcategories.find((subcategory) => subcategory.id === newKeywordSubcategoryId);
@@ -2877,7 +2850,7 @@ function CatalogPanel() {
                 }}
               >
                 <SelectTrigger>
-                  <SelectValue placeholder="Categoría opcional" />
+                  <SelectValue placeholder="CategorÃ­a opcional" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">Todas</SelectItem>
@@ -2888,12 +2861,12 @@ function CatalogPanel() {
                   ))}
                 </SelectContent>
               </Select>
-              <Select value={newKeywordSubcategoryId || "none"} onValueChange={(value) => setNewKeywordSubcategoryId(value === "none" ? "" : value)}>
+              <Select value={newKeywordSubcategoryId || "none"} onValueChange={(value) => setNewKeywordSubcategoryId(value === "none"  "" : value)}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Subcategoría opcional" />
+                  <SelectValue placeholder="SubcategorÃ­a opcional" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="none">Sin subcategoría</SelectItem>
+                  <SelectItem value="none">Sin subcategorÃ­a</SelectItem>
                   {availableSubcategories.map((subcategory) => (
                     <SelectItem key={subcategory.id} value={subcategory.id}>
                       {subcategory.label}
@@ -2912,7 +2885,7 @@ function CatalogPanel() {
               </Button>
             </div>
             <div className="space-y-2">
-              {keywordsLoading ? (
+              {keywordsLoading  (
                 <Skeleton className="h-24 w-full" />
               ) : (
                 (keywords || []).map((keyword) => (
@@ -2925,7 +2898,7 @@ function CatalogPanel() {
                         {keyword.subcategoryLabel && <Badge variant="outline">{keyword.subcategoryLabel}</Badge>}
                       </div>
                       <p className="text-xs text-muted-foreground mt-1">
-                        Normalizado: {keyword.normalizedKeyword} ? {formatShortDate(keyword.createdAt)}
+                        Normalizado: {keyword.normalizedKeyword} Â· {formatShortDate(keyword.createdAt)}
                       </p>
                     </div>
                     <Button
@@ -2947,10 +2920,10 @@ function CatalogPanel() {
           <CardContent className="p-4 space-y-4">
             <div className="flex items-center gap-2">
               <Settings2 className="h-5 w-5 text-primary" />
-              <h2 className="font-semibold text-lg">Settings básicos</h2>
+              <h2 className="font-semibold text-lg">Settings bÃ¡sicos</h2>
             </div>
             <div className="space-y-3">
-              {settingsLoading ? (
+              {settingsLoading  (
                 <Skeleton className="h-24 w-full" />
               ) : (
                 (settings || []).map((setting) => (
@@ -2966,13 +2939,13 @@ function CatalogPanel() {
         <CardContent className="p-4 space-y-4">
           <div className="flex items-center gap-2">
             <BarChart3 className="h-5 w-5 text-primary" />
-            <h2 className="font-semibold text-lg">Métricas de búsqueda</h2>
+            <h2 className="font-semibold text-lg">MÃ©tricas de bÃºsqueda</h2>
           </div>
           <div className="grid gap-4 lg:grid-cols-3">
             <div className="rounded-lg border p-3">
-              <p className="text-sm font-medium mb-3">Términos más buscados</p>
+              <p className="text-sm font-medium mb-3">TÃ©rminos mÃ¡s buscados</p>
               <div className="space-y-2">
-                {(metrics.topQueries || []).length > 0 ? (
+                {(metrics.topQueries || []).length > 0  (
                   metrics.topQueries.map((item) => (
                     <div key={item.query} className="flex items-center justify-between gap-3 text-sm">
                       <span className="truncate">{item.query}</span>
@@ -2980,14 +2953,14 @@ function CatalogPanel() {
                     </div>
                   ))
                 ) : (
-                  <p className="text-sm text-muted-foreground">Sin datos todavía.</p>
+                  <p className="text-sm text-muted-foreground">Sin datos todavÃ­a.</p>
                 )}
               </div>
             </div>
             <div className="rounded-lg border p-3">
-              <p className="text-sm font-medium mb-3">Búsquedas sin resultados</p>
+              <p className="text-sm font-medium mb-3">BÃºsquedas sin resultados</p>
               <div className="space-y-2">
-                {(metrics.zeroResultQueries || []).length > 0 ? (
+                {(metrics.zeroResultQueries || []).length > 0  (
                   metrics.zeroResultQueries.map((item) => (
                     <div key={item.query} className="flex items-center justify-between gap-3 text-sm">
                       <span className="truncate">{item.query}</span>
@@ -3000,14 +2973,14 @@ function CatalogPanel() {
                     </div>
                   ))
                 ) : (
-                  <p className="text-sm text-muted-foreground">Sin datos todavía.</p>
+                  <p className="text-sm text-muted-foreground">Sin datos todavÃ­a.</p>
                 )}
               </div>
             </div>
             <div className="rounded-lg border p-3">
-              <p className="text-sm font-medium mb-3">Categorías más buscadas</p>
+              <p className="text-sm font-medium mb-3">CategorÃ­as mÃ¡s buscadas</p>
               <div className="space-y-2">
-                {(metrics.topCategories || []).length > 0 ? (
+                {(metrics.topCategories || []).length > 0  (
                   metrics.topCategories.map((item) => (
                     <div key={item.category} className="flex items-center justify-between gap-3 text-sm">
                       <span className="truncate">{getCategoryLabel(item.category)}</span>
@@ -3015,7 +2988,7 @@ function CatalogPanel() {
                     </div>
                   ))
                 ) : (
-                  <p className="text-sm text-muted-foreground">Sin datos todavía.</p>
+                  <p className="text-sm text-muted-foreground">Sin datos todavÃ­a.</p>
                 )}
               </div>
             </div>
@@ -3023,40 +2996,40 @@ function CatalogPanel() {
           <div className="grid gap-3 sm:grid-cols-4">
             <div className="rounded-lg border p-3">
               <p className="text-xs text-muted-foreground">Usuarios app</p>
-              <p className="text-xl font-semibold">{platformMetrics.totalAppUsers ?? 0}</p>
+              <p className="text-xl font-semibold">{platformMetrics.totalAppUsers  0}</p>
             </div>
             <div className="rounded-lg border p-3">
               <p className="text-xs text-muted-foreground">Sucursales activas</p>
-              <p className="text-xl font-semibold">{platformMetrics.activeBranches ?? 0}</p>
+              <p className="text-xl font-semibold">{platformMetrics.activeBranches  0}</p>
             </div>
             <div className="rounded-lg border p-3">
-              <p className="text-xs text-muted-foreground">Búsquedas</p>
-              <p className="text-xl font-semibold">{platformMetrics.totalSearches ?? 0}</p>
+              <p className="text-xs text-muted-foreground">BÃºsquedas</p>
+              <p className="text-xl font-semibold">{platformMetrics.totalSearches  0}</p>
             </div>
             <div className="rounded-lg border p-3">
               <p className="text-xs text-muted-foreground">Sin resultados</p>
-              <p className="text-xl font-semibold">{platformMetrics.zeroResultSearches ?? 0}</p>
+              <p className="text-xl font-semibold">{platformMetrics.zeroResultSearches  0}</p>
             </div>
           </div>
           <div className="rounded-lg border p-3">
-            <p className="text-sm font-medium mb-3">Últimas búsquedas</p>
+            <p className="text-sm font-medium mb-3">Ãšltimas bÃºsquedas</p>
             <div className="space-y-2">
-              {(searchLogs || []).length > 0 ? (
+              {(searchLogs || []).length > 0  (
                 searchLogs.map((log) => (
                   <div key={log.id} className="flex items-start justify-between gap-3 border-b pb-2 last:border-b-0">
                     <div className="min-w-0">
                       <p className="text-sm font-medium truncate">
-                        {log.queryRaw || log.category || log.subcategory || "Búsqueda sin texto"}
+                        {log.queryRaw || log.category || log.subcategory || "BÃºsqueda sin texto"}
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        {log.source} · {log.resultCount} resultado(s) · {log.userEmail || "Anónimo"}
+                        {log.source} Â· {log.resultCount} resultado(s) Â· {log.userEmail || "AnÃ³nimo"}
                       </p>
                     </div>
                     <p className="text-xs text-muted-foreground shrink-0">{formatShortDateTime(log.createdAt)}</p>
                   </div>
                 ))
               ) : (
-                <p className="text-sm text-muted-foreground">Todavía no hay búsquedas registradas.</p>
+                <p className="text-sm text-muted-foreground">TodavÃ­a no hay bÃºsquedas registradas.</p>
               )}
             </div>
           </div>
@@ -3076,13 +3049,13 @@ function CatalogSubcategoryCardEditor({
   const { toast } = useToast();
   const [label, setLabel] = useState(item.label);
   const [categoryKey, setCategoryKey] = useState(item.categoryKey);
-  const [displayOrder, setDisplayOrder] = useState(String(item.displayOrder ?? 0));
+  const [displayOrder, setDisplayOrder] = useState(String(item.displayOrder  0));
   const [isActive, setIsActive] = useState(item.isActive);
 
   useEffect(() => {
     setLabel(item.label);
     setCategoryKey(item.categoryKey);
-    setDisplayOrder(String(item.displayOrder ?? 0));
+    setDisplayOrder(String(item.displayOrder  0));
     setIsActive(item.isActive);
   }, [item.id, item.label, item.categoryKey, item.displayOrder, item.isActive]);
 
@@ -3098,10 +3071,10 @@ function CatalogSubcategoryCardEditor({
     },
     onSuccess: () => {
       invalidateCatalog();
-      toast({ title: "Subcategoría actualizada" });
+      toast({ title: "SubcategorÃ­a actualizada" });
     },
     onError: (err: any) => {
-      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo actualizar la subcategoría"), variant: "destructive" });
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo actualizar la subcategorÃ­a"), variant: "destructive" });
     },
   });
 
@@ -3111,11 +3084,11 @@ function CatalogSubcategoryCardEditor({
         <div className="space-y-1">
           <div className="flex items-center gap-2 flex-wrap">
             {item.categoryLabel && <Badge variant="outline">{item.categoryLabel}</Badge>}
-            <Badge variant={isActive ? "default" : "secondary"}>
-              {isActive ? "Activa" : "Inactiva"}
+            <Badge variant={isActive  "default" : "secondary"}>
+              {isActive  "Activa" : "Inactiva"}
             </Badge>
           </div>
-          <p className="text-sm text-muted-foreground">Organiza especialidades y controla el orden en que aparecen para búsqueda.</p>
+          <p className="text-sm text-muted-foreground">Organiza especialidades y controla el orden en que aparecen para bÃºsqueda.</p>
         </div>
         <div className="flex items-center gap-3 self-start">
           <div className="flex items-center gap-2 rounded-full border px-3 py-1.5">
@@ -3131,10 +3104,10 @@ function CatalogSubcategoryCardEditor({
 
       <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,1.25fr)_120px]">
         <div className="space-y-2">
-          <Label>Categoría</Label>
+          <Label>CategorÃ­a</Label>
           <Select value={categoryKey} onValueChange={setCategoryKey}>
             <SelectTrigger>
-              <SelectValue placeholder="Categoría" />
+              <SelectValue placeholder="CategorÃ­a" />
             </SelectTrigger>
             <SelectContent>
               {categories.map((category) => (
@@ -3146,8 +3119,8 @@ function CatalogSubcategoryCardEditor({
           </Select>
         </div>
         <div className="space-y-2">
-          <Label>Subcategoría</Label>
-          <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Nutriólogo" />
+          <Label>SubcategorÃ­a</Label>
+          <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="NutriÃ³logo" />
         </div>
         <div className="space-y-2">
           <Label>Orden</Label>
@@ -3171,7 +3144,7 @@ function CatalogSettingFriendlyEditor({ item }: { item: AppSettingRow }) {
     mutationFn: async () => {
       const numericValue = Number(draft);
       if (!Number.isFinite(numericValue) || numericValue <= 0) {
-        throw new Error("Ingresa un número válido mayor a cero");
+        throw new Error("Ingresa un nÃºmero vÃ¡lido mayor a cero");
       }
 
       const resp = await apiRequest("PATCH", `/api/superadmin/settings/${encodeURIComponent(item.key)}`, {
@@ -3182,10 +3155,10 @@ function CatalogSettingFriendlyEditor({ item }: { item: AppSettingRow }) {
     },
     onSuccess: () => {
       invalidateCatalog();
-      toast({ title: "Configuración guardada" });
+      toast({ title: "ConfiguraciÃ³n guardada" });
     },
     onError: (err: any) => {
-      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo guardar la configuración"), variant: "destructive" });
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo guardar la configuraciÃ³n"), variant: "destructive" });
     },
   });
 
@@ -3209,7 +3182,7 @@ function CatalogSettingFriendlyEditor({ item }: { item: AppSettingRow }) {
           <Input
             type="number"
             min={copy.min}
-            step={copy.step ?? 1}
+            step={copy.step  1}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             placeholder="0"
@@ -3239,37 +3212,37 @@ function CatalogExecutivePanel() {
   const [newKeywordSubcategoryId, setNewKeywordSubcategoryId] = useState("");
   const [newKeywordValue, setNewKeywordValue] = useState("");
 
-  const { data: categories = [], isLoading: categoriesLoading } = useQuery<CatalogCategoryRow[]>({
+  const { data: categories, isLoading: categoriesLoading } = useQuery<CatalogCategoryRow[]>({
     queryKey: ["/api/superadmin/catalog/categories"],
     queryFn: () => fetchJson("/api/superadmin/catalog/categories"),
   });
 
-  const { data: subcategories = [], isLoading: subcategoriesLoading } = useQuery<CatalogSubcategoryRow[]>({
+  const { data: subcategories, isLoading: subcategoriesLoading } = useQuery<CatalogSubcategoryRow[]>({
     queryKey: ["/api/superadmin/catalog/subcategories"],
     queryFn: () => fetchJson("/api/superadmin/catalog/subcategories"),
   });
 
-  const { data: keywords = [], isLoading: keywordsLoading } = useQuery<CatalogKeywordRow[]>({
+  const { data: keywords, isLoading: keywordsLoading } = useQuery<CatalogKeywordRow[]>({
     queryKey: ["/api/superadmin/catalog/keywords"],
     queryFn: () => fetchJson("/api/superadmin/catalog/keywords"),
   });
 
-  const { data: settings = [], isLoading: settingsLoading } = useQuery<AppSettingRow[]>({
+  const { data: settings, isLoading: settingsLoading } = useQuery<AppSettingRow[]>({
     queryKey: ["/api/superadmin/settings"],
     queryFn: () => fetchJson("/api/superadmin/settings"),
   });
 
-  const { data: metrics = EMPTY_SEARCH_METRICS } = useQuery<SearchMetricsResponse>({
+  const { data: metrics } = useQuery<SearchMetricsResponse>({
     queryKey: ["/api/superadmin/search-metrics"],
     queryFn: () => fetchJson("/api/superadmin/search-metricslimit=8"),
   });
 
-  const { data: platformMetrics = EMPTY_PLATFORM_METRICS } = useQuery<PlatformMetricsResponse>({
+  const { data: platformMetrics } = useQuery<PlatformMetricsResponse>({
     queryKey: ["/api/superadmin/platform-metrics"],
     queryFn: () => fetchJson("/api/superadmin/platform-metrics"),
   });
 
-  const { data: searchLogs = [] } = useQuery<SearchLogRecord[]>({
+  const { data: searchLogs } = useQuery<SearchLogRecord[]>({
     queryKey: ["/api/superadmin/search-logs"],
     queryFn: () => fetchJson("/api/superadmin/search-logslimit=20"),
   });
@@ -3290,10 +3263,10 @@ function CatalogExecutivePanel() {
       setNewCategoryIcon("");
       setNewCategoryOrder("0");
       invalidateCatalog();
-      toast({ title: "Categoría creada" });
+      toast({ title: "CategorÃ­a creada" });
     },
     onError: (err: any) => {
-      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo crear la categoría"), variant: "destructive" });
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo crear la categorÃ­a"), variant: "destructive" });
     },
   });
 
@@ -3310,10 +3283,10 @@ function CatalogExecutivePanel() {
       setNewSubcategoryLabel("");
       setNewSubcategoryOrder("0");
       invalidateCatalog();
-      toast({ title: "Subcategoría creada" });
+      toast({ title: "SubcategorÃ­a creada" });
     },
     onError: (err: any) => {
-      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo crear la subcategoría"), variant: "destructive" });
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo crear la subcategorÃ­a"), variant: "destructive" });
     },
   });
 
@@ -3321,7 +3294,7 @@ function CatalogExecutivePanel() {
     mutationFn: async () => {
       const resolvedCategoryKey =
         newKeywordCategoryKey ||
-        subcategories.find((subcategory) => subcategory.id === newKeywordSubcategoryId)?.categoryKey ||
+        subcategories.find((subcategory) => subcategory.id === newKeywordSubcategoryId).categoryKey ||
         null;
 
       const resp = await apiRequest("POST", "/api/superadmin/catalog/keywords", {
@@ -3360,7 +3333,7 @@ function CatalogExecutivePanel() {
   const subcategoriesList = subcategories || [];
   const keywordsList = keywords || [];
   const availableSubcategories = subcategoriesList.filter((subcategory) =>
-    newKeywordCategoryKey ? subcategory.categoryKey === newKeywordCategoryKey : true,
+    newKeywordCategoryKey  subcategory.categoryKey === newKeywordCategoryKey : true,
   );
   const categoryGroups = categoriesList.map((category) => ({
     category,
@@ -3378,39 +3351,39 @@ function CatalogExecutivePanel() {
             <div className="space-y-2">
               <div className="flex items-center gap-2">
                 <FolderTree className="h-5 w-5 text-primary" />
-                <CardTitle className="text-2xl">Catálogo</CardTitle>
+                <CardTitle className="text-2xl">CatÃ¡logo</CardTitle>
               </div>
               <CardDescription className="max-w-3xl">
-                Administra categorías, subcategorías, keywords y parámetros de búsqueda desde un panel más claro para operación diaria.
+                Administra categorÃ­as, subcategorÃ­as, keywords y parÃ¡metros de bÃºsqueda desde un panel mÃ¡s claro para operaciÃ³n diaria.
               </CardDescription>
             </div>
             <Badge variant="outline" className="self-start px-3 py-1 text-xs">
-              Solo UI · misma lógica
+              Solo UI Â· misma lÃ³gica
             </Badge>
           </div>
         </CardHeader>
         <CardContent className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <ExecutiveMetricCard
-            title="Búsquedas totales"
-            value={platformMetrics.totalSearches ?? 0}
+            title="BÃºsquedas totales"
+            value={platformMetrics.totalSearches  0}
             helper="Actividad acumulada en app y web."
             icon={Search}
           />
           <ExecutiveMetricCard
             title="Sin resultados"
-            value={platformMetrics.zeroResultSearches ?? 0}
+            value={platformMetrics.zeroResultSearches  0}
             helper="Consultas que hoy no encuentran oferta."
             icon={BarChart3}
           />
           <ExecutiveMetricCard
             title="Usuarios app"
-            value={platformMetrics.totalAppUsers ?? 0}
+            value={platformMetrics.totalAppUsers  0}
             helper="Clientes finales registrados."
             icon={Users}
           />
           <ExecutiveMetricCard
             title="Sucursales activas"
-            value={platformMetrics.activeBranches ?? 0}
+            value={platformMetrics.activeBranches  0}
             helper="Negocios visibles actualmente."
             icon={Building2}
           />
@@ -3421,14 +3394,14 @@ function CatalogExecutivePanel() {
         <div className="space-y-6">
           <Card>
             <CardHeader>
-              <CardTitle className="text-xl">Categorías</CardTitle>
-              <CardDescription>Organiza el catálogo principal que usa Super Admin y sirve como base para búsqueda.</CardDescription>
+              <CardTitle className="text-xl">CategorÃ­as</CardTitle>
+              <CardDescription>Organiza el catÃ¡logo principal que usa Super Admin y sirve como base para bÃºsqueda.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-5">
               <div className="rounded-2xl border bg-muted/20 p-4">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
                   <div>
-                    <p className="font-medium">Crear categoría</p>
+                    <p className="font-medium">Crear categorÃ­a</p>
                     <p className="text-sm text-muted-foreground">Usa una clave corta, una etiqueta visible y el orden deseado.</p>
                   </div>
                   <Badge variant="secondary">{categoriesList.length} registradas</Badge>
@@ -3440,10 +3413,10 @@ function CatalogExecutivePanel() {
                   </div>
                   <div className="space-y-2">
                     <Label>Etiqueta</Label>
-                    <Input value={newCategoryLabel} onChange={(e) => setNewCategoryLabel(e.target.value)} placeholder="Doctor / Clínica" />
+                    <Input value={newCategoryLabel} onChange={(e) => setNewCategoryLabel(e.target.value)} placeholder="Doctor / ClÃ­nica" />
                   </div>
                   <div className="space-y-2">
-                    <Label>Ícono</Label>
+                    <Label>Ãcono</Label>
                     <Input value={newCategoryIcon} onChange={(e) => setNewCategoryIcon(e.target.value)} placeholder="stethoscope" />
                   </div>
                   <div className="space-y-2">
@@ -3458,21 +3431,21 @@ function CatalogExecutivePanel() {
                     >
                       {createCategoryMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                       <Plus className="mr-2 h-4 w-4" />
-                      Crear categoría
+                      Crear categorÃ­a
                     </Button>
                   </div>
                 </div>
               </div>
 
               <div className="space-y-3">
-                {categoriesLoading ? (
+                {categoriesLoading  (
                   <Skeleton className="h-48 w-full" />
-                ) : categoriesList.length > 0 ? (
+                ) : categoriesList.length > 0  (
                   categoriesList.map((item) => <CatalogCategoryEditor key={item.key} item={item} />)
                 ) : (
                   <EmptyCatalogState
-                  title="Todavía no hay categorías"
-                  description="Crea la primera categoría para empezar a ordenar el catálogo global."
+                    title="TodavÃ­a no hay categorÃ­as"
+                    description="Crea la primera categorÃ­a para empezar a ordenar el catÃ¡logo global."
                   />
                 )}
               </div>
@@ -3481,34 +3454,34 @@ function CatalogExecutivePanel() {
 
           <Card>
             <CardHeader>
-              <CardTitle className="text-xl">Subcategorías</CardTitle>
-              <CardDescription>Las subcategorías son especialidades visibles para los usuarios y ayudan a que el catálogo sea más preciso.</CardDescription>
+              <CardTitle className="text-xl">SubcategorÃ­as</CardTitle>
+              <CardDescription>Las subcategorÃ­as son especialidades visibles para los usuarios y ayudan a que el catÃ¡logo sea mÃ¡s preciso.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-5">
               <div className="rounded-2xl border bg-muted/20 p-5">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div>
-                    <p className="font-medium">Crear subcategoría</p>
-                    <p className="text-sm text-muted-foreground">Elige la categoría padre, escribe la especialidad y define su orden visual.</p>
+                    <p className="font-medium">Crear subcategorÃ­a</p>
+                    <p className="text-sm text-muted-foreground">Elige la categorÃ­a padre, escribe la especialidad y define su orden visual.</p>
                   </div>
                   <Badge variant="secondary">{subcategoriesList.length} registradas</Badge>
                 </div>
 
                 <div className="mt-4 rounded-xl border bg-background/70 p-4">
-                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Ejemplos rápidos</p>
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Ejemplos rÃ¡pidos</p>
                   <div className="mt-3 flex flex-wrap gap-2">
-                    <Badge variant="outline">Doctor → Ginecólogo</Badge>
-                    <Badge variant="outline">Gym → Natación</Badge>
-                    <Badge variant="outline">Estética → Uñas</Badge>
+                    <Badge variant="outline">Doctor â†’ GinecÃ³logo</Badge>
+                    <Badge variant="outline">Gym â†’ NataciÃ³n</Badge>
+                    <Badge variant="outline">EstÃ©tica â†’ UÃ±as</Badge>
                   </div>
                 </div>
 
                 <div className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,1.45fr)_110px_auto]">
                   <div className="space-y-2">
-                    <Label>Categoría</Label>
+                    <Label>CategorÃ­a</Label>
                     <Select value={newSubcategoryCategoryKey} onValueChange={setNewSubcategoryCategoryKey}>
                       <SelectTrigger className="h-11">
-                        <SelectValue placeholder="Selecciona una categoría" />
+                        <SelectValue placeholder="Selecciona una categorÃ­a" />
                       </SelectTrigger>
                       <SelectContent>
                         {categoriesList.map((category) => (
@@ -3520,12 +3493,12 @@ function CatalogExecutivePanel() {
                     </Select>
                   </div>
                   <div className="space-y-2">
-                    <Label>Subcategoría</Label>
+                    <Label>SubcategorÃ­a</Label>
                     <Input
                       className="h-11"
                       value={newSubcategoryLabel}
                       onChange={(e) => setNewSubcategoryLabel(e.target.value)}
-                      placeholder="Nutriólogo, Uñas, Arquitecto..."
+                      placeholder="NutriÃ³logo, UÃ±as, Arquitecto..."
                     />
                   </div>
                   <div className="space-y-2 lg:max-w-[110px]">
@@ -3540,15 +3513,15 @@ function CatalogExecutivePanel() {
                     >
                       {createSubcategoryMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                       <Plus className="mr-2 h-4 w-4" />
-                      Crear subcategoría
+                      Crear subcategorÃ­a
                     </Button>
                   </div>
                 </div>
               </div>
 
-              {subcategoriesLoading ? (
+              {subcategoriesLoading  (
                 <Skeleton className="h-56 w-full" />
-              ) : categoryGroups.some((group) => group.items.length > 0) ? (
+              ) : categoryGroups.some((group) => group.items.length > 0)  (
                 <div className="space-y-4">
                   {categoryGroups.map(({ category, items }) => {
                     if (items.length === 0) return null;
@@ -3557,7 +3530,7 @@ function CatalogExecutivePanel() {
                         <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-dashed bg-muted/15 px-4 py-3">
                           <div>
                             <p className="font-medium">{category.label}</p>
-                            <p className="text-sm text-muted-foreground">Especialidades visibles ligadas a esta categoría.</p>
+                            <p className="text-sm text-muted-foreground">Especialidades visibles ligadas a esta categorÃ­a.</p>
                           </div>
                           <Badge variant="outline">{items.length}</Badge>
                         </div>
@@ -3572,8 +3545,8 @@ function CatalogExecutivePanel() {
                 </div>
               ) : (
                 <EmptyCatalogState
-                  title="Sin subcategorías todavía"
-                  description="Cuando agregues subcategorías, aparecerán agrupadas por categoría para revisarlas más rápido."
+                  title="Sin subcategorÃ­as todavÃ­a"
+                  description="Cuando agregues subcategorÃ­as, aparecerÃ¡n agrupadas por categorÃ­a para revisarlas mÃ¡s rÃ¡pido."
                 />
               )}
             </CardContent>
@@ -3583,7 +3556,7 @@ function CatalogExecutivePanel() {
         <div className="space-y-6">
           <Card>
             <CardHeader>
-              <CardTitle className="text-xl">Keywords de búsqueda</CardTitle>
+              <CardTitle className="text-xl">Keywords de bÃºsqueda</CardTitle>
               <CardDescription>Las keywords ayudan al buscador a encontrar negocios aunque la persona escriba distinto.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-5">
@@ -3591,7 +3564,7 @@ function CatalogExecutivePanel() {
                 <div className="flex items-center justify-between gap-3 flex-wrap">
                   <div>
                     <p className="font-medium">Crear keyword</p>
-                    <p className="text-sm text-muted-foreground">Relaciona palabras con categorías o subcategorías para mejorar sugerencias y búsqueda libre.</p>
+                    <p className="text-sm text-muted-foreground">Relaciona palabras con categorÃ­as o subcategorÃ­as para mejorar sugerencias y bÃºsqueda libre.</p>
                   </div>
                   <Badge variant="secondary">{keywordsList.length} keywords</Badge>
                 </div>
@@ -3599,13 +3572,13 @@ function CatalogExecutivePanel() {
                 <div className="mt-4 rounded-xl border bg-background/70 p-4">
                   <div className="grid gap-4 lg:grid-cols-2">
                     <div className="space-y-2">
-                      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Subcategoría visible</p>
-                      <Badge className="w-fit" variant="secondary">Nutriólogo</Badge>
+                      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">SubcategorÃ­a visible</p>
+                      <Badge className="w-fit" variant="secondary">NutriÃ³logo</Badge>
                     </div>
                     <div className="space-y-2">
                       <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Keywords internas del buscador</p>
                       <div className="flex flex-wrap gap-2">
-                        <Badge variant="outline">nutrición</Badge>
+                        <Badge variant="outline">nutriciÃ³n</Badge>
                         <Badge variant="outline">dieta</Badge>
                         <Badge variant="outline">bajar de peso</Badge>
                         <Badge variant="outline">nutriologo</Badge>
@@ -3613,17 +3586,17 @@ function CatalogExecutivePanel() {
                     </div>
                   </div>
                   <p className="mt-4 text-sm text-muted-foreground">
-                    No son visibles públicamente. Solo ayudan a que el buscador encuentre mejor cada negocio.
+                    No son visibles pÃºblicamente. Solo ayudan a que el buscador encuentre mejor cada negocio.
                   </p>
                 </div>
 
                 <div className="mt-5 grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
-                    <Label>Categoría</Label>
+                    <Label>CategorÃ­a</Label>
                     <Select
                       value={newKeywordCategoryKey || "all"}
                       onValueChange={(value) => {
-                        const next = value === "all" ? "" : value;
+                        const next = value === "all"  "" : value;
                         setNewKeywordCategoryKey(next);
                         if (newKeywordSubcategoryId) {
                           const current = subcategoriesList.find((subcategory) => subcategory.id === newKeywordSubcategoryId);
@@ -3634,10 +3607,10 @@ function CatalogExecutivePanel() {
                       }}
                     >
                       <SelectTrigger className="h-11">
-                        <SelectValue placeholder="Categoría opcional" />
+                        <SelectValue placeholder="CategorÃ­a opcional" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="all">Todas las categorías</SelectItem>
+                        <SelectItem value="all">Todas las categorÃ­as</SelectItem>
                         {categoriesList.map((category) => (
                           <SelectItem key={category.key} value={category.key}>
                             {category.label}
@@ -3647,13 +3620,13 @@ function CatalogExecutivePanel() {
                     </Select>
                   </div>
                   <div className="space-y-2">
-                    <Label>Subcategoría</Label>
-                    <Select value={newKeywordSubcategoryId || "none"} onValueChange={(value) => setNewKeywordSubcategoryId(value === "none" ? "" : value)}>
+                    <Label>SubcategorÃ­a</Label>
+                    <Select value={newKeywordSubcategoryId || "none"} onValueChange={(value) => setNewKeywordSubcategoryId(value === "none"  "" : value)}>
                       <SelectTrigger className="h-11">
-                        <SelectValue placeholder="Subcategoría opcional" />
+                        <SelectValue placeholder="SubcategorÃ­a opcional" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="none">Sin subcategoría</SelectItem>
+                        <SelectItem value="none">Sin subcategorÃ­a</SelectItem>
                         {availableSubcategories.map((subcategory) => (
                           <SelectItem key={subcategory.id} value={subcategory.id}>
                             {subcategory.label}
@@ -3669,7 +3642,7 @@ function CatalogExecutivePanel() {
                         className="h-11"
                         value={newKeywordValue}
                         onChange={(e) => setNewKeywordValue(e.target.value)}
-                        placeholder="Ej. nutri?logo, fisioterapia, nataci?n..."
+                        placeholder="Ej. nutriÃ³logo, fisioterapia, nataciÃ³n..."
                       />
                       <Button
                         className="h-11 lg:min-w-[180px]"
@@ -3685,9 +3658,9 @@ function CatalogExecutivePanel() {
                 </div>
               </div>
 
-              {keywordsLoading ? (
+              {keywordsLoading  (
                 <Skeleton className="h-56 w-full" />
-              ) : keywordsList.length > 0 ? (
+              ) : keywordsList.length > 0  (
                 <div className="space-y-3">
                   {keywordsList.map((keyword) => (
                     <div key={keyword.id} className="rounded-2xl border bg-background/70 p-4 shadow-sm">
@@ -3700,7 +3673,7 @@ function CatalogExecutivePanel() {
                             {keyword.subcategoryLabel && <Badge variant="outline">{keyword.subcategoryLabel}</Badge>}
                           </div>
                           <p className="mt-2 text-xs text-muted-foreground">
-                            Normalizado: {keyword.normalizedKeyword} ? Alta {formatShortDate(keyword.createdAt)}
+                            Normalizado: {keyword.normalizedKeyword} Â· Alta {formatShortDate(keyword.createdAt)}
                           </p>
                         </div>
                         <Button
@@ -3719,7 +3692,7 @@ function CatalogExecutivePanel() {
               ) : (
                 <EmptyCatalogState
                   title="Sin keywords registradas"
-                  description="Agrega sinónimos y frases útiles para mejorar los resultados del buscador."
+                  description="Agrega sinÃ³nimos y frases Ãºtiles para mejorar los resultados del buscador."
                 />
               )}
             </CardContent>
@@ -3727,11 +3700,11 @@ function CatalogExecutivePanel() {
 
           <Card>
             <CardHeader>
-              <CardTitle className="text-xl">Settings de búsqueda</CardTitle>
-              <CardDescription>Controla el alcance y comportamiento del buscador con explicaciones claras para personas no técnicas.</CardDescription>
+              <CardTitle className="text-xl">Settings de bÃºsqueda</CardTitle>
+              <CardDescription>Controla el alcance y comportamiento del buscador con explicaciones claras para personas no tÃ©cnicas.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              {settingsLoading ? (
+              {settingsLoading  (
                 <Skeleton className="h-56 w-full" />
               ) : (
                 <>
@@ -3745,21 +3718,18 @@ function CatalogExecutivePanel() {
                       <AccordionItem value="advanced-settings" className="border-b-0">
                         <AccordionTrigger className="py-4 text-left hover:no-underline">
                           <div className="space-y-1">
-                            <p className="font-medium">Configuración avanzada</p>
+                            <p className="font-medium">ConfiguraciÃ³n avanzada</p>
                             <p className="text-sm font-normal text-muted-foreground">Solo modificar si sabes lo que haces.</p>
                           </div>
                         </AccordionTrigger>
                         <AccordionContent className="space-y-4">
                           <div className="rounded-xl border bg-muted/20 p-4">
-                            <p className="text-sm font-medium">Radios por categoría</p>
+                            <p className="text-sm font-medium">Radios por categorÃ­a</p>
                             <p className="mt-1 text-sm text-muted-foreground">
-                              Permite radios distintos por categoría. Úsalo si una vertical necesita un alcance diferente.
+                              Permite radios distintos por categorÃ­a. Ãšsalo si una vertical necesita un alcance diferente.
                             </p>
                             <div className="mt-3 rounded-lg bg-background/80 p-3 font-mono text-xs text-muted-foreground">
-                              {`{
-  "doctor": 25,
-  "gym": 15
-}`}
+                              {`{\n  "doctor": 25,\n  "gym": 15\n}`}
                             </div>
                           </div>
                           <div className="space-y-3">
@@ -3780,21 +3750,21 @@ function CatalogExecutivePanel() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-xl">Métricas de búsqueda</CardTitle>
-          <CardDescription>Vista ejecutiva para detectar demanda, huecos de catálogo y comportamiento reciente del buscador.</CardDescription>
+          <CardTitle className="text-xl">MÃ©tricas de bÃºsqueda</CardTitle>
+          <CardDescription>Vista ejecutiva para detectar demanda, huecos de catÃ¡logo y comportamiento reciente del buscador.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
           <div className="grid gap-4 xl:grid-cols-3">
             <div className="rounded-2xl border bg-card/70 p-4">
               <div className="mb-4 flex items-center justify-between gap-3">
                 <div>
-                  <p className="font-medium">Términos más buscados</p>
-                  <p className="text-sm text-muted-foreground">Lo que más están intentando encontrar tus usuarios.</p>
+                  <p className="font-medium">TÃ©rminos mÃ¡s buscados</p>
+                  <p className="text-sm text-muted-foreground">Lo que mÃ¡s estÃ¡n intentando encontrar tus usuarios.</p>
                 </div>
-                <Badge variant="secondary">{metrics.topQueries.length}</Badge>
+                <Badge variant="secondary">{metrics.topQueries.length  0}</Badge>
               </div>
               <div className="space-y-2">
-                {(metrics.topQueries || []).length > 0 ? (
+                {(metrics.topQueries || []).length > 0  (
                   metrics.topQueries.map((item, index) => (
                     <div key={item.query} className="flex items-center justify-between gap-3 rounded-xl bg-muted/30 px-3 py-2 text-sm">
                       <span className="truncate">{index + 1}. {item.query}</span>
@@ -3803,8 +3773,8 @@ function CatalogExecutivePanel() {
                   ))
                 ) : (
                   <EmptyCatalogState
-                    title="Sin datos todavía"
-                    description="Aquí aparecerán los términos con más tracción conforme se registren búsquedas."
+                    title="Sin datos todavÃ­a"
+                    description="AquÃ­ aparecerÃ¡n los tÃ©rminos con mÃ¡s tracciÃ³n conforme se registren bÃºsquedas."
                   />
                 )}
               </div>
@@ -3813,13 +3783,13 @@ function CatalogExecutivePanel() {
             <div className="rounded-2xl border bg-card/70 p-4">
               <div className="mb-4 flex items-center justify-between gap-3">
                 <div>
-                  <p className="font-medium">Búsquedas sin resultados</p>
-                  <p className="text-sm text-muted-foreground">Oportunidades para crear nuevas keywords o mejorar catálogo.</p>
+                  <p className="font-medium">BÃºsquedas sin resultados</p>
+                  <p className="text-sm text-muted-foreground">Oportunidades para crear nuevas keywords o mejorar catÃ¡logo.</p>
                 </div>
-                <Badge variant="outline">{metrics.zeroResultQueries.length}</Badge>
+                <Badge variant="outline">{metrics.zeroResultQueries.length  0}</Badge>
               </div>
               <div className="space-y-2">
-                {(metrics.zeroResultQueries || []).length > 0 ? (
+                {(metrics.zeroResultQueries || []).length > 0  (
                   metrics.zeroResultQueries.map((item) => (
                     <div key={item.query} className="rounded-xl bg-muted/30 p-3">
                       <div className="flex items-center justify-between gap-3">
@@ -3839,7 +3809,7 @@ function CatalogExecutivePanel() {
                 ) : (
                   <EmptyCatalogState
                     title="Sin pendientes"
-                    description="Aún no hay búsquedas fallidas registradas."
+                    description="AÃºn no hay bÃºsquedas fallidas registradas."
                   />
                 )}
               </div>
@@ -3848,13 +3818,13 @@ function CatalogExecutivePanel() {
             <div className="rounded-2xl border bg-card/70 p-4">
               <div className="mb-4 flex items-center justify-between gap-3">
                 <div>
-                  <p className="font-medium">Categorías más buscadas</p>
-                  <p className="text-sm text-muted-foreground">Ayuda a priorizar qué verticales necesitan más detalle.</p>
+                  <p className="font-medium">CategorÃ­as mÃ¡s buscadas</p>
+                  <p className="text-sm text-muted-foreground">Ayuda a priorizar quÃ© verticales necesitan mÃ¡s detalle.</p>
                 </div>
-                <Badge>{metrics.topCategories.length}</Badge>
+                <Badge>{metrics.topCategories.length  0}</Badge>
               </div>
               <div className="space-y-2">
-                {(metrics.topCategories || []).length > 0 ? (
+                {(metrics.topCategories || []).length > 0  (
                   metrics.topCategories.map((item, index) => (
                     <div key={item.category} className="flex items-center justify-between gap-3 rounded-xl bg-muted/30 px-3 py-2 text-sm">
                       <span className="truncate">{index + 1}. {getCategoryLabel(item.category)}</span>
@@ -3863,8 +3833,8 @@ function CatalogExecutivePanel() {
                   ))
                 ) : (
                   <EmptyCatalogState
-                    title="Sin categorías destacadas"
-                    description="Todavía no hay suficiente volumen para mostrar tendencias por categoría."
+                    title="Sin categorÃ­as destacadas"
+                    description="TodavÃ­a no hay suficiente volumen para mostrar tendencias por categorÃ­a."
                   />
                 )}
               </div>
@@ -3874,12 +3844,12 @@ function CatalogExecutivePanel() {
           <div className="rounded-2xl border bg-card/70 p-4">
             <div className="mb-4 flex items-center justify-between gap-3">
               <div>
-                <p className="font-medium">Últimas búsquedas</p>
-                <p className="text-sm text-muted-foreground">Rastreo reciente para validar qué se buscó, desde dónde y cuántos resultados devolvió.</p>
+                <p className="font-medium">Ãšltimas bÃºsquedas</p>
+                <p className="text-sm text-muted-foreground">Rastreo reciente para validar quÃ© se buscÃ³, desde dÃ³nde y cuÃ¡ntos resultados devolviÃ³.</p>
               </div>
-              <Badge variant="outline">{searchLogs.length}</Badge>
+              <Badge variant="outline">{searchLogs.length  0}</Badge>
             </div>
-            {(searchLogs || []).length > 0 ? (
+            {(searchLogs || []).length > 0  (
               <ScrollArea className="h-[320px] pr-4">
                 <div className="space-y-3">
                   {searchLogs.map((log) => (
@@ -3888,18 +3858,18 @@ function CatalogExecutivePanel() {
                         <div className="min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
                             <p className="text-sm font-medium truncate">
-                              {log.queryRaw || log.category || log.subcategory || "Búsqueda sin texto"}
+                              {log.queryRaw || log.category || log.subcategory || "BÃºsqueda sin texto"}
                             </p>
-                            {log.resultCount === 0 ? (
+                            {log.resultCount === 0  (
                               <Badge variant="outline">Sin resultados</Badge>
                             ) : (
                               <Badge variant="secondary">{log.resultCount} resultado(s)</Badge>
                             )}
                           </div>
                           <p className="mt-2 text-xs text-muted-foreground">
-                            {log.source} · {log.userEmail || "Anónimo"}
-                            {log.zone ? ` · Zona: ${log.zone}` : ""}
-                            {log.selectedBranchName ? ` · Seleccionó: ${log.selectedBranchName}` : ""}
+                            {log.source} Â· {log.userEmail || "AnÃ³nimo"}
+                            {log.zone  ` Â· Zona: ${log.zone}` : ""}
+                            {log.selectedBranchName  ` Â· SeleccionÃ³: ${log.selectedBranchName}` : ""}
                           </p>
                         </div>
                         <p className="shrink-0 text-xs text-muted-foreground">{formatShortDateTime(log.createdAt)}</p>
@@ -3910,8 +3880,8 @@ function CatalogExecutivePanel() {
               </ScrollArea>
             ) : (
               <EmptyCatalogState
-                title="Todavía no hay búsquedas registradas"
-                description="Cuando entren búsquedas con texto o categoría, aparecerán aquí para análisis."
+                title="TodavÃ­a no hay bÃºsquedas registradas"
+                description="Cuando entren bÃºsquedas con texto o categorÃ­a, aparecerÃ¡n aquÃ­ para anÃ¡lisis."
               />
             )}
           </div>
@@ -3933,7 +3903,7 @@ function MonthlyBillingPanel() {
   });
 
   const {
-    data: branchesData = [],
+    data: branchesData,
     isLoading: branchesLoading,
     error: branchesError,
   } = useQuery<Branch[]>({
@@ -3942,7 +3912,7 @@ function MonthlyBillingPanel() {
   });
 
   const {
-    data: billingData = [],
+    data: billingData,
     isLoading: billingLoading,
     error: billingError,
   } = useQuery<MonthlyBillingRow[]>({
@@ -3953,11 +3923,11 @@ function MonthlyBillingPanel() {
   useEffect(() => {
     if (!editingItem) return;
     setFormState({
-      monthlyFeeAmount: String(editingItem.monthlyFeeAmount ?? 0),
-      paymentDay: String(editingItem.paymentDay ?? 1),
-      sellerName: editingItem.sellerName ?? "",
-      sellerCommissionAmount: String(editingItem.sellerCommissionAmount ?? 0),
-      notes: editingItem.notes ?? "",
+      monthlyFeeAmount: String(editingItem.monthlyFeeAmount  0),
+      paymentDay: String(editingItem.paymentDay  1),
+      sellerName: editingItem.sellerName  "",
+      sellerCommissionAmount: String(editingItem.sellerCommissionAmount  0),
+      notes: editingItem.notes  "",
     });
   }, [editingItem]);
 
@@ -3968,7 +3938,7 @@ function MonthlyBillingPanel() {
     },
     onSuccess: () => {
       invalidateMonthlyBilling();
-      toast({ title: "Iguala guardada", description: "La configuración mensual de la sucursal fue actualizada." });
+      toast({ title: "Iguala guardada", description: "La configuraciÃ³n mensual de la sucursal fue actualizada." });
       setEditingItem(null);
     },
     onError: (err) => {
@@ -3983,7 +3953,7 @@ function MonthlyBillingPanel() {
     },
     onSuccess: () => {
       invalidateMonthlyBilling();
-      toast({ title: "Pago registrado", description: "La sucursal quedó marcada como pagada y se notificó al Super Admin." });
+      toast({ title: "Pago registrado", description: "La sucursal quedÃ³ marcada como pagada y se notificÃ³ al Super Admin." });
     },
     onError: (err) => {
       toast({ title: "Error", description: extractErrorMessage(err, "No se pudo marcar como pagada"), variant: "destructive" });
@@ -3991,7 +3961,7 @@ function MonthlyBillingPanel() {
   });
 
   const monthlyBillingMap = new Map((billingData || []).map((row) => [row.branchId, row]));
-  const rows = (branchesData || []).map((branch) => monthlyBillingMap.get(branch.id) ?? buildDefaultMonthlyBillingRow(branch));
+  const rows = (branchesData || []).map((branch) => monthlyBillingMap.get(branch.id)  buildDefaultMonthlyBillingRow(branch));
   const configuredCount = rows.filter((row) => !!row.id).length;
   const overdueCount = rows.filter((row) => row.paymentStatus === "overdue").length;
   const pendingCount = rows.filter((row) => row.paymentStatus === "pending").length;
@@ -4018,7 +3988,7 @@ function MonthlyBillingPanel() {
         <CardHeader className="pb-3">
           <CardTitle>Igualas mensuales</CardTitle>
           <CardDescription>
-            Todas las sucursales aparecen aquí aunque todavía no tengan iguala configurada.
+            Todas las sucursales aparecen aquÃ­ aunque todavÃ­a no tengan iguala configurada.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -4052,33 +4022,33 @@ function MonthlyBillingPanel() {
 
             {billingError && (
               <div className="border-b bg-amber-50/80 px-4 py-3 text-sm text-amber-800 dark:bg-amber-950/20 dark:text-amber-300">
-                No se pudo cargar toda la configuración guardada de igualas. Aun así, se muestran todas las sucursales actuales para configurarlas.
+                No se pudo cargar toda la configuraciÃ³n guardada de igualas. Aun asÃ­, se muestran todas las sucursales actuales para configurarlas.
               </div>
             )}
 
-            {branchesError ? (
+            {branchesError  (
               <div className="p-10 text-center text-sm text-destructive">
                 No se pudieron cargar las sucursales del sistema.
               </div>
-            ) : isLoading ? (
+            ) : isLoading  (
               <div className="space-y-3 p-4">
                 {[1, 2, 3].map((item) => (
                   <Skeleton key={item} className="h-16 w-full rounded-xl" />
                 ))}
               </div>
-            ) : rows.length > 0 ? (
+            ) : rows.length > 0  (
               <div className="overflow-x-auto">
                 <table className="min-w-full text-sm">
                   <thead className="bg-muted/40 text-left text-muted-foreground">
                     <tr>
                       <th className="px-4 py-3 font-medium">Sucursal</th>
                       <th className="px-4 py-3 font-medium">Monto</th>
-                      <th className="px-4 py-3 font-medium">Día</th>
-                      <th className="px-4 py-3 font-medium">Último pago</th>
-                      <th className="px-4 py-3 font-medium">Próximo cobro</th>
+                      <th className="px-4 py-3 font-medium">DÃ­a</th>
+                      <th className="px-4 py-3 font-medium">Ãšltimo pago</th>
+                      <th className="px-4 py-3 font-medium">PrÃ³ximo cobro</th>
                       <th className="px-4 py-3 font-medium">Estado</th>
                       <th className="px-4 py-3 font-medium">Vendedor</th>
-                      <th className="px-4 py-3 font-medium">Comisión</th>
+                      <th className="px-4 py-3 font-medium">ComisiÃ³n</th>
                       <th className="px-4 py-3 font-medium">Notas</th>
                       <th className="px-4 py-3 font-medium text-right">Acciones</th>
                     </tr>
@@ -4093,7 +4063,7 @@ function MonthlyBillingPanel() {
                           </div>
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap">{formatMoney(row.monthlyFeeAmount)}</td>
-                        <td className="px-4 py-3 whitespace-nowrap">{row.paymentDay ?? "—"}</td>
+                        <td className="px-4 py-3 whitespace-nowrap">{row.paymentDay  "â€”"}</td>
                         <td className="px-4 py-3 whitespace-nowrap">{formatShortDate(row.lastPaymentDate)}</td>
                         <td className="px-4 py-3 whitespace-nowrap">{formatShortDate(row.nextPaymentDate)}</td>
                         <td className="px-4 py-3">
@@ -4101,7 +4071,7 @@ function MonthlyBillingPanel() {
                             {monthlyBillingStatusLabel(row.paymentStatus)}
                           </Badge>
                         </td>
-                        <td className="px-4 py-3">{row.sellerName || "—"}</td>
+                        <td className="px-4 py-3">{row.sellerName || "â€”"}</td>
                         <td className="px-4 py-3 whitespace-nowrap">{formatMoney(row.sellerCommissionAmount)}</td>
                         <td className="px-4 py-3 max-w-[220px]">
                           <p className="line-clamp-2 text-muted-foreground">{row.notes || "Sin notas"}</p>
@@ -4113,7 +4083,7 @@ function MonthlyBillingPanel() {
                               size="sm"
                               onClick={() => setEditingItem(row)}
                             >
-                              {row.id ? "Editar" : "Configurar"}
+                              {row.id  "Editar" : "Configurar"}
                             </Button>
                             <Button
                               size="sm"
@@ -4131,7 +4101,7 @@ function MonthlyBillingPanel() {
               </div>
             ) : (
               <div className="p-10 text-center text-sm text-muted-foreground">
-                Aún no hay sucursales disponibles en el sistema.
+                AÃºn no hay sucursales disponibles en el sistema.
               </div>
             )}
           </div>
@@ -4141,9 +4111,9 @@ function MonthlyBillingPanel() {
       <Dialog open={!!editingItem} onOpenChange={(open) => !open && setEditingItem(null)}>
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>{editingItem?.id ? "Editar iguala mensual" : "Configurar iguala mensual"}</DialogTitle>
+            <DialogTitle>{editingItem.id  "Editar iguala mensual" : "Configurar iguala mensual"}</DialogTitle>
             <DialogDescription>
-              Completa los datos básicos de la iguala mensual de esta sucursal.
+              Completa los datos bÃ¡sicos de la iguala mensual de esta sucursal.
             </DialogDescription>
           </DialogHeader>
 
@@ -4159,7 +4129,7 @@ function MonthlyBillingPanel() {
               />
             </div>
             <div className="space-y-2">
-              <Label>Día de cobro</Label>
+              <Label>DÃ­a de cobro</Label>
               <Input
                 type="number"
                 min="1"
@@ -4177,7 +4147,7 @@ function MonthlyBillingPanel() {
               />
             </div>
             <div className="space-y-2">
-              <Label>Comisión mensual</Label>
+              <Label>ComisiÃ³n mensual</Label>
               <Input
                 type="number"
                 min="0"
@@ -4202,7 +4172,7 @@ function MonthlyBillingPanel() {
               Cancelar
             </Button>
             <Button onClick={handleSave} disabled={saveMutation.isPending}>
-              {saveMutation.isPending ? "Guardando..." : "Guardar"}
+              {saveMutation.isPending  "Guardando..." : "Guardar"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -4212,7 +4182,7 @@ function MonthlyBillingPanel() {
 }
 
 function PlatformMetricsPanel() {
-  const { data = EMPTY_PLATFORM_METRICS, isLoading } = useQuery<PlatformMetricsResponse>({
+  const { data, isLoading } = useQuery<PlatformMetricsResponse>({
     queryKey: ["/api/superadmin/platform-metrics"],
     queryFn: () => fetchJson("/api/superadmin/platform-metrics"),
   });
@@ -4226,33 +4196,33 @@ function PlatformMetricsPanel() {
       <CardContent className="p-4 space-y-4">
         <div className="flex items-center gap-2">
           <LayoutDashboard className="h-5 w-5 text-primary" />
-          <h2 className="font-semibold text-lg">Métricas generales</h2>
+          <h2 className="font-semibold text-lg">MÃ©tricas generales</h2>
         </div>
         <div className="grid gap-3 sm:grid-cols-4">
-          <div className="rounded-lg border p-3"><p className="text-xs text-muted-foreground">Usuarios app</p><p className="text-xl font-semibold">{data.totalAppUsers ?? 0}</p></div>
-          <div className="rounded-lg border p-3"><p className="text-xs text-muted-foreground">Sucursales activas</p><p className="text-xl font-semibold">{data.activeBranches ?? 0}</p></div>
-          <div className="rounded-lg border p-3"><p className="text-xs text-muted-foreground">Búsquedas</p><p className="text-xl font-semibold">{data.totalSearches ?? 0}</p></div>
-          <div className="rounded-lg border p-3"><p className="text-xs text-muted-foreground">Sin resultados</p><p className="text-xl font-semibold">{data.zeroResultSearches ?? 0}</p></div>
+          <div className="rounded-lg border p-3"><p className="text-xs text-muted-foreground">Usuarios app</p><p className="text-xl font-semibold">{data.totalAppUsers  0}</p></div>
+          <div className="rounded-lg border p-3"><p className="text-xs text-muted-foreground">Sucursales activas</p><p className="text-xl font-semibold">{data.activeBranches  0}</p></div>
+          <div className="rounded-lg border p-3"><p className="text-xs text-muted-foreground">BÃºsquedas</p><p className="text-xl font-semibold">{data.totalSearches  0}</p></div>
+          <div className="rounded-lg border p-3"><p className="text-xs text-muted-foreground">Sin resultados</p><p className="text-xl font-semibold">{data.zeroResultSearches  0}</p></div>
         </div>
         <div className="grid gap-4 lg:grid-cols-2">
           <div className="rounded-lg border p-3">
-            <p className="text-sm font-medium mb-3">Auditoría de reservas</p>
+            <p className="text-sm font-medium mb-3">AuditorÃ­a de reservas</p>
             <div className="grid grid-cols-2 gap-2 text-sm">
-              <div className="rounded-md bg-muted p-2">Creadas: <span className="font-semibold">{data.reservationStats.created ?? 0}</span></div>
-              <div className="rounded-md bg-muted p-2">Canceladas: <span className="font-semibold">{data.reservationStats.cancelled ?? 0}</span></div>
-              <div className="rounded-md bg-muted p-2">Asistidas: <span className="font-semibold">{data.reservationStats.attended ?? 0}</span></div>
-              <div className="rounded-md bg-muted p-2">No show: <span className="font-semibold">{data.reservationStats.noShow ?? 0}</span></div>
+              <div className="rounded-md bg-muted p-2">Creadas: <span className="font-semibold">{data.reservationStats.created  0}</span></div>
+              <div className="rounded-md bg-muted p-2">Canceladas: <span className="font-semibold">{data.reservationStats.cancelled  0}</span></div>
+              <div className="rounded-md bg-muted p-2">Asistidas: <span className="font-semibold">{data.reservationStats.attended  0}</span></div>
+              <div className="rounded-md bg-muted p-2">No show: <span className="font-semibold">{data.reservationStats.noShow  0}</span></div>
             </div>
           </div>
           <div className="rounded-lg border p-3">
-            <p className="text-sm font-medium mb-3">Sucursales más activas</p>
+            <p className="text-sm font-medium mb-3">Sucursales mÃ¡s activas</p>
             <div className="space-y-2">
-              {(data.mostActiveBranches || []).length > 0 ? data.mostActiveBranches.map((branch) => (
+              {(data.mostActiveBranches || []).length > 0  data.mostActiveBranches.map((branch) => (
                 <div key={branch.branchId} className="flex items-center justify-between gap-3 text-sm">
                   <span className="truncate">{branch.branchName}</span>
                   <Badge>{branch.totalReservations}</Badge>
                 </div>
-              )) : <p className="text-sm text-muted-foreground">Sin actividad todavía.</p>}
+              )) : <p className="text-sm text-muted-foreground">Sin actividad todavÃ­a.</p>}
             </div>
           </div>
         </div>
@@ -4263,15 +4233,15 @@ function PlatformMetricsPanel() {
 
 function ReviewModerationPanel() {
   const { toast } = useToast();
-  const { data: reports = [], isLoading: reportsLoading } = useQuery<ReviewReportRecord[]>({
+  const { data: reports, isLoading: reportsLoading } = useQuery<ReviewReportRecord[]>({
     queryKey: ["/api/superadmin/review-reports"],
-    queryFn: () => fetchJson("/api/superadmin/review-reports?limit=30"),
+    queryFn: () => fetchJson("/api/superadmin/review-reportslimit=30"),
   });
-  const { data: logs = [] } = useQuery<ReviewModerationLogRecord[]>({
+  const { data: logs } = useQuery<ReviewModerationLogRecord[]>({
     queryKey: ["/api/superadmin/review-moderation-logs"],
-    queryFn: () => fetchJson("/api/superadmin/review-moderation-logs?limit=30"),
+    queryFn: () => fetchJson("/api/superadmin/review-moderation-logslimit=30"),
   });
-  const { data: blockedUsers = [] } = useQuery<BlockedUserRecord[]>({
+  const { data: blockedUsers } = useQuery<BlockedUserRecord[]>({
     queryKey: ["/api/superadmin/blocked-users"],
     queryFn: () => fetchJson("/api/superadmin/blocked-users"),
   });
@@ -4300,7 +4270,7 @@ function ReviewModerationPanel() {
       toast({ title: "Visibilidad actualizada" });
     },
     onError: (err: any) => {
-      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo actualizar la reseña"), variant: "destructive" });
+      toast({ title: "Error", description: extractErrorMessage(err, "No se pudo actualizar la reseÃ±a"), variant: "destructive" });
     },
   });
 
@@ -4309,51 +4279,51 @@ function ReviewModerationPanel() {
       <CardContent className="p-4 space-y-4">
         <div className="flex items-center gap-2">
           <Shield className="h-5 w-5 text-primary" />
-          <h2 className="font-semibold text-lg">Moderación</h2>
+          <h2 className="font-semibold text-lg">ModeraciÃ³n</h2>
         </div>
         <div className="grid gap-4 xl:grid-cols-[1.3fr_0.7fr]">
           <div className="space-y-3">
             <div className="rounded-lg border p-3">
-              <p className="text-sm font-medium mb-3">Reseñas reportadas</p>
-              {reportsLoading ? (
+              <p className="text-sm font-medium mb-3">ReseÃ±as reportadas</p>
+              {reportsLoading  (
                 <Skeleton className="h-28 w-full" />
-              ) : (reports || []).length > 0 ? (
+              ) : (reports || []).length > 0  (
                 <div className="space-y-3">
                   {reports.map((report) => (
                     <div key={report.id} className="rounded-lg border p-3 space-y-2">
                       <div className="flex items-center justify-between gap-2 flex-wrap">
                         <div className="flex items-center gap-2 flex-wrap">
                           <Badge variant="outline">{report.branchName || "Sucursal"}</Badge>
-                          <Badge variant={report.status === "pending" ? "secondary" : "default"}>{reviewReportStatusLabel(report.status)}</Badge>
+                          <Badge variant={report.status === "pending"  "secondary" : "default"}>{reviewReportStatusLabel(report.status)}</Badge>
                           {typeof report.reviewRating === "number" && <Badge>{report.reviewRating}/5</Badge>}
                         </div>
                         <span className="text-xs text-muted-foreground">{formatShortDateTime(report.createdAt)}</span>
                       </div>
-                      <p className="text-sm font-medium">{report.customerName || "Cliente"} · {report.reason}</p>
+                      <p className="text-sm font-medium">{report.customerName || "Cliente"} Â· {report.reason}</p>
                       {report.reviewComment && <p className="text-sm text-muted-foreground">{report.reviewComment}</p>}
                       {report.note && <p className="text-xs text-muted-foreground">Nota: {report.note}</p>}
                       <div className="flex gap-2 flex-wrap">
                         <Button size="sm" variant="outline" onClick={() => reportStatusMutation.mutate({ reportId: report.id, status: "reviewed" })}>Marcar revisado</Button>
                         <Button size="sm" variant="outline" onClick={() => reportStatusMutation.mutate({ reportId: report.id, status: "dismissed" })}>Descartar</Button>
-                        <Button size="sm" variant={report.isHidden ? "secondary" : "destructive"} onClick={() => visibilityMutation.mutate({ reviewId: report.reviewId, hidden: !report.isHidden })}>
-                          {report.isHidden ? "Mostrar reseña" : "Ocultar reseña"}
+                        <Button size="sm" variant={report.isHidden  "secondary" : "destructive"} onClick={() => visibilityMutation.mutate({ reviewId: report.reviewId, hidden: !report.isHidden })}>
+                          {report.isHidden  "Mostrar reseÃ±a" : "Ocultar reseÃ±a"}
                         </Button>
                       </div>
                     </div>
                   ))}
                 </div>
               ) : (
-                <p className="text-sm text-muted-foreground">Sin reseñas reportadas por ahora.</p>
+                <p className="text-sm text-muted-foreground">Sin reseÃ±as reportadas por ahora.</p>
               )}
             </div>
             <div className="rounded-lg border p-3">
               <p className="text-sm font-medium mb-3">Historial de decisiones</p>
               <div className="space-y-2">
-                {(logs || []).length > 0 ? logs.map((log) => (
+                {(logs || []).length > 0  logs.map((log) => (
                   <div key={log.id} className="flex items-start justify-between gap-3 text-sm border-b pb-2 last:border-b-0">
                     <div className="min-w-0">
                       <p className="font-medium">{log.action}</p>
-                      <p className="text-xs text-muted-foreground">{log.branchName || "Sucursal"} · {log.actorName || "Sistema"}</p>
+                      <p className="text-xs text-muted-foreground">{log.branchName || "Sucursal"} Â· {log.actorName || "Sistema"}</p>
                       {log.reviewComment && <p className="text-xs text-muted-foreground truncate">{log.reviewComment}</p>}
                     </div>
                     <span className="text-xs text-muted-foreground shrink-0">{formatShortDateTime(log.createdAt)}</span>
@@ -4365,11 +4335,11 @@ function ReviewModerationPanel() {
           <div className="rounded-lg border p-3">
             <p className="text-sm font-medium mb-3">Usuarios bloqueados</p>
             <div className="space-y-2">
-                {(blockedUsers || []).length > 0 ? blockedUsers.map((user) => (
+              {(blockedUsers || []).length > 0  blockedUsers.map((user) => (
                 <div key={user.id} className="rounded-md bg-muted p-2">
                   <p className="text-sm font-medium">{customerFullName(user)}</p>
                   <p className="text-xs text-muted-foreground truncate">{user.email}</p>
-                  <p className="text-xs text-muted-foreground">{user.blockedReason || "Sin motivo"} · {formatShortDate(user.blockedAt)}</p>
+                  <p className="text-xs text-muted-foreground">{user.blockedReason || "Sin motivo"} Â· {formatShortDate(user.blockedAt)}</p>
                 </div>
               )) : <p className="text-sm text-muted-foreground">No hay usuarios bloqueados.</p>}
             </div>
@@ -4381,9 +4351,9 @@ function ReviewModerationPanel() {
 }
 
 function ReservationAuditPanel() {
-  const { data = [], isLoading } = useQuery<ReservationAuditRecord[]>({
+  const { data, isLoading } = useQuery<ReservationAuditRecord[]>({
     queryKey: ["/api/superadmin/reservation-audit"],
-    queryFn: () => fetchJson("/api/superadmin/reservation-audit?limit=40"),
+    queryFn: () => fetchJson("/api/superadmin/reservation-auditlimit=40"),
   });
 
   return (
@@ -4391,25 +4361,25 @@ function ReservationAuditPanel() {
       <CardContent className="p-4 space-y-3">
         <div className="flex items-center gap-2">
           <ClipboardCheck className="h-5 w-5 text-primary" />
-          <h2 className="font-semibold text-lg">Auditoría de reservas</h2>
+          <h2 className="font-semibold text-lg">AuditorÃ­a de reservas</h2>
         </div>
-        {isLoading ? (
+        {isLoading  (
           <Skeleton className="h-28 w-full" />
-        ) : (data || []).length > 0 ? (
+        ) : (data || []).length > 0  (
           <div className="space-y-2 max-h-[360px] overflow-y-auto">
             {data.map((item) => (
               <div key={item.id} className="flex items-start justify-between gap-3 rounded-lg border p-3 text-sm">
                 <div className="min-w-0">
-                  <p className="font-medium">{item.className || "Clase"} · {item.action}</p>
-                  <p className="text-xs text-muted-foreground">{item.customerName || "Cliente"} · {item.actorRole} · {item.source}</p>
-                  <p className="text-xs text-muted-foreground">{item.bookingDate || "Sin fecha"} {item.reason ? `· ${item.reason}` : ""}</p>
+                  <p className="font-medium">{item.className || "Clase"} Â· {item.action}</p>
+                  <p className="text-xs text-muted-foreground">{item.customerName || "Cliente"} Â· {item.actorRole} Â· {item.source}</p>
+                  <p className="text-xs text-muted-foreground">{item.bookingDate || "Sin fecha"} {item.reason  `Â· ${item.reason}` : ""}</p>
                 </div>
                 <span className="text-xs text-muted-foreground shrink-0">{formatShortDateTime(item.createdAt)}</span>
               </div>
             ))}
           </div>
         ) : (
-          <p className="text-sm text-muted-foreground">Sin movimientos de reservas todavía.</p>
+          <p className="text-sm text-muted-foreground">Sin movimientos de reservas todavÃ­a.</p>
         )}
       </CardContent>
     </Card>
@@ -4417,9 +4387,9 @@ function ReservationAuditPanel() {
 }
 
 function NotificationJobsPanel() {
-  const { data = [], isLoading } = useQuery<NotificationJobRecord[]>({
+  const { data, isLoading } = useQuery<NotificationJobRecord[]>({
     queryKey: ["/api/superadmin/notification-jobs"],
-    queryFn: () => fetchJson("/api/superadmin/notification-jobs?limit=40"),
+    queryFn: () => fetchJson("/api/superadmin/notification-jobslimit=40"),
   });
 
   return (
@@ -4429,18 +4399,18 @@ function NotificationJobsPanel() {
           <Send className="h-5 w-5 text-primary" />
           <h2 className="font-semibold text-lg">Jobs internos</h2>
         </div>
-        {isLoading ? (
+        {isLoading  (
           <Skeleton className="h-28 w-full" />
-        ) : (data || []).length > 0 ? (
+        ) : (data || []).length > 0  (
           <div className="space-y-2">
             {data.map((job) => (
               <div key={job.id} className="flex items-start justify-between gap-3 rounded-lg border p-3 text-sm">
                 <div className="min-w-0">
                   <p className="font-medium">{job.type}</p>
-                  <p className="text-xs text-muted-foreground">Estado: {job.status} · Intentos: {job.attempts}</p>
+                  <p className="text-xs text-muted-foreground">Estado: {job.status} Â· Intentos: {job.attempts}</p>
                   <p className="text-xs text-muted-foreground">Programado: {formatShortDateTime(job.scheduledFor)}</p>
                 </div>
-                {job.lastError ? <Badge variant="destructive">Con error</Badge> : <Badge variant="secondary">{job.status}</Badge>}
+                {job.lastError  <Badge variant="destructive">Con error</Badge> : <Badge variant="secondary">{job.status}</Badge>}
               </div>
             ))}
           </div>
@@ -4478,7 +4448,7 @@ function AppCustomerDetailDialog({
   });
 
   useEffect(() => {
-    if (detail?.user) {
+    if (detail.user) {
       setBlockReason(detail.user.blockedReason || "");
     }
     if (!open) {
@@ -4512,7 +4482,7 @@ function AppCustomerDetailDialog({
     },
     onSuccess: (_data) => {
       invalidateAppCustomers();
-      toast({ title: detail?.user?.isBlocked ? "Usuario desbloqueado" : "Usuario bloqueado" });
+      toast({ title: detail.user.isBlocked  "Usuario desbloqueado" : "Usuario bloqueado" });
     },
     onError: (err: any) => {
       toast({ title: "Error", description: extractErrorMessage(err, "No se pudo actualizar el bloqueo"), variant: "destructive" });
@@ -4530,7 +4500,7 @@ function AppCustomerDetailDialog({
     },
     onSuccess: (_data, hidden) => {
       invalidateAppCustomers();
-      toast({ title: hidden ? "Reseñas ocultadas" : "Reseñas restauradas" });
+      toast({ title: hidden  "ReseÃ±as ocultadas" : "ReseÃ±as restauradas" });
     },
     onError: (err: any) => {
       toast({ title: "Error", description: extractErrorMessage(err, "No se pudo actualizar la visibilidad"), variant: "destructive" });
@@ -4552,17 +4522,17 @@ function AppCustomerDetailDialog({
     },
   });
 
-  const hasHiddenReviews = detail?.reviews?.some((review) => review.isHidden) ?? false;
+  const hasHiddenReviews = detail.reviews.some((review) => review.isHidden)  false;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Cliente App</DialogTitle>
-          <DialogDescription>Moderación, membresías, reseñas y reportes del usuario final.</DialogDescription>
+          <DialogDescription>ModeraciÃ³n, membresÃ­as, reseÃ±as y reportes del usuario final.</DialogDescription>
         </DialogHeader>
 
-        {isLoading || !detail ? (
+        {isLoading || !detail  (
           <div className="space-y-3">
             <Skeleton className="h-8 w-48" />
             <Skeleton className="h-24 w-full" />
@@ -4575,19 +4545,19 @@ function AppCustomerDetailDialog({
                 <h3 className="text-lg font-semibold">{customerFullName(detail.user)}</h3>
                 <p className="text-sm text-muted-foreground">{detail.user.email}</p>
                 <div className="flex items-center gap-2 mt-1 flex-wrap text-xs text-muted-foreground">
-                  <span>{detail.user.phone || "Sin teléfono"}</span>
+                  <span>{detail.user.phone || "Sin telÃ©fono"}</span>
                   <span>Alta {formatShortDate(detail.user.createdAt)}</span>
-                  <span>Última actividad {formatShortDateTime(detail.stats.lastActivity)}</span>
+                  <span>Ãšltima actividad {formatShortDateTime(detail.stats.lastActivity)}</span>
                 </div>
               </div>
-              <Badge variant={detail.user.isBlocked ? "destructive" : "default"}>
-                {detail.user.isBlocked ? "Bloqueado" : "Activo"}
+              <Badge variant={detail.user.isBlocked  "destructive" : "default"}>
+                {detail.user.isBlocked  "Bloqueado" : "Activo"}
               </Badge>
             </div>
 
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <Card><CardContent className="p-3"><p className="text-2xl font-bold">{detail.stats.branchCount}</p><p className="text-xs text-muted-foreground">Sucursales</p></CardContent></Card>
-              <Card><CardContent className="p-3"><p className="text-2xl font-bold">{detail.stats.reviewCount}</p><p className="text-xs text-muted-foreground">Reseñas</p></CardContent></Card>
+              <Card><CardContent className="p-3"><p className="text-2xl font-bold">{detail.stats.reviewCount}</p><p className="text-xs text-muted-foreground">ReseÃ±as</p></CardContent></Card>
               <Card><CardContent className="p-3"><p className="text-2xl font-bold">{detail.reports.length}</p><p className="text-xs text-muted-foreground">Reportes</p></CardContent></Card>
               <Card><CardContent className="p-3"><p className="text-2xl font-bold">{detail.localBlocks.filter((block) => !block.unblockedAt).length}</p><p className="text-xs text-muted-foreground">Bloqueos locales</p></CardContent></Card>
             </div>
@@ -4596,17 +4566,17 @@ function AppCustomerDetailDialog({
               <div className="flex items-center justify-between gap-3 flex-wrap">
                 <div>
                   <h4 className="font-medium">Control global</h4>
-                  <p className="text-xs text-muted-foreground">Bloquea la cuenta en toda la app sin afectar admins ni contratos móviles.</p>
+                  <p className="text-xs text-muted-foreground">Bloquea la cuenta en toda la app sin afectar admins ni contratos mÃ³viles.</p>
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
                   <Button
-                    variant={detail.user.isBlocked ? "outline" : "destructive"}
+                    variant={detail.user.isBlocked  "outline" : "destructive"}
                     onClick={() => blockMutation.mutate()}
                     disabled={blockMutation.isPending}
                     data-testid="button-toggle-global-block"
                   >
                     {blockMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
-                    {detail.user.isBlocked ? "Desbloquear usuario" : "Bloquear usuario"}
+                    {detail.user.isBlocked  "Desbloquear usuario" : "Bloquear usuario"}
                   </Button>
                   <Button
                     variant="outline"
@@ -4615,7 +4585,7 @@ function AppCustomerDetailDialog({
                     data-testid="button-toggle-hide-reviews"
                   >
                     {hideReviewsMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
-                    {hasHiddenReviews ? "Restaurar reseñas" : "Ocultar reseñas"}
+                    {hasHiddenReviews  "Restaurar reseÃ±as" : "Ocultar reseÃ±as"}
                   </Button>
                   <Button
                     variant="outline"
@@ -4638,13 +4608,13 @@ function AppCustomerDetailDialog({
                 <Textarea
                   value={blockReason}
                   onChange={(e) => setBlockReason(e.target.value)}
-                  placeholder="Motivo visible para soporte y moderación"
+                  placeholder="Motivo visible para soporte y moderaciÃ³n"
                   className="min-h-[84px]"
                   data-testid="textarea-global-block-reason"
                 />
                 <div className="flex items-center gap-2">
                   <Switch checked={hideReviewsOnBlock} onCheckedChange={setHideReviewsOnBlock} data-testid="switch-hide-reviews-on-block" />
-                  <Label className="text-xs text-muted-foreground">Ocultar reseñas al bloquear</Label>
+                  <Label className="text-xs text-muted-foreground">Ocultar reseÃ±as al bloquear</Label>
                 </div>
               </div>
               {detail.user.blockedReason && (
@@ -4658,8 +4628,8 @@ function AppCustomerDetailDialog({
               <Card>
                 <CardContent className="p-4 space-y-3">
                   <h4 className="font-medium">Sucursales donde participa</h4>
-                  {detail.memberships.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">Sin membresías registradas.</p>
+                  {detail.memberships.length === 0  (
+                    <p className="text-sm text-muted-foreground">Sin membresÃ­as registradas.</p>
                   ) : (
                     detail.memberships.map((membership) => (
                       <div key={membership.id} className="rounded-md border p-3">
@@ -4668,12 +4638,12 @@ function AppCustomerDetailDialog({
                             <p className="font-medium text-sm">{membership.branchName}</p>
                             <p className="text-xs text-muted-foreground">/{membership.branchSlug}</p>
                           </div>
-                          <Badge variant={membership.status === "active" ? "default" : "secondary"}>
+                          <Badge variant={membership.status === "active"  "default" : "secondary"}>
                             {membership.status}
                           </Badge>
                         </div>
                         <p className="text-xs text-muted-foreground mt-2">
-                          Alta {formatShortDate(membership.joinedAt)} · Cliente {membership.clientStatus}
+                          Alta {formatShortDate(membership.joinedAt)} Â· Cliente {membership.clientStatus}
                         </p>
                       </div>
                     ))
@@ -4684,19 +4654,19 @@ function AppCustomerDetailDialog({
               <Card>
                 <CardContent className="p-4 space-y-3">
                   <h4 className="font-medium">Bloqueos por sucursal</h4>
-                  {detail.localBlocks.length === 0 ? (
+                  {detail.localBlocks.length === 0  (
                     <p className="text-sm text-muted-foreground">Sin bloqueos locales.</p>
                   ) : (
                     detail.localBlocks.map((block) => (
                       <div key={block.id} className="rounded-md border p-3">
                         <div className="flex items-center justify-between gap-2">
                           <p className="font-medium text-sm">{block.branchName}</p>
-                          <Badge variant={block.unblockedAt ? "secondary" : "destructive"}>
-                            {block.unblockedAt ? "Levantado" : "Activo"}
+                          <Badge variant={block.unblockedAt  "secondary" : "destructive"}>
+                            {block.unblockedAt  "Levantado" : "Activo"}
                           </Badge>
                         </div>
                         <p className="text-xs text-muted-foreground mt-2">
-                          {block.reason ? customerReportReasonLabel(block.reason) : "Sin motivo"} · {formatShortDateTime(block.createdAt)}
+                          {block.reason  customerReportReasonLabel(block.reason) : "Sin motivo"} Â· {formatShortDateTime(block.createdAt)}
                         </p>
                         {block.note && <p className="text-sm mt-1">{block.note}</p>}
                       </div>
@@ -4708,9 +4678,9 @@ function AppCustomerDetailDialog({
 
             <Card>
               <CardContent className="p-4 space-y-3">
-                <h4 className="font-medium">Reseñas</h4>
-                {detail.reviews.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">Sin reseñas registradas.</p>
+                <h4 className="font-medium">ReseÃ±as</h4>
+                {detail.reviews.length === 0  (
+                  <p className="text-sm text-muted-foreground">Sin reseÃ±as registradas.</p>
                 ) : (
                   detail.reviews.map((review) => (
                     <div key={review.id} className="rounded-md border p-3 space-y-1">
@@ -4733,7 +4703,7 @@ function AppCustomerDetailDialog({
             <Card>
               <CardContent className="p-4 space-y-3">
                 <h4 className="font-medium">Reportes recibidos</h4>
-                {detail.reports.length === 0 ? (
+                {detail.reports.length === 0  (
                   <p className="text-sm text-muted-foreground">Sin reportes.</p>
                 ) : (
                   detail.reports.map((report) => (
@@ -4751,8 +4721,8 @@ function AppCustomerDetailDialog({
                       {report.note && <p className="text-sm">{report.note}</p>}
                       <div className="flex items-center justify-between gap-3 flex-wrap">
                         <p className="text-xs text-muted-foreground">
-                          {report.reporterName ? `Reportado por ${report.reporterName}` : "Reportado por sucursal"}
-                          {report.reviewedAt && report.reviewerName ? ` · Revisado por ${report.reviewerName}` : ""}
+                          {report.reporterName  `Reportado por ${report.reporterName}` : "Reportado por sucursal"}
+                          {report.reviewedAt && report.reviewerName  ` Â· Revisado por ${report.reviewerName}` : ""}
                         </p>
                         <Select
                           value={report.status}
@@ -4786,14 +4756,14 @@ function AppCustomersPanel() {
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
 
-  const { data: overview = EMPTY_CUSTOMER_APP_OVERVIEW } = useQuery<CustomerAppOverview>({
+  const { data: overview } = useQuery<CustomerAppOverview>({
     queryKey: ["/api/superadmin/app-customers/overview"],
   });
 
-  const { data: customers = [], isLoading } = useQuery<CustomerAppUser[]>({
+  const { data: customers, isLoading } = useQuery<CustomerAppUser[]>({
     queryKey: ["/api/superadmin/app-customers", search],
     queryFn: async () => {
-      const query = search.trim() ? `?q=${encodeURIComponent(search.trim())}` : "";
+      const query = search.trim()  `q=${encodeURIComponent(search.trim())}` : "";
       const resp = await fetch(`/api/superadmin/app-customers${query}`, { credentials: "include" });
       if (!resp.ok) {
         throw new Error(await resp.text());
@@ -4805,10 +4775,10 @@ function AppCustomersPanel() {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <Card><CardContent className="p-4"><p className="text-2xl font-bold">{overview.total ?? 0}</p><p className="text-xs text-muted-foreground">Total usuarios</p></CardContent></Card>
-        <Card><CardContent className="p-4"><p className="text-2xl font-bold">{overview.active ?? 0}</p><p className="text-xs text-muted-foreground">Activos</p></CardContent></Card>
-        <Card><CardContent className="p-4"><p className="text-2xl font-bold">{overview.blocked ?? 0}</p><p className="text-xs text-muted-foreground">Bloqueados</p></CardContent></Card>
-        <Card><CardContent className="p-4"><p className="text-2xl font-bold">{overview.pendingReports ?? 0}</p><p className="text-xs text-muted-foreground">Reportes pendientes</p></CardContent></Card>
+        <Card><CardContent className="p-4"><p className="text-2xl font-bold">{overview.total  0}</p><p className="text-xs text-muted-foreground">Total usuarios</p></CardContent></Card>
+        <Card><CardContent className="p-4"><p className="text-2xl font-bold">{overview.active  0}</p><p className="text-xs text-muted-foreground">Activos</p></CardContent></Card>
+        <Card><CardContent className="p-4"><p className="text-2xl font-bold">{overview.blocked  0}</p><p className="text-xs text-muted-foreground">Bloqueados</p></CardContent></Card>
+        <Card><CardContent className="p-4"><p className="text-2xl font-bold">{overview.pendingReports  0}</p><p className="text-xs text-muted-foreground">Reportes pendientes</p></CardContent></Card>
       </div>
 
       <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -4817,7 +4787,7 @@ function AppCustomersPanel() {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
             type="search"
-            placeholder="Buscar por nombre, email o teléfono"
+            placeholder="Buscar por nombre, email o telÃ©fono"
             className="pl-9 w-72"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -4826,13 +4796,13 @@ function AppCustomersPanel() {
         </div>
       </div>
 
-      {isLoading ? (
+      {isLoading  (
         <div className="space-y-3">
           {[1, 2, 3].map((i) => (
             <Card key={i}><CardContent className="p-4"><Skeleton className="h-5 w-48 mb-2" /><Skeleton className="h-4 w-64" /></CardContent></Card>
           ))}
         </div>
-      ) : customers && customers.length > 0 ? (
+      ) : customers && customers.length > 0  (
         <div className="space-y-3">
           {customers.map((customer) => (
             <Card
@@ -4846,17 +4816,17 @@ function AppCustomersPanel() {
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <h3 className="font-semibold truncate">{customerFullName(customer)}</h3>
-                      <Badge variant={customer.isBlocked ? "destructive" : "default"}>
-                        {customer.isBlocked ? "Bloqueado" : "Activo"}
+                      <Badge variant={customer.isBlocked  "destructive" : "default"}>
+                        {customer.isBlocked  "Bloqueado" : "Activo"}
                       </Badge>
                     </div>
                     <p className="text-sm text-muted-foreground truncate">{customer.email}</p>
                     <div className="flex items-center gap-3 mt-2 text-xs text-muted-foreground flex-wrap">
-                      <span>{customer.phone || "Sin teléfono"}</span>
+                      <span>{customer.phone || "Sin telÃ©fono"}</span>
                       <span>Alta {formatShortDate(customer.createdAt)}</span>
                       <span>{customer.branchCount} sucursales</span>
-                      <span>{customer.reviewCount} reseñas</span>
-                      <span>Última actividad {formatShortDateTime(customer.lastActivity)}</span>
+                      <span>{customer.reviewCount} reseÃ±as</span>
+                      <span>Ãšltima actividad {formatShortDateTime(customer.lastActivity)}</span>
                     </div>
                     {customer.blockedReason && (
                       <p className="text-xs text-muted-foreground mt-2">Motivo de bloqueo: {customer.blockedReason}</p>
@@ -4873,7 +4843,7 @@ function AppCustomersPanel() {
           <CardContent className="p-12 text-center">
             <Users className="h-12 w-12 text-muted-foreground/30 mx-auto mb-4" />
             <h3 className="font-semibold text-lg mb-1">Sin resultados</h3>
-            <p className="text-sm text-muted-foreground">No se encontraron usuarios app con esa búsqueda.</p>
+            <p className="text-sm text-muted-foreground">No se encontraron usuarios app con esa bÃºsqueda.</p>
           </CardContent>
         </Card>
       )}
@@ -4893,12 +4863,12 @@ function BranchCard({
   onStatusChange,
 }: {
   branch: Branch;
-  metrics?: BranchMetric;
+  metrics: BranchMetric;
   onStatusChange: (id: string, status: string) => void;
 }) {
   const isDeleted = !!branch.deletedAt;
 
-  const { data: adminData = null, refetch: refetchAdmin } = useQuery<AdminInfo>({
+  const { data: adminData, refetch: refetchAdmin } = useQuery<AdminInfo>({
     queryKey: ["/api/superadmin/branches", branch.id, "admin"],
     queryFn: async () => {
       const resp = await fetch(`/api/superadmin/branches/${branch.id}/admin`, { credentials: "include" });
@@ -4906,11 +4876,11 @@ function BranchCard({
       return resp.json();
     },
   });
-  const hasAdmin = !!adminData;
+  const hasAdmin = adminData !== undefined  !!adminData : undefined;
 
   return (
     <Card
-      className={isDeleted ? "opacity-50" : ""}
+      className={isDeleted  "opacity-50" : ""}
       data-testid={`card-branch-${branch.id}`}
     >
       <CardContent className="p-4">
@@ -4928,12 +4898,12 @@ function BranchCard({
               </p>
               <p className="text-xs text-muted-foreground" data-testid={`text-branch-category-${branch.id}`}>
                 {getCategoryLabel(branch.category)}
-                {branch.subcategory ? ` · ${branch.subcategory}` : ""}
+                {branch.subcategory  ` Â· ${branch.subcategory}` : ""}
               </p>
               <p className="text-xs text-muted-foreground" data-testid={`text-admin-email-${branch.id}`}>
-                {adminData ? (
+                {adminData  (
                   <span className="text-green-600 dark:text-green-400">Admin: {adminData.email}</span>
-                ) : adminData === null ? (
+                ) : adminData === null  (
                   <span className="text-amber-500">Sin admin asignado</span>
                 ) : null}
               </p>
@@ -4948,15 +4918,15 @@ function BranchCard({
         <div className="grid grid-cols-2 gap-2 mt-3">
           <div className="text-center p-2 bg-muted/50 rounded-md">
             <p className="text-lg font-bold" data-testid={`text-customers-${branch.id}`}>
-              {metrics?.customerCount ?? 0}
+              {metrics.customerCount  0}
             </p>
             <p className="text-xs text-muted-foreground">Clientes (activos)</p>
           </div>
           <div className="text-center p-2 bg-muted/50 rounded-md">
             <p className="text-lg font-bold" data-testid={`text-memberships-${branch.id}`}>
-              {metrics?.activeMemberships ?? 0}
+              {metrics.activeMemberships  0}
             </p>
-            <p className="text-xs text-muted-foreground">Membresías activas</p>
+            <p className="text-xs text-muted-foreground">MembresÃ­as activas</p>
           </div>
         </div>
 
@@ -4977,9 +4947,9 @@ function BranchCard({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="active">Activa — Todo funciona</SelectItem>
-                <SelectItem value="suspended">Suspendida — El administrador ve el aviso "Pago pendiente"</SelectItem>
-                <SelectItem value="blacklisted">Bloqueada — No permite acceso</SelectItem>
+                <SelectItem value="active">Activa â€” Todo funciona</SelectItem>
+                <SelectItem value="suspended">Suspendida â€” Admin ve banner "Pago pendiente"</SelectItem>
+                <SelectItem value="blacklisted">Bloqueada â€” No permite acceso</SelectItem>
               </SelectContent>
             </Select>
           )}
@@ -5000,7 +4970,7 @@ function BranchCard({
                   </a>
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>Abrir app pública</TooltipContent>
+              <TooltipContent>Abrir app pÃºblica</TooltipContent>
             </Tooltip>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -5017,7 +4987,7 @@ function BranchCard({
               </TooltipTrigger>
               <TooltipContent>Dashboard (requiere login)</TooltipContent>
             </Tooltip>
-            <EditBranchDialog branch={branch} adminEmail={adminData?.email || null} />
+            <EditBranchDialog branch={branch} adminEmail={adminData.email || null} />
             <ImpersonateButton branch={branch} hasAdmin={hasAdmin} />
             <AdminDialog branch={branch} onAdminChanged={() => refetchAdmin()} />
             <ResetPasswordDialog branch={branch} hasAdmin={hasAdmin} />
@@ -5041,12 +5011,12 @@ export default function SuperAdminPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [showDeleted, setShowDeleted] = useState(false);
 
-  const branchesUrl = showDeleted ? "/api/branches?include_deleted=true" : "/api/branches";
-  const { data: branches = [], isLoading } = useQuery<Branch[]>({
+  const branchesUrl = showDeleted  "/api/branchesinclude_deleted=true" : "/api/branches";
+  const { data: branches, isLoading } = useQuery<Branch[]>({
     queryKey: [branchesUrl],
   });
 
-  const { data: metrics = [] } = useQuery<BranchMetric[]>({
+  const { data: metrics } = useQuery<BranchMetric[]>({
     queryKey: ["/api/superadmin/branches/metrics"],
   });
 
@@ -5093,10 +5063,10 @@ export default function SuperAdminPage() {
     );
   });
 
-  const activeBranches = branches.filter((b) => b.status === "active" && !b.deletedAt).length ?? 0;
-  const totalBranches = branches.filter((b) => !b.deletedAt).length ?? 0;
-  const totalCustomers = metrics.reduce((acc, m) => acc + m.customerCount, 0) ?? 0;
-  const totalActiveMemberships = metrics.reduce((acc, m) => acc + m.activeMemberships, 0) ?? 0;
+  const activeBranches = branches.filter((b) => b.status === "active" && !b.deletedAt).length  0;
+  const totalBranches = branches.filter((b) => !b.deletedAt).length  0;
+  const totalCustomers = metrics.reduce((acc, m) => acc + m.customerCount, 0)  0;
+  const totalActiveMemberships = metrics.reduce((acc, m) => acc + m.activeMemberships, 0)  0;
 
   return (
     <div className="min-h-screen bg-background">
@@ -5110,12 +5080,12 @@ export default function SuperAdminPage() {
               <h1 className="font-bold text-lg leading-tight" data-testid="text-superadmin-title">
                 Super Admin
               </h1>
-              <p className="text-xs text-muted-foreground">{user?.email ?? ""}</p>
+              <p className="text-xs text-muted-foreground">{user.email}</p>
             </div>
           </div>
           <div className="flex items-center gap-1">
             <Button size="icon" variant="ghost" onClick={toggleTheme} data-testid="button-theme">
-              {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+              {theme === "dark"  <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </Button>
             <Button variant="ghost" onClick={logout} data-testid="button-logout">
               <LogOut className="h-4 w-4 mr-2" />
@@ -5167,7 +5137,7 @@ export default function SuperAdminPage() {
               </div>
               <div>
                 <p className="text-2xl font-bold" data-testid="text-total-memberships">{totalActiveMemberships}</p>
-                <p className="text-xs text-muted-foreground">Membresías activas</p>
+                <p className="text-xs text-muted-foreground">MembresÃ­as activas</p>
               </div>
             </CardContent>
           </Card>
@@ -5216,7 +5186,7 @@ export default function SuperAdminPage() {
               </div>
             </div>
 
-            {isLoading ? (
+            {isLoading  (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {[1, 2, 3].map((i) => (
                   <Card key={i}>
@@ -5233,7 +5203,7 @@ export default function SuperAdminPage() {
                   </Card>
                 ))}
               </div>
-            ) : filteredBranches && filteredBranches.length > 0 ? (
+            ) : filteredBranches && filteredBranches.length > 0  (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {filteredBranches.map((branch) => (
                   <BranchCard
@@ -5249,11 +5219,11 @@ export default function SuperAdminPage() {
                 <CardContent className="p-12 text-center">
                   <Building2 className="h-12 w-12 text-muted-foreground/30 mx-auto mb-4" />
                   <h3 className="font-semibold text-lg mb-1">
-                    {searchQuery ? "Sin resultados" : "Sin sucursales"}
+                    {searchQuery  "Sin resultados" : "Sin sucursales"}
                   </h3>
                   <p className="text-sm text-muted-foreground">
                     {searchQuery
-                      ? "No se encontraron sucursales con esa búsqueda"
+                       "No se encontraron sucursales con esa bÃºsqueda"
                       : "Crea tu primera sucursal para comenzar"}
                   </p>
                 </CardContent>
@@ -5296,3 +5266,4 @@ export default function SuperAdminPage() {
     </div>
   );
 }
+
