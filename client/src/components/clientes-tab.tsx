@@ -72,7 +72,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { invalidateBranchMembershipQueries } from "@/lib/branch-dashboard-cache";
+import { invalidateBranchClientQueries, invalidateBranchMembershipQueries } from "@/lib/branch-dashboard-cache";
 import { useToast } from "@/hooks/use-toast";
 
 type ClientIdentityControl = {
@@ -976,8 +976,7 @@ function AvatarUploadSection({ clientId, avatarUrl, name, lastName }: { clientId
         const err = await resp.json();
         throw new Error(err.message || "Error al subir");
       }
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients", clientId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
+      await invalidateBranchClientQueries(clientId);
       toast({ title: "Foto actualizada" });
     } catch (err: any) {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -991,9 +990,8 @@ function AvatarUploadSection({ clientId, avatarUrl, name, lastName }: { clientId
     mutationFn: async () => {
       await apiRequest("DELETE", `/api/branch/clients/${clientId}/avatar`);
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients", clientId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
+    onSuccess: async () => {
+      await invalidateBranchClientQueries(clientId);
       toast({ title: "Foto eliminada" });
     },
     onError: (err: any) => {
@@ -1039,8 +1037,6 @@ function CreateClientDialog({
 }) {
   const { toast } = useToast();
   const { user } = useAuth();
-  const branchSlug = ((user?.branch as any)?.slug ?? "");
-  const appLink = branchSlug ? `${window.location.origin}/app/${branchSlug}` : "";
   const [name, setName] = useState("");
   const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
@@ -1097,10 +1093,9 @@ function CreateClientDialog({
 
       return payload ?? {};
     },
-    onSuccess: (data: any) => {
+    onSuccess: async (data: any) => {
       setDuplicateState(null);
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/stats"] });
+      await invalidateBranchMembershipQueries(data?.userId ?? null);
       if (data.password) {
         setCreatedPassword(data.password);
         toast({ title: "Cliente creado" });
@@ -1184,7 +1179,7 @@ function CreateClientDialog({
 
   if (createdPassword) {
     const clientName = [name, lastName].filter(Boolean).join(" ");
-    const accessText = `Hola ${name}, aquí están tus datos de acceso para ${((user?.branch as any)?.name ?? "el estudio")}:\n\nUsuario (email): ${email}\nContraseña: ${createdPassword}${appLink ? `\nApp: ${appLink}` : ""}`;
+    const accessText = `Hola ${name}, aquí están tus datos de acceso para ${((user?.branch as any)?.name ?? "el estudio")}:\n\nUsuario (email): ${email}\nContraseña: ${createdPassword}`;
     const waPhone = phone ? normalizePhoneMX(phone) : null;
     return (
       <Dialog open={open} onOpenChange={() => resetAndClose()}>
@@ -1197,7 +1192,6 @@ function CreateClientDialog({
             <div className="bg-muted rounded-md p-3 space-y-2 text-sm font-mono" data-testid="box-credentials">
               <p><span className="font-sans font-medium">Email:</span> {email}</p>
               <p><span className="font-sans font-medium">Contraseña:</span> {createdPassword}</p>
-              {appLink && <p><span className="font-sans font-medium">App:</span> {appLink}</p>}
             </div>
             <Button
               variant="outline"
@@ -1847,9 +1841,8 @@ function ClientDebtSection({ clientId, hasDebt, debtAmount }: { clientId: string
       const resp = await apiRequest("PATCH", `/api/branch/clients/${clientId}/debt`, data);
       return resp.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients", clientId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
+    onSuccess: async () => {
+      await invalidateBranchClientQueries(clientId);
       toast({ title: "Adeudo actualizado" });
     },
     onError: (err: any) => {
@@ -1918,10 +1911,8 @@ function ClientStatusSelector({ clientId, currentStatus }: { clientId: string; c
       const resp = await apiRequest("PATCH", `/api/branch/clients/${clientId}/status`, { clientStatus });
       return resp.json();
     },
-    onSuccess: (_data, newStatus) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients", clientId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/stats"] });
+    onSuccess: async (_data, newStatus) => {
+      await invalidateBranchMembershipQueries(clientId);
       toast({ title: `Status actualizado a ${clientStatusLabel(newStatus)}` });
     },
     onError: (err: any) => {
@@ -2059,8 +2050,8 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
       const resp = await apiRequest("POST", `/api/branch/clients/${clientId}/notes`, { content });
       return resp.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients", clientId] });
+    onSuccess: async () => {
+      await invalidateBranchClientQueries(clientId);
       setNoteContent("");
       toast({ title: "Nota agregada" });
     },
@@ -2074,9 +2065,8 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
       const resp = await apiRequest("POST", `/api/branch/clients/${clientId}/attendance`);
       return resp.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients", clientId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
+    onSuccess: async () => {
+      await invalidateBranchMembershipQueries(clientId);
       toast({ title: "Asistencia registrada" });
     },
     onError: (err: any) => {
@@ -2110,9 +2100,8 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
       const resp = await apiRequest("DELETE", `/api/branch/memberships/${profile!.membership.id}/plan`);
       return resp.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients", clientId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
+    onSuccess: async () => {
+      await invalidateBranchMembershipQueries(clientId);
       toast({ title: "Servicio o plan removido" });
     },
     onError: (err: any) => {
@@ -2141,9 +2130,8 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
       const resp = await apiRequest("POST", `/api/branch/client/${clientId}/report`, payload);
       return resp.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients", clientId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
+    onSuccess: async () => {
+      await invalidateBranchClientQueries(clientId);
       setReportNote("");
       setBlockLocally(false);
       toast({ title: "Incidencia enviada a Super Admin" });
@@ -2158,9 +2146,8 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
       const resp = await apiRequest("POST", `/api/branch/client/${clientId}/local-block`, payload);
       return resp.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients", clientId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
+    onSuccess: async () => {
+      await invalidateBranchClientQueries(clientId);
       toast({ title: "Cliente bloqueado en esta sucursal" });
     },
     onError: (err: any) => {
@@ -2173,9 +2160,8 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
       const resp = await apiRequest("DELETE", `/api/branch/client/${clientId}/local-block`);
       return resp.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients", clientId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
+    onSuccess: async () => {
+      await invalidateBranchClientQueries(clientId);
       toast({ title: "Bloqueo local removido" });
     },
     onError: (err: any) => {
@@ -3431,9 +3417,8 @@ export default function ClientesTab({ focusRequest }: { focusRequest?: ClientFoc
     mutationFn: async (clientId: string) => {
       await apiRequest("DELETE", `/api/branch/clients/${clientId}`);
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/clients"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/branch/stats"] });
+    onSuccess: async (_data, deletedClientId) => {
+      await invalidateBranchMembershipQueries(deletedClientId);
       toast({ title: "Cliente eliminado" });
       setDeleteTarget(null);
     },

@@ -156,6 +156,7 @@ import {
   type Promotion,
   type InsertPromotion,
 } from "@shared/schema";
+import { buildMembershipActivePatch, buildMembershipLeftPatch } from "./membership-state";
 import { normalizeSearchText } from "./search-utils";
 
 const BRANCH_TIMEZONE = "America/Mexico_City";
@@ -4893,6 +4894,7 @@ export class DatabaseStorage implements IStorage {
     const [m] = await db
       .update(memberships)
       .set({
+        ...buildMembershipActivePatch(),
         planId,
         planNameSnapshot: null,
         classesRemaining,
@@ -11112,6 +11114,7 @@ export class DatabaseStorage implements IStorage {
     const [m] = await db
       .update(memberships)
       .set({
+        ...buildMembershipActivePatch(),
         planId,
         classesRemaining,
         classesTotal,
@@ -11119,7 +11122,6 @@ export class DatabaseStorage implements IStorage {
         membershipStartDate: paidAt,
         membershipEndDate: expiresAt,
         paidAt,
-        clientStatus: "active",
       })
       .where(eq(memberships.id, membershipId))
       .returning();
@@ -11223,7 +11225,7 @@ export class DatabaseStorage implements IStorage {
   async softDeleteMembership(membershipId: string): Promise<any> {
     const [updated] = await db
       .update(memberships)
-      .set({ status: "left" })
+      .set(buildMembershipLeftPatch())
       .where(eq(memberships.id, membershipId))
       .returning();
     return updated;

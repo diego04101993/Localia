@@ -1,6 +1,12 @@
-import { createContext, useContext, useCallback } from "react";
+import { createContext, useContext, useCallback, useEffect, useMemo, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { queryClient, apiRequest, getQueryFn } from "./queryClient";
+import {
+  queryClient,
+  apiRequest,
+  getQueryFn,
+  clearScopedQueryCache,
+  recoverActiveQueriesAfterResume,
+} from "./queryClient";
 import type { User } from "@shared/schema";
 
 type AuthUser = Omit<User, "passwordHash"> & {
@@ -25,7 +31,57 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     queryFn: getQueryFn({ on401: "returnNull" }),
     staleTime: 30 * 1000,
     refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
   });
+
+  const previousScopeRef = useRef<string | null>(null);
+  const authScope = useMemo(() => {
+    if (!user) return "guest";
+    return [
+      user.id,
+      user.role,
+      user.branch?.id ?? "no-branch",
+      (user as any).impersonating ? "impersonating" : "direct",
+    ].join(":");
+  }, [user]);
+
+  useEffect(() => {
+    if (previousScopeRef.current === null) {
+      previousScopeRef.current = authScope;
+      return;
+    }
+
+    if (previousScopeRef.current !== authScope) {
+      clearScopedQueryCache();
+      previousScopeRef.current = authScope;
+    }
+  }, [authScope]);
+
+  useEffect(() => {
+    const handleVisible = () => {
+      if (document.visibilityState === "visible") {
+        void recoverActiveQueriesAfterResume();
+      }
+    };
+
+    const handlePageShow = () => {
+      void recoverActiveQueriesAfterResume();
+    };
+
+    const handleOnline = () => {
+      void recoverActiveQueriesAfterResume();
+    };
+
+    document.addEventListener("visibilitychange", handleVisible);
+    window.addEventListener("pageshow", handlePageShow);
+    window.addEventListener("online", handleOnline);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisible);
+      window.removeEventListener("pageshow", handlePageShow);
+      window.removeEventListener("online", handleOnline);
+    };
+  }, []);
 
   const loginMutation = useMutation({
     mutationFn: async ({ email, password }: { email: string; password: string }) => {

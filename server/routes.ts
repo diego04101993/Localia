@@ -126,6 +126,7 @@ import {
   branchFinancePaymentMethodValues,
   upsertBranchMonthlyBillingSchema,
 } from "@shared/schema";
+import { buildMembershipActivePatch, buildMembershipLeftPatch } from "./membership-state";
 import {
   branches,
   users,
@@ -4809,7 +4810,9 @@ if (!user) {
           }
 
           if (matchedMembership.status === "left") {
-            await storage.updateMembership(matchedMembership.id, { status: "active", source: "admin_created" });
+            await storage.updateMembership(matchedMembership.id, {
+              ...buildMembershipActivePatch("admin_created"),
+            });
           }
 
           if (hasPrivateProfilePayload) {
@@ -4905,7 +4908,9 @@ if (!user) {
           }
 
           if (membership.status === "left") {
-            await storage.updateMembership(membership.id, { status: "active", source: "admin_created" });
+            await storage.updateMembership(membership.id, {
+              ...buildMembershipActivePatch("admin_created"),
+            });
           }
 
           if (hasPrivateProfilePayload) {
@@ -5011,7 +5016,9 @@ if (!user) {
           if (existingMembership.status === "active") {
             return res.status(409).json({ message: "Este cliente ya está registrado en tu sucursal" });
           }
-          await storage.updateMembership(existingMembership.id, { status: "active", source: "admin_created" });
+          await storage.updateMembership(existingMembership.id, {
+            ...buildMembershipActivePatch("admin_created"),
+          });
           if (hasPrivateProfilePayload) {
             await storage.updateBranchClientPrivateProfile(actor.branchId, existing.id, privateProfilePayload);
           }
@@ -5694,8 +5701,7 @@ if (!user) {
 
       if (matchedClient && matchedClient.membershipStatus === "left" && membershipId) {
         await storage.updateMembership(membershipId, {
-          status: "active",
-          source: "admin_created",
+          ...buildMembershipActivePatch("admin_created"),
         });
         clientAction = "reactivated";
       }
@@ -10263,7 +10269,9 @@ if (!user) {
           return res.status(403).json({ message: "No puedes unirte a esta sucursal" });
         }
         if (existing.status === "left") {
-          const updated = await storage.updateMembership(existing.id, { status: "active", source: "self_join" });
+          const updated = await storage.updateMembership(existing.id, {
+            ...buildMembershipActivePatch("self_join"),
+          });
           await notifyBranchCustomerJoinedFromApp(branch.id, user.id);
           return res.json(updated);
         }
@@ -10303,7 +10311,9 @@ if (!user) {
       if (!existing || existing.status !== "active") {
         return res.status(400).json({ message: "No eres miembro activo de esta sucursal" });
       }
-      const updated = await storage.updateMembership(existing.id, { status: "left" });
+      const updated = await storage.updateMembership(existing.id, {
+        ...buildMembershipLeftPatch(),
+      });
       return res.json(updated);
     } catch (err: any) {
       console.error("[LEAVE]", err.stack || err);
@@ -10332,10 +10342,17 @@ if (!user) {
       if (existing.status === "banned") {
         return res.status(403).json({ message: "No puedes interactuar con esta sucursal" });
       }
-      const updated = await storage.updateMembership(existing.id, {
-        isFavorite: result.data.isFavorite,
-        status: existing.status === "left" ? "active" : existing.status,
-      });
+      const updated = await storage.updateMembership(
+        existing.id,
+        existing.status === "left"
+          ? {
+              ...buildMembershipActivePatch(),
+              isFavorite: result.data.isFavorite,
+            }
+          : {
+              isFavorite: result.data.isFavorite,
+            },
+      );
       return res.json(updated);
     }
 
@@ -10345,13 +10362,17 @@ if (!user) {
         return res.status(409).json(favoriteLinkResult.blocked);
       }
       if (favoriteLinkResult.membership) {
-        const updatedLinkedMembership = await storage.updateMembership(favoriteLinkResult.membership.id, {
-          isFavorite: true,
-          status:
-            favoriteLinkResult.membership.status === "left"
-              ? "active"
-              : favoriteLinkResult.membership.status,
-        });
+        const updatedLinkedMembership = await storage.updateMembership(
+          favoriteLinkResult.membership.id,
+          favoriteLinkResult.membership.status === "left"
+            ? {
+                ...buildMembershipActivePatch(),
+                isFavorite: true,
+              }
+            : {
+                isFavorite: true,
+              },
+        );
         await notifyBranchCustomerJoinedFromApp(branch.id, user.id);
         return res.status(201).json(updatedLinkedMembership || favoriteLinkResult.membership);
       }
