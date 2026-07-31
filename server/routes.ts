@@ -12,6 +12,7 @@ import { db } from "./db";
 import { and, count, eq, ne, or } from "drizzle-orm";
 import {
   getBranchClientIdentityControl,
+  getBranchClientPasswordResetEligibility,
   isCrmPlaceholderEmail,
 } from "./branch-client-identity";
 import {
@@ -4497,9 +4498,13 @@ if (!user) {
       if (!profile) return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
       const rawUser = await storage.getUser(clientId);
       if (!rawUser) return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+      const passwordResetEligibility = getBranchClientPasswordResetEligibility(rawUser, profile.membership);
       res.json({
         ...profile,
         identityControl: getBranchClientIdentityControl(rawUser, profile.membership),
+        canResetLocalPassword: passwordResetEligibility.canResetLocalPassword,
+        canResetLocalPasswordReason: passwordResetEligibility.reason,
+        accessEmail: passwordResetEligibility.email,
       });
     } catch (err: any) {
       console.error(`[CLIENT_PROFILE] Error:`, err.stack || err);
@@ -5474,33 +5479,59 @@ if (!user) {
   });
 
   app.post("/api/branch/clients/:id/reset-password", requireBranchAdmin, async (req, res) => {
-    return res.status(403).json({ message: "Esta función ya no está disponible. El cliente debe gestionar su contraseña desde el inicio de sesión." });
     const actor = req.user as any;
     const clientId = req.params.id as string;
+    res.set("Cache-Control", "no-store");
+
     try {
+      if (actor.role !== "BRANCH_ADMIN") {
+        return res.status(403).json({ message: "Solo la sucursal asociada puede restablecer el acceso del cliente." });
+      }
+
       const membership = await storage.getMembership(clientId, actor.branchId);
-      if (!membership) return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+      if (!membership) {
+        return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+      }
 
       const client = await storage.getUser(clientId);
-      if (!client) return res.status(404).json({ message: "Usuario no encontrado" });
-      const clientEmail = client!.email;
+      if (!client) {
+        return res.status(404).json({ message: "Usuario no encontrado" });
+      }
 
-      const newPassword = generateSecurePassword(12);
-      const hash = await bcrypt.hash(newPassword, 10);
-      await storage.updateUserPassword(clientId, hash);
+      const access = getBranchClientPasswordResetEligibility(client, membership);
+      if (!access.canResetLocalPassword || !access.email) {
+        const statusCode = access.code === "CLIENT_ACCESS_UNAVAILABLE" ? 403 : 409;
+        return res.status(statusCode).json({
+          code: access.code,
+          message: access.reason,
+        });
+      }
 
-      await storage.createAuditLog({
+      const temporaryPassword = generateSecurePassword(16);
+      const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+      const resetResult = await storage.resetBranchClientLocalPasswordAccess({
         actorUserId: actor.id,
-        action: "RESET_CLIENT_PASSWORD",
         branchId: actor.branchId,
-        metadata: { clientId, clientEmail },
+        clientId,
+        passwordHash,
       });
+      if (!resetResult.ok) {
+        return res.status(resetResult.statusCode).json({
+          code: resetResult.code,
+          message: resetResult.message,
+        });
+      }
 
-      console.log(`[RESET_CLIENT_PASSWORD] Reset password for ${clientEmail} by ${actor.email}`);
-      res.json({ email: clientEmail, password: newPassword });
+      return res.json({
+        email: resetResult.email,
+        temporaryPassword,
+        sessionsInvalidated: resetResult.sessionsInvalidated,
+        mustChangePasswordOnLogin: false,
+        message: "Contraseña temporal generada correctamente.",
+      });
     } catch (err: any) {
       console.error(`[RESET_CLIENT_PASSWORD] Error:`, err.stack || err);
-      res.status(500).json({ message: "Error al resetear contraseña" });
+      return res.status(500).json({ message: "Error al restablecer el acceso del cliente" });
     }
   });
 

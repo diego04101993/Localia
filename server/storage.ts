@@ -1,6 +1,9 @@
 import { eq, and, sql, or, ne, isNull, count, desc, asc, gte, inArray, lte } from "drizzle-orm";
 import { db } from "./db";
-import { getBranchClientIdentityControl } from "./branch-client-identity";
+import {
+  getBranchClientIdentityControl,
+  getBranchClientPasswordResetEligibility,
+} from "./branch-client-identity";
 import {
   users,
   branches,
@@ -158,6 +161,21 @@ import {
 } from "@shared/schema";
 import { buildMembershipActivePatch, buildMembershipLeftPatch } from "./membership-state";
 import { normalizeSearchText } from "./search-utils";
+
+const BRANCH_CLIENT_PASSWORD_RESET_COOLDOWN_MS = 60_000;
+
+export type BranchClientPasswordResetResult =
+  | {
+      ok: true;
+      email: string;
+      sessionsInvalidated: number;
+    }
+  | {
+      ok: false;
+      statusCode: number;
+      code: string;
+      message: string;
+    };
 
 const BRANCH_TIMEZONE = "America/Mexico_City";
 const COMMERCIAL_LARGE_SALE_THRESHOLD = 10000;
@@ -1482,6 +1500,12 @@ export interface IStorage {
   createUser(user: InsertUser): Promise<User>;
   deleteCustomerAccount(id: string): Promise<void>;
   updateUserPassword(id: string, passwordHash: string): Promise<User | undefined>;
+  resetBranchClientLocalPasswordAccess(params: {
+    actorUserId: string;
+    branchId: string;
+    clientId: string;
+    passwordHash: string;
+  }): Promise<BranchClientPasswordResetResult>;
   getAllBranches(includeDeleted?: boolean): Promise<Branch[]>;
   getBranch(id: string): Promise<Branch | undefined>;
   getBranchBySlug(slug: string): Promise<Branch | undefined>;
@@ -2122,6 +2146,148 @@ export class DatabaseStorage implements IStorage {
       .where(eq(users.id, id))
       .returning();
     return user;
+  }
+
+  async resetBranchClientLocalPasswordAccess(params: {
+    actorUserId: string;
+    branchId: string;
+    clientId: string;
+    passwordHash: string;
+  }): Promise<BranchClientPasswordResetResult> {
+    const referenceId = `client-password-reset:${params.branchId}:${params.clientId}`;
+
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`
+        SELECT pg_advisory_xact_lock(
+          hashtext(${params.branchId}),
+          hashtext(${params.clientId})
+        )
+      `);
+
+      const membershipResult = await tx.execute(sql<{
+        source: string | null;
+        status: string | null;
+        clientStatus: string | null;
+      }>`
+        SELECT
+          source,
+          status,
+          client_status AS "clientStatus"
+        FROM memberships
+        WHERE user_id = ${params.clientId}
+          AND branch_id = ${params.branchId}
+        LIMIT 1
+        FOR UPDATE
+      `);
+      const membership = membershipResult.rows[0] ?? null;
+      if (!membership) {
+        return {
+          ok: false,
+          statusCode: 404,
+          code: "CLIENT_NOT_FOUND",
+          message: "Cliente no encontrado en esta sucursal",
+        };
+      }
+
+      const clientResult = await tx.execute(sql<{
+        email: string | null;
+        authProvider: string | null;
+        passwordHash: string | null;
+        firebaseUid: string | null;
+        acceptedTerms: boolean | null;
+        isBlocked: boolean | null;
+      }>`
+        SELECT
+          email,
+          auth_provider AS "authProvider",
+          password_hash AS "passwordHash",
+          firebase_uid AS "firebaseUid",
+          accepted_terms AS "acceptedTerms",
+          is_blocked AS "isBlocked"
+        FROM users
+        WHERE id = ${params.clientId}
+        LIMIT 1
+        FOR UPDATE
+      `);
+      const client = clientResult.rows[0] ?? null;
+      if (!client) {
+        return {
+          ok: false,
+          statusCode: 404,
+          code: "CLIENT_NOT_FOUND",
+          message: "Usuario no encontrado",
+        };
+      }
+
+      const eligibility = getBranchClientPasswordResetEligibility(client, membership);
+      if (!eligibility.canResetLocalPassword || !eligibility.email) {
+        return {
+          ok: false,
+          statusCode: eligibility.code === "CLIENT_ACCESS_UNAVAILABLE" ? 403 : 409,
+          code: eligibility.code,
+          message: eligibility.reason,
+        };
+      }
+
+      const [latestResetLog] = await tx
+        .select({
+          createdAt: auditLogs.createdAt,
+        })
+        .from(auditLogs)
+        .where(and(
+          eq(auditLogs.action, "RESET_CLIENT_PASSWORD"),
+          eq(auditLogs.branchId, params.branchId),
+          sql`COALESCE(${auditLogs.metadata} ->> 'referenceId', '') = ${referenceId}`,
+        ))
+        .orderBy(desc(auditLogs.createdAt))
+        .limit(1);
+
+      if (latestResetLog) {
+        const elapsedMs = Date.now() - new Date(latestResetLog.createdAt).getTime();
+        if (elapsedMs >= 0 && elapsedMs < BRANCH_CLIENT_PASSWORD_RESET_COOLDOWN_MS) {
+          return {
+            ok: false,
+            statusCode: 429,
+            code: "RESET_RATE_LIMITED",
+            message: "Espera un momento antes de generar otra contraseña temporal.",
+          };
+        }
+      }
+
+      await tx
+        .update(users)
+        .set({ passwordHash: params.passwordHash })
+        .where(eq(users.id, params.clientId));
+
+      await tx
+        .update(passwordResetTokens)
+        .set({ used: true })
+        .where(eq(passwordResetTokens.userId, params.clientId));
+
+      const sessionDeleteResult = await tx.execute(sql`
+        DELETE FROM session
+        WHERE sess::json -> 'passport' ->> 'user' = ${params.clientId}
+      `);
+      const sessionsInvalidated = Number((sessionDeleteResult as any)?.rowCount ?? 0);
+
+      await tx.insert(auditLogs).values({
+        actorUserId: params.actorUserId,
+        action: "RESET_CLIENT_PASSWORD",
+        branchId: params.branchId,
+        metadata: {
+          clientId: params.clientId,
+          referenceId,
+          result: "success",
+          sessionsInvalidated,
+        },
+      });
+
+      return {
+        ok: true,
+        email: eligibility.email,
+        sessionsInvalidated,
+      };
+    });
   }
 
   async getAllBranches(includeDeleted = false): Promise<Branch[]> {

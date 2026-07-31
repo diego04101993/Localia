@@ -217,7 +217,18 @@ interface ClientProfile {
     }[];
   };
   identityControl: ClientIdentityControl | null;
+  canResetLocalPassword: boolean;
+  canResetLocalPasswordReason: string | null;
+  accessEmail: string | null;
 }
+
+type ClientAccessResetResult = {
+  email: string;
+  temporaryPassword: string;
+  sessionsInvalidated: number;
+  mustChangePasswordOnLogin: boolean;
+  message?: string;
+};
 
 type ClientCommercialHistoryFilter = "all" | "products" | "services" | "current_month";
 
@@ -410,6 +421,19 @@ function isCrmPlaceholderEmail(email: string | null | undefined): boolean {
 function displayClientEmail(email: string | null | undefined): string {
   if (!email) return "Sin correo registrado";
   return isCrmPlaceholderEmail(email) ? "Sin correo registrado" : email;
+}
+
+function getApiErrorMessage(error: unknown, fallback: string): string {
+  if (!(error instanceof Error) || !error.message) {
+    return fallback;
+  }
+
+  try {
+    const parsed = JSON.parse(error.message.replace(/^\d+:\s*/, ""));
+    return parsed?.message || fallback;
+  } catch {
+    return error.message || fallback;
+  }
 }
 
 function normalizeOptionalTextInput(value: string): string | null {
@@ -1190,7 +1214,7 @@ function CreateClientDialog({
           </DialogHeader>
           <div className="space-y-3">
             <div className="bg-muted rounded-md p-3 space-y-2 text-sm font-mono" data-testid="box-credentials">
-              <p><span className="font-sans font-medium">Email:</span> {email}</p>
+              <p><span className="font-sans font-medium">Usuario (email):</span> {email}</p>
               <p><span className="font-sans font-medium">Contraseña:</span> {createdPassword}</p>
             </div>
             <Button
@@ -1960,8 +1984,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
 }) {
   const { toast } = useToast();
   const { user } = useAuth();
-  const branchSlug = ((user?.branch as any)?.slug ?? "");
-  const appLink = branchSlug ? `${window.location.origin}/app/${branchSlug}` : "";
+  const branchName = ((user?.branch as any)?.name ?? "tu sucursal");
   const [noteContent, setNoteContent] = useState("");
   const [showAllNotes, setShowAllNotes] = useState(false);
   const [showPlanSelect, setShowPlanSelect] = useState(false);
@@ -1974,6 +1997,8 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
   const [blockLocally, setBlockLocally] = useState(false);
   const [commercialHistoryFilter, setCommercialHistoryFilter] = useState<ClientCommercialHistoryFilter>("all");
   const [commercialHistoryPage, setCommercialHistoryPage] = useState(1);
+  const [accessDialogOpen, setAccessDialogOpen] = useState(false);
+  const [accessResetResult, setAccessResetResult] = useState<ClientAccessResetResult | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const { data: profile, isLoading } = useQuery<ClientProfile>({
     queryKey: ["/api/branch/clients", clientId],
@@ -1999,6 +2024,8 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
       setMembershipPaymentMethod("efectivo");
       setCommercialHistoryFilter("all");
       setCommercialHistoryPage(1);
+      setAccessDialogOpen(false);
+      setAccessResetResult(null);
     }
   }, [open]);
 
@@ -2008,6 +2035,8 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
     setCommercialHistoryPage(1);
     setAssignmentStartDate(getMxTodayIsoDate());
     setSelectedAssignPlanId("");
+    setAccessDialogOpen(false);
+    setAccessResetResult(null);
   }, [open, clientId]);
 
   useEffect(() => {
@@ -2169,6 +2198,25 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
     },
   });
 
+  const resetClientAccessMutation = useMutation({
+    mutationFn: async () => {
+      const resp = await apiRequest("POST", `/api/branch/clients/${clientId}/reset-password`);
+      return (await resp.json()) as ClientAccessResetResult;
+    },
+    onSuccess: async (payload) => {
+      setAccessResetResult(payload);
+      await invalidateBranchClientQueries(clientId);
+      toast({ title: "Contraseña temporal generada" });
+    },
+    onError: (err: any) => {
+      toast({
+        title: "Error",
+        description: getApiErrorMessage(err, "No se pudo restablecer la contraseña"),
+        variant: "destructive",
+      });
+    },
+  });
+
   const activePlans = (plans || []).filter(p => p.isActive);
   const todayAssignmentDate = getMxTodayIsoDate();
   const selectedAssignPlan = activePlans.find((plan) => plan.id === selectedAssignPlanId) ?? null;
@@ -2193,6 +2241,48 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
   const commercialHistoryPageCount = commercialHistory
     ? Math.max(1, Math.ceil(commercialHistory.total / commercialHistory.limit))
     : 1;
+  const resolvedIdentityControl = resolveClientIdentityControl(profile?.identityControl ?? null, {
+    context: "client-profile",
+    clientId,
+  });
+  const showClientAccessSection = !!profile?.canResetLocalPassword;
+  const normalizedAccessEmail = profile?.accessEmail ?? null;
+  const canCopyAccessUser = !!normalizedAccessEmail;
+  const canResetClientAccess = !!profile?.canResetLocalPassword;
+  const accessHelperText =
+    profile?.canResetLocalPasswordReason ||
+    "Si olvidó su contraseña, puedes generar una nueva temporal. La anterior dejará de funcionar.";
+
+  function handleCopyAccessUser() {
+    if (!normalizedAccessEmail) return;
+    navigator.clipboard.writeText(normalizedAccessEmail);
+    toast({ title: "Usuario copiado" });
+  }
+
+  function handleCopyTemporaryAccess() {
+    if (!accessResetResult) return;
+    navigator.clipboard.writeText(
+      `Usuario (email): ${accessResetResult.email}\nContraseña temporal: ${accessResetResult.temporaryPassword}`,
+    );
+    toast({ title: "Acceso copiado" });
+  }
+
+  function handleShareTemporaryAccess() {
+    if (!profile?.user.phone || !accessResetResult) return;
+    openWaLink(
+      profile.user.phone,
+      `Hola ${profile.user.name}, aquí están tus nuevos datos de acceso para ${branchName}:\n\nUsuario: ${accessResetResult.email}\nContraseña temporal: ${accessResetResult.temporaryPassword}\n\nPor seguridad, cambia esta contraseña después de iniciar sesión.`,
+    );
+  }
+
+  function handleResetClientAccess() {
+    if (!canResetClientAccess) return;
+    const confirmed = window.confirm(
+      "Se generará una nueva contraseña temporal. La contraseña anterior dejará de funcionar.",
+    );
+    if (!confirmed) return;
+    resetClientAccessMutation.mutate();
+  }
 
   const renderAssignPlanPicker = () => (
     <div className="space-y-3">
@@ -2316,6 +2406,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
   );
 
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="z-[90] h-[100dvh] max-h-[100dvh] w-screen max-w-none gap-0 overflow-hidden border-0 p-0 shadow-2xl sm:p-0 md:max-h-[90vh] md:h-auto md:w-full md:max-w-lg md:gap-4 md:overflow-y-auto md:border md:p-6 md:shadow-lg">
         <div className="flex h-full min-h-0 max-w-full min-w-0 flex-col overflow-hidden">
@@ -2849,21 +2940,45 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
               )}
             </div>
 
-            <div>
-              <h4 className="text-sm font-medium mb-2 flex items-center gap-1.5">
-                <KeyRound className="h-3.5 w-3.5" />
-                Acceso del cliente
-              </h4>
-              <div className="max-w-full rounded-md bg-muted p-2.5 text-sm space-y-1 sm:p-3">
-                <p className="break-all"><span className="font-medium">Email:</span> {displayClientEmail(profile.user.email)}</p>
-                {isCrmPlaceholderEmail(profile.user.email) && (
-                  <p className="break-words text-xs text-muted-foreground">
-                    Cliente creado desde cobro rápido o CRM. Aún no tiene correo real para iniciar sesión.
-                  </p>
-                )}
-                {appLink && <p className="break-words text-muted-foreground text-xs">El cliente gestiona su contraseña desde el inicio de sesión.</p>}
+            {showClientAccessSection && (
+              <div className="space-y-2">
+                <div>
+                  <h4 className="text-sm font-medium mb-2 flex items-center gap-1.5">
+                    <KeyRound className="h-3.5 w-3.5" />
+                    Acceso del cliente
+                  </h4>
+                  <div className="max-w-full rounded-md bg-muted p-2.5 text-sm space-y-1 sm:p-3">
+                    <p className="break-all"><span className="font-medium">Usuario/email actual:</span> {displayClientEmail(normalizedAccessEmail)}</p>
+                    <p className="break-words text-xs text-muted-foreground">{accessHelperText}</p>
+                  </div>
+                </div>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-10 sm:h-9"
+                    onClick={handleCopyAccessUser}
+                    disabled={!canCopyAccessUser}
+                    data-testid="button-copy-client-access-user"
+                  >
+                    <Copy className="mr-1 h-3.5 w-3.5" />
+                    Copiar usuario
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="default"
+                    size="sm"
+                    className="h-10 sm:h-9"
+                    onClick={() => setAccessDialogOpen(true)}
+                    data-testid="button-open-client-access"
+                  >
+                    <KeyRound className="mr-1 h-3.5 w-3.5" />
+                    Gestionar acceso
+                  </Button>
+                </div>
               </div>
-            </div>
+            )}
 
             {profile.purchaseHistory && profile.purchaseHistory.length > 0 && (
               <div>
@@ -3134,6 +3249,104 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
         </div>
       </DialogContent>
     </Dialog>
+    <Dialog
+      open={accessDialogOpen}
+      onOpenChange={(nextOpen) => {
+        setAccessDialogOpen(nextOpen);
+        if (!nextOpen) {
+          setAccessResetResult(null);
+        }
+      }}
+    >
+      <DialogContent className="max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Acceso del cliente</DialogTitle>
+          <DialogDescription>
+            Consulta el usuario actual y genera una nueva contraseña temporal solo cuando sea necesario.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <div className="rounded-md bg-muted p-3 text-sm">
+            <p className="break-all">
+              <span className="font-medium">Usuario/email actual:</span> {displayClientEmail(normalizedAccessEmail)}
+            </p>
+            <p className="mt-2 break-words text-xs text-muted-foreground">{accessHelperText}</p>
+          </div>
+
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleCopyAccessUser}
+              disabled={!canCopyAccessUser}
+              data-testid="button-copy-client-access-user-dialog"
+            >
+              <Copy className="mr-2 h-4 w-4" />
+              Copiar usuario
+            </Button>
+            <Button
+              type="button"
+              onClick={handleResetClientAccess}
+              disabled={!canResetClientAccess || resetClientAccessMutation.isPending}
+              data-testid="button-reset-client-password"
+            >
+              {resetClientAccessMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <KeyRound className="mr-2 h-4 w-4" />}
+              Restablecer contraseña
+            </Button>
+          </div>
+
+          {accessResetResult && (
+            <div className="space-y-3">
+              <div className="rounded-md border bg-background p-3 font-mono text-sm" data-testid="box-client-reset-access">
+                <p><span className="font-sans font-medium">Usuario (email):</span> {accessResetResult.email}</p>
+                <p><span className="font-sans font-medium">Contraseña temporal:</span> {accessResetResult.temporaryPassword}</p>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Esta contraseña se muestra solo ahora. Las sesiones anteriores del cliente dejaron de ser válidas.
+                {accessResetResult.mustChangePasswordOnLogin ? " El cliente deberá cambiarla al iniciar sesión." : ""}
+              </p>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleCopyTemporaryAccess}
+                  data-testid="button-copy-client-reset-access"
+                >
+                  <Copy className="mr-2 h-4 w-4" />
+                  Copiar acceso
+                </Button>
+                <Button
+                  type="button"
+                  className="bg-green-600 text-white hover:bg-green-700"
+                  onClick={handleShareTemporaryAccess}
+                  disabled={!profile?.user.phone}
+                  data-testid="button-share-client-reset-access"
+                >
+                  <MessageCircle className="mr-2 h-4 w-4" />
+                  Enviar acceso por WhatsApp
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => {
+              setAccessDialogOpen(false);
+              setAccessResetResult(null);
+            }}
+            data-testid="button-close-client-access"
+          >
+            Cerrar
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }
 
