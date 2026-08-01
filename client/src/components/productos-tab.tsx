@@ -21,7 +21,7 @@ import {
   TrendingUp,
   Warehouse,
 } from "lucide-react";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, fetchJson, queryClient } from "@/lib/queryClient";
 import { invalidateBranchCommercialQueries, invalidateBranchFinanceQueries } from "@/lib/branch-dashboard-cache";
 import { useToast } from "@/hooks/use-toast";
 import { useHorizontalScrollNav } from "@/hooks/use-horizontal-scroll-nav";
@@ -698,7 +698,7 @@ export default function ProductosTab({ focusRequest }: { focusRequest?: ProductF
       categoryFilter,
       sortBy,
     ],
-    queryFn: async () => {
+    queryFn: ({ signal }) => {
       const params = new URLSearchParams({
         page: String(page),
         pageSize: String(pageSize),
@@ -712,14 +712,9 @@ export default function ProductosTab({ focusRequest }: { focusRequest?: ProductF
         params.set("search", debouncedSearch);
       }
 
-      const response = await fetch(`/api/branch/commercial-products/page?${params.toString()}`, {
-        credentials: "include",
-      });
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.message || "No se pudo cargar el catalogo de productos");
-      }
-      return response.json() as Promise<CommercialProductPageResponse>;
+      return fetchJson<CommercialProductPageResponse>(`/api/branch/commercial-products/page?${params.toString()}`, {
+        signal,
+      }) as Promise<CommercialProductPageResponse>;
     },
     placeholderData: (previousData) => previousData,
   });

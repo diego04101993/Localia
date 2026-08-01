@@ -986,10 +986,17 @@ export default function VendedoresTab({ focusRequest }: { focusRequest?: Salespe
               filteredSalespeople.map((person) => {
                 const active = selectedId === person.id;
                 return (
-                  <button
+                  <div
                     key={person.id}
-                    type="button"
+                    role="button"
+                    tabIndex={0}
                     onClick={() => setSelectedId(person.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        setSelectedId(person.id);
+                      }
+                    }}
                     className={`w-full rounded-2xl border p-4 text-left transition-colors ${active ? "border-primary bg-primary/5" : "border-border/60 bg-muted/20 hover:bg-muted/40"}`}
                     data-testid={`salesperson-card-${person.id}`}
                   >
@@ -1009,6 +1016,7 @@ export default function VendedoresTab({ focusRequest }: { focusRequest?: Salespe
                     </div>
                     <div className="mt-3 flex flex-wrap gap-2">
                       <Button
+                        type="button"
                         size="sm"
                         variant="outline"
                         onClick={(event) => {
@@ -1020,6 +1028,7 @@ export default function VendedoresTab({ focusRequest }: { focusRequest?: Salespe
                         Editar
                       </Button>
                       <Button
+                        type="button"
                         size="sm"
                         variant="outline"
                         className="text-destructive"
@@ -1032,7 +1041,7 @@ export default function VendedoresTab({ focusRequest }: { focusRequest?: Salespe
                         Eliminar
                       </Button>
                     </div>
-                  </button>
+                  </div>
                 );
               })
             )}

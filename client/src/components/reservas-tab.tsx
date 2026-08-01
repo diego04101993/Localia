@@ -38,7 +38,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, fetchJson, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
 interface ClassSchedule {
@@ -866,13 +866,7 @@ export default function ReservasTab({
   });
   const { data: bookingHistory } = useQuery<BookingAuditEntry[]>({
     queryKey: ["/api/branch/bookings/history"],
-    queryFn: async () => {
-      const res = await fetch("/api/branch/bookings/history?limit=20", { credentials: "include" });
-      if (!res.ok) {
-        throw new Error("No se pudo cargar el historial de reservas");
-      }
-      return res.json();
-    },
+    queryFn: ({ signal }) => fetchJson<BookingAuditEntry[]>("/api/branch/bookings/history?limit=20", { signal }) as Promise<BookingAuditEntry[]>,
   });
 
   const deactivateMutation = useMutation({

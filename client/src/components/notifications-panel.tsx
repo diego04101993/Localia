@@ -21,7 +21,7 @@ import {
   Wallet,
   XCircle,
 } from "lucide-react";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, fetchJson, queryClient } from "@/lib/queryClient";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -523,7 +523,10 @@ function getNotificationMeta(notification: NotificationItem) {
   };
 }
 
-async function fetchNotifications(params: { limit: number; page?: number; status?: NotificationFilter }) {
+async function fetchNotifications(
+  params: { limit: number; page?: number; status?: NotificationFilter },
+  signal?: AbortSignal,
+) {
   const search = new URLSearchParams({
     limit: String(params.limit),
     page: String(params.page ?? 1),
@@ -533,19 +536,11 @@ async function fetchNotifications(params: { limit: number; page?: number; status
     search.set("status", params.status);
   }
 
-  const resp = await fetch(`/api/notifications?${search.toString()}`, { credentials: "include" });
-  if (!resp.ok) {
-    throw new Error(await resp.text());
-  }
-  return resp.json();
+  return fetchJson<NotificationItem[]>(`/api/notifications?${search.toString()}`, { signal }) as Promise<NotificationItem[]>;
 }
 
-async function fetchNotificationSummary() {
-  const resp = await fetch("/api/notifications/summary", { credentials: "include" });
-  if (!resp.ok) {
-    throw new Error(await resp.text());
-  }
-  return resp.json();
+async function fetchNotificationSummary(signal?: AbortSignal) {
+  return fetchJson<NotificationSummary>("/api/notifications/summary", { signal }) as Promise<NotificationSummary>;
 }
 
 function NotificationList({
@@ -771,20 +766,20 @@ export default function NotificationsPanel({
 
   const summaryQuery = useQuery<NotificationSummary>({
     queryKey: ["/api/notifications/summary"],
-    queryFn: fetchNotificationSummary,
+    queryFn: ({ signal }) => fetchNotificationSummary(signal),
     refetchInterval: pollingMs,
   });
 
   const previewQuery = useQuery<NotificationItem[]>({
     queryKey: ["/api/notifications", limit, variant === "bell" ? "popover" : "preview"],
-    queryFn: async () => fetchNotifications({ limit, page: 1, status: "all" }),
+    queryFn: ({ signal }) => fetchNotifications({ limit, page: 1, status: "all" }, signal),
     enabled: variant === "card" || isPopoverOpen || isDialogOpen,
     refetchInterval: variant === "card" || isPopoverOpen ? pollingMs : false,
   });
 
   const fullNotificationsQuery = useQuery<NotificationItem[]>({
     queryKey: ["/api/notifications", "full", filter, page, FULL_PAGE_SIZE],
-    queryFn: async () => fetchNotifications({ limit: FULL_PAGE_SIZE, page, status: filter }),
+    queryFn: ({ signal }) => fetchNotifications({ limit: FULL_PAGE_SIZE, page, status: filter }, signal),
     enabled: isDialogOpen,
     refetchInterval: isDialogOpen ? pollingMs : false,
   });

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useEffect, useMemo, useState, useRef, type ReactNode } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import {
   Building2,
@@ -80,7 +80,7 @@ import {
   DrawerHeader,
   DrawerTitle,
 } from "@/components/ui/drawer";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, fetchJson, queryClient } from "@/lib/queryClient";
 import { invalidateBranchMembershipQueries } from "@/lib/branch-dashboard-cache";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
@@ -98,6 +98,7 @@ import PerfilPublicoTab from "@/components/perfil-publico-tab";
 import NotificationsPanel, { type NotificationItem } from "@/components/notifications-panel";
 import CajaTab from "@/components/caja-tab";
 import CobrarTab from "@/components/cobrar-tab";
+import DashboardModuleErrorBoundary from "@/components/dashboard-module-error-boundary";
 
 const DASHBOARD_TABS = [
   { value: "resumen", label: "Resumen", icon: LayoutDashboard },
@@ -118,6 +119,66 @@ const DASHBOARD_TABS = [
 ] as const;
 
 type TabValue = typeof DASHBOARD_TABS[number]["value"];
+const DASHBOARD_TAB_VALUES = new Set<string>(DASHBOARD_TABS.map((tab) => tab.value));
+
+function logDashboardNavEvent(event: string, payload: Record<string, unknown>) {
+  if (!import.meta.env.DEV || typeof window === "undefined") {
+    return;
+  }
+
+  const dashboardAuditWindow = window as typeof window & {
+    __webcoolActiveDashboardTab?: string;
+  };
+
+  if (typeof payload.activeTab === "string") {
+    dashboardAuditWindow.__webcoolActiveDashboardTab = payload.activeTab;
+  }
+
+  console.info(`[dashboard-nav] ${event}`, {
+    ...payload,
+    location: window.location.pathname,
+  });
+}
+
+function isDashboardTabValue(value: string): value is TabValue {
+  return DASHBOARD_TAB_VALUES.has(value);
+}
+
+function DashboardTabTrace({
+  tab,
+  children,
+}: {
+  tab: TabValue;
+  children: ReactNode;
+}) {
+  useEffect(() => {
+    logDashboardNavEvent("tab-mounted", { tab, activeTab: tab });
+
+    return () => {
+      logDashboardNavEvent("tab-unmounted", { tab, activeTab: tab });
+    };
+  }, [tab]);
+
+  return <>{children}</>;
+}
+
+function DashboardTabPanel({
+  tab,
+  moduleLabel,
+  onGoHome,
+  children,
+}: {
+  tab: TabValue;
+  moduleLabel: string;
+  onGoHome: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <DashboardModuleErrorBoundary moduleLabel={moduleLabel} onGoHome={onGoHome}>
+      <DashboardTabTrace tab={tab}>{children}</DashboardTabTrace>
+    </DashboardModuleErrorBoundary>
+  );
+}
 
 type BranchClientSummary = {
   userId: string;
@@ -1527,15 +1588,10 @@ function ResumenTabPremium({ branchStats, branchStatus, branchSlug, branchId, br
   const financeTo = getIsoDateDaysAgo(0);
   const { data: financeSummary, isLoading: financeLoading } = useQuery<BranchFinanceSummary>({
     queryKey: ["/api/branch/finance/summary", "overview", financeFrom, financeTo],
-    queryFn: async () => {
-      const res = await fetch(`/api/branch/finance/summary?from=${financeFrom}&to=${financeTo}`, {
-        credentials: "include",
-      });
-      if (!res.ok) {
-        throw new Error("No se pudo cargar el resumen financiero");
-      }
-      return res.json();
-    },
+    queryFn: ({ signal }) =>
+      fetchJson<BranchFinanceSummary>(`/api/branch/finance/summary?from=${financeFrom}&to=${financeTo}`, {
+        signal,
+      }) as Promise<BranchFinanceSummary>,
     staleTime: 60_000,
   });
 
@@ -2060,15 +2116,10 @@ function ResumenTabPremiumCompact({ branchStats, branchStatus, branchSlug, branc
   const financeTo = getIsoDateDaysAgo(0);
   const { data: financeSummary, isLoading: financeLoading } = useQuery<BranchFinanceSummary>({
     queryKey: ["/api/branch/finance/summary", "overview", financeFrom, financeTo],
-    queryFn: async () => {
-      const res = await fetch(`/api/branch/finance/summary?from=${financeFrom}&to=${financeTo}`, {
-        credentials: "include",
-      });
-      if (!res.ok) {
-        throw new Error("No se pudo cargar el resumen financiero");
-      }
-      return res.json();
-    },
+    queryFn: ({ signal }) =>
+      fetchJson<BranchFinanceSummary>(`/api/branch/finance/summary?from=${financeFrom}&to=${financeTo}`, {
+        signal,
+      }) as Promise<BranchFinanceSummary>,
     staleTime: 60_000,
   });
 
@@ -2574,15 +2625,10 @@ function ResumenTabDesktopSaaS({ branchStats, branchStatus, branchSlug, branchId
   const financeTo = getIsoDateDaysAgo(0);
   const { data: financeSummary, isLoading: financeLoading } = useQuery<BranchFinanceSummary>({
     queryKey: ["/api/branch/finance/summary", "overview", financeFrom, financeTo],
-    queryFn: async () => {
-      const res = await fetch(`/api/branch/finance/summary?from=${financeFrom}&to=${financeTo}`, {
-        credentials: "include",
-      });
-      if (!res.ok) {
-        throw new Error("No se pudo cargar el resumen financiero");
-      }
-      return res.json();
-    },
+    queryFn: ({ signal }) =>
+      fetchJson<BranchFinanceSummary>(`/api/branch/finance/summary?from=${financeFrom}&to=${financeTo}`, {
+        signal,
+      }) as Promise<BranchFinanceSummary>,
     staleTime: 60_000,
   });
 
@@ -3790,6 +3836,21 @@ export default function DashboardPage() {
   const branchStatus = user?.branch?.status || "active";
   const isImpersonating = !!(user as any)?.impersonating;
   const impersonatedBranchName = (user as any)?.impersonatedBranchName;
+  const goToSummary = () => setActiveTab("resumen");
+
+  useEffect(() => {
+    logDashboardNavEvent("active-tab-changed", {
+      activeTab,
+      branchId: user?.branchId ?? null,
+      branchName: user?.branch?.name ?? null,
+    });
+  }, [activeTab, user?.branch?.name, user?.branchId]);
+
+  useEffect(() => {
+    if (!isDashboardTabValue(activeTab)) {
+      setActiveTab("resumen");
+    }
+  }, [activeTab]);
 
   const { data: branchStats, isLoading: statsLoading } = useQuery<{ activeMemberships: number; uniqueActiveCustomers: number; totalCustomers: number }>({
     queryKey: ["/api/branch/stats"],
@@ -3843,6 +3904,10 @@ export default function DashboardPage() {
     if (typeof window !== "undefined") {
       window.scrollTo({ top: 0, behavior: "smooth" });
     }
+  }
+
+  function handleTabValueChange(value: string) {
+    setActiveTab(isDashboardTabValue(value) ? value : "resumen");
   }
 
   function handleViewClient(userId: string) {
@@ -4071,7 +4136,7 @@ export default function DashboardPage() {
       </header>
 
       <main className="mx-auto max-w-[1680px] px-4 py-4 pb-24 md:pb-4 lg:px-6">
-        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as TabValue)}>
+        <Tabs value={activeTab} onValueChange={handleTabValueChange}>
           <div className="hidden overflow-x-auto pb-1 md:block lg:hidden">
             <TabsList className="w-full sm:w-auto" data-testid="tabs-dashboard-nav">
               {DASHBOARD_NAV_TABS.map((tab) => (
@@ -4137,83 +4202,113 @@ export default function DashboardPage() {
               </div>
 
               <TabsContent value="resumen" className="mt-0">
-                <ResumenTabDesktopSaaS
-                  branchStats={branchStats}
-                  branchStatus={branchStatus}
-                  branchSlug={branchSlug}
-                  branchId={user?.branchId || ""}
-                  branchName={branchName}
-                  isLoading={statsLoading}
-                  reservationStats={reservationStats}
-                  reservationLoading={reservationLoading}
-                  dashboardMetrics={dashboardMetrics}
-                  commercialDashboard={commercialDashboard}
-                  alerts={alerts}
-                  alertsLoading={alertsLoading}
-                  onViewClient={handleViewClient}
-                />
+                <DashboardTabPanel tab="resumen" moduleLabel="Resumen" onGoHome={goToSummary}>
+                  <ResumenTabDesktopSaaS
+                    branchStats={branchStats}
+                    branchStatus={branchStatus}
+                    branchSlug={branchSlug}
+                    branchId={user?.branchId || ""}
+                    branchName={branchName}
+                    isLoading={statsLoading}
+                    reservationStats={reservationStats}
+                    reservationLoading={reservationLoading}
+                    dashboardMetrics={dashboardMetrics}
+                    commercialDashboard={commercialDashboard}
+                    alerts={alerts}
+                    alertsLoading={alertsLoading}
+                    onViewClient={handleViewClient}
+                  />
+                </DashboardTabPanel>
               </TabsContent>
 
               <TabsContent value="clientes" className="mt-0">
-                <ClientesTab focusRequest={clientFocus} />
+                <DashboardTabPanel tab="clientes" moduleLabel="Clientes" onGoHome={goToSummary}>
+                  <ClientesTab focusRequest={clientFocus} />
+                </DashboardTabPanel>
               </TabsContent>
 
               <TabsContent value="membresias" className="mt-0">
-                <MembresiasTab />
+                <DashboardTabPanel tab="membresias" moduleLabel="Servicios y planes" onGoHome={goToSummary}>
+                  <MembresiasTab />
+                </DashboardTabPanel>
               </TabsContent>
 
               <TabsContent value="productos" className="mt-0">
-                <ProductosTab focusRequest={productFocus} />
+                <DashboardTabPanel tab="productos" moduleLabel="Productos" onGoHome={goToSummary}>
+                  <ProductosTab focusRequest={productFocus} />
+                </DashboardTabPanel>
               </TabsContent>
 
               <TabsContent value="compras" className="mt-0">
-                <ProveedoresComprasTab focusRequest={purchaseFocus} />
+                <DashboardTabPanel tab="compras" moduleLabel="Proveedores y compras" onGoHome={goToSummary}>
+                  <ProveedoresComprasTab focusRequest={purchaseFocus} />
+                </DashboardTabPanel>
               </TabsContent>
 
               <TabsContent value="vendedores" className="mt-0">
-                <VendedoresTab focusRequest={salespersonFocus} />
+                <DashboardTabPanel tab="vendedores" moduleLabel="Vendedores" onGoHome={goToSummary}>
+                  <VendedoresTab focusRequest={salespersonFocus} />
+                </DashboardTabPanel>
               </TabsContent>
 
               <TabsContent value="caja" className="mt-0">
-                <CajaTab focusRequest={cajaFocus} />
+                <DashboardTabPanel tab="caja" moduleLabel="Caja" onGoHome={goToSummary}>
+                  <CajaTab focusRequest={cajaFocus} />
+                </DashboardTabPanel>
               </TabsContent>
 
               <TabsContent value="cobrar" className="mt-0">
-                <CobrarTab />
+                <DashboardTabPanel tab="cobrar" moduleLabel="Cobrar" onGoHome={goToSummary}>
+                  <CobrarTab />
+                </DashboardTabPanel>
               </TabsContent>
 
               <TabsContent value="proyectos" className="mt-0">
-                <ProyectosTab />
+                <DashboardTabPanel tab="proyectos" moduleLabel="Proyectos" onGoHome={goToSummary}>
+                  <ProyectosTab />
+                </DashboardTabPanel>
               </TabsContent>
 
               <TabsContent value="reservas" className="mt-0">
-                <ReservasTab focusRequest={reservationFocus} />
+                <DashboardTabPanel tab="reservas" moduleLabel="Reservas" onGoHome={goToSummary}>
+                  <ReservasTab focusRequest={reservationFocus} />
+                </DashboardTabPanel>
               </TabsContent>
 
               <TabsContent value="contenido" className="mt-0">
-                <ContenidoTab />
+                <DashboardTabPanel tab="contenido" moduleLabel="Contenido" onGoHome={goToSummary}>
+                  <ContenidoTab />
+                </DashboardTabPanel>
               </TabsContent>
 
               <TabsContent value="perfil" className="mt-0">
-                <PerfilPublicoTab />
+                <DashboardTabPanel tab="perfil" moduleLabel="Perfil publico" onGoHome={goToSummary}>
+                  <PerfilPublicoTab />
+                </DashboardTabPanel>
               </TabsContent>
 
               <TabsContent value="configuracion" className="mt-0">
-                <ConfigurationTab
-                  branchName={branchName}
-                  branchSlug={branchSlug}
-                  refetchAuth={refetch}
-                  onOpenPublicProfileSettings={() => setActiveTab("perfil")}
-                  onOpenMyProfile={() => setLocation("/profile")}
-                />
+                <DashboardTabPanel tab="configuracion" moduleLabel="Configuracion" onGoHome={goToSummary}>
+                  <ConfigurationTab
+                    branchName={branchName}
+                    branchSlug={branchSlug}
+                    refetchAuth={refetch}
+                    onOpenPublicProfileSettings={() => setActiveTab("perfil")}
+                    onOpenMyProfile={() => setLocation("/profile")}
+                  />
+                </DashboardTabPanel>
               </TabsContent>
 
               <TabsContent value="promociones" className="mt-0">
-                <PromocionesTab />
+                <DashboardTabPanel tab="promociones" moduleLabel="Promociones" onGoHome={goToSummary}>
+                  <PromocionesTab />
+                </DashboardTabPanel>
               </TabsContent>
 
               <TabsContent value="tv" className="mt-0">
-                <TvModeTab />
+                <DashboardTabPanel tab="tv" moduleLabel="TV Mode" onGoHome={goToSummary}>
+                  <TvModeTab />
+                </DashboardTabPanel>
               </TabsContent>
             </div>
           </div>

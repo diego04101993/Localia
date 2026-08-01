@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Switch, Route, useLocation, Redirect } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -31,6 +32,44 @@ function FullScreenLoader() {
       <Loader2 className="h-6 w-6 animate-spin text-primary" />
     </div>
   );
+}
+
+function DevRuntimeDiagnostics() {
+  useEffect(() => {
+    if (!import.meta.env.DEV) {
+      return;
+    }
+
+    const handleError = (event: ErrorEvent) => {
+      console.error("[dashboard-runtime-error]", {
+        message: event.message,
+        filename: event.filename,
+        lineno: event.lineno,
+        colno: event.colno,
+        activeTab: (window as typeof window & { __webcoolActiveDashboardTab?: string }).__webcoolActiveDashboardTab ?? null,
+        location: window.location.pathname,
+      });
+    };
+
+    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      const reason = event.reason instanceof Error ? event.reason.message : String(event.reason ?? "unknown");
+      console.error("[dashboard-unhandled-rejection]", {
+        reason,
+        activeTab: (window as typeof window & { __webcoolActiveDashboardTab?: string }).__webcoolActiveDashboardTab ?? null,
+        location: window.location.pathname,
+      });
+    };
+
+    window.addEventListener("error", handleError);
+    window.addEventListener("unhandledrejection", handleUnhandledRejection);
+
+    return () => {
+      window.removeEventListener("error", handleError);
+      window.removeEventListener("unhandledrejection", handleUnhandledRejection);
+    };
+  }, []);
+
+  return null;
 }
 
 function AuthenticatedRouter() {
@@ -144,6 +183,7 @@ function App() {
       <ThemeProvider>
         <TooltipProvider>
           <AuthProvider>
+            <DevRuntimeDiagnostics />
             <Toaster />
             <AuthenticatedRouter />
           </AuthProvider>
