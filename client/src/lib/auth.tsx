@@ -34,6 +34,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     refetchOnReconnect: true,
   });
 
+  const hasInitializedAuthScopeRef = useRef(false);
   const previousScopeRef = useRef<string | null>(null);
   const authScope = useMemo(() => {
     if (!user) return "guest";
@@ -46,8 +47,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [user]);
 
   useEffect(() => {
-    if (previousScopeRef.current === null) {
+    if (isLoading) {
+      return;
+    }
+
+    if (!hasInitializedAuthScopeRef.current) {
       previousScopeRef.current = authScope;
+      hasInitializedAuthScopeRef.current = true;
       return;
     }
 
@@ -55,7 +61,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       clearScopedQueryCache();
       previousScopeRef.current = authScope;
     }
-  }, [authScope]);
+  }, [authScope, isLoading]);
 
   useEffect(() => {
     const handleVisible = () => {
