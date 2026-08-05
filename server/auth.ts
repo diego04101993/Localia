@@ -6,6 +6,7 @@ import connectPgSimple from "connect-pg-simple";
 import type { Express, Request, Response, NextFunction } from "express";
 import { storage } from "./storage";
 import { pool } from "./db";
+import { supportsLocalPasswordAuth } from "./branch-client-identity";
 
 const PgSession = connectPgSimple(session);
 export const CUSTOMER_BLOCKED_MESSAGE = "Tu cuenta ha sido bloqueada. Contacta a soporte.";
@@ -239,8 +240,11 @@ export function setupAuth(app: Express) {
         try {
           const user = await storage.getUserByEmail(email);
           if (!user) return done(null, false, { message: "Credenciales incorrectas" });
+          const supportsLocalAuth = supportsLocalPasswordAuth(user);
           const valid = await bcrypt.compare(password, user.passwordHash);
-          if (!valid) return done(null, false, { message: "Credenciales incorrectas" });
+          if (!valid || !supportsLocalAuth) {
+            return done(null, false, { message: "Credenciales incorrectas" });
+          }
           if (isBlockedCustomer(user)) {
             return done(null, false, { message: CUSTOMER_BLOCKED_MESSAGE });
           }

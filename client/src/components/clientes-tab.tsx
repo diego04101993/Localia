@@ -217,17 +217,24 @@ interface ClientProfile {
     }[];
   };
   identityControl: ClientIdentityControl | null;
+  accessStatus: "NO_ACCESS" | "LOCAL_ACCESS" | "EXTERNAL_PROVIDER" | "DISABLED" | "LEGACY_UNVERIFIED";
+  accessProvider: "email" | "google" | "apple" | null;
+  canBranchManageAccess: boolean;
+  canCreateLocalAccess: boolean;
+  canVerifyLegacyLocalAccess: boolean;
   canResetLocalPassword: boolean;
   canResetLocalPasswordReason: string | null;
   accessEmail: string | null;
+  accessReason: string | null;
 }
 
-type ClientAccessResetResult = {
+type ClientAccessCredentialResult = {
   email: string;
   temporaryPassword: string;
   sessionsInvalidated: number;
   mustChangePasswordOnLogin: boolean;
   message?: string;
+  accessStatus?: "LOCAL_ACCESS";
 };
 
 type ClientCommercialHistoryFilter = "all" | "products" | "services" | "current_month";
@@ -444,6 +451,11 @@ function normalizeOptionalTextInput(value: string): string | null {
 function normalizeOptionalEmailInput(value: string): string | null {
   const trimmed = value.trim().toLowerCase();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function looksLikeEmail(value: string): boolean {
+  const trimmed = value.trim();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed);
 }
 
 function formatCurrencyMx(value: number) {
@@ -1073,6 +1085,8 @@ function CreateClientDialog({
   const [medicalNotes, setMedicalNotes] = useState("");
   const [createdPassword, setCreatedPassword] = useState<string | null>(null);
   const [duplicateState, setDuplicateState] = useState<CreateClientDuplicateState | null>(null);
+  const [showCreateWithoutAccessConfirm, setShowCreateWithoutAccessConfirm] = useState(false);
+  const [continueWithoutAppAccess, setContinueWithoutAppAccess] = useState(false);
 
   function buildCreatePayload(overrides: Record<string, unknown> = {}) {
     const normalizedEmail = normalizeOptionalEmailInput(email);
@@ -1086,6 +1100,9 @@ function CreateClientDialog({
     if (emergencyContactName.trim()) data.emergencyContactName = emergencyContactName.trim();
     if (emergencyContactPhone.trim()) data.emergencyContactPhone = emergencyContactPhone.trim();
     if (medicalNotes.trim()) data.medicalNotes = medicalNotes.trim();
+    if (!normalizedEmail && continueWithoutAppAccess) {
+      data.continueWithoutAppAccess = true;
+    }
     return data;
   }
 
@@ -1119,6 +1136,7 @@ function CreateClientDialog({
     },
     onSuccess: async (data: any) => {
       setDuplicateState(null);
+      setContinueWithoutAppAccess(false);
       await invalidateBranchMembershipQueries(data?.userId ?? null);
       if (data.password) {
         setCreatedPassword(data.password);
@@ -1149,6 +1167,10 @@ function CreateClientDialog({
         });
         return;
       }
+      if (err.code === "APP_ACCESS_CONFIRMATION_REQUIRED") {
+        setShowCreateWithoutAccessConfirm(true);
+        return;
+      }
       toast({ title: "Error", description: err.message || "Error al crear cliente", variant: "destructive" });
     },
   });
@@ -1157,12 +1179,23 @@ function CreateClientDialog({
     setName(""); setLastName(""); setEmail(""); setPhone("");
     setShowMore(false); setBirthDate(""); setGender("");
     setEmergencyContactName(""); setEmergencyContactPhone("");
-    setMedicalNotes(""); setCreatedPassword(null); setDuplicateState(null);
+    setMedicalNotes(""); setCreatedPassword(null); setDuplicateState(null); setShowCreateWithoutAccessConfirm(false); setContinueWithoutAppAccess(false);
     onOpenChange(false);
   }
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!normalizeOptionalEmailInput(email)) {
+      setContinueWithoutAppAccess(false);
+      setShowCreateWithoutAccessConfirm(true);
+      return;
+    }
+    createMutation.mutate(buildCreatePayload());
+  }
+
+  function handleConfirmCreateWithoutAccess() {
+    setContinueWithoutAppAccess(true);
+    setShowCreateWithoutAccessConfirm(false);
     createMutation.mutate(buildCreatePayload());
   }
 
@@ -1200,6 +1233,8 @@ function CreateClientDialog({
       : duplicateState?.code === "DUPLICATE_CLIENT"
         ? "Este cliente ya parece estar registrado"
       : "Encontramos datos similares";
+
+  const phoneLooksLikeEmail = !normalizeOptionalEmailInput(email) && looksLikeEmail(phone);
 
   if (createdPassword) {
     const clientName = [name, lastName].filter(Boolean).join(" ");
@@ -1260,7 +1295,7 @@ function CreateClientDialog({
           onOpenChange(nextOpen);
         }}
       >
-      <DialogContent className="max-h-[90vh] overflow-y-auto">
+      <DialogContent className="z-[130] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Crear cliente</DialogTitle>
           <DialogDescription>Agrega un nuevo cliente a tu sucursal</DialogDescription>
@@ -1339,6 +1374,34 @@ function CreateClientDialog({
         </form>
       </DialogContent>
       </Dialog>
+
+      <AlertDialog
+        open={showCreateWithoutAccessConfirm}
+        onOpenChange={setShowCreateWithoutAccessConfirm}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Crear cliente sin acceso a la app</AlertDialogTitle>
+            <AlertDialogDescription>
+              Este cliente podra administrarse normalmente en WebCool, pero no tendra usuario ni contrasena para ingresar a la app porque no tiene correo electronico.
+              {phoneLooksLikeEmail ? " Parece que escribiste un correo en el campo telefono. Revisa los datos antes de continuar." : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-cancel-create-without-access">
+              Regresar y agregar correo
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleConfirmCreateWithoutAccess}
+              disabled={createMutation.isPending}
+              data-testid="button-confirm-create-without-access"
+            >
+              {createMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Continuar sin acceso
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog
         open={!!duplicateState}
@@ -1983,8 +2046,6 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
   onWhatsApp: (target: WaModalTarget) => void;
 }) {
   const { toast } = useToast();
-  const { user } = useAuth();
-  const branchName = ((user?.branch as any)?.name ?? "tu sucursal");
   const [noteContent, setNoteContent] = useState("");
   const [showAllNotes, setShowAllNotes] = useState(false);
   const [showPlanSelect, setShowPlanSelect] = useState(false);
@@ -1998,7 +2059,9 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
   const [commercialHistoryFilter, setCommercialHistoryFilter] = useState<ClientCommercialHistoryFilter>("all");
   const [commercialHistoryPage, setCommercialHistoryPage] = useState(1);
   const [accessDialogOpen, setAccessDialogOpen] = useState(false);
-  const [accessResetResult, setAccessResetResult] = useState<ClientAccessResetResult | null>(null);
+  const [accessConfirmationOpen, setAccessConfirmationOpen] = useState(false);
+  const [pendingAccessAction, setPendingAccessAction] = useState<"create" | "verifyLegacy" | "reset" | null>(null);
+  const [accessCredentialResult, setAccessCredentialResult] = useState<ClientAccessCredentialResult | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const { data: profile, isLoading } = useQuery<ClientProfile>({
     queryKey: ["/api/branch/clients", clientId],
@@ -2011,6 +2074,47 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
     enabled: open && !!clientId,
     placeholderData: (previous) => previous,
   });
+
+  function applyLocalAccessSuccessToCache(payload: ClientAccessCredentialResult) {
+    if (!clientId) return;
+    queryClient.setQueryData<ClientProfile>(["/api/branch/clients", clientId], (current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        accessStatus: "LOCAL_ACCESS",
+        accessProvider: "email",
+        accessEmail: payload.email,
+        canBranchManageAccess: true,
+        canCreateLocalAccess: false,
+        canVerifyLegacyLocalAccess: false,
+        canResetLocalPassword: true,
+        canResetLocalPasswordReason: "Si olvido su contrasena, puedes generar una nueva temporal. La anterior dejara de funcionar.",
+        accessReason: "Si olvido su contrasena, puedes generar una nueva temporal. La anterior dejara de funcionar.",
+      };
+    });
+  }
+
+  function logClientAccess(
+    stage:
+      | "create-button-click"
+      | "verify-button-click"
+      | "reset-button-click"
+      | "confirmation-open"
+      | "confirmation-submit"
+      | "mutation-start"
+      | "mutation-success"
+      | "mutation-error"
+      | "mutation-settled",
+    action: "create" | "verifyLegacy" | "reset",
+    extra?: Record<string, unknown>,
+  ) {
+    if (!import.meta.env.DEV) return;
+    console.log(`[client-access] ${stage}`, {
+      clientId,
+      action,
+      ...extra,
+    });
+  }
 
   useEffect(() => {
     if (!open) {
@@ -2025,7 +2129,9 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
       setCommercialHistoryFilter("all");
       setCommercialHistoryPage(1);
       setAccessDialogOpen(false);
-      setAccessResetResult(null);
+      setAccessConfirmationOpen(false);
+      setPendingAccessAction(null);
+      setAccessCredentialResult(null);
     }
   }, [open]);
 
@@ -2036,7 +2142,9 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
     setAssignmentStartDate(getMxTodayIsoDate());
     setSelectedAssignPlanId("");
     setAccessDialogOpen(false);
-    setAccessResetResult(null);
+    setAccessConfirmationOpen(false);
+    setPendingAccessAction(null);
+    setAccessCredentialResult(null);
   }, [open, clientId]);
 
   useEffect(() => {
@@ -2198,22 +2306,24 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
     },
   });
 
+  const createClientAccessMutation = useMutation({
+    mutationFn: async () => {
+      const resp = await apiRequest("POST", `/api/branch/clients/${clientId}/create-local-access`);
+      return (await resp.json()) as ClientAccessCredentialResult;
+    },
+  });
+
   const resetClientAccessMutation = useMutation({
     mutationFn: async () => {
       const resp = await apiRequest("POST", `/api/branch/clients/${clientId}/reset-password`);
-      return (await resp.json()) as ClientAccessResetResult;
+      return (await resp.json()) as ClientAccessCredentialResult;
     },
-    onSuccess: async (payload) => {
-      setAccessResetResult(payload);
-      await invalidateBranchClientQueries(clientId);
-      toast({ title: "Contraseña temporal generada" });
-    },
-    onError: (err: any) => {
-      toast({
-        title: "Error",
-        description: getApiErrorMessage(err, "No se pudo restablecer la contraseña"),
-        variant: "destructive",
-      });
+  });
+
+  const verifyLegacyClientAccessMutation = useMutation({
+    mutationFn: async () => {
+      const resp = await apiRequest("POST", `/api/branch/clients/${clientId}/verify-legacy-local-access`);
+      return (await resp.json()) as ClientAccessCredentialResult;
     },
   });
 
@@ -2245,13 +2355,59 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
     context: "client-profile",
     clientId,
   });
-  const showClientAccessSection = !!profile?.canResetLocalPassword;
+  const showClientAccessSection = !!profile;
+  const canBranchManageClientAccess = !!profile?.canBranchManageAccess;
+  const accessStatus = profile?.accessStatus ?? "NO_ACCESS";
+  const accessProvider = profile?.accessProvider ?? null;
   const normalizedAccessEmail = profile?.accessEmail ?? null;
-  const canCopyAccessUser = !!normalizedAccessEmail;
+  const canCreateClientAccess = !!profile?.canCreateLocalAccess;
+  const canVerifyLegacyClientAccess = !!profile?.canVerifyLegacyLocalAccess;
   const canResetClientAccess = !!profile?.canResetLocalPassword;
+  const canCopyAccessUser =
+    canBranchManageClientAccess
+    && !!normalizedAccessEmail
+    && (accessStatus !== "LEGACY_UNVERIFIED" || canVerifyLegacyClientAccess);
+  const accessProviderLabel =
+    accessStatus === "LEGACY_UNVERIFIED"
+      ? "Correo historico"
+      : accessProvider === "google"
+      ? "Google"
+      : accessProvider === "apple"
+        ? "Apple"
+        : accessProvider === "email"
+          ? "Correo y contrasena"
+          : "Sin acceso";
+  const accessStatusLabel =
+    accessStatus === "LOCAL_ACCESS"
+      ? "Acceso activo"
+      : accessStatus === "EXTERNAL_PROVIDER"
+        ? "Proveedor externo"
+        : accessStatus === "DISABLED"
+          ? "Acceso deshabilitado"
+          : accessStatus === "LEGACY_UNVERIFIED"
+            ? "Acceso historico por verificar"
+            : "Sin acceso";
   const accessHelperText =
-    profile?.canResetLocalPasswordReason ||
-    "Si olvidó su contraseña, puedes generar una nueva temporal. La anterior dejará de funcionar.";
+    canBranchManageClientAccess
+      ? (
+        profile?.accessReason ||
+        profile?.canResetLocalPasswordReason ||
+        "Consulta y administra el acceso de este cliente a la app desde aqui."
+      )
+      : "El acceso de este cliente es administrado por su propia cuenta.";
+  const accessPrimaryActionLabel = !canBranchManageClientAccess
+    ? null
+    : canCreateClientAccess
+      ? "Crear acceso a la app"
+      : canVerifyLegacyClientAccess
+        ? "Verificar y restablecer acceso"
+      : canResetClientAccess
+        ? "Restablecer contrasena"
+        : null;
+  const isAccessMutationPending =
+    createClientAccessMutation.isPending
+    || verifyLegacyClientAccessMutation.isPending
+    || resetClientAccessMutation.isPending;
 
   function handleCopyAccessUser() {
     if (!normalizedAccessEmail) return;
@@ -2260,28 +2416,103 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
   }
 
   function handleCopyTemporaryAccess() {
-    if (!accessResetResult) return;
-    navigator.clipboard.writeText(
-      `Usuario (email): ${accessResetResult.email}\nContraseña temporal: ${accessResetResult.temporaryPassword}`,
-    );
+    if (!accessCredentialResult) return;
+    const tempAccessText = `Usuario (email): ${accessCredentialResult.email}\nContrasena temporal: ${accessCredentialResult.temporaryPassword}`;
+    navigator.clipboard.writeText(tempAccessText);
     toast({ title: "Acceso copiado" });
   }
 
   function handleShareTemporaryAccess() {
-    if (!profile?.user.phone || !accessResetResult) return;
-    openWaLink(
-      profile.user.phone,
-      `Hola ${profile.user.name}, aquí están tus nuevos datos de acceso para ${branchName}:\n\nUsuario: ${accessResetResult.email}\nContraseña temporal: ${accessResetResult.temporaryPassword}\n\nPor seguridad, cambia esta contraseña después de iniciar sesión.`,
+    if (!profile?.user.phone || !accessCredentialResult) return;
+    const shareMessage = `Hola ${profile!.user.name}, estos son tus datos de acceso:\n\nUsuario: ${accessCredentialResult.email}\nContrasena temporal: ${accessCredentialResult.temporaryPassword}\n\nPor seguridad, te recomendamos cambiar tu contrasena al ingresar.`;
+    openWaLink(profile.user.phone, shareMessage);
+  }
+
+  function openAccessConfirmation(action: "create" | "verifyLegacy" | "reset") {
+    if (action === "create" && !canCreateClientAccess) return;
+    if (action === "verifyLegacy" && !canVerifyLegacyClientAccess) return;
+    if (action === "reset" && !canResetClientAccess) return;
+    logClientAccess(
+      action === "create"
+        ? "create-button-click"
+        : action === "verifyLegacy"
+          ? "verify-button-click"
+          : "reset-button-click",
+      action,
     );
+    setPendingAccessAction(action);
+    setAccessConfirmationOpen(true);
+    logClientAccess("confirmation-open", action);
+  }
+
+  function handleCreateClientAccess() {
+    openAccessConfirmation("create");
   }
 
   function handleResetClientAccess() {
-    if (!canResetClientAccess) return;
-    const confirmed = window.confirm(
-      "Se generará una nueva contraseña temporal. La contraseña anterior dejará de funcionar.",
-    );
-    if (!confirmed) return;
-    resetClientAccessMutation.mutate();
+    openAccessConfirmation("reset");
+  }
+
+  function handleVerifyLegacyClientAccess() {
+    openAccessConfirmation("verifyLegacy");
+  }
+
+  async function handleConfirmClientAccessAction() {
+    const action = pendingAccessAction;
+    if (!action) return;
+
+    logClientAccess("confirmation-submit", action);
+
+    try {
+      logClientAccess("mutation-start", action);
+      const payload = action === "create"
+        ? await createClientAccessMutation.mutateAsync()
+        : action === "verifyLegacy"
+          ? await verifyLegacyClientAccessMutation.mutateAsync()
+          : await resetClientAccessMutation.mutateAsync();
+
+      setAccessCredentialResult(payload);
+      applyLocalAccessSuccessToCache(payload);
+      setAccessConfirmationOpen(false);
+      setAccessDialogOpen(true);
+      void invalidateBranchClientQueries(clientId);
+
+      logClientAccess("mutation-success", action, {
+        sessionsInvalidated: payload.sessionsInvalidated,
+      });
+
+      toast({
+        title:
+          action === "create"
+            ? "Acceso creado correctamente"
+            : action === "verifyLegacy"
+              ? "Acceso historico verificado"
+              : "Contrasena temporal generada",
+      });
+    } catch (err: any) {
+      logClientAccess("mutation-error", action, {
+        error: err instanceof Error ? err.message : String(err ?? "unknown"),
+      });
+      setAccessConfirmationOpen(false);
+      setAccessDialogOpen(false);
+      setAccessCredentialResult(null);
+      setPendingAccessAction(null);
+      toast({
+        title: "Error",
+        description: getApiErrorMessage(
+          err,
+          action === "create"
+            ? "No se pudo crear el acceso a la app"
+            : action === "verifyLegacy"
+              ? "No se pudo verificar y restablecer el acceso"
+              : "No se pudo restablecer la contrasena",
+        ),
+        variant: "destructive",
+      });
+    } finally {
+      setAccessConfirmationOpen(false);
+      logClientAccess("mutation-settled", action);
+    }
   }
 
   const renderAssignPlanPicker = () => (
@@ -2947,36 +3178,55 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                     <KeyRound className="h-3.5 w-3.5" />
                     Acceso del cliente
                   </h4>
-                  <div className="max-w-full rounded-md bg-muted p-2.5 text-sm space-y-1 sm:p-3">
-                    <p className="break-all"><span className="font-medium">Usuario/email actual:</span> {displayClientEmail(normalizedAccessEmail)}</p>
-                    <p className="break-words text-xs text-muted-foreground">{accessHelperText}</p>
+                  {canBranchManageClientAccess ? (
+                    <div className="max-w-full rounded-md bg-muted p-2.5 text-sm space-y-1 sm:p-3">
+                      <p className="break-all"><span className="font-medium">Estado:</span> {accessStatusLabel}</p>
+                      <p className="break-all"><span className="font-medium">Proveedor:</span> {accessProviderLabel}</p>
+                      <p className="break-all"><span className="font-medium">Usuario/email actual:</span> {displayClientEmail(normalizedAccessEmail)}</p>
+                      <p className="break-words text-xs text-muted-foreground">{accessHelperText}</p>
+                    </div>
+                  ) : (
+                    <div className="max-w-full rounded-md bg-muted p-2.5 text-sm sm:p-3">
+                      <p className="break-words text-xs text-muted-foreground sm:text-sm">{accessHelperText}</p>
+                    </div>
+                  )}
+                </div>
+                {canBranchManageClientAccess && (canCopyAccessUser || accessPrimaryActionLabel) && (
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    {canCopyAccessUser && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-10 sm:h-9"
+                        onClick={handleCopyAccessUser}
+                        data-testid="button-copy-client-access-user"
+                      >
+                        <Copy className="mr-1 h-3.5 w-3.5" />
+                        Copiar usuario
+                      </Button>
+                    )}
+                    {accessPrimaryActionLabel && (
+                      <Button
+                        type="button"
+                        variant="default"
+                        size="sm"
+                        className="h-10 sm:h-9"
+                        onClick={() => openAccessConfirmation(
+                          canCreateClientAccess
+                            ? "create"
+                            : canVerifyLegacyClientAccess
+                              ? "verifyLegacy"
+                              : "reset",
+                        )}
+                        data-testid="button-open-client-access"
+                      >
+                        <KeyRound className="mr-1 h-3.5 w-3.5" />
+                        {accessPrimaryActionLabel}
+                      </Button>
+                    )}
                   </div>
-                </div>
-                <div className="flex flex-col gap-2 sm:flex-row">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-10 sm:h-9"
-                    onClick={handleCopyAccessUser}
-                    disabled={!canCopyAccessUser}
-                    data-testid="button-copy-client-access-user"
-                  >
-                    <Copy className="mr-1 h-3.5 w-3.5" />
-                    Copiar usuario
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="default"
-                    size="sm"
-                    className="h-10 sm:h-9"
-                    onClick={() => setAccessDialogOpen(true)}
-                    data-testid="button-open-client-access"
-                  >
-                    <KeyRound className="mr-1 h-3.5 w-3.5" />
-                    Gestionar acceso
-                  </Button>
-                </div>
+                )}
               </div>
             )}
 
@@ -3249,18 +3499,77 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
         </div>
       </DialogContent>
     </Dialog>
+    <AlertDialog
+      open={accessConfirmationOpen}
+      onOpenChange={(nextOpen) => {
+        if (isAccessMutationPending) return;
+        setAccessConfirmationOpen(nextOpen);
+        if (!nextOpen) {
+          setPendingAccessAction(null);
+        }
+      }}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            {pendingAccessAction === "create"
+              ? "Crear acceso a la app"
+              : pendingAccessAction === "verifyLegacy"
+                ? "Verificar y restablecer acceso"
+              : "Restablecer contrasena"}
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            {pendingAccessAction === "create"
+              ? "Se generara una contrasena temporal para este cliente. La contrasena se mostrara una sola vez y deberas compartirla de forma segura."
+              : pendingAccessAction === "verifyLegacy"
+                ? "Esta es una cuenta historica. Al continuar, WebCool confirmara que esta sucursal administra su acceso y generara una nueva contrasena temporal. La contrasena anterior dejara de funcionar."
+              : "Se generara una nueva contrasena temporal. La contrasena anterior dejara de funcionar."}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel
+            disabled={isAccessMutationPending}
+            data-testid="button-cancel-client-access-confirmation"
+          >
+            Cancelar
+          </AlertDialogCancel>
+          <Button
+            type="button"
+            onClick={() => {
+              void handleConfirmClientAccessAction();
+            }}
+            disabled={isAccessMutationPending}
+            data-testid="button-confirm-client-access-action"
+          >
+            {isAccessMutationPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            {pendingAccessAction === "create"
+              ? "Confirmar y crear acceso"
+              : pendingAccessAction === "verifyLegacy"
+                ? "Confirmar verificacion"
+                : "Confirmar y restablecer"}
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
     <Dialog
       open={accessDialogOpen}
       onOpenChange={(nextOpen) => {
         setAccessDialogOpen(nextOpen);
         if (!nextOpen) {
-          setAccessResetResult(null);
+          setPendingAccessAction(null);
+          setAccessCredentialResult(null);
         }
       }}
     >
-      <DialogContent className="max-h-[90vh] overflow-y-auto">
+      <DialogContent className="z-[130] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Acceso del cliente</DialogTitle>
+          <DialogTitle>
+            {pendingAccessAction === "create"
+              ? "Acceso creado correctamente"
+              : pendingAccessAction === "verifyLegacy"
+                ? "Acceso historico verificado"
+              : "Contrasena temporal generada"}
+          </DialogTitle>
           <DialogDescription>
             Consulta el usuario actual y genera una nueva contraseña temporal solo cuando sea necesario.
           </DialogDescription>
@@ -3269,11 +3578,18 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
         <div className="space-y-4">
           <div className="rounded-md bg-muted p-3 text-sm">
             <p className="break-all">
+              <span className="font-medium">Estado:</span> {accessStatusLabel}
+            </p>
+            <p className="break-all">
+              <span className="font-medium">Proveedor:</span> {accessProviderLabel}
+            </p>
+            <p className="break-all">
               <span className="font-medium">Usuario/email actual:</span> {displayClientEmail(normalizedAccessEmail)}
             </p>
             <p className="mt-2 break-words text-xs text-muted-foreground">{accessHelperText}</p>
           </div>
 
+          {!accessCredentialResult && (
           <div className="flex flex-col gap-2 sm:flex-row">
             <Button
               type="button"
@@ -3285,26 +3601,51 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
               <Copy className="mr-2 h-4 w-4" />
               Copiar usuario
             </Button>
+            {canCreateClientAccess ? (
+              <Button
+                type="button"
+                onClick={handleCreateClientAccess}
+                disabled={isAccessMutationPending}
+                data-testid="button-create-client-access"
+              >
+                {isAccessMutationPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <KeyRound className="mr-2 h-4 w-4" />}
+                Crear acceso a la app
+              </Button>
+            ) : null}
+            {canVerifyLegacyClientAccess ? (
+              <Button
+                type="button"
+                onClick={handleVerifyLegacyClientAccess}
+                disabled={isAccessMutationPending}
+                data-testid="button-verify-legacy-client-access"
+              >
+                {isAccessMutationPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <KeyRound className="mr-2 h-4 w-4" />}
+                Verificar y restablecer acceso
+              </Button>
+            ) : null}
+            {canResetClientAccess ? (
             <Button
               type="button"
               onClick={handleResetClientAccess}
-              disabled={!canResetClientAccess || resetClientAccessMutation.isPending}
+              disabled={isAccessMutationPending}
               data-testid="button-reset-client-password"
             >
-              {resetClientAccessMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <KeyRound className="mr-2 h-4 w-4" />}
+              {isAccessMutationPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <KeyRound className="mr-2 h-4 w-4" />}
               Restablecer contraseña
             </Button>
+            ) : null}
           </div>
+          )}
 
-          {accessResetResult && (
+          {accessCredentialResult && (
             <div className="space-y-3">
               <div className="rounded-md border bg-background p-3 font-mono text-sm" data-testid="box-client-reset-access">
-                <p><span className="font-sans font-medium">Usuario (email):</span> {accessResetResult.email}</p>
-                <p><span className="font-sans font-medium">Contraseña temporal:</span> {accessResetResult.temporaryPassword}</p>
+                <p><span className="font-sans font-medium">Usuario (email):</span> {accessCredentialResult.email}</p>
+                <p><span className="font-sans font-medium">Contrasena temporal:</span> {accessCredentialResult.temporaryPassword}</p>
               </div>
               <p className="text-xs text-muted-foreground">
-                Esta contraseña se muestra solo ahora. Las sesiones anteriores del cliente dejaron de ser válidas.
-                {accessResetResult.mustChangePasswordOnLogin ? " El cliente deberá cambiarla al iniciar sesión." : ""}
+                Esta contrasena se muestra solo ahora. Las sesiones anteriores del cliente dejaron de ser validas.
+                {accessCredentialResult.mustChangePasswordOnLogin ? " El cliente debera cambiarla al iniciar sesion." : ""}
               </p>
               <div className="flex flex-col gap-2 sm:flex-row">
                 <Button
@@ -3337,7 +3678,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
             variant="outline"
             onClick={() => {
               setAccessDialogOpen(false);
-              setAccessResetResult(null);
+              setAccessCredentialResult(null);
             }}
             data-testid="button-close-client-access"
           >

@@ -1,8 +1,15 @@
 import { eq, and, sql, or, ne, isNull, count, desc, asc, gte, inArray, lte } from "drizzle-orm";
 import { db } from "./db";
 import {
+  type BranchClientAccessEvidence,
+  type BranchClientCreateAccessEligibility,
+  type BranchClientLegacyVerificationEligibility,
+  type BranchClientPasswordResetEligibility,
   getBranchClientIdentityControl,
+  getBranchClientCreateAccessEligibility,
+  getBranchClientLegacyAccessVerificationEligibility,
   getBranchClientPasswordResetEligibility,
+  supportsLocalPasswordAuth,
 } from "./branch-client-identity";
 import {
   users,
@@ -159,7 +166,7 @@ import {
   type Promotion,
   type InsertPromotion,
 } from "@shared/schema";
-import { buildMembershipActivePatch, buildMembershipLeftPatch } from "./membership-state";
+import { ACTIVE_MEMBERSHIP_CLIENT_STATUSES, buildMembershipActivePatch, buildMembershipLeftPatch } from "./membership-state";
 import { normalizeSearchText } from "./search-utils";
 
 const BRANCH_CLIENT_PASSWORD_RESET_COOLDOWN_MS = 60_000;
@@ -177,10 +184,66 @@ export type BranchClientPasswordResetResult =
       message: string;
     };
 
+export type PublicPasswordResetResult =
+  | {
+      ok: true;
+      userId: string;
+      sessionsInvalidated: number;
+    }
+  | {
+      ok: false;
+      statusCode: number;
+      code: string;
+      message: string;
+    };
+
 const BRANCH_TIMEZONE = "America/Mexico_City";
 const COMMERCIAL_LARGE_SALE_THRESHOLD = 10000;
 const CRM_ACTIVITY_WINDOW_DAYS = 30;
 const CRM_ACTIVITY_WINDOW_MS = CRM_ACTIVITY_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+const BRANCH_CLIENT_ACCESS_LOCK_TIMEOUT_MS = 5_000;
+const BRANCH_CLIENT_ACCESS_STATEMENT_TIMEOUT_MS = 20_000;
+
+function buildLocalAccessProvisioningPatch(
+  user: {
+    email: string | null;
+    authProvider: string | null;
+    localAccessProvisionedAt: Date | string | null;
+    localAccessProvisionedByBranchId: string | null;
+  },
+  options?: { branchId?: string | null; provisionedAt?: Date | string | null },
+): Partial<typeof users.$inferInsert> | null {
+  if (!supportsLocalPasswordAuth(user)) {
+    throw new Error("LOCAL_ACCESS_PROVIDER_UNSUPPORTED");
+  }
+
+  const patch: Partial<typeof users.$inferInsert> = {};
+  if (!user.localAccessProvisionedAt) {
+    patch.localAccessProvisionedAt = options?.provisionedAt ? new Date(options.provisionedAt) : new Date();
+  }
+
+  if (
+    options
+    && Object.prototype.hasOwnProperty.call(options, "branchId")
+    && !user.localAccessProvisionedByBranchId
+  ) {
+    patch.localAccessProvisionedByBranchId = options.branchId ?? null;
+  }
+
+  return Object.keys(patch).length > 0 ? patch : null;
+}
+
+async function invalidateUserSessionsTx(
+  executor: { execute: typeof db.execute },
+  userId: string,
+): Promise<number> {
+  const sessionDeleteResult = await executor.execute(sql`
+    DELETE FROM session
+    WHERE sess::json -> 'passport' ->> 'user' = ${userId}
+  `);
+
+  return Number((sessionDeleteResult as any)?.rowCount ?? 0);
+}
 const DEFAULT_GLOBAL_APP_SETTINGS: Array<{ key: string; valueJson: any; scope: string }> = [
   {
     key: "search.default_radius_km",
@@ -323,6 +386,38 @@ function normalizeOptionalTextValue(value: unknown): string | null {
   if (value == null) return null;
   const trimmed = String(value).trim();
   return trimmed ? trimmed : null;
+}
+
+async function readBranchClientAccessEvidence(
+  executor: { execute: typeof db.execute },
+  params: { branchId: string; clientId: string; email?: string | null },
+): Promise<BranchClientAccessEvidence> {
+  const result = await executor.execute(sql<{
+    activeMembershipBranchCount: number;
+    hasNoAccessAudit: boolean;
+  }>`
+    SELECT
+      (
+        SELECT COUNT(*)::int
+        FROM memberships m
+        WHERE m.user_id = ${params.clientId}
+          AND m.status = 'active'
+          AND m.client_status = ANY(${sql.raw(`ARRAY['${ACTIVE_MEMBERSHIP_CLIENT_STATUSES.join("','")}']::text[]`)})
+      ) AS "activeMembershipBranchCount",
+      EXISTS (
+        SELECT 1
+        FROM audit_logs a
+        WHERE a.branch_id = ${params.branchId}
+          AND a.action = 'CREATE_CLIENT_WITHOUT_APP_ACCESS'
+          AND COALESCE(a.metadata ->> 'clientId', '') = ${params.clientId}
+      ) AS "hasNoAccessAudit"
+  `);
+
+  const row = result.rows[0];
+  return {
+    activeMembershipBranchCount: Number(row?.activeMembershipBranchCount ?? 0),
+    hasNoAccessAudit: !!row?.hasNoAccessAudit,
+  };
 }
 
 function isPgUniqueViolation(error: any) {
@@ -1500,6 +1595,28 @@ export interface IStorage {
   createUser(user: InsertUser): Promise<User>;
   deleteCustomerAccount(id: string): Promise<void>;
   updateUserPassword(id: string, passwordHash: string): Promise<User | undefined>;
+  markLocalAccessProvisioned(
+    id: string,
+    options?: { branchId?: string | null; provisionedAt?: Date | string | null },
+  ): Promise<User | undefined>;
+  confirmLegacyLocalAccess(userId: string): Promise<User | undefined>;
+  completePublicPasswordReset(params: {
+    token: string;
+    passwordHash: string;
+  }): Promise<PublicPasswordResetResult>;
+  getBranchClientAccessEvidence(branchId: string, clientId: string, email?: string | null): Promise<BranchClientAccessEvidence>;
+  createBranchClientLocalAccess(params: {
+    actorUserId: string;
+    branchId: string;
+    clientId: string;
+    passwordHash: string;
+  }): Promise<BranchClientPasswordResetResult>;
+  verifyLegacyBranchClientLocalAccess(params: {
+    actorUserId: string;
+    branchId: string;
+    clientId: string;
+    passwordHash: string;
+  }): Promise<BranchClientPasswordResetResult>;
   resetBranchClientLocalPasswordAccess(params: {
     actorUserId: string;
     branchId: string;
@@ -2148,146 +2265,757 @@ export class DatabaseStorage implements IStorage {
     return user;
   }
 
+  async markLocalAccessProvisioned(
+    id: string,
+    options?: { branchId?: string | null; provisionedAt?: Date | string | null },
+  ): Promise<User | undefined> {
+    const [currentUser] = await db
+      .select()
+      .from(users)
+      .where(eq(users.id, id))
+      .limit(1);
+
+    if (!currentUser) {
+      return undefined;
+    }
+
+    const patch = buildLocalAccessProvisioningPatch(currentUser, options);
+    if (!patch) {
+      return currentUser;
+    }
+
+    const [user] = await db
+      .update(users)
+      .set(patch)
+      .where(eq(users.id, id))
+      .returning();
+    return user;
+  }
+
+  async confirmLegacyLocalAccess(userId: string): Promise<User | undefined> {
+    return db.transaction(async (tx) => {
+      const [currentUser] = await tx
+        .select()
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1);
+
+      if (!currentUser) {
+        return undefined;
+      }
+
+      const patch = buildLocalAccessProvisioningPatch(currentUser, {});
+      if (!patch) {
+        return currentUser;
+      }
+
+      const [updatedUser] = await tx
+        .update(users)
+        .set(patch)
+        .where(eq(users.id, userId))
+        .returning();
+
+      await tx.insert(auditLogs).values({
+        actorUserId: userId,
+        action: "CONFIRM_LEGACY_LOCAL_ACCESS",
+        branchId: updatedUser.localAccessProvisionedByBranchId ?? null,
+        metadata: {
+          clientId: userId,
+          result: "success",
+        },
+      });
+
+      return updatedUser;
+    });
+  }
+
+  async completePublicPasswordReset(params: {
+    token: string;
+    passwordHash: string;
+  }): Promise<PublicPasswordResetResult> {
+    try {
+      return await db.transaction<PublicPasswordResetResult>(async (tx) => {
+        await tx.execute(
+          sql.raw(`SET LOCAL lock_timeout = '${BRANCH_CLIENT_ACCESS_LOCK_TIMEOUT_MS}ms'`),
+        );
+        await tx.execute(
+          sql.raw(`SET LOCAL statement_timeout = '${BRANCH_CLIENT_ACCESS_STATEMENT_TIMEOUT_MS}ms'`),
+        );
+
+        const tokenLookup = await tx.execute(sql<{
+          id: string;
+          userId: string;
+          used: boolean;
+          expiresAt: string;
+        }>`
+          SELECT
+            id,
+            user_id AS "userId",
+            used,
+            expires_at AS "expiresAt"
+          FROM password_reset_tokens
+          WHERE token = ${params.token}
+          LIMIT 1
+        `);
+        const tokenRow = (tokenLookup.rows[0] as {
+          id: string;
+          userId: string;
+          used: boolean;
+          expiresAt: string;
+        } | undefined) ?? null;
+        if (!tokenRow) {
+          return {
+            ok: false,
+            statusCode: 400,
+            code: "INVALID_TOKEN",
+            message: "Token inválido o no existe",
+          };
+        }
+
+        const advisoryLockResult = await tx.execute(sql<{ locked: boolean }>`
+          SELECT pg_try_advisory_xact_lock(
+            hashtext('public-password-reset'),
+            hashtext(${tokenRow.userId})
+          ) AS locked
+        `);
+        if (!advisoryLockResult.rows[0]?.locked) {
+          return {
+            ok: false,
+            statusCode: 423,
+            code: "RESET_BUSY",
+            message: "No se pudo completar el restablecimiento porque esta cuenta ya está siendo actualizada. Inténtalo de nuevo.",
+          };
+        }
+
+        const tokenResult = await tx.execute(sql<{
+          id: string;
+          userId: string;
+          used: boolean;
+          expiresAt: string;
+        }>`
+          SELECT
+            id,
+            user_id AS "userId",
+            used,
+            expires_at AS "expiresAt"
+          FROM password_reset_tokens
+          WHERE id = ${tokenRow.id}
+          LIMIT 1
+          FOR UPDATE
+        `);
+        const lockedToken = (tokenResult.rows[0] as {
+          id: string;
+          userId: string;
+          used: boolean;
+          expiresAt: string;
+        } | undefined) ?? null;
+        if (!lockedToken) {
+          return {
+            ok: false,
+            statusCode: 400,
+            code: "INVALID_TOKEN",
+            message: "Token inválido o no existe",
+          };
+        }
+        if (lockedToken.used) {
+          return {
+            ok: false,
+            statusCode: 400,
+            code: "TOKEN_USED",
+            message: "Este enlace ya fue utilizado. Solicita uno nuevo.",
+          };
+        }
+        if (new Date(lockedToken.expiresAt) < new Date()) {
+          return {
+            ok: false,
+            statusCode: 400,
+            code: "TOKEN_EXPIRED",
+            message: "Este enlace expiró. Solicita uno nuevo.",
+          };
+        }
+
+        const userResult = await tx.execute(sql<{
+          id: string;
+          email: string | null;
+          authProvider: string | null;
+          isBlocked: boolean | null;
+          localAccessProvisionedAt: Date | string | null;
+          localAccessProvisionedByBranchId: string | null;
+        }>`
+          SELECT
+            id,
+            email,
+            auth_provider AS "authProvider",
+            is_blocked AS "isBlocked",
+            local_access_provisioned_at AS "localAccessProvisionedAt",
+            local_access_provisioned_by_branch_id AS "localAccessProvisionedByBranchId"
+          FROM users
+          WHERE id = ${lockedToken.userId}
+          LIMIT 1
+          FOR UPDATE
+        `);
+        const user = (userResult.rows[0] as {
+          id: string;
+          email: string | null;
+          authProvider: string | null;
+          isBlocked: boolean | null;
+          localAccessProvisionedAt: Date | string | null;
+          localAccessProvisionedByBranchId: string | null;
+        } | undefined) ?? null;
+        if (!user) {
+          return {
+            ok: false,
+            statusCode: 400,
+            code: "INVALID_TOKEN",
+            message: "Token inválido o no existe",
+          };
+        }
+        if (user.isBlocked) {
+          return {
+            ok: false,
+            statusCode: 403,
+            code: "CUSTOMER_BLOCKED",
+            message: "Tu cuenta esta bloqueada. Contacta a soporte.",
+          };
+        }
+        if (!supportsLocalPasswordAuth(user)) {
+          const normalizedAuthProvider = typeof user.authProvider === "string"
+            ? user.authProvider.trim().toLowerCase()
+            : "";
+          if (normalizedAuthProvider === "crm") {
+            return {
+              ok: false,
+              statusCode: 409,
+              code: "MANUAL_ACCESS_NOT_PROVISIONED",
+              message: "Esta cuenta fue creada por tu sucursal y aún no tiene acceso a la app. Solicita a tu sucursal que cree tu acceso de forma segura.",
+            };
+          }
+          return {
+            ok: false,
+            statusCode: 409,
+            code: "EXTERNAL_PROVIDER_ACCOUNT",
+            message: "Esta cuenta no usa correo y contraseña local. Si accedes con Google o Apple, entra con ese proveedor.",
+          };
+        }
+
+        const patch = buildLocalAccessProvisioningPatch(user, undefined);
+        const userPatch: Partial<typeof users.$inferInsert> = {
+          passwordHash: params.passwordHash,
+          ...(patch ?? {}),
+        };
+
+        await tx
+          .update(users)
+          .set(userPatch)
+          .where(eq(users.id, user.id));
+
+        await tx
+          .update(passwordResetTokens)
+          .set({ used: true })
+          .where(eq(passwordResetTokens.userId, user.id));
+
+        const sessionsInvalidated = await invalidateUserSessionsTx(tx, user.id);
+
+        const auditLogEntry: typeof auditLogs.$inferInsert = {
+          actorUserId: user.id,
+          action: "PUBLIC_PASSWORD_RESET",
+          branchId: user.localAccessProvisionedByBranchId ?? null,
+          metadata: {
+            clientId: user.id,
+            result: "success",
+            referenceId: `public-password-reset:${lockedToken.id}`,
+            sessionsInvalidated,
+          },
+        };
+        await tx.insert(auditLogs).values(auditLogEntry);
+
+        return {
+          ok: true,
+          userId: user.id,
+          sessionsInvalidated,
+        };
+      });
+    } catch (error: any) {
+      if (error?.code === "55P03" || error?.code === "57014") {
+        return {
+          ok: false,
+          statusCode: 423,
+          code: "RESET_BUSY",
+          message: "No se pudo completar el restablecimiento porque la cuenta está ocupada. Inténtalo nuevamente.",
+        };
+      }
+
+      if (error instanceof Error && error.message === "LOCAL_ACCESS_PROVIDER_UNSUPPORTED") {
+        return {
+          ok: false,
+          statusCode: 409,
+          code: "EXTERNAL_PROVIDER_ACCOUNT",
+          message: "Esta cuenta no usa correo y contraseña local. Si accedes con Google o Apple, entra con ese proveedor.",
+        };
+      }
+
+      throw error;
+    }
+  }
+
+  async getBranchClientAccessEvidence(
+    branchId: string,
+    clientId: string,
+    email?: string | null,
+  ): Promise<BranchClientAccessEvidence> {
+    return readBranchClientAccessEvidence(db, { branchId, clientId, email });
+  }
+
+  private async runBranchClientLocalAccessMutation(params: {
+    actorUserId: string;
+    branchId: string;
+    clientId: string;
+    passwordHash: string;
+    mode: "create" | "reset";
+  }): Promise<BranchClientPasswordResetResult> {
+    const action =
+      params.mode === "create" ? "CREATE_LOCAL_CLIENT_ACCESS" : "RESET_CLIENT_PASSWORD";
+    const referenceId = `client-local-access:${params.branchId}:${params.clientId}`;
+
+    try {
+      return await db.transaction(async (tx) => {
+        await tx.execute(
+          sql.raw(`SET LOCAL lock_timeout = '${BRANCH_CLIENT_ACCESS_LOCK_TIMEOUT_MS}ms'`),
+        );
+        await tx.execute(
+          sql.raw(`SET LOCAL statement_timeout = '${BRANCH_CLIENT_ACCESS_STATEMENT_TIMEOUT_MS}ms'`),
+        );
+
+        const advisoryLockResult = await tx.execute(sql<{ locked: boolean }>`
+          SELECT pg_try_advisory_xact_lock(
+            hashtext(${params.branchId}),
+            hashtext(${params.clientId})
+          ) AS locked
+        `);
+        if (!advisoryLockResult.rows[0]?.locked) {
+          return {
+            ok: false,
+            statusCode: 423,
+            code: "CLIENT_ACCESS_BUSY",
+            message: "Ya hay otra operacion administrando el acceso de este cliente. Intentalo de nuevo en unos segundos.",
+          };
+        }
+
+        const membershipResult = await tx.execute(sql<{
+          id: string;
+          source: string | null;
+          status: string | null;
+          clientStatus: string | null;
+        }>`
+          SELECT
+            id,
+            source,
+            status,
+            client_status AS "clientStatus"
+          FROM memberships
+          WHERE user_id = ${params.clientId}
+            AND branch_id = ${params.branchId}
+          LIMIT 1
+          FOR UPDATE
+        `);
+        const membership = membershipResult.rows[0] ?? null;
+        if (!membership) {
+          return {
+            ok: false,
+            statusCode: 404,
+            code: "CLIENT_NOT_FOUND",
+            message: "Cliente no encontrado en esta sucursal",
+          };
+        }
+
+        const clientResult = await tx.execute(sql<{
+          email: string | null;
+          authProvider: string | null;
+          passwordHash: string | null;
+          firebaseUid: string | null;
+          acceptedTerms: boolean | null;
+          isBlocked: boolean | null;
+          localAccessProvisionedAt: Date | string | null;
+        }>`
+          SELECT
+            email,
+            auth_provider AS "authProvider",
+            password_hash AS "passwordHash",
+            firebase_uid AS "firebaseUid",
+            accepted_terms AS "acceptedTerms",
+            is_blocked AS "isBlocked",
+            local_access_provisioned_at AS "localAccessProvisionedAt"
+          FROM users
+          WHERE id = ${params.clientId}
+          LIMIT 1
+          FOR UPDATE
+        `);
+        const client = (clientResult.rows[0] ?? null) as {
+          email: string | null;
+          authProvider: string | null;
+          passwordHash: string | null;
+          firebaseUid: string | null;
+          acceptedTerms: boolean | null;
+          isBlocked: boolean | null;
+          localAccessProvisionedAt: Date | string | null;
+        } | null;
+        if (!client) {
+          return {
+            ok: false,
+            statusCode: 404,
+            code: "CLIENT_NOT_FOUND",
+            message: "Usuario no encontrado",
+          };
+        }
+
+        const evidence = await readBranchClientAccessEvidence(tx, {
+          branchId: params.branchId,
+          clientId: params.clientId,
+          email: client.email,
+        });
+
+        const eligibility =
+          params.mode === "create"
+            ? getBranchClientCreateAccessEligibility(client, membership, evidence)
+            : getBranchClientPasswordResetEligibility(client, membership, evidence);
+        const isAllowed =
+          params.mode === "create"
+            ? (eligibility as BranchClientCreateAccessEligibility).canCreateLocalAccess
+            : (eligibility as BranchClientPasswordResetEligibility).canResetLocalPassword;
+
+        if (!isAllowed || !eligibility.email) {
+          const statusCode =
+            eligibility.code === "CLIENT_BLOCKED"
+              ? 403
+              : eligibility.code === "CLIENT_EMAIL_REQUIRED"
+                ? 422
+                : eligibility.code === "CLIENT_ACCESS_UNAVAILABLE"
+                  ? 403
+                  : 409;
+
+          return {
+            ok: false,
+            statusCode,
+            code: eligibility.code,
+            message: eligibility.reason,
+          };
+        }
+
+        const [latestAccessLog] = await tx
+          .select({
+            createdAt: auditLogs.createdAt,
+          })
+          .from(auditLogs)
+          .where(and(
+            inArray(auditLogs.action, ["CREATE_LOCAL_CLIENT_ACCESS", "RESET_CLIENT_PASSWORD", "VERIFY_LEGACY_LOCAL_ACCESS"]),
+            eq(auditLogs.branchId, params.branchId),
+            sql`COALESCE(${auditLogs.metadata} ->> 'referenceId', '') = ${referenceId}`,
+          ))
+          .orderBy(desc(auditLogs.createdAt))
+          .limit(1);
+
+        if (latestAccessLog) {
+          const elapsedMs = Date.now() - new Date(latestAccessLog.createdAt).getTime();
+          if (elapsedMs >= 0 && elapsedMs < BRANCH_CLIENT_PASSWORD_RESET_COOLDOWN_MS) {
+            return {
+              ok: false,
+              statusCode: 429,
+              code: "RESET_RATE_LIMITED",
+              message: "Espera un momento antes de generar otra contrasena temporal.",
+            };
+          }
+        }
+
+        const userPatch: Record<string, unknown> = {
+          passwordHash: params.passwordHash,
+          localAccessProvisionedAt: new Date(),
+          localAccessProvisionedByBranchId: params.branchId,
+        };
+
+        if (String(client.authProvider ?? "").trim().toLowerCase() !== "email") {
+          userPatch.authProvider = "email";
+        }
+
+        await tx
+          .update(users)
+          .set(userPatch)
+          .where(eq(users.id, params.clientId));
+
+        await tx
+          .update(passwordResetTokens)
+          .set({ used: true })
+          .where(eq(passwordResetTokens.userId, params.clientId));
+
+        const sessionsInvalidated = await invalidateUserSessionsTx(tx, params.clientId);
+
+        await tx.insert(auditLogs).values({
+          actorUserId: params.actorUserId,
+          action,
+          branchId: params.branchId,
+          metadata: {
+            clientId: params.clientId,
+            membershipId: membership.id,
+            referenceId,
+            result: "success",
+            sessionsInvalidated,
+            accessAction: params.mode,
+          },
+        });
+
+        return {
+          ok: true,
+          email: eligibility.email,
+          sessionsInvalidated,
+        };
+      });
+    } catch (error: any) {
+      if (error?.code === "55P03" || error?.code === "57014") {
+        return {
+          ok: false,
+          statusCode: 423,
+          code: "CLIENT_ACCESS_BUSY",
+          message: "No se pudo completar la operacion porque el acceso del cliente esta ocupado. Intentalo nuevamente.",
+        };
+      }
+
+      throw error;
+    }
+  }
+
+  async createBranchClientLocalAccess(params: {
+    actorUserId: string;
+    branchId: string;
+    clientId: string;
+    passwordHash: string;
+  }): Promise<BranchClientPasswordResetResult> {
+    return this.runBranchClientLocalAccessMutation({
+      ...params,
+      mode: "create",
+    });
+  }
+
   async resetBranchClientLocalPasswordAccess(params: {
     actorUserId: string;
     branchId: string;
     clientId: string;
     passwordHash: string;
   }): Promise<BranchClientPasswordResetResult> {
-    const referenceId = `client-password-reset:${params.branchId}:${params.clientId}`;
+    return this.runBranchClientLocalAccessMutation({
+      ...params,
+      mode: "reset",
+    });
+  }
 
-    return db.transaction(async (tx) => {
-      await tx.execute(sql`
-        SELECT pg_advisory_xact_lock(
-          hashtext(${params.branchId}),
-          hashtext(${params.clientId})
-        )
-      `);
+  async verifyLegacyBranchClientLocalAccess(params: {
+    actorUserId: string;
+    branchId: string;
+    clientId: string;
+    passwordHash: string;
+  }): Promise<BranchClientPasswordResetResult> {
+    const action = "VERIFY_LEGACY_LOCAL_ACCESS";
+    const referenceId = `client-local-access:${params.branchId}:${params.clientId}`;
 
-      const membershipResult = await tx.execute(sql<{
-        source: string | null;
-        status: string | null;
-        clientStatus: string | null;
-      }>`
-        SELECT
-          source,
-          status,
-          client_status AS "clientStatus"
-        FROM memberships
-        WHERE user_id = ${params.clientId}
-          AND branch_id = ${params.branchId}
-        LIMIT 1
-        FOR UPDATE
-      `);
-      const membership = membershipResult.rows[0] ?? null;
-      if (!membership) {
-        return {
-          ok: false,
-          statusCode: 404,
-          code: "CLIENT_NOT_FOUND",
-          message: "Cliente no encontrado en esta sucursal",
-        };
-      }
+    try {
+      return await db.transaction(async (tx) => {
+        await tx.execute(
+          sql.raw(`SET LOCAL lock_timeout = '${BRANCH_CLIENT_ACCESS_LOCK_TIMEOUT_MS}ms'`),
+        );
+        await tx.execute(
+          sql.raw(`SET LOCAL statement_timeout = '${BRANCH_CLIENT_ACCESS_STATEMENT_TIMEOUT_MS}ms'`),
+        );
 
-      const clientResult = await tx.execute(sql<{
-        email: string | null;
-        authProvider: string | null;
-        passwordHash: string | null;
-        firebaseUid: string | null;
-        acceptedTerms: boolean | null;
-        isBlocked: boolean | null;
-      }>`
-        SELECT
-          email,
-          auth_provider AS "authProvider",
-          password_hash AS "passwordHash",
-          firebase_uid AS "firebaseUid",
-          accepted_terms AS "acceptedTerms",
-          is_blocked AS "isBlocked"
-        FROM users
-        WHERE id = ${params.clientId}
-        LIMIT 1
-        FOR UPDATE
-      `);
-      const client = clientResult.rows[0] ?? null;
-      if (!client) {
-        return {
-          ok: false,
-          statusCode: 404,
-          code: "CLIENT_NOT_FOUND",
-          message: "Usuario no encontrado",
-        };
-      }
-
-      const eligibility = getBranchClientPasswordResetEligibility(client, membership);
-      if (!eligibility.canResetLocalPassword || !eligibility.email) {
-        return {
-          ok: false,
-          statusCode: eligibility.code === "CLIENT_ACCESS_UNAVAILABLE" ? 403 : 409,
-          code: eligibility.code,
-          message: eligibility.reason,
-        };
-      }
-
-      const [latestResetLog] = await tx
-        .select({
-          createdAt: auditLogs.createdAt,
-        })
-        .from(auditLogs)
-        .where(and(
-          eq(auditLogs.action, "RESET_CLIENT_PASSWORD"),
-          eq(auditLogs.branchId, params.branchId),
-          sql`COALESCE(${auditLogs.metadata} ->> 'referenceId', '') = ${referenceId}`,
-        ))
-        .orderBy(desc(auditLogs.createdAt))
-        .limit(1);
-
-      if (latestResetLog) {
-        const elapsedMs = Date.now() - new Date(latestResetLog.createdAt).getTime();
-        if (elapsedMs >= 0 && elapsedMs < BRANCH_CLIENT_PASSWORD_RESET_COOLDOWN_MS) {
+        const advisoryLockResult = await tx.execute(sql<{ locked: boolean }>`
+          SELECT pg_try_advisory_xact_lock(
+            hashtext(${params.branchId}),
+            hashtext(${params.clientId})
+          ) AS locked
+        `);
+        if (!advisoryLockResult.rows[0]?.locked) {
           return {
             ok: false,
-            statusCode: 429,
-            code: "RESET_RATE_LIMITED",
-            message: "Espera un momento antes de generar otra contraseña temporal.",
+            statusCode: 423,
+            code: "CLIENT_ACCESS_BUSY",
+            message: "Ya hay otra operacion administrando el acceso de este cliente. Intentalo de nuevo en unos segundos.",
           };
         }
+
+        const membershipResult = await tx.execute(sql<{
+          id: string;
+          source: string | null;
+          status: string | null;
+          clientStatus: string | null;
+        }>`
+          SELECT
+            id,
+            source,
+            status,
+            client_status AS "clientStatus"
+          FROM memberships
+          WHERE user_id = ${params.clientId}
+            AND branch_id = ${params.branchId}
+          LIMIT 1
+          FOR UPDATE
+        `);
+        const membership = membershipResult.rows[0] ?? null;
+        if (!membership) {
+          return {
+            ok: false,
+            statusCode: 404,
+            code: "CLIENT_NOT_FOUND",
+            message: "Cliente no encontrado en esta sucursal",
+          };
+        }
+
+        const clientResult = await tx.execute(sql<{
+          email: string | null;
+          authProvider: string | null;
+          passwordHash: string | null;
+          firebaseUid: string | null;
+          acceptedTerms: boolean | null;
+          isBlocked: boolean | null;
+          localAccessProvisionedAt: Date | string | null;
+          localAccessProvisionedByBranchId: string | null;
+        }>`
+          SELECT
+            email,
+            auth_provider AS "authProvider",
+            password_hash AS "passwordHash",
+            firebase_uid AS "firebaseUid",
+            accepted_terms AS "acceptedTerms",
+            is_blocked AS "isBlocked",
+            local_access_provisioned_at AS "localAccessProvisionedAt",
+            local_access_provisioned_by_branch_id AS "localAccessProvisionedByBranchId"
+          FROM users
+          WHERE id = ${params.clientId}
+          LIMIT 1
+          FOR UPDATE
+        `);
+        const client = (clientResult.rows[0] ?? null) as {
+          email: string | null;
+          authProvider: string | null;
+          passwordHash: string | null;
+          firebaseUid: string | null;
+          acceptedTerms: boolean | null;
+          isBlocked: boolean | null;
+          localAccessProvisionedAt: Date | string | null;
+          localAccessProvisionedByBranchId: string | null;
+        } | null;
+        if (!client) {
+          return {
+            ok: false,
+            statusCode: 404,
+            code: "CLIENT_NOT_FOUND",
+            message: "Usuario no encontrado",
+          };
+        }
+
+        const evidence = await readBranchClientAccessEvidence(tx, {
+          branchId: params.branchId,
+          clientId: params.clientId,
+          email: client.email,
+        });
+        const eligibility: BranchClientLegacyVerificationEligibility =
+          getBranchClientLegacyAccessVerificationEligibility(client, membership, evidence);
+
+        if (!eligibility.canVerifyLegacyLocalAccess || !eligibility.email) {
+          const statusCode =
+            eligibility.code === "CLIENT_BLOCKED"
+              ? 403
+              : eligibility.code === "CLIENT_EMAIL_REQUIRED"
+                ? 422
+                : eligibility.code === "CLIENT_ACCESS_UNAVAILABLE"
+                  ? 403
+                  : 409;
+
+          return {
+            ok: false,
+            statusCode,
+            code: eligibility.code,
+            message: eligibility.reason,
+          };
+        }
+
+        const [latestAccessLog] = await tx
+          .select({
+            createdAt: auditLogs.createdAt,
+          })
+          .from(auditLogs)
+          .where(and(
+            inArray(auditLogs.action, ["CREATE_LOCAL_CLIENT_ACCESS", "RESET_CLIENT_PASSWORD", "VERIFY_LEGACY_LOCAL_ACCESS"]),
+            eq(auditLogs.branchId, params.branchId),
+            sql`COALESCE(${auditLogs.metadata} ->> 'referenceId', '') = ${referenceId}`,
+          ))
+          .orderBy(desc(auditLogs.createdAt))
+          .limit(1);
+
+        if (latestAccessLog) {
+          const elapsedMs = Date.now() - new Date(latestAccessLog.createdAt).getTime();
+          if (elapsedMs >= 0 && elapsedMs < BRANCH_CLIENT_PASSWORD_RESET_COOLDOWN_MS) {
+            return {
+              ok: false,
+              statusCode: 429,
+              code: "RESET_RATE_LIMITED",
+              message: "Espera un momento antes de generar otra contrasena temporal.",
+            };
+          }
+        }
+
+        const provisioningPatch = buildLocalAccessProvisioningPatch(client, {
+          branchId: params.branchId,
+        });
+        const userPatch: Record<string, unknown> = {
+          passwordHash: params.passwordHash,
+          ...(provisioningPatch ?? {}),
+        };
+
+        if (String(client.authProvider ?? "").trim().toLowerCase() !== "email") {
+          userPatch.authProvider = "email";
+        }
+
+        await tx
+          .update(users)
+          .set(userPatch)
+          .where(eq(users.id, params.clientId));
+
+        await tx
+          .update(passwordResetTokens)
+          .set({ used: true })
+          .where(eq(passwordResetTokens.userId, params.clientId));
+
+        const sessionsInvalidated = await invalidateUserSessionsTx(tx, params.clientId);
+
+        await tx.insert(auditLogs).values({
+          actorUserId: params.actorUserId,
+          action,
+          branchId: params.branchId,
+          metadata: {
+            clientId: params.clientId,
+            membershipId: membership.id,
+            referenceId,
+            result: "success",
+            sessionsInvalidated,
+            accessAction: "verify_legacy",
+          },
+        });
+
+        return {
+          ok: true,
+          email: eligibility.email,
+          sessionsInvalidated,
+        };
+      });
+    } catch (error: any) {
+      if (error?.code === "55P03" || error?.code === "57014") {
+        return {
+          ok: false,
+          statusCode: 423,
+          code: "CLIENT_ACCESS_BUSY",
+          message: "No se pudo completar la operacion porque el acceso del cliente esta ocupado. Intentalo nuevamente.",
+        };
       }
 
-      await tx
-        .update(users)
-        .set({ passwordHash: params.passwordHash })
-        .where(eq(users.id, params.clientId));
-
-      await tx
-        .update(passwordResetTokens)
-        .set({ used: true })
-        .where(eq(passwordResetTokens.userId, params.clientId));
-
-      const sessionDeleteResult = await tx.execute(sql`
-        DELETE FROM session
-        WHERE sess::json -> 'passport' ->> 'user' = ${params.clientId}
-      `);
-      const sessionsInvalidated = Number((sessionDeleteResult as any)?.rowCount ?? 0);
-
-      await tx.insert(auditLogs).values({
-        actorUserId: params.actorUserId,
-        action: "RESET_CLIENT_PASSWORD",
-        branchId: params.branchId,
-        metadata: {
-          clientId: params.clientId,
-          referenceId,
-          result: "success",
-          sessionsInvalidated,
-        },
-      });
-
-      return {
-        ok: true,
-        email: eligibility.email,
-        sessionsInvalidated,
-      };
-    });
+      throw error;
+    }
   }
 
   async getAllBranches(includeDeleted = false): Promise<Branch[]> {
@@ -3564,6 +4292,8 @@ export class DatabaseStorage implements IStorage {
       acceptedTerms: true,
       acceptedTermsAt: new Date().toISOString(),
       termsVersion: data.termsVersion,
+      localAccessProvisionedAt: new Date(),
+      localAccessProvisionedByBranchId: null,
     };
     if (data.name) setData.name = data.name;
     if (data.lastName !== undefined) setData.lastName = data.lastName;

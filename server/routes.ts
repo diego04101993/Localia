@@ -11,9 +11,17 @@ import { storage } from "./storage";
 import { db } from "./db";
 import { and, count, eq, ne, or } from "drizzle-orm";
 import {
+  getBranchClientAccessState,
+  getBranchClientCreateAccessEligibility,
   getBranchClientIdentityControl,
+  getBranchClientLegacyAccessVerificationEligibility,
   getBranchClientPasswordResetEligibility,
+  hasLegacyLocalCredentials,
+  hasPersistedLocalAccess,
   isCrmPlaceholderEmail,
+  normalizeAccessEmail,
+  resolveAccessProvider,
+  supportsLocalPasswordAuth,
 } from "./branch-client-identity";
 import {
   deleteAllNotifications,
@@ -131,6 +139,9 @@ import { buildMembershipActivePatch, buildMembershipLeftPatch } from "./membersh
 import {
   branches,
   users,
+  memberships,
+  branchClientCrm,
+  auditLogs,
   classSchedules,
   branchPhotos,
   branchPosts,
@@ -698,6 +709,143 @@ function buildBranchClientPrivateProfilePayload(data: {
   if (data.parqAcceptedDate !== undefined) payload.parqAcceptedDate = data.parqAcceptedDate || null;
 
   return payload;
+}
+
+function buildUserIdentityPatch(updates: Record<string, unknown>) {
+  const setData: Record<string, unknown> = {};
+  if (updates.name !== undefined) setData.name = updates.name;
+  if (updates.lastName !== undefined) setData.lastName = updates.lastName;
+  if (updates.email !== undefined) setData.email = updates.email;
+  if (updates.phone !== undefined) setData.phone = updates.phone;
+  if (updates.birthDate !== undefined) setData.birthDate = updates.birthDate;
+  if (updates.gender !== undefined) setData.gender = updates.gender;
+  return setData;
+}
+
+async function upsertBranchClientPrivateProfileTx(
+  tx: any,
+  branchId: string,
+  userId: string,
+  data: ReturnType<typeof buildBranchClientPrivateProfilePayload>,
+) {
+  if (Object.keys(data).length === 0) {
+    return;
+  }
+
+  const now = new Date();
+  const setData: Record<string, unknown> = {
+    updatedAt: now,
+    privateProfileInitialized: true,
+  };
+  if (data.emergencyContactName !== undefined) setData.emergencyContactName = data.emergencyContactName;
+  if (data.emergencyContactPhone !== undefined) setData.emergencyContactPhone = data.emergencyContactPhone;
+  if (data.medicalNotes !== undefined) setData.medicalNotes = data.medicalNotes;
+  if (data.injuriesNotes !== undefined) setData.injuriesNotes = data.injuriesNotes;
+  if (data.medicalWarnings !== undefined) setData.medicalWarnings = data.medicalWarnings;
+  if (data.parqAccepted !== undefined) setData.parqAccepted = data.parqAccepted;
+  if (data.parqAcceptedDate !== undefined) setData.parqAcceptedDate = data.parqAcceptedDate;
+
+  await tx
+    .insert(branchClientCrm)
+    .values({
+      branchId,
+      userId,
+      emergencyContactName: data.emergencyContactName ?? null,
+      emergencyContactPhone: data.emergencyContactPhone ?? null,
+      medicalNotes: data.medicalNotes ?? null,
+      injuriesNotes: data.injuriesNotes ?? null,
+      medicalWarnings: data.medicalWarnings ?? null,
+      parqAccepted: data.parqAccepted ?? false,
+      parqAcceptedDate: data.parqAcceptedDate ?? null,
+      privateProfileInitialized: true,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: [branchClientCrm.branchId, branchClientCrm.userId],
+      set: setData,
+    });
+}
+
+async function createAuditLogTx(
+  tx: any,
+  data: {
+    actorUserId: string;
+    action: string;
+    branchId?: string | null;
+    metadata?: Record<string, unknown>;
+  },
+) {
+  await tx.insert(auditLogs).values({
+    actorUserId: data.actorUserId,
+    action: data.action,
+    branchId: data.branchId ?? null,
+    metadata: data.metadata ?? null,
+  });
+}
+
+async function persistExistingBranchClientTx(params: {
+  actorUserId: string;
+  branchId: string;
+  userId: string;
+  membershipId?: string | null;
+  membershipStatus?: string | null;
+  missingUpdates?: Record<string, unknown>;
+  privateProfilePayload?: ReturnType<typeof buildBranchClientPrivateProfilePayload>;
+  auditAction: string;
+  auditMetadata?: Record<string, unknown>;
+}) {
+  return db.transaction(async (tx) => {
+    const identityPatch = buildUserIdentityPatch(params.missingUpdates ?? {});
+    if (Object.keys(identityPatch).length > 0) {
+      await tx.update(users).set(identityPatch).where(eq(users.id, params.userId));
+    }
+
+    let membershipId = params.membershipId ?? null;
+    if (membershipId) {
+      if (params.membershipStatus === "left") {
+        const [updatedMembership] = await tx
+          .update(memberships)
+          .set({
+            ...buildMembershipActivePatch("admin_created"),
+          })
+          .where(eq(memberships.id, membershipId))
+          .returning({ id: memberships.id });
+        membershipId = updatedMembership?.id ?? membershipId;
+      }
+    } else {
+      const [createdMembership] = await tx
+        .insert(memberships)
+        .values({
+          userId: params.userId,
+          branchId: params.branchId,
+          status: "active",
+          isFavorite: false,
+          source: "admin_created",
+        })
+        .returning({ id: memberships.id });
+      membershipId = createdMembership.id;
+    }
+
+    await upsertBranchClientPrivateProfileTx(
+      tx,
+      params.branchId,
+      params.userId,
+      params.privateProfilePayload ?? {},
+    );
+
+    await createAuditLogTx(tx, {
+      actorUserId: params.actorUserId,
+      action: params.auditAction,
+      branchId: params.branchId,
+      metadata: {
+        clientId: params.userId,
+        membershipId,
+        ...(params.auditMetadata ?? {}),
+      },
+    });
+
+    return { membershipId };
+  });
 }
 
 async function maybeLinkExistingBranchClientToAuthenticatedUser(
@@ -1288,14 +1436,38 @@ export async function registerRoutes(
     if (!result.success) {
       return res.status(400).json({ message: "Datos inválidos" });
     }
-    passport.authenticate("local", (err: any, user: any, info: any) => {
+    passport.authenticate("local", async (err: any, user: any, info: any) => {
       if (err) return next(err);
       if (!user) {
         return res.status(401).json({ message: info?.message || "Credenciales incorrectas" });
       }
 
-      const { passwordHash, ...safeUser } = user;
-      return completeLoginSession(req, res, next, user, safeUser, 200, "local");
+      let authenticatedUser = user;
+      if (
+        authenticatedUser.role === "CUSTOMER"
+        && !authenticatedUser.localAccessProvisionedAt
+        && supportsLocalPasswordAuth(authenticatedUser)
+      ) {
+        try {
+          const confirmedUser = await storage.confirmLegacyLocalAccess(authenticatedUser.id);
+          if (!confirmedUser) {
+            return res.status(503).json({
+              code: "LEGACY_ACCESS_CONFIRMATION_FAILED",
+              message: "No pudimos confirmar tu acceso en este momento. Intenta nuevamente.",
+            });
+          }
+          authenticatedUser = confirmedUser;
+        } catch (confirmErr: any) {
+          console.error("[AUTH_LOGIN] Error al confirmar local_access_provisioned_at:", confirmErr?.stack || confirmErr);
+          return res.status(503).json({
+            code: "LEGACY_ACCESS_CONFIRMATION_FAILED",
+            message: "No pudimos confirmar tu acceso en este momento. Intenta nuevamente.",
+          });
+        }
+      }
+
+      const { passwordHash, ...safeUser } = authenticatedUser;
+      return completeLoginSession(req, res, next, authenticatedUser, safeUser, 200, "local");
     })(req, res, next);
   });
 
@@ -1647,6 +1819,37 @@ if (!user) {
       const existing = await storage.getUserByEmail(email);
 
       if (existing) {
+        const normalizedExistingEmail = normalizeAccessEmail(existing.email);
+        const resolvedAccessProvider = resolveAccessProvider(existing.authProvider);
+        const normalizedAuthProvider = typeof existing.authProvider === "string"
+          ? existing.authProvider.trim().toLowerCase()
+          : "";
+        const hasProvisionedLocalPassword = hasPersistedLocalAccess(
+          existing,
+          normalizedExistingEmail,
+          resolvedAccessProvider,
+        );
+        const hasHistoricalLocalPassword = hasLegacyLocalCredentials(
+          existing,
+          normalizedExistingEmail,
+          resolvedAccessProvider,
+        );
+        const isManualAccessNotProvisioned =
+          normalizedAuthProvider === "crm"
+          && !!normalizedExistingEmail
+          && !isCrmPlaceholderEmail(normalizedExistingEmail);
+        const isExternalProviderAccount =
+          resolvedAccessProvider === "google"
+          || resolvedAccessProvider === "apple"
+          || (normalizedAuthProvider.length > 0
+            && !supportsLocalPasswordAuth(existing)
+            && normalizedAuthProvider !== "crm");
+        const externalProviderLabel =
+          resolvedAccessProvider === "apple"
+            ? "Apple"
+            : resolvedAccessProvider === "google"
+              ? "Google"
+              : "tu proveedor externo";
         if ((existing as any).isBlocked) {
           return res.status(403).json({ message: CUSTOMER_BLOCKED_MESSAGE });
         }
@@ -1656,20 +1859,37 @@ if (!user) {
             message: "Este correo pertenece a una cuenta de administrador. Inicia sesión normalmente.",
           });
         }
+        if (isExternalProviderAccount) {
+          return res.status(409).json({
+            code: "EXTERNAL_PROVIDER_ACCOUNT",
+            message: `Este correo ya está vinculado a ${externalProviderLabel}. Ingresa con ese proveedor para continuar.`,
+          });
+        }
+        if (hasProvisionedLocalPassword) {
+          return res.status(409).json({
+            code: "LOCAL_ACCESS_EXISTS",
+            message: "Ya existe una cuenta con este correo. Inicia sesión o recupera tu contraseña.",
+          });
+        }
+        if (hasHistoricalLocalPassword) {
+          return res.status(409).json({
+            code: "LEGACY_ACCESS_UNVERIFIED",
+            message: "Tu acceso histórico necesita confirmarse. Intenta iniciar sesión con tu contraseña actual o solicita recuperar tu acceso.",
+          });
+        }
+        if (isManualAccessNotProvisioned) {
+          return res.status(409).json({
+            code: "MANUAL_ACCESS_NOT_PROVISIONED",
+            message: "Tu cuenta fue creada por tu sucursal y aún no tiene acceso a la app. Solicita a tu sucursal que cree tu acceso de forma segura.",
+          });
+        }
         if ((existing as any).acceptedTerms) {
           return res.status(409).json({
             code: "ALREADY_EXISTS",
             message: "Ya existe una cuenta con este correo. Inicia sesión.",
           });
         }
-        // Cliente existente con contraseña (creado por sucursal) — no sobreescribir
-        if ((existing as any).passwordHash) {
-          return res.status(409).json({
-            code: "HAS_CREDENTIALS",
-            message: "Ya tienes un perfil en WebCool. Inicia sesión con tu contraseña y acepta los términos para continuar.",
-          });
-        }
-        // Cliente existente SIN contraseña — activar (caso especial: alta sin credenciales)
+        // Cliente existente SIN contraseña local activa — activar (caso especial legado)
         const hash = await bcrypt.hash(password, 10);
         const updated = await storage.activateCustomerAccount(existing.id, {
           passwordHash: hash,
@@ -1708,6 +1928,8 @@ if (!user) {
         passwordHash: hash,
         role: "CUSTOMER",
         name,
+        localAccessProvisionedAt: new Date(),
+        localAccessProvisionedByBranchId: null,
         acceptedTerms: true,
         acceptedTermsAt: new Date().toISOString(),
         termsVersion: TERMS_VERSION,
@@ -1790,10 +2012,15 @@ if (!user) {
       });
     }
     // Always respond the same way for security (don't reveal if email exists)
-    const GENERIC_OK = { message: "Si el correo está registrado, te enviamos instrucciones en breve." };
+    const GENERIC_OK = {
+      message: "Si el correo está registrado y usa contraseña local, te enviaremos instrucciones en breve. Si accedes con Google o Apple, entra con ese proveedor.",
+    };
     try {
       const user = await storage.getUserByEmail(email.toLowerCase().trim());
       if (!user) return res.json(GENERIC_OK);
+      if (user.isBlocked || !supportsLocalPasswordAuth(user)) {
+        return res.json(GENERIC_OK);
+      }
       // Invalidate any existing tokens for this user
       await storage.invalidateUserPasswordResetTokens(user.id);
       const token = crypto.randomBytes(32).toString("hex");
@@ -1833,15 +2060,17 @@ if (!user) {
       return res.status(400).json({ message: "La contraseña debe tener al menos 8 caracteres" });
     }
     try {
-      const record = await storage.getPasswordResetToken(token);
-      if (!record) return res.status(400).json({ code: "INVALID_TOKEN", message: "Token inválido o no existe" });
-      if (record.used) return res.status(400).json({ code: "TOKEN_USED", message: "Este enlace ya fue utilizado. Solicita uno nuevo." });
-      if (new Date(record.expiresAt) < new Date()) {
-        return res.status(400).json({ code: "TOKEN_EXPIRED", message: "Este enlace expiró. Solicita uno nuevo." });
-      }
       const hash = await bcrypt.hash(newPassword, 10);
-      await storage.updateUserPassword(record.userId, hash);
-      await storage.markPasswordResetTokenUsed(record.id);
+      const resetResult = await storage.completePublicPasswordReset({
+        token,
+        passwordHash: hash,
+      });
+      if (!resetResult.ok) {
+        return res.status(resetResult.statusCode).json({
+          code: resetResult.code,
+          message: resetResult.message,
+        });
+      }
       return res.json({ message: "Contraseña actualizada correctamente. Ya puedes iniciar sesión." });
     } catch (err) {
       next(err);
@@ -4498,13 +4727,20 @@ if (!user) {
       if (!profile) return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
       const rawUser = await storage.getUser(clientId);
       if (!rawUser) return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
-      const passwordResetEligibility = getBranchClientPasswordResetEligibility(rawUser, profile.membership);
+      const accessEvidence = await storage.getBranchClientAccessEvidence(user.branchId, clientId, rawUser.email);
+      const accessState = getBranchClientAccessState(rawUser, profile.membership, accessEvidence);
       res.json({
         ...profile,
         identityControl: getBranchClientIdentityControl(rawUser, profile.membership),
-        canResetLocalPassword: passwordResetEligibility.canResetLocalPassword,
-        canResetLocalPasswordReason: passwordResetEligibility.reason,
-        accessEmail: passwordResetEligibility.email,
+        accessStatus: accessState.accessStatus,
+        accessProvider: accessState.accessProvider,
+        accessEmail: accessState.accessEmail,
+        canBranchManageAccess: accessState.canBranchManageAccess,
+        canCreateLocalAccess: accessState.canCreateLocalAccess,
+        canVerifyLegacyLocalAccess: getBranchClientLegacyAccessVerificationEligibility(rawUser, profile.membership, accessEvidence).canVerifyLegacyLocalAccess,
+        canResetLocalPassword: accessState.canResetLocalPassword,
+        canResetLocalPasswordReason: accessState.accessReason,
+        accessReason: accessState.accessReason,
       });
     } catch (err: any) {
       console.error(`[CLIENT_PROFILE] Error:`, err.stack || err);
@@ -4716,6 +4952,12 @@ if (!user) {
         phone: result.data.phone,
         birthDate: result.data.birthDate,
       });
+      if (!normalizedEmail && !result.data.continueWithoutAppAccess) {
+        return res.status(400).json({
+          code: "APP_ACCESS_CONFIRMATION_REQUIRED",
+          message: "Confirma que deseas guardar este cliente sin acceso a la app antes de continuar.",
+        });
+      }
       const branchClients = await storage.getBranchClients(actor.branchId, true);
       const phoneMatches = getBranchClientPhoneMatches(branchClients, incomingIdentity.phone);
       const duplicateMatches = collectBranchClientDuplicateMatches(branchClients, incomingIdentity);
@@ -4810,25 +5052,16 @@ if (!user) {
               })
             : {};
 
-          if (Object.keys(missingUpdates).length > 0) {
-            await storage.updateUser(matchedUser.id, missingUpdates);
-          }
-
-          if (matchedMembership.status === "left") {
-            await storage.updateMembership(matchedMembership.id, {
-              ...buildMembershipActivePatch("admin_created"),
-            });
-          }
-
-          if (hasPrivateProfilePayload) {
-            await storage.updateBranchClientPrivateProfile(actor.branchId, matchedUser.id, privateProfilePayload);
-          }
-
-          await storage.createAuditLog({
+          await persistExistingBranchClientTx({
             actorUserId: actor.id,
-            action: "DUPLICATE_CLIENT_REUSED",
             branchId: actor.branchId,
-            metadata: {
+            userId: matchedUser.id,
+            membershipId: matchedMembership.id,
+            membershipStatus: matchedMembership.status,
+            missingUpdates,
+            privateProfilePayload,
+            auditAction: "DUPLICATE_CLIENT_REUSED",
+            auditMetadata: {
               incomingEmail: normalizedEmail,
               candidateUserId: phoneMatch.candidate.userId,
               targetUserId: matchedUser.id,
@@ -4908,25 +5141,16 @@ if (!user) {
               })
             : {};
 
-          if (Object.keys(missingUpdates).length > 0) {
-            await storage.updateUser(currentUser.id, missingUpdates);
-          }
-
-          if (membership.status === "left") {
-            await storage.updateMembership(membership.id, {
-              ...buildMembershipActivePatch("admin_created"),
-            });
-          }
-
-          if (hasPrivateProfilePayload) {
-            await storage.updateBranchClientPrivateProfile(actor.branchId, currentUser.id, privateProfilePayload);
-          }
-
-          await storage.createAuditLog({
+          await persistExistingBranchClientTx({
             actorUserId: actor.id,
-            action: "DUPLICATE_CLIENT_REUSED",
             branchId: actor.branchId,
-            metadata: {
+            userId: currentUser.id,
+            membershipId: membership.id,
+            membershipStatus: membership.status,
+            missingUpdates,
+            privateProfilePayload,
+            auditAction: "DUPLICATE_CLIENT_REUSED",
+            auditMetadata: {
               incomingEmail: normalizedEmail,
               candidateUserId: strongMatch.candidate.userId,
               targetUserId: currentUser.id,
@@ -5014,84 +5238,107 @@ if (!user) {
               gender: result.data.gender,
             })
           : {};
-        if (Object.keys(missingUpdates).length > 0) {
-          await storage.updateUser(existing.id, missingUpdates);
-        }
         if (existingMembership) {
           if (existingMembership.status === "active") {
             return res.status(409).json({ message: "Este cliente ya está registrado en tu sucursal" });
           }
-          await storage.updateMembership(existingMembership.id, {
-            ...buildMembershipActivePatch("admin_created"),
-          });
-          if (hasPrivateProfilePayload) {
-            await storage.updateBranchClientPrivateProfile(actor.branchId, existing.id, privateProfilePayload);
-          }
-          await storage.createAuditLog({
+          await persistExistingBranchClientTx({
             actorUserId: actor.id,
-            action: "REACTIVATE_CLIENT",
             branchId: actor.branchId,
-            metadata: { clientEmail: existing.email },
+            userId: existing.id,
+            membershipId: existingMembership.id,
+            membershipStatus: existingMembership.status,
+            missingUpdates,
+            privateProfilePayload,
+            auditAction: "REACTIVATE_CLIENT",
+            auditMetadata: {
+              previousStatus: existingMembership.status,
+              updatedIdentityFields: Object.keys(missingUpdates),
+            },
           });
           console.log(`[CREATE_CLIENT] Reactivated ${existing.email} for branch ${actor.branchId}`);
           return res.json({ message: "Cliente reactivado", userId: existing.id });
         }
-        await storage.createMembership({
-          userId: existing.id,
-          branchId: actor.branchId,
-          status: "active",
-          isFavorite: false,
-          source: "admin_created",
-        });
-        if (hasPrivateProfilePayload) {
-          await storage.updateBranchClientPrivateProfile(actor.branchId, existing.id, privateProfilePayload);
-        }
-        await storage.createAuditLog({
+        await persistExistingBranchClientTx({
           actorUserId: actor.id,
-          action: "ADD_EXISTING_CLIENT",
           branchId: actor.branchId,
-          metadata: { clientEmail: existing.email },
+          userId: existing.id,
+          membershipId: null,
+          membershipStatus: null,
+          missingUpdates,
+          privateProfilePayload,
+          auditAction: "ADD_EXISTING_CLIENT",
+          auditMetadata: {
+            updatedIdentityFields: Object.keys(missingUpdates),
+          },
         });
         console.log(`[CREATE_CLIENT] Added existing user ${existing.email} to branch ${actor.branchId}`);
         return res.json({ message: "Cliente agregado", userId: existing.id });
       }
 
-      const plainPassword = result.data.password || generateSecurePassword(12);
-      const hash = await bcrypt.hash(plainPassword, 10);
+      const hasAccessEmail = !!normalizedEmail;
+      const plainPassword = hasAccessEmail ? (result.data.password || generateSecurePassword(12)) : null;
+      const technicalPassword = plainPassword || generateSecurePassword(24);
+      const hash = await bcrypt.hash(technicalPassword, 10);
 
-      const newUser = await storage.createUser({
-        email: normalizedEmail,
-        passwordHash: hash,
-        role: "CUSTOMER",
-        name: result.data.name,
-        lastName: result.data.lastName || null,
-        phone: normalizedPhoneText,
-        birthDate: result.data.birthDate || null,
-        gender: result.data.gender || null,
-      } as any);
+      const newUser = await db.transaction(async (tx) => {
+        const [createdUser] = await tx
+          .insert(users)
+          .values({
+            email: normalizedEmail,
+            passwordHash: hash,
+            role: "CUSTOMER",
+            name: result.data.name,
+            lastName: result.data.lastName || null,
+            phone: normalizedPhoneText,
+            birthDate: result.data.birthDate || null,
+            gender: result.data.gender || null,
+            authProvider: hasAccessEmail ? "email" : "crm",
+            localAccessProvisionedAt: hasAccessEmail ? new Date() : null,
+            localAccessProvisionedByBranchId: hasAccessEmail ? actor.branchId : null,
+          } as any)
+          .returning();
 
-      await storage.createMembership({
-        userId: newUser.id,
-        branchId: actor.branchId,
-        status: "active",
-        isFavorite: false,
-        source: "admin_created",
-      });
+        const [createdMembership] = await tx
+          .insert(memberships)
+          .values({
+            userId: createdUser.id,
+            branchId: actor.branchId,
+            status: "active",
+            isFavorite: false,
+            source: "admin_created",
+          })
+          .returning({ id: memberships.id });
 
-      if (hasPrivateProfilePayload) {
-        await storage.updateBranchClientPrivateProfile(actor.branchId, newUser.id, privateProfilePayload);
-      }
+        await upsertBranchClientPrivateProfileTx(tx, actor.branchId, createdUser.id, privateProfilePayload);
 
-      await storage.createAuditLog({
-        actorUserId: actor.id,
-        action: "CREATE_CLIENT",
-        branchId: actor.branchId,
-        metadata: {
-          clientEmail: newUser.email,
-          clientName: newUser.name,
-          confirmedPossibleDuplicate: !!result.data.confirmPotentialDuplicate,
-          confirmedPhoneDuplicate: forcePhoneDuplicateCreate,
-        },
+        await createAuditLogTx(tx, {
+          actorUserId: actor.id,
+          action: "CREATE_CLIENT",
+          branchId: actor.branchId,
+          metadata: {
+            clientId: createdUser.id,
+            membershipId: createdMembership.id,
+            accessStatus: hasAccessEmail ? "LOCAL_ACCESS" : "NO_ACCESS",
+            confirmedPossibleDuplicate: !!result.data.confirmPotentialDuplicate,
+            confirmedPhoneDuplicate: forcePhoneDuplicateCreate,
+          },
+        });
+
+        await createAuditLogTx(tx, {
+          actorUserId: actor.id,
+          action: hasAccessEmail ? "CREATE_CLIENT_LOCAL_ACCESS" : "CREATE_CLIENT_WITHOUT_APP_ACCESS",
+          branchId: actor.branchId,
+          metadata: {
+            clientId: createdUser.id,
+            membershipId: createdMembership.id,
+            referenceId: `client-local-access:${actor.branchId}:${createdUser.id}`,
+            accessStatus: hasAccessEmail ? "LOCAL_ACCESS" : "NO_ACCESS",
+            result: "success",
+          },
+        });
+
+        return createdUser;
       });
 
       console.log(`[CREATE_CLIENT] Created new client ${newUser.email ?? "sin-correo"} for branch ${actor.branchId}`);
@@ -5099,8 +5346,8 @@ if (!user) {
         userId: newUser.id,
         email: newUser.email,
         name: newUser.name,
-        message: newUser.email ? "Cliente creado" : "Cliente creado sin correo registrado",
-        ...(newUser.email ? { password: plainPassword } : {}),
+        message: newUser.email ? "Cliente creado" : "Cliente creado sin acceso a la app",
+        ...(newUser.email && plainPassword ? { password: plainPassword } : {}),
       });
     } catch (err: any) {
       console.error(`[CREATE_CLIENT] Error:`, err.stack || err);
@@ -5478,6 +5725,73 @@ if (!user) {
     }
   });
 
+  app.post("/api/branch/clients/:id/create-local-access", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const clientId = req.params.id as string;
+    res.set("Cache-Control", "no-store");
+
+    try {
+      if (actor.role !== "BRANCH_ADMIN") {
+        return res.status(403).json({ message: "Solo la sucursal asociada puede crear acceso para este cliente." });
+      }
+
+      const membership = await storage.getMembership(clientId, actor.branchId);
+      if (!membership) {
+        return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+      }
+
+      const client = await storage.getUser(clientId);
+      if (!client) {
+        return res.status(404).json({ message: "Usuario no encontrado" });
+      }
+
+      const accessEvidence = await storage.getBranchClientAccessEvidence(actor.branchId, clientId, client.email);
+      const access = getBranchClientCreateAccessEligibility(client, membership, accessEvidence);
+      if (!access.canCreateLocalAccess || !access.email) {
+        const statusCode =
+          access.code === "CLIENT_BLOCKED"
+            ? 403
+            : access.code === "CLIENT_EMAIL_REQUIRED"
+              ? 422
+              : access.code === "CLIENT_ACCESS_UNAVAILABLE"
+                ? 403
+                : 409;
+
+        return res.status(statusCode).json({
+          code: access.code,
+          message: access.reason,
+        });
+      }
+
+      const temporaryPassword = generateSecurePassword(16);
+      const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+      const createResult = await storage.createBranchClientLocalAccess({
+        actorUserId: actor.id,
+        branchId: actor.branchId,
+        clientId,
+        passwordHash,
+      });
+      if (!createResult.ok) {
+        return res.status(createResult.statusCode).json({
+          code: createResult.code,
+          message: createResult.message,
+        });
+      }
+
+      return res.json({
+        email: createResult.email,
+        temporaryPassword,
+        sessionsInvalidated: createResult.sessionsInvalidated,
+        mustChangePasswordOnLogin: false,
+        accessStatus: "LOCAL_ACCESS",
+        message: "Acceso a la app creado correctamente.",
+      });
+    } catch (err: any) {
+      console.error(`[CREATE_CLIENT_LOCAL_ACCESS] Error:`, err.stack || err);
+      return res.status(500).json({ message: "Error al crear el acceso del cliente" });
+    }
+  });
+
   app.post("/api/branch/clients/:id/reset-password", requireBranchAdmin, async (req, res) => {
     const actor = req.user as any;
     const clientId = req.params.id as string;
@@ -5498,9 +5812,17 @@ if (!user) {
         return res.status(404).json({ message: "Usuario no encontrado" });
       }
 
-      const access = getBranchClientPasswordResetEligibility(client, membership);
+      const accessEvidence = await storage.getBranchClientAccessEvidence(actor.branchId, clientId, client.email);
+      const access = getBranchClientPasswordResetEligibility(client, membership, accessEvidence);
       if (!access.canResetLocalPassword || !access.email) {
-        const statusCode = access.code === "CLIENT_ACCESS_UNAVAILABLE" ? 403 : 409;
+        const statusCode =
+          access.code === "CLIENT_BLOCKED"
+            ? 403
+            : access.code === "CLIENT_EMAIL_REQUIRED"
+              ? 422
+              : access.code === "CLIENT_ACCESS_UNAVAILABLE"
+                ? 403
+                : 409;
         return res.status(statusCode).json({
           code: access.code,
           message: access.reason,
@@ -5532,6 +5854,73 @@ if (!user) {
     } catch (err: any) {
       console.error(`[RESET_CLIENT_PASSWORD] Error:`, err.stack || err);
       return res.status(500).json({ message: "Error al restablecer el acceso del cliente" });
+    }
+  });
+
+  app.post("/api/branch/clients/:id/verify-legacy-local-access", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const clientId = req.params.id as string;
+    res.set("Cache-Control", "no-store");
+
+    try {
+      if (actor.role !== "BRANCH_ADMIN") {
+        return res.status(403).json({ message: "Solo la sucursal asociada puede verificar el acceso historico del cliente." });
+      }
+
+      const membership = await storage.getMembership(clientId, actor.branchId);
+      if (!membership) {
+        return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+      }
+
+      const client = await storage.getUser(clientId);
+      if (!client) {
+        return res.status(404).json({ message: "Usuario no encontrado" });
+      }
+
+      const accessEvidence = await storage.getBranchClientAccessEvidence(actor.branchId, clientId, client.email);
+      const access = getBranchClientLegacyAccessVerificationEligibility(client, membership, accessEvidence);
+      if (!access.canVerifyLegacyLocalAccess || !access.email) {
+        const statusCode =
+          access.code === "CLIENT_BLOCKED"
+            ? 403
+            : access.code === "CLIENT_EMAIL_REQUIRED"
+              ? 422
+              : access.code === "CLIENT_ACCESS_UNAVAILABLE"
+                ? 403
+                : 409;
+
+        return res.status(statusCode).json({
+          code: access.code,
+          message: access.reason,
+        });
+      }
+
+      const temporaryPassword = generateSecurePassword(16);
+      const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+      const verifyResult = await storage.verifyLegacyBranchClientLocalAccess({
+        actorUserId: actor.id,
+        branchId: actor.branchId,
+        clientId,
+        passwordHash,
+      });
+      if (!verifyResult.ok) {
+        return res.status(verifyResult.statusCode).json({
+          code: verifyResult.code,
+          message: verifyResult.message,
+        });
+      }
+
+      return res.json({
+        email: verifyResult.email,
+        temporaryPassword,
+        sessionsInvalidated: verifyResult.sessionsInvalidated,
+        mustChangePasswordOnLogin: false,
+        accessStatus: "LOCAL_ACCESS",
+        message: "Acceso historico verificado y restablecido correctamente.",
+      });
+    } catch (err: any) {
+      console.error(`[VERIFY_LEGACY_LOCAL_ACCESS] Error:`, err.stack || err);
+      return res.status(500).json({ message: "Error al verificar y restablecer el acceso historico del cliente" });
     }
   });
 

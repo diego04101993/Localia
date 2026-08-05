@@ -58,6 +58,8 @@ export const users = pgTable("users", {
   emailVerifiedAt: text("email_verified_at"),
   emailVerificationToken: text("email_verification_token"),
   emailVerificationTokenExpiresAt: text("email_verification_token_expires_at"),
+  localAccessProvisionedAt: timestamp("local_access_provisioned_at", { withTimezone: true }),
+  localAccessProvisionedByBranchId: varchar("local_access_provisioned_by_branch_id", { length: 36 }).references(() => branches.id, { onDelete: "set null" }),
   isBlocked: boolean("is_blocked").notNull().default(false),
   blockedAt: timestamp("blocked_at", { withTimezone: true }),
   blockedReason: text("blocked_reason"),
@@ -711,6 +713,7 @@ export const createClientSchema = z.object({
   medicalNotes: z.string().optional(),
   confirmPotentialDuplicate: z.boolean().optional(),
   reuseExistingClientId: z.string().optional(),
+  continueWithoutAppAccess: z.boolean().optional(),
   password: z.string().min(6, "La contraseña debe tener al menos 6 caracteres").optional(),
 });
 
