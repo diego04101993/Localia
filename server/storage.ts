@@ -274,6 +274,57 @@ function getMxLocalDateAndTime(): { today: string; currentTime: string } {
   return { today, currentTime };
 }
 
+function timeToMinutes(value: string): number {
+  const [hoursText = "0", minutesText = "0"] = value.split(":");
+  const hours = Number(hoursText);
+  const minutes = Number(minutesText);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return 0;
+  return (hours * 60) + minutes;
+}
+
+function compareDateOnly(left: string, right: string): number {
+  return left.localeCompare(right);
+}
+
+function hasMxClassStarted(bookingDate: string, startTime: string, now = getMxLocalDateAndTime()): boolean {
+  if (compareDateOnly(bookingDate, now.today) < 0) return true;
+  if (compareDateOnly(bookingDate, now.today) > 0) return false;
+  return startTime <= now.currentTime;
+}
+
+function isLateCancellationByMxCutoff(
+  bookingDate: string,
+  startTime: string,
+  cutoffMinutes: number,
+  now = getMxLocalDateAndTime(),
+): boolean {
+  if (compareDateOnly(bookingDate, now.today) < 0) return true;
+  if (compareDateOnly(bookingDate, now.today) > 0) return false;
+  const diffMinutes = timeToMinutes(startTime) - timeToMinutes(now.currentTime);
+  return diffMinutes < cutoffMinutes;
+}
+
+function membershipUsesClassCounter(membership?: Membership | null): boolean {
+  if (!membership) return false;
+  return membership.classesRemaining !== null || membership.classesTotal !== null;
+}
+
+function isMembershipExpired(membership?: Membership | null): boolean {
+  if (!membership?.expiresAt) return false;
+  return new Date(membership.expiresAt) < new Date();
+}
+
+function canConsumeMembershipClass(membership?: Membership | null): boolean {
+  if (!membershipUsesClassCounter(membership)) return false;
+  if (!membership || membership.status !== "active") return false;
+  if (isMembershipExpired(membership)) return false;
+  return membership.classesRemaining === null || membership.classesRemaining > 0;
+}
+
+function canReturnMembershipClass(membership?: Membership | null): boolean {
+  return membershipUsesClassCounter(membership);
+}
+
 function getCurrentMonthRange() {
   const today = getMxLocalDate();
   return {
@@ -684,6 +735,33 @@ export interface ReservationAuditRow extends ReservationAuditLog {
   bookingDate?: string | null;
   bookingStatus?: string | null;
 }
+
+export type BookingTransitionMode = "legacy" | "managed";
+export type BookingTransitionTargetStatus = "confirmed" | "cancelled" | "attended" | "no_show";
+export type BookingTransitionTrigger = "manual" | "automatic";
+export type BookingTransitionErrorCode =
+  | "NOT_FOUND"
+  | "FORBIDDEN_BRANCH"
+  | "INVALID_TRANSITION"
+  | "CLASS_COUNTER_UNAVAILABLE";
+
+export interface BookingStatusTransitionResult {
+  booking: ClassBooking;
+  previousStatus: ClassBooking["status"];
+  targetStatus: BookingTransitionTargetStatus;
+  mode: BookingTransitionMode;
+  isLegacyUnverified: boolean;
+  lateCancellation: boolean;
+  classesDeducted: boolean;
+  classesReturned: boolean;
+  attendanceCreated: boolean;
+  attendanceRemoved: boolean;
+  changed: boolean;
+}
+
+export type BookingStatusTransitionResponse =
+  | { ok: true; result: BookingStatusTransitionResult }
+  | { ok: false; code: BookingTransitionErrorCode; message: string };
 
 export interface ReviewReportRow extends ReviewReport {
   reviewRating?: number | null;
@@ -1847,6 +1925,13 @@ export interface IStorage {
     eventType: "assign" | "renew";
   }): Promise<BranchFinanceEntryRow | null>;
   getMembershipByUserAndBranch(userId: string, branchId: string): Promise<Membership | undefined>;
+  transitionBookingStatus(params: {
+    bookingId: string;
+    branchId: string;
+    targetStatus: BookingTransitionTargetStatus;
+    registeredByUserId?: string | null;
+    trigger?: BookingTransitionTrigger;
+  }): Promise<BookingStatusTransitionResponse>;
   reconcilePastBookings(branchId: string): Promise<number>;
   getAllActiveBranchIds(): Promise<string[]>;
   cancelFutureBookingsForUser(userId: string, branchId: string): Promise<number>;
@@ -4723,7 +4808,8 @@ export class DatabaseStorage implements IStorage {
     return rows.length;
   }
 
-  async upsertBranchClientCrm(
+  private async upsertBranchClientCrmTx(
+    executor: any,
     branchId: string,
     userId: string,
     data: {
@@ -4757,7 +4843,7 @@ export class DatabaseStorage implements IStorage {
     if (data.parqAcceptedDate !== undefined) setData.parqAcceptedDate = data.parqAcceptedDate;
     if (data.privateProfileInitialized !== undefined) setData.privateProfileInitialized = data.privateProfileInitialized;
 
-    const [row] = await db
+    const [row] = await executor
       .insert(branchClientCrm)
       .values({
         branchId,
@@ -4782,6 +4868,26 @@ export class DatabaseStorage implements IStorage {
       .returning();
 
     return row;
+  }
+
+  async upsertBranchClientCrm(
+    branchId: string,
+    userId: string,
+    data: {
+      clientStatus?: string | null;
+      tags?: string | null;
+      lastVisit?: Date | null;
+      emergencyContactName?: string | null;
+      emergencyContactPhone?: string | null;
+      medicalNotes?: string | null;
+      injuriesNotes?: string | null;
+      medicalWarnings?: string | null;
+      parqAccepted?: boolean;
+      parqAcceptedDate?: string | null;
+      privateProfileInitialized?: boolean;
+    },
+  ): Promise<BranchClientCrm> {
+    return this.upsertBranchClientCrmTx(db as any, branchId, userId, data);
   }
 
   async touchBranchClientLastVisit(branchId: string, userId: string, lastVisit: Date = new Date()): Promise<void> {
@@ -5714,10 +5820,414 @@ export class DatabaseStorage implements IStorage {
     }));
   }
 
+  private async lockBookingTx(tx: any, bookingId: string): Promise<ClassBooking | undefined> {
+    const lockResult = await tx.execute(sql`
+      SELECT id
+      FROM class_bookings
+      WHERE id = ${bookingId}
+      FOR UPDATE
+    `);
+
+    if (!Number((lockResult as any)?.rowCount ?? 0)) {
+      return undefined;
+    }
+
+    const [booking] = await tx.select().from(classBookings).where(eq(classBookings.id, bookingId)).limit(1);
+    return booking;
+  }
+
+  private async lockMembershipByUserAndBranchTx(
+    tx: any,
+    userId: string,
+    branchId: string,
+  ): Promise<Membership | undefined> {
+    const lockResult = await tx.execute(sql`
+      SELECT id
+      FROM memberships
+      WHERE user_id = ${userId}
+        AND branch_id = ${branchId}
+      FOR UPDATE
+    `);
+
+    if (!Number((lockResult as any)?.rowCount ?? 0)) {
+      return undefined;
+    }
+
+    const [membership] = await tx
+      .select()
+      .from(memberships)
+      .where(and(eq(memberships.userId, userId), eq(memberships.branchId, branchId)))
+      .limit(1);
+    return membership;
+  }
+
+  private async getAttendanceByBookingIdTx(tx: any, bookingId: string): Promise<Attendance | undefined> {
+    const [attendance] = await tx
+      .select()
+      .from(attendances)
+      .where(eq(attendances.bookingId, bookingId))
+      .limit(1);
+    return attendance;
+  }
+
+  private async createAttendanceTx(tx: any, data: InsertAttendance): Promise<Attendance> {
+    const [attendance] = await tx.insert(attendances).values(data).returning();
+    await this.upsertBranchClientCrmTx(tx, data.branchId, data.userId, {
+      lastVisit: attendance.checkedInAt,
+    });
+    return attendance;
+  }
+
+  private async deleteAttendanceByBookingIdTx(tx: any, bookingId: string): Promise<Attendance | undefined> {
+    const [attendance] = await tx
+      .delete(attendances)
+      .where(eq(attendances.bookingId, bookingId))
+      .returning();
+    return attendance;
+  }
+
+  private async decrementClassesRemainingTx(tx: any, membershipId: string): Promise<Membership | undefined> {
+    const [membership] = await tx
+      .update(memberships)
+      .set({ classesRemaining: sql`GREATEST(${memberships.classesRemaining} - 1, 0)` })
+      .where(and(
+        eq(memberships.id, membershipId),
+        sql`${memberships.classesRemaining} IS NOT NULL AND ${memberships.classesRemaining} > 0`,
+      ))
+      .returning();
+    return membership;
+  }
+
+  private async incrementClassesRemainingTx(
+    tx: any,
+    membershipId: string,
+    classesTotal: number | null,
+  ): Promise<Membership | undefined> {
+    const nextValue = classesTotal !== null
+      ? sql`LEAST(COALESCE(${memberships.classesRemaining}, 0) + 1, ${classesTotal})`
+      : sql`COALESCE(${memberships.classesRemaining}, 0) + 1`;
+
+    const [membership] = await tx
+      .update(memberships)
+      .set({ classesRemaining: nextValue })
+      .where(eq(memberships.id, membershipId))
+      .returning();
+    return membership;
+  }
+
+  private async applyLegacyBookingStatusTransitionTx(
+    tx: any,
+    booking: ClassBooking,
+    params: {
+      branchId: string;
+      targetStatus: BookingTransitionTargetStatus;
+      registeredByUserId?: string | null;
+    },
+  ): Promise<BookingStatusTransitionResponse> {
+    const previousStatus = booking.status;
+    const alreadyProcessed = previousStatus === "attended" || previousStatus === "no_show";
+
+    if (params.targetStatus === "attended" && !alreadyProcessed) {
+      const membership = await this.lockMembershipByUserAndBranchTx(tx, booking.userId, params.branchId);
+      if (membership && membership.expiresAt && new Date(membership.expiresAt) < new Date()) {
+        return {
+          ok: false,
+          code: "INVALID_TRANSITION",
+          message: "Plan vencido. Renueva la membresía antes de marcar asistencia.",
+        };
+      }
+    }
+
+    let lateCancellation = false;
+    if (params.targetStatus === "cancelled" && previousStatus === "confirmed") {
+      const [schedule] = await tx
+        .select({ startTime: classSchedules.startTime })
+        .from(classSchedules)
+        .where(eq(classSchedules.id, booking.classScheduleId))
+        .limit(1);
+      const [branch] = await tx
+        .select({ cancelCutoffMinutes: branches.cancelCutoffMinutes })
+        .from(branches)
+        .where(eq(branches.id, params.branchId))
+        .limit(1);
+
+      if (schedule) {
+        lateCancellation = isLateCancellationByMxCutoff(
+          booking.bookingDate,
+          schedule.startTime,
+          Number(branch?.cancelCutoffMinutes ?? 180),
+        );
+      }
+    }
+
+    const [updatedBooking] = await tx
+      .update(classBookings)
+      .set({
+        status: params.targetStatus as any,
+        ...(params.targetStatus === "cancelled" ? { lateCancellation } : {}),
+      })
+      .where(eq(classBookings.id, booking.id))
+      .returning();
+
+    let attendanceCreated = false;
+    if (params.targetStatus === "attended" && !alreadyProcessed) {
+      await this.createAttendanceTx(tx, {
+        userId: booking.userId,
+        branchId: params.branchId,
+        registeredBy: params.registeredByUserId ?? booking.userId,
+      });
+      attendanceCreated = true;
+    }
+
+    let classesDeducted = false;
+    if (
+      !alreadyProcessed
+      && (
+        params.targetStatus === "attended"
+        || params.targetStatus === "no_show"
+        || (params.targetStatus === "cancelled" && lateCancellation)
+      )
+    ) {
+      const membership = await this.lockMembershipByUserAndBranchTx(tx, booking.userId, params.branchId);
+      if (membership && membership.classesRemaining !== null && membership.classesRemaining > 0) {
+        const decremented = await this.decrementClassesRemainingTx(tx, membership.id);
+        classesDeducted = !!decremented;
+      }
+    }
+
+    return {
+      ok: true,
+      result: {
+        booking: updatedBooking,
+        previousStatus,
+        targetStatus: params.targetStatus,
+        mode: "legacy",
+        isLegacyUnverified: true,
+        lateCancellation,
+        classesDeducted,
+        classesReturned: false,
+        attendanceCreated,
+        attendanceRemoved: false,
+        changed: previousStatus !== params.targetStatus,
+      },
+    };
+  }
+
+  private async applyManagedBookingStatusTransitionTx(
+    tx: any,
+    booking: ClassBooking,
+    params: {
+      branchId: string;
+      targetStatus: BookingTransitionTargetStatus;
+      registeredByUserId?: string | null;
+      trigger: BookingTransitionTrigger;
+    },
+  ): Promise<BookingStatusTransitionResponse> {
+    const previousStatus = booking.status;
+    const targetStatus = params.targetStatus;
+    const now = getMxLocalDateAndTime();
+
+    if (previousStatus === targetStatus) {
+      return {
+        ok: true,
+        result: {
+          booking,
+          previousStatus,
+          targetStatus,
+          mode: "managed",
+          isLegacyUnverified: false,
+          lateCancellation: false,
+          classesDeducted: false,
+          classesReturned: false,
+          attendanceCreated: false,
+          attendanceRemoved: false,
+          changed: false,
+        },
+      };
+    }
+
+    const isAllowedTransition =
+      params.trigger === "automatic"
+        ? previousStatus === "confirmed" && targetStatus === "attended"
+        : (
+          (previousStatus === "confirmed" && (targetStatus === "attended" || targetStatus === "no_show" || targetStatus === "cancelled"))
+          || (previousStatus === "attended" && targetStatus === "no_show")
+          || (previousStatus === "no_show" && targetStatus === "attended")
+        );
+
+    if (!isAllowedTransition) {
+      return {
+        ok: false,
+        code: "INVALID_TRANSITION",
+        message: "Esta transición no está permitida para reservas administradas por el motor nuevo.",
+      };
+    }
+
+    const membership = await this.lockMembershipByUserAndBranchTx(tx, booking.userId, params.branchId);
+    const existingAttendance = await this.getAttendanceByBookingIdTx(tx, booking.id);
+    let classStarted = false;
+
+    if (previousStatus === "confirmed" && targetStatus === "cancelled") {
+      const [schedule] = await tx
+        .select({ startTime: classSchedules.startTime })
+        .from(classSchedules)
+        .where(eq(classSchedules.id, booking.classScheduleId))
+        .limit(1);
+      if (schedule) {
+        classStarted = hasMxClassStarted(booking.bookingDate, schedule.startTime, now);
+      }
+    }
+
+    if (previousStatus === "confirmed" && targetStatus === "cancelled" && classStarted) {
+      return {
+        ok: false,
+        code: "INVALID_TRANSITION",
+        message: "La clase ya comenzó. Esta reserva ya no puede cancelarse.",
+      };
+    }
+
+    let classesDeducted = false;
+    let classesReturned = false;
+    let attendanceCreated = false;
+    let attendanceRemoved = false;
+    const bookingPatch: Record<string, any> = {
+      status: targetStatus,
+      lateCancellation: targetStatus === "cancelled" ? false : booking.lateCancellation,
+    };
+
+    const consumeClassIfNeeded = async () => {
+      if (booking.classConsumed) return null;
+      if (!membershipUsesClassCounter(membership)) return null;
+      if (!canConsumeMembershipClass(membership)) {
+        return {
+          ok: false as const,
+          code: "CLASS_COUNTER_UNAVAILABLE" as const,
+          message: "Esta reserva requiere una clase disponible y activa para completar la transición.",
+        };
+      }
+      const decremented = membership ? await this.decrementClassesRemainingTx(tx, membership.id) : undefined;
+      if (decremented) {
+        bookingPatch.classConsumed = true;
+        bookingPatch.classConsumedAt = new Date();
+        classesDeducted = true;
+        return null;
+      }
+      return {
+        ok: false as const,
+        code: "CLASS_COUNTER_UNAVAILABLE" as const,
+        message: "Esta reserva requiere una clase disponible y activa para completar la transición.",
+      };
+    };
+
+    const returnClassIfNeeded = async () => {
+      if (!booking.classConsumed) {
+        bookingPatch.classConsumed = false;
+        bookingPatch.classConsumedAt = null;
+        return;
+      }
+      if (!membership || !canReturnMembershipClass(membership)) {
+        return {
+          ok: false as const,
+          code: "CLASS_COUNTER_UNAVAILABLE" as const,
+          message: "No se pudo devolver la clase de esta reserva sin arriesgar inconsistencias.",
+        };
+      }
+      const incremented = await this.incrementClassesRemainingTx(tx, membership.id, membership.classesTotal);
+      if (!incremented) {
+        return {
+          ok: false as const,
+          code: "CLASS_COUNTER_UNAVAILABLE" as const,
+          message: "No se pudo devolver la clase de esta reserva sin arriesgar inconsistencias.",
+        };
+      }
+      bookingPatch.classConsumed = false;
+      bookingPatch.classConsumedAt = null;
+      classesReturned = true;
+      return null;
+    };
+
+    if (previousStatus === "confirmed" && targetStatus === "attended") {
+      if (!existingAttendance) {
+        await this.createAttendanceTx(tx, {
+          userId: booking.userId,
+          branchId: params.branchId,
+          registeredBy: params.registeredByUserId ?? booking.userId,
+          bookingId: booking.id,
+        });
+        attendanceCreated = true;
+      }
+      const consumeResult = await consumeClassIfNeeded();
+      if (consumeResult) return consumeResult;
+    } else if (previousStatus === "confirmed" && targetStatus === "no_show") {
+      if (existingAttendance) {
+        await this.deleteAttendanceByBookingIdTx(tx, booking.id);
+        attendanceRemoved = true;
+      }
+      const returnResult = await returnClassIfNeeded();
+      if (returnResult) return returnResult;
+    } else if (previousStatus === "confirmed" && targetStatus === "cancelled") {
+      if (existingAttendance) {
+        await this.deleteAttendanceByBookingIdTx(tx, booking.id);
+        attendanceRemoved = true;
+      }
+      const returnResult = await returnClassIfNeeded();
+      if (returnResult) return returnResult;
+    } else if (previousStatus === "attended" && targetStatus === "no_show") {
+      if (existingAttendance) {
+        await this.deleteAttendanceByBookingIdTx(tx, booking.id);
+        attendanceRemoved = true;
+      }
+      const returnResult = await returnClassIfNeeded();
+      if (returnResult) {
+        return returnResult;
+      }
+    } else if (previousStatus === "no_show" && targetStatus === "attended") {
+      if (!existingAttendance) {
+        await this.createAttendanceTx(tx, {
+          userId: booking.userId,
+          branchId: params.branchId,
+          registeredBy: params.registeredByUserId ?? booking.userId,
+          bookingId: booking.id,
+        });
+        attendanceCreated = true;
+      }
+      const consumeResult = await consumeClassIfNeeded();
+      if (consumeResult) return consumeResult;
+    }
+
+    if (bookingPatch.classConsumed === undefined) {
+      bookingPatch.classConsumed = booking.classConsumed;
+    }
+    if (bookingPatch.classConsumedAt === undefined) {
+      bookingPatch.classConsumedAt = booking.classConsumedAt ?? null;
+    }
+
+    const [updatedBooking] = await tx
+      .update(classBookings)
+      .set(bookingPatch)
+      .where(eq(classBookings.id, booking.id))
+      .returning();
+
+    return {
+      ok: true,
+      result: {
+        booking: updatedBooking,
+        previousStatus,
+        targetStatus,
+        mode: "managed",
+        isLegacyUnverified: false,
+        lateCancellation: false,
+        classesDeducted,
+        classesReturned,
+        attendanceCreated,
+        attendanceRemoved,
+        changed: previousStatus !== targetStatus,
+      },
+    };
+  }
+
   async createAttendance(data: InsertAttendance): Promise<Attendance> {
-    const [att] = await db.insert(attendances).values(data).returning();
-    await this.touchBranchClientLastVisit(data.branchId, data.userId);
-    return att;
+    return db.transaction(async (tx) => this.createAttendanceTx(tx, data));
   }
 
   async getClientAttendances(userId: string, branchId: string, limit = 10): Promise<Attendance[]> {
@@ -5820,27 +6330,63 @@ export class DatabaseStorage implements IStorage {
     return m;
   }
 
-  // Rule 2: Auto no-show reconciliation
-  // Called on GET /api/branch/bookings — marks past confirmed bookings as no_show and deducts class
-  //
-  // Test scenarios:
-  // 1. Client with 5 classes books 10am class. Class ends. reconcile → classesRemaining=4, booking=no_show
-  // 2. Client cancels >3hrs before class → no deduction (classesRemaining stays same)
-  // 3. Client cancels <3hrs before class → lateCancellation=true, classesRemaining decremented
-  async reconcilePastBookings(branchId: string): Promise<number> {
-    const { today, currentTime } = getMxLocalDateAndTime();
+  async transitionBookingStatus(params: {
+    bookingId: string;
+    branchId: string;
+    targetStatus: BookingTransitionTargetStatus;
+    registeredByUserId?: string | null;
+    trigger?: BookingTransitionTrigger;
+  }): Promise<BookingStatusTransitionResponse> {
+    return db.transaction(async (tx) => {
+      const booking = await this.lockBookingTx(tx, params.bookingId);
+      if (!booking) {
+        return { ok: false, code: "NOT_FOUND", message: "Reserva no encontrada" } as const;
+      }
+      if (booking.branchId !== params.branchId) {
+        return { ok: false, code: "FORBIDDEN_BRANCH", message: "Reserva no encontrada" } as const;
+      }
 
-    // Fetch confirmed bookings up to and including today (local time).
-    // We include today because same-day classes that have already ended need reconciling.
-    // We use JavaScript to filter — not SQL — so we can properly handle
-    // midnight-crossing classes (e.g. 23:00→00:00 where endTime < startTime).
+      if (booking.status === params.targetStatus) {
+        return {
+          ok: true,
+          result: {
+            booking,
+            previousStatus: booking.status,
+            targetStatus: params.targetStatus,
+            mode: booking.classConsumed === null ? "legacy" : "managed",
+            isLegacyUnverified: booking.classConsumed === null,
+            lateCancellation: booking.lateCancellation,
+            classesDeducted: false,
+            classesReturned: false,
+            attendanceCreated: false,
+            attendanceRemoved: false,
+            changed: false,
+          },
+        } as const;
+      }
+
+      if (booking.classConsumed === null) {
+        return this.applyLegacyBookingStatusTransitionTx(tx, booking, params);
+      }
+
+      return this.applyManagedBookingStatusTransitionTx(tx, booking, {
+        ...params,
+        trigger: params.trigger ?? "manual",
+      });
+    });
+  }
+
+  // New attendance engine: only managed bookings auto-transition here.
+  // Existing future confirmed bookings are adopted during migration 0029.
+  // Historical legacy bookings with class_consumed IS NULL remain untouched.
+  async reconcilePastBookings(branchId: string): Promise<number> {
+    const now = getMxLocalDateAndTime();
     const candidates = await db
       .select({
         bookingId: classBookings.id,
         userId: classBookings.userId,
         bookingDate: classBookings.bookingDate,
         startTime: classSchedules.startTime,
-        endTime: classSchedules.endTime,
       })
       .from(classBookings)
       .innerJoin(classSchedules, eq(classBookings.classScheduleId, classSchedules.id))
@@ -5848,103 +6394,31 @@ export class DatabaseStorage implements IStorage {
         and(
           eq(classBookings.branchId, branchId),
           eq(classBookings.status, "confirmed"),
-          sql`${classBookings.bookingDate} <= ${today}`
+          eq(classBookings.classConsumed, false),
+          sql`${classBookings.bookingDate} <= ${now.today}`
         )
       );
 
     let count = 0;
     for (const booking of candidates) {
-      const { startTime, endTime, bookingDate } = booking;
+      if (!hasMxClassStarted(booking.bookingDate, booking.startTime, now)) continue;
 
-      // Determine actual end date. If endTime < startTime the class crosses midnight.
-      let endDate = bookingDate;
-      if (endTime < startTime) {
-        const d = new Date(bookingDate + "T12:00:00");
-        d.setDate(d.getDate() + 1);
-        endDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-      }
-
-      // The booking is past only when the real end datetime is in the past.
-      const isPast =
-        endDate < today ||
-        (endDate === today && endTime <= currentTime);
-
-      if (!isPast) continue;
-
-      await db.update(classBookings).set({ status: "no_show" as any }).where(eq(classBookings.id, booking.bookingId));
-
-      const mem = await this.getMembershipByUserAndBranch(booking.userId, branchId);
-      if ((mem?.classesRemaining ?? 0) > 0) {
-        await this.decrementClassesRemaining(mem!.id);
-      }
-      count++;
+      const result = await this.transitionBookingStatus({
+        bookingId: booking.bookingId,
+        branchId,
+        targetStatus: "attended",
+        registeredByUserId: booking.userId,
+        trigger: "automatic",
+      });
+      if (result.ok && result.result.changed) count++;
     }
     return count;
   }
 
-  // Auto-mark attended: runs on page load (via reconcilePastBookings) and from background job.
-  // Finds confirmed bookings whose class START time has already passed and marks them as attended,
-  // creating an attendance record and deducting 1 class — exactly the same as the manual "Asistió" button.
-  // Guard: only processes status === "confirmed"; once attended or no_show, never re-processed.
+  // Legacy no-op kept for compatibility with older callers.
   async autoMarkAttendedBookings(branchId: string): Promise<number> {
     void branchId;
     return 0;
-
-    const { today, currentTime } = getMxLocalDateAndTime();
-
-    const candidates = await db
-      .select({
-        bookingId: classBookings.id,
-        userId: classBookings.userId,
-        branchId: classBookings.branchId,
-        bookingDate: classBookings.bookingDate,
-        startTime: classSchedules.startTime,
-      })
-      .from(classBookings)
-      .innerJoin(classSchedules, eq(classBookings.classScheduleId, classSchedules.id))
-      .where(
-        and(
-          eq(classBookings.branchId, branchId),
-          eq(classBookings.status, "confirmed"),
-          sql`${classBookings.bookingDate} <= ${today}`
-        )
-      );
-
-    let count = 0;
-    for (const booking of candidates) {
-      // Class start is always on bookingDate (no midnight-crossing needed for start time).
-      const classStarted =
-        booking.bookingDate < today ||
-        (booking.bookingDate === today && booking.startTime <= currentTime);
-
-      if (!classStarted) continue;
-
-      await db
-        .update(classBookings)
-        .set({ status: "attended" as any })
-        .where(eq(classBookings.id, booking.bookingId));
-
-      // Create attendance record — same as manual "Asistió". registeredBy = userId (system auto check-in).
-      try {
-        await this.createAttendance({
-          userId: booking.userId,
-          branchId: booking.branchId,
-          registeredBy: booking.userId,
-        });
-      } catch (attErr: any) {
-        console.error(`[AUTO-ATTEND] Error creating attendance record:`, attErr.message);
-      }
-
-      // Deduct 1 class from membership if applicable — same logic as manual button.
-      const mem = await this.getMembershipByUserAndBranch(booking.userId, branchId);
-      if ((mem?.classesRemaining ?? 0) > 0) {
-        await this.decrementClassesRemaining(mem!.id);
-      }
-
-      console.log(`[AUTO-ATTEND] Marked booking ${booking.bookingId} as attended for user ${booking.userId}`);
-      count++;
-    }
-    return count;
   }
 
   async getAllActiveBranchIds(): Promise<string[]> {
@@ -5965,6 +6439,7 @@ export class DatabaseStorage implements IStorage {
           eq(classBookings.userId, userId),
           eq(classBookings.branchId, branchId),
           eq(classBookings.status, "confirmed"),
+          isNull(classBookings.classConsumed),
           gte(classBookings.bookingDate, today)
         )
       )
@@ -5973,12 +6448,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async decrementClassesRemaining(membershipId: string): Promise<Membership | undefined> {
-    const [m] = await db
-      .update(memberships)
-      .set({ classesRemaining: sql`GREATEST(${memberships.classesRemaining} - 1, 0)` })
-      .where(and(eq(memberships.id, membershipId), sql`${memberships.classesRemaining} IS NOT NULL AND ${memberships.classesRemaining} > 0`))
-      .returning();
-    return m;
+    return db.transaction(async (tx) => this.decrementClassesRemainingTx(tx, membershipId));
   }
 
   async getBranchClassSchedules(branchId: string): Promise<ClassSchedule[]> {
@@ -6137,7 +6607,11 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createBooking(data: InsertClassBooking): Promise<ClassBooking> {
-    const [booking] = await db.insert(classBookings).values(data).returning();
+    const [booking] = await db.insert(classBookings).values({
+      ...data,
+      classConsumed: data.classConsumed ?? false,
+      classConsumedAt: data.classConsumedAt ?? null,
+    }).returning();
     await this.touchBranchClientLastVisit(data.branchId, data.userId);
     return booking;
   }
@@ -6208,6 +6682,8 @@ export class DatabaseStorage implements IStorage {
           userId: params.userId,
           bookingDate: params.bookingDate,
           status: "confirmed",
+          classConsumed: false,
+          classConsumedAt: null,
           source: params.source,
         })
         .returning();

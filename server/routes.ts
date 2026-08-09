@@ -6598,59 +6598,24 @@ if (!user) {
       return { error: { status: 404, message: "Reserva no encontrada" } } as const;
     }
 
-    const previousStatus = existing.status;
-    const alreadyProcessed = existing.status === "attended" || existing.status === "no_show";
-
-    if (status === "attended" && !alreadyProcessed) {
-      const mem = await storage.getMembershipByUserAndBranch(existing.userId, actor.branchId);
-      if (mem && mem.expiresAt && new Date(mem.expiresAt) < new Date()) {
-        return { error: { status: 400, message: "Plan vencido. Renueva la membresía antes de marcar asistencia." } } as const;
-      }
+    const transition = await storage.transitionBookingStatus({
+      bookingId,
+      branchId: actor.branchId,
+      targetStatus: status,
+      registeredByUserId: actor.id,
+      trigger: "manual",
+    });
+    if (!transition.ok) {
+      const httpStatus =
+        transition.code === "NOT_FOUND" || transition.code === "FORBIDDEN_BRANCH"
+          ? 404
+          : transition.code === "CLASS_COUNTER_UNAVAILABLE"
+          ? 409
+          : 400;
+      return { error: { status: httpStatus, message: transition.message } } as const;
     }
 
-    let lateCancellation = false;
-    if (status === "cancelled" && existing.status === "confirmed") {
-      const schedule = await storage.getClassSchedule(existing.classScheduleId);
-      const branch = await storage.getBranch(actor.branchId);
-      if (schedule && branch) {
-        const cutoff = (branch as any).cancelCutoffMinutes ?? DEFAULT_CANCEL_CUTOFF_MINUTES;
-        const classStart = new Date(`${existing.bookingDate}T${schedule.startTime}:00`);
-        const diffMin = (classStart.getTime() - Date.now()) / 60000;
-        if (diffMin < cutoff) {
-          lateCancellation = true;
-        }
-      }
-    }
-
-    const updated = await storage.updateBookingStatus(bookingId, status);
-    if (!updated) {
-      return { error: { status: 404, message: "Reserva no encontrada" } } as const;
-    }
-
-    if (lateCancellation) {
-      await storage.markBookingLateCancellation(bookingId);
-    }
-
-    if (status === "attended" && !alreadyProcessed) {
-      try {
-        await storage.createAttendance({
-          userId: existing.userId,
-          branchId: actor.branchId,
-          registeredBy: actor.id,
-        });
-      } catch (attErr: any) {
-        console.error("[BOOKINGS] Error creating attendance record:", attErr.message);
-      }
-    }
-
-    let classesDeducted = false;
-    if (!alreadyProcessed && (status === "attended" || status === "no_show" || (status === "cancelled" && lateCancellation))) {
-      const mem = await storage.getMembershipByUserAndBranch(existing.userId, actor.branchId);
-      if (mem && mem.classesRemaining !== null && mem.classesRemaining > 0) {
-        const updatedMembership = await storage.decrementClassesRemaining(mem.id);
-        classesDeducted = !!updatedMembership;
-      }
-    }
+    const result = transition.result;
 
     await createReservationAuditSafe({
       bookingId,
@@ -6662,9 +6627,14 @@ if (!user) {
       reason: normalizeModerationText(reason),
       source: "dashboard",
       metadata: {
-        previousStatus,
-        lateCancellation,
-        classesDeducted,
+        previousStatus: result.previousStatus,
+        mode: result.mode,
+        isLegacyUnverified: result.isLegacyUnverified,
+        lateCancellation: result.lateCancellation,
+        classesDeducted: result.classesDeducted,
+        classesReturned: result.classesReturned,
+        attendanceCreated: result.attendanceCreated,
+        attendanceRemoved: result.attendanceRemoved,
       },
     });
 
@@ -6672,10 +6642,22 @@ if (!user) {
       actorUserId: actor.id,
       action: "UPDATE_BOOKING_STATUS",
       branchId: actor.branchId,
-      metadata: { bookingId, previousStatus, status, lateCancellation, classesDeducted, reason: normalizeModerationText(reason) },
+      metadata: {
+        bookingId,
+        previousStatus: result.previousStatus,
+        status,
+        mode: result.mode,
+        isLegacyUnverified: result.isLegacyUnverified,
+        lateCancellation: result.lateCancellation,
+        classesDeducted: result.classesDeducted,
+        classesReturned: result.classesReturned,
+        attendanceCreated: result.attendanceCreated,
+        attendanceRemoved: result.attendanceRemoved,
+        reason: normalizeModerationText(reason),
+      },
     });
 
-    if (status === "cancelled" && previousStatus !== "cancelled") {
+    if (status === "cancelled" && result.previousStatus !== "cancelled") {
       await createSystemEventSafe({
         eventType: "booking_cancelled",
         branchId: actor.branchId,
@@ -6685,13 +6667,20 @@ if (!user) {
           classScheduleId: existing.classScheduleId,
           bookingDate: existing.bookingDate,
           source: "dashboard",
-          lateCancellation,
+          lateCancellation: result.lateCancellation,
           reason: normalizeModerationText(reason),
         },
       });
     }
 
-    return { updated, lateCancellation, classesDeducted } as const;
+    return {
+      updated: result.booking,
+      lateCancellation: result.lateCancellation,
+      classesDeducted: result.classesDeducted,
+      classesReturned: result.classesReturned,
+      mode: result.mode,
+      isLegacyUnverified: result.isLegacyUnverified,
+    } as const;
   }
 
   // --- Bookings ---
@@ -6910,116 +6899,6 @@ if (!user) {
       res.status(500).json({ message: "Error al obtener el historial de reservas" });
     }
   });
-
-  /* Legacy duplicate route disabled. The canonical /api/branch/bookings/:id/status
-     handler is the earlier implementation backed by handleBranchBookingStatusChange.
-  app.patch("/api/branch/bookings/:id/status", requireBranchAdmin, async (req, res) => {
-    const actor = req.user as any;
-    const bookingId = req.params.id as string;
-    try {
-      const { status } = z.object({ status: z.enum(["confirmed", "cancelled", "attended", "no_show"]) }).parse(req.body);
-      const existing = await storage.getBooking(bookingId);
-      if (!existing || existing.branchId !== actor.branchId) {
-        return res.status(404).json({ message: "Reserva no encontrada" });
-      }
-
-      const alreadyProcessed = existing.status === "attended" || existing.status === "no_show";
-
-      // Rule 1: Block "attended" if plan is expired
-      if (status === "attended" && !alreadyProcessed) {
-        const mem = await storage.getMembershipByUserAndBranch(existing.userId, actor.branchId);
-        if (mem && mem.expiresAt && new Date(mem.expiresAt) < new Date()) {
-          return res.status(400).json({ message: "Plan vencido. Renueva la membresía antes de marcar asistencia." });
-        }
-      }
-
-      let lateCancellation = false;
-      if (status === "cancelled" && existing.status === "confirmed") {
-        // Rule 3: Cancellation cutoff — late cancel deducts like no_show
-        const schedule = await storage.getClassSchedule(existing.classScheduleId);
-        const branch = await storage.getBranch(actor.branchId);
-        if (schedule && branch) {
-          const cutoff = (branch as any).cancelCutoffMinutes ?? DEFAULT_CANCEL_CUTOFF_MINUTES;
-          const bookingDateStr = existing.bookingDate;
-          const classStart = new Date(`${bookingDateStr}T${schedule.startTime}:00`);
-          const now = new Date();
-          const diffMin = (classStart.getTime() - now.getTime()) / 60000;
-          if (diffMin < cutoff) {
-            lateCancellation = true;
-          }
-        }
-      }
-
-      const updated = await storage.updateBookingStatus(bookingId, status);
-
-      if (lateCancellation) {
-        await storage.markBookingLateCancellation(bookingId);
-      }
-
-      if (status === "attended" && !alreadyProcessed) {
-        try {
-          await storage.createAttendance({
-            userId: existing.userId,
-            branchId: actor.branchId,
-            registeredBy: actor.id,
-          });
-        } catch (attErr: any) {
-          console.error(`[BOOKINGS] Error creating attendance record:`, attErr.message);
-        }
-      }
-
-      // Class deduction rules:
-      // - attended: -1 class (if plan active and not unlimited)
-      // - no_show: -1 class (if plan active and not unlimited)
-      // - cancelled + lateCancellation: -1 class (treated as no_show)
-      // - cancelled before cutoff: no deduction
-      // - already processed (attended/no_show): no double deduction
-      const shouldDeduct = !alreadyProcessed && (status === "attended" || status === "no_show" || (status === "cancelled" && lateCancellation));
-      let classesRemaining: number | null = null;
-      if (shouldDeduct) {
-        const mem = await storage.getMembershipByUserAndBranch(existing.userId, actor.branchId);
-        if (mem && mem.classesRemaining !== null && mem.classesRemaining > 0) {
-          const decremented = await storage.decrementClassesRemaining(mem.id);
-          classesRemaining = decremented?.classesRemaining ?? null;
-        } else if (mem) {
-          classesRemaining = mem.classesRemaining;
-        }
-      }
-
-      await storage.createAuditLog({
-        actorUserId: actor.id,
-        action: "UPDATE_BOOKING_STATUS",
-        branchId: actor.branchId,
-        metadata: { bookingId, oldStatus: existing.status, newStatus: status, lateCancellation },
-      });
-
-      if (status === "cancelled" && existing.status !== "cancelled") {
-        await createSystemEventSafe({
-          eventType: "booking_cancelled",
-          branchId: actor.branchId,
-          userId: existing.userId,
-          payload: {
-            bookingId,
-            classScheduleId: existing.classScheduleId,
-            bookingDate: existing.bookingDate,
-            source: "dashboard",
-            lateCancellation,
-          },
-        });
-      }
-
-      console.log(`[BOOKINGS] Updated booking ${bookingId} status to ${status}${lateCancellation ? " (late cancel)" : ""} by ${actor.email}`);
-      res.json({ ...updated, lateCancellation, classesRemaining });
-    } catch (err: any) {
-      if (err.name === "ZodError") {
-        return res.status(400).json({ message: err.errors[0]?.message || "Datos inválidos" });
-      }
-      console.error(`[BOOKINGS] Error updating status:`, err.stack || err);
-      res.status(500).json({ message: "Error al actualizar reserva" });
-    }
-  });
-
-  */
 
   // --- Branch Content Management ---
 
@@ -10474,27 +10353,24 @@ if (!user) {
       if (booking.status !== "confirmed") {
         return res.status(400).json({ message: "Solo puedes cancelar reservas confirmadas" });
       }
-
-      const schedule = await storage.getClassSchedule(booking.classScheduleId);
-      const cutoff = branch.cancelCutoffMinutes ?? DEFAULT_CANCEL_CUTOFF_MINUTES;
-      let lateCancellation = false;
-
-      if (schedule) {
-        const classStart = new Date(`${booking.bookingDate}T${schedule.startTime}:00`);
-        const diffMin = (classStart.getTime() - Date.now()) / 60000;
-        if (diffMin < cutoff) {
-          lateCancellation = true;
-        }
+      const transition = await storage.transitionBookingStatus({
+        bookingId,
+        branchId: branch.id,
+        targetStatus: "cancelled",
+        registeredByUserId: user.id,
+        trigger: "manual",
+      });
+      if (!transition.ok) {
+        const httpStatus =
+          transition.code === "NOT_FOUND" || transition.code === "FORBIDDEN_BRANCH"
+            ? 404
+            : transition.code === "CLASS_COUNTER_UNAVAILABLE"
+            ? 409
+            : 400;
+        return res.status(httpStatus).json({ message: transition.message });
       }
 
-      await storage.updateBookingStatus(bookingId, "cancelled");
-      if (lateCancellation) {
-        await storage.markBookingLateCancellation(bookingId);
-        const mem = await storage.getMembershipByUserAndBranch(user.id, branch.id);
-        if (mem && mem.classesRemaining !== null && mem.classesRemaining > 0) {
-          await storage.decrementClassesRemaining(mem.id);
-        }
-      }
+      const lateCancellation = transition.result.lateCancellation;
 
       await createSystemEventSafe({
         eventType: "booking_cancelled",
@@ -10520,7 +10396,13 @@ if (!user) {
         metadata: {
           classScheduleId: booking.classScheduleId,
           bookingDate: booking.bookingDate,
+          mode: transition.result.mode,
+          isLegacyUnverified: transition.result.isLegacyUnverified,
           lateCancellation,
+          classesDeducted: transition.result.classesDeducted,
+          classesReturned: transition.result.classesReturned,
+          attendanceCreated: transition.result.attendanceCreated,
+          attendanceRemoved: transition.result.attendanceRemoved,
         },
       });
 
@@ -10959,16 +10841,16 @@ if (!user) {
 
   // ── END PROMOTIONS ────────────────────────────────────────────────────────────
 
-  // Background job: every 60 seconds, auto-mark attended for confirmed bookings
-  // whose class start time has passed, for all active branches.
-  // This is the same logic as the manual "Asistió" button — no separate deduction logic.
+  // Background job: every 60 seconds, auto-mark managed confirmed bookings as attended
+  // once their class start time has been reached in America/Mexico_City.
+  // Historical bookings (class_consumed IS NULL) are intentionally skipped.
   setInterval(async () => {
     try {
       const branchIds = await storage.getAllActiveBranchIds();
       for (const branchId of branchIds) {
         const count = await storage.reconcilePastBookings(branchId);
         if (count > 0) {
-          console.log(`[RECONCILE] Marked ${count} booking(s) as no_show for branch ${branchId}`);
+          console.log(`[RECONCILE] Marked ${count} booking(s) as attended for branch ${branchId}`);
         }
       }
     } catch (err: any) {

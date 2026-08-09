@@ -129,6 +129,16 @@ type ReservationFocusRequest = {
 const DAY_NAMES = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
 const DAY_NAMES_SHORT = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
 
+const MEXICO_TIME_ZONE = "America/Mexico_City";
+
+function getMxTodayIsoDate() {
+  return new Date().toLocaleDateString("en-CA", { timeZone: MEXICO_TIME_ZONE });
+}
+
+function parseIsoDateAtNoon(isoDate: string) {
+  return new Date(`${isoDate}T12:00:00`);
+}
+
 function getWeekDates(referenceDate: Date): Date[] {
   const day = referenceDate.getDay();
   const monday = new Date(referenceDate);
@@ -150,10 +160,7 @@ function formatDateStr(d: Date): string {
 }
 
 function isToday(d: Date): boolean {
-  const today = new Date();
-  return d.getFullYear() === today.getFullYear() &&
-    d.getMonth() === today.getMonth() &&
-    d.getDate() === today.getDate();
+  return formatDateStr(d) === getMxTodayIsoDate();
 }
 
 function reservationAuditActionLabel(action: string): string {
@@ -389,7 +396,7 @@ function BookClientDialog({
         <DialogHeader>
           <DialogTitle>Nueva reservación</DialogTitle>
           <DialogDescription>
-            {classSchedule.name} — {DAY_NAMES[classSchedule.dayOfWeek]} {classSchedule.startTime}-{classSchedule.endTime} — {bookingDate}
+            {classSchedule.name} · {DAY_NAMES[classSchedule.dayOfWeek]} {classSchedule.startTime}-{classSchedule.endTime} · {bookingDate}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
@@ -410,7 +417,7 @@ function BookClientDialog({
                     {availableClients.map((c) => (
                       <SelectItem key={c.userId} value={c.userId}>
                         {c.name} ({c.email || "Sin correo"})
-                        {c.clientStatus === "frozen" ? " ❄️" : c.clientStatus === "inactive" ? " ⏸️" : ""}
+                        {c.clientStatus === "frozen" ? " · Congelado" : c.clientStatus === "inactive" ? " · Inactivo" : ""}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -439,14 +446,14 @@ function BookClientDialog({
                   </div>
                   {clientBlocked && (
                     <p className="text-xs text-red-500 mt-1">
-                      {selectedClient.clientStatus === "frozen" ? "Cliente congelado — no puede reservar" : "Cliente inactivo — no puede reservar"}
+                      {selectedClient.clientStatus === "frozen" ? "Cliente congelado · no puede reservar" : "Cliente inactivo · no puede reservar"}
                     </p>
                   )}
                   {clientNoClasses && (
-                    <p className="text-xs text-red-500 mt-1">Sin usos disponibles — asigna un servicio o plan primero</p>
+                    <p className="text-xs text-red-500 mt-1">Sin usos disponibles · asigna un servicio o plan primero</p>
                   )}
                   {clientExpired && (
-                    <p className="text-xs text-red-500 mt-1">Servicio o plan vencido — renueva para reservar</p>
+                    <p className="text-xs text-red-500 mt-1">Servicio o plan vencido · renueva para reservar</p>
                   )}
                 </div>
               )}
@@ -496,9 +503,16 @@ function ClassDayDetail({
   const { toast } = useToast();
   const [showBookDialog, setShowBookDialog] = useState(false);
   const lastMissingFocusNonceRef = useRef<number | null>(null);
+  const lastScrolledFocusNonceRef = useRef<number | null>(null);
+  const bookingsQueryKey = [`/api/branch/bookings/class/${classSchedule.id}?date=${bookingDate}`] as const;
 
-  const { data: classBookings, isLoading } = useQuery<ClassBookingResponse>({
-    queryKey: [`/api/branch/bookings/class/${classSchedule.id}?date=${bookingDate}`],
+  const {
+    data: classBookings,
+    isLoading,
+  } = useQuery<ClassBookingResponse>({
+    queryKey: bookingsQueryKey,
+    queryFn: ({ signal }) =>
+      fetchJson<ClassBookingResponse>(bookingsQueryKey[0], { signal }) as Promise<ClassBookingResponse>,
   });
 
   const statusMutation = useMutation({
@@ -530,10 +544,13 @@ function ClassDayDetail({
     },
   });
 
-  const activeBookings = (classBookings?.bookings || []).filter(b => b.status !== "cancelled" && b.status !== "no_show");
-  const noShowBookings = (classBookings?.bookings || []).filter(b => b.status === "no_show");
-  const cancelledBookings = (classBookings?.bookings || []).filter(b => b.status === "cancelled");
-  const spotsLeft = classSchedule.capacity - activeBookings.length;
+  const allBookings = classBookings?.bookings || [];
+  const confirmedBookings = allBookings.filter((b) => b.status === "confirmed");
+  const attendedBookings = allBookings.filter((b) => b.status === "attended");
+  const noShowBookings = allBookings.filter((b) => b.status === "no_show");
+  const cancelledBookings = allBookings.filter((b) => b.status === "cancelled");
+  const visibleCapacityCount = confirmedBookings.length + attendedBookings.length;
+  const spotsLeft = classSchedule.capacity - visibleCapacityCount;
 
   function isFocusedBooking(booking: ClassBookingDetail) {
     if (focusedBookingId) {
@@ -547,12 +564,12 @@ function ClassDayDetail({
     return false;
   }
 
+
   useEffect(() => {
     if ((!focusedBookingId && !focusedClientUserId) || !focusNonce || isLoading) {
       return;
     }
 
-    const allBookings = classBookings?.bookings || [];
     const targetBooking = allBookings.find((booking) => isFocusedBooking(booking));
 
     if (!targetBooking) {
@@ -564,7 +581,8 @@ function ClassDayDetail({
     }
 
     const row = document.querySelector(`[data-booking-row-id="${targetBooking.id}"]`) as HTMLElement | null;
-    if (row) {
+    if (row && lastScrolledFocusNonceRef.current !== focusNonce) {
+      lastScrolledFocusNonceRef.current = focusNonce;
       row.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }, [classBookings, focusNonce, focusedBookingId, focusedClientUserId, isLoading, onMissingFocusedBooking]);
@@ -585,7 +603,7 @@ function ClassDayDetail({
           <div className="flex w-full flex-wrap items-center gap-2 md:w-auto md:justify-end">
             <Badge variant={spotsLeft > 0 ? "secondary" : "destructive"} data-testid={`badge-capacity-${classSchedule.id}`}>
               <Users className="h-3 w-3 mr-1" />
-              {activeBookings.length}/{classSchedule.capacity}
+              {visibleCapacityCount}/{classSchedule.capacity}
             </Badge>
             <Button
               size="sm"
@@ -609,13 +627,16 @@ function ClassDayDetail({
           <div className="space-y-2">
             {[1, 2].map(i => <Skeleton key={i} className="h-8 w-full" />)}
           </div>
-        ) : activeBookings.length === 0 ? (
+        ) : allBookings.length === 0 ? (
           <p className="text-sm text-muted-foreground py-3 text-center" data-testid={`empty-bookings-${classSchedule.id}`}>
             Sin reservas para esta clase
           </p>
         ) : (
-          <div className="space-y-1">
-            {activeBookings.map((b) => (
+          <div className="space-y-3">
+            {confirmedBookings.length > 0 && (
+              <p className="text-xs text-muted-foreground">Reservados ({confirmedBookings.length})</p>
+            )}
+            {confirmedBookings.map((b) => (
               <div
                 key={b.id}
                 className={`rounded-xl border px-3 py-2 transition-colors ${
@@ -633,7 +654,7 @@ function ClassDayDetail({
                       <span className="text-sm font-medium" data-testid={`text-booking-name-${b.id}`}>{b.userName}</span>
                       <p className="break-all text-xs text-muted-foreground">{b.userEmail || "Sin correo registrado"}</p>
                       <p className="mt-1 text-[11px] text-muted-foreground">
-                        {b.planStatusLabel || "Sin servicio o plan"} · {b.clientOriginLabel || "Origen no disponible"}
+                        {[b.planStatusLabel || "Sin servicio o plan", b.clientOriginLabel || "Origen no disponible"].join(" \u00b7 ")}
                       </p>
                     </div>
                   </div>
@@ -649,7 +670,7 @@ function ClassDayDetail({
                         data-testid={`button-attend-${b.id}`}
                       >
                         <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
-                        Asistió
+                        Marcar asistió
                       </Button>
                       <Button
                         size="sm"
@@ -659,7 +680,7 @@ function ClassDayDetail({
                         disabled={statusMutation.isPending}
                         data-testid={`button-noshow-${b.id}`}
                       >
-                        No asistió
+                        Marcar no asistió
                       </Button>
                       <Button
                         size="sm"
@@ -700,31 +721,97 @@ function ClassDayDetail({
                         <p>Vence: {new Date(b.expiresAt).toLocaleDateString("es-MX", { day: "2-digit", month: "short", year: "numeric" })}</p>
                       )}
                     </div>
-                  </div>
-                )}
-              </div>
-            ))}
-            {noShowBookings.length > 0 && (
-              <div className="pt-2 border-t mt-2">
-                <p className="text-xs text-muted-foreground mb-1">No asistieron ({noShowBookings.length})</p>
-                {noShowBookings.map((b) => (
+	                  </div>
+	                )}
+	              </div>
+	            ))}
+	            {attendedBookings.length > 0 && (
+              <div className="pt-2 border-t mt-2 space-y-2">
+                <p className="text-xs text-muted-foreground">Asistieron ({attendedBookings.length})</p>
+                {attendedBookings.map((b) => (
                   <div
                     key={b.id}
-                    className={`flex items-center justify-between gap-2 py-1 px-2 opacity-70 rounded-md ${
-                      isFocusedBooking(b) ? "bg-orange-50 ring-1 ring-orange-200 dark:bg-orange-950/20 dark:ring-orange-900/50" : ""
+                    className={`rounded-xl border px-3 py-2 transition-colors ${
+                      isFocusedBooking(b)
+                        ? "border-green-300 bg-green-50/70 ring-1 ring-green-200 dark:border-green-900/60 dark:bg-green-950/20 dark:ring-green-900/50"
+                        : "border-transparent bg-muted/20 hover:bg-muted/50"
                     }`}
+                    data-testid={`booking-row-${b.id}`}
                     data-booking-row-id={b.id}
                   >
-                    <div className="flex items-center gap-2">
-                      <User className="h-3 w-3 text-orange-400" />
-                      <span className="text-xs">{b.userName}</span>
+                    <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                      <div className="flex min-w-0 items-start gap-2">
+                        <User className="mt-0.5 h-3.5 w-3.5 text-muted-foreground" />
+                        <div className="min-w-0">
+                          <span className="text-sm font-medium">{b.userName}</span>
+                          <p className="break-all text-xs text-muted-foreground">{b.userEmail || "Sin correo registrado"}</p>
+                          <p className="mt-1 text-[11px] text-muted-foreground">
+                            {[b.planStatusLabel || "Sin servicio o plan", b.clientOriginLabel || "Origen no disponible"].join(" \u00b7 ")}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex w-full flex-wrap items-center gap-1 md:w-auto md:justify-end">
+                        <Badge variant="default" className="bg-green-600 text-xs" data-testid={`badge-attended-${b.id}`}>
+                          <CheckCircle2 className="h-3 w-3 mr-1" />
+                          Asistió
+                        </Badge>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 px-2 text-orange-500"
+                          onClick={() => statusMutation.mutate({ bookingId: b.id, status: "no_show" })}
+                          disabled={statusMutation.isPending}
+                          data-testid={`button-correct-noshow-${b.id}`}
+                        >
+                          Marcar no asistió
+                        </Button>
+                      </div>
                     </div>
-                    <Badge variant="destructive" className="text-[10px]">No asistió</Badge>
                   </div>
                 ))}
               </div>
             )}
-            {cancelledBookings.length > 0 && (
+            {noShowBookings.length > 0 && (
+              <div className="pt-2 border-t mt-2 space-y-2">
+                <p className="text-xs text-muted-foreground">No asistieron ({noShowBookings.length})</p>
+                {noShowBookings.map((b) => (
+                  <div
+                    key={b.id}
+                    className={`flex flex-col gap-2 rounded-md px-2 py-2 opacity-80 ${
+                      isFocusedBooking(b) ? "bg-orange-50 ring-1 ring-orange-200 dark:bg-orange-950/20 dark:ring-orange-900/50" : ""
+                    }`}
+                    data-booking-row-id={b.id}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <User className="h-3 w-3 shrink-0 text-orange-400" />
+                        <div className="min-w-0">
+                          <p className="truncate text-xs font-medium">{b.userName}</p>
+                          <p className="truncate text-[11px] text-muted-foreground">
+                            {[b.planStatusLabel || "Sin servicio o plan", b.clientOriginLabel || "Origen no disponible"].join(" \u00b7 ")}
+                          </p>
+                        </div>
+                      </div>
+                      <Badge variant="destructive" className="text-[10px]" data-testid={`badge-noshow-${b.id}`}>No asistió</Badge>
+                    </div>
+                    <div className="flex justify-end">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-green-600"
+                        onClick={() => statusMutation.mutate({ bookingId: b.id, status: "attended" })}
+                        disabled={statusMutation.isPending}
+                        data-testid={`button-correct-attended-${b.id}`}
+                      >
+                        <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
+                        Marcar asistió
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+	            {cancelledBookings.length > 0 && (
               <div className="pt-2 border-t mt-2">
                 <p className="text-xs text-muted-foreground mb-1">Canceladas ({cancelledBookings.length})</p>
                 {cancelledBookings.map((b) => (
@@ -855,9 +942,10 @@ export default function ReservasTab({
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [showCopyDialog, setShowCopyDialog] = useState(false);
   const [editingClass, setEditingClass] = useState<ClassSchedule | null>(null);
-  const [selectedDate, setSelectedDate] = useState(new Date());
+  const [selectedDate, setSelectedDate] = useState(() => parseIsoDateAtNoon(getMxTodayIsoDate()));
   const [viewMode, setViewMode] = useState<"calendar" | "classes">("calendar");
   const [activeFocusRequest, setActiveFocusRequest] = useState<ReservationFocusRequest | null>(null);
+  const lastProcessedFocusNonceRef = useRef<number | null>(null);
 
   const weekDates = getWeekDates(selectedDate);
 
@@ -912,10 +1000,18 @@ export default function ReservasTab({
       return;
     }
 
+    if (lastProcessedFocusNonceRef.current === focusRequest.nonce) {
+      return;
+    }
+
+    lastProcessedFocusNonceRef.current = focusRequest.nonce;
+
+    const nextSelectedDate = parseIsoDateAtNoon(focusRequest.bookingDate);
+
     setActiveFocusRequest(focusRequest);
     setViewMode("calendar");
-    setSelectedDate(new Date(`${focusRequest.bookingDate}T12:00:00`));
-  }, [focusRequest]);
+    setSelectedDate(nextSelectedDate);
+  }, [focusRequest, selectedDate, viewMode]);
 
   useEffect(() => {
     if (!activeFocusRequest?.nonce) {
@@ -923,7 +1019,13 @@ export default function ReservasTab({
     }
 
     const timeoutId = window.setTimeout(() => {
-      setActiveFocusRequest((current) => (current?.nonce === activeFocusRequest.nonce ? null : current));
+      setActiveFocusRequest((current) => {
+        if (current?.nonce === activeFocusRequest.nonce) {
+          return null;
+        }
+
+        return current;
+      });
     }, 6000);
 
     return () => window.clearTimeout(timeoutId);
@@ -934,6 +1036,9 @@ export default function ReservasTab({
       return;
     }
 
+    const targetClass = classes.find(
+      (classSchedule) => classSchedule.id === focusedBookingForDay.classScheduleId,
+    );
     const classExists = classes.some(
       (classSchedule) => classSchedule.id === focusedBookingForDay.classScheduleId && classSchedule.isActive,
     );
@@ -941,7 +1046,7 @@ export default function ReservasTab({
     if (!classExists) {
       toast({
         title: "Reserva no disponible",
-        description: "Esta reserva ya no esta disponible.",
+        description: "Esta reserva ya no está disponible.",
         variant: "destructive",
       });
       setActiveFocusRequest(null);
@@ -955,7 +1060,7 @@ export default function ReservasTab({
 
     toast({
       title: "Reserva no disponible",
-      description: "Esta reserva ya no esta disponible.",
+      description: "Esta reserva ya no está disponible.",
       variant: "destructive",
     });
     setActiveFocusRequest(null);
@@ -972,7 +1077,7 @@ export default function ReservasTab({
     setSelectedDate(d);
   }
   function goToToday() {
-    setSelectedDate(new Date());
+    setSelectedDate(parseIsoDateAtNoon(getMxTodayIsoDate()));
   }
 
   return (
@@ -1022,7 +1127,7 @@ export default function ReservasTab({
             </Button>
             <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-start">
               <span className="min-w-0 text-center text-sm font-medium" data-testid="text-week-range">
-                {weekDates[0].toLocaleDateString("es-MX", { day: "numeric", month: "short" })} — {weekDates[6].toLocaleDateString("es-MX", { day: "numeric", month: "short", year: "numeric" })}
+                {weekDates[0].toLocaleDateString("es-MX", { day: "numeric", month: "short" })} · {weekDates[6].toLocaleDateString("es-MX", { day: "numeric", month: "short", year: "numeric" })}
               </span>
               <Button className="w-full justify-center md:w-auto md:shrink-0" size="sm" variant="outline" onClick={goToToday} data-testid="button-today">
                 Hoy

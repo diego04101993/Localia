@@ -123,16 +123,6 @@ function getNotificationData(notification: NotificationItem) {
   return notification.data && typeof notification.data === "object" ? notification.data : {};
 }
 
-function formatReservationNotificationDate(date: string | null | undefined) {
-  if (!date) return null;
-  return new Date(`${date}T12:00:00`).toLocaleDateString("es-MX", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    timeZone: "America/Mexico_City",
-  });
-}
-
 function formatReservationNotificationTime(time: string | null | undefined) {
   if (!time) return null;
 
@@ -144,12 +134,82 @@ function formatReservationNotificationTime(time: string | null | undefined) {
   });
 }
 
+function formatReservationNotificationDateLine(date: string | null | undefined) {
+  if (!date) return null;
+
+  return new Date(`${date}T12:00:00`)
+    .toLocaleDateString("es-MX", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      timeZone: "America/Mexico_City",
+    })
+    .replace(",", "");
+}
+
+type ReservationNotificationFields = {
+  clientName: string;
+  serviceName: string;
+  reservationDate: string | null;
+  reservationTime: string | null;
+  bookingId: string | null;
+  classScheduleId: string | null;
+};
+
+function getReservationNotificationFields(notification: NotificationItem): ReservationNotificationFields {
+  const data = getNotificationData(notification);
+
+  return {
+    clientName: typeof data.clientName === "string" ? data.clientName.trim() : "",
+    serviceName:
+      typeof data.serviceName === "string" && data.serviceName.trim().length > 0
+        ? data.serviceName.trim()
+        : typeof data.className === "string"
+        ? data.className.trim()
+        : "",
+    reservationDate:
+      typeof data.reservationDate === "string" && data.reservationDate
+        ? data.reservationDate
+        : typeof data.bookingDate === "string"
+        ? data.bookingDate
+        : null,
+    reservationTime:
+      typeof data.reservationTime === "string" && data.reservationTime
+        ? data.reservationTime
+        : typeof data.startTime === "string"
+        ? data.startTime
+        : null,
+    bookingId: typeof data.bookingId === "string" && data.bookingId.trim().length > 0 ? data.bookingId.trim() : null,
+    classScheduleId:
+      typeof data.classScheduleId === "string" && data.classScheduleId.trim().length > 0
+        ? data.classScheduleId.trim()
+        : null,
+  };
+}
+
+function buildReservationNotificationDateTimeLine(fields: ReservationNotificationFields) {
+  const dateLabel = formatReservationNotificationDateLine(fields.reservationDate);
+  const timeLabel = formatReservationNotificationTime(fields.reservationTime);
+  const line = [dateLabel, timeLabel].filter(Boolean).join(" · ");
+
+  return line.length > 0 ? line : null;
+}
+
 function buildReservationNotificationCopy(notification: NotificationItem) {
   const data = getNotificationData(notification);
   const displayTitle = typeof data.displayTitle === "string" ? data.displayTitle.trim() : "";
   const displayCancelTitle = typeof data.displayCancelTitle === "string" ? data.displayCancelTitle.trim() : "";
   const displayLine1 = typeof data.displayLine1 === "string" ? data.displayLine1.trim() : "";
   const displayLine2 = typeof data.displayLine2 === "string" ? data.displayLine2.trim() : "";
+  const fields = getReservationNotificationFields(notification);
+  const dateTimeLine = buildReservationNotificationDateTimeLine(fields);
+
+  if (fields.clientName && fields.serviceName && dateTimeLine) {
+    return {
+      title: `${fields.clientName} ${notification.type === "booking_cancelled" ? "canceló" : "reservó"} ${fields.serviceName}`,
+      lines: [dateTimeLine],
+    };
+  }
 
   if ((displayTitle || displayCancelTitle) && (displayLine1 || displayLine2)) {
     return {
@@ -158,59 +218,12 @@ function buildReservationNotificationCopy(notification: NotificationItem) {
     };
   }
 
-  const clientName = typeof data.clientName === "string" ? data.clientName.trim() : "";
-  const serviceName =
-    typeof data.serviceName === "string" && data.serviceName.trim().length > 0
-      ? data.serviceName.trim()
-      : typeof data.className === "string"
-      ? data.className.trim()
-      : "";
-  const reservationDate =
-    typeof data.reservationDate === "string" && data.reservationDate
-      ? data.reservationDate
-      : typeof data.bookingDate === "string"
-      ? data.bookingDate
-      : null;
-  const reservationTime =
-    typeof data.reservationTime === "string" && data.reservationTime
-      ? data.reservationTime
-      : typeof data.startTime === "string"
-      ? data.startTime
-      : null;
-  const planLabel =
-    typeof data.planStatusLabel === "string" && data.planStatusLabel.trim().length > 0
-      ? data.planStatusLabel.trim()
-      : data.hasActivePlan
-      ? typeof data.planName === "string" && data.planName.trim().length > 0
-        ? data.planName.trim()
-        : "Con servicio o plan activo"
-      : "Sin servicio o plan";
-  const originLabel =
-    typeof data.clientOriginLabel === "string" && data.clientOriginLabel.trim().length > 0
-      ? data.clientOriginLabel.trim()
-      : data.clientOrigin === "app"
-      ? "Se uni\u00F3 desde la app"
-      : data.clientOrigin === "counter"
-      ? "Cliente de mostrador"
-      : data.clientOrigin === "manual"
-      ? "Agregado manualmente"
-      : null;
-  const dateLabel = formatReservationNotificationDate(reservationDate);
-  const timeLabel = formatReservationNotificationTime(reservationTime);
-
-  const title =
-    clientName && serviceName
-      ? `${clientName} ${notification.type === "booking_cancelled" ? "cancel\u00F3" : "reserv\u00F3"} ${serviceName}`
-      : notification.title;
-
-  const lines = [
-    [dateLabel, timeLabel].filter(Boolean).join(" · "),
-    [planLabel, originLabel].filter(Boolean).join(" · "),
-  ].filter((line) => line.length > 0);
-
   return {
-    title,
-    lines: lines.length > 0 ? lines : [notification.message],
+    title:
+      fields.clientName && fields.serviceName
+        ? `${fields.clientName} ${notification.type === "booking_cancelled" ? "canceló" : "reservó"} ${fields.serviceName}`
+        : notification.title,
+    lines: [notification.message].filter((line) => Boolean(line && line.length > 0)),
   };
 }
 
@@ -920,7 +933,7 @@ export default function NotificationsPanel({
             }}
             data-testid={`${testIdPrefix}-view-all`}
           >
-            Ver todas
+            Ver historial completo
           </Button>
         )}
         <Button
@@ -1031,35 +1044,49 @@ export default function NotificationsPanel({
           </PopoverTrigger>
           <PopoverContent
             align="end"
-            className="w-[420px] max-w-[calc(100vw-1.5rem)] rounded-3xl border border-border/70 p-0 shadow-2xl"
+            className="w-[420px] max-w-[calc(100vw-1.5rem)] overflow-hidden rounded-3xl border border-border/70 p-0 shadow-2xl"
           >
-            <div className="space-y-4 p-4">
-              <div className="flex items-start justify-between gap-3">
+            <div className="flex max-h-[min(78vh,40rem)] flex-col">
+              <div className="flex shrink-0 items-start justify-between gap-3 border-b border-border/60 px-4 py-4">
                 <div>
-                  <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Centro de alertas</p>
+                  <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Notificaciones recientes</p>
                   <div className="mt-1 flex items-center gap-2">
                     <h3 className="text-base font-semibold">{title}</h3>
                     {unreadCount > 0 && <Badge variant="destructive">{unreadCount}</Badge>}
                   </div>
                 </div>
-                {renderActions(false)}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => readAllMutation.mutate()}
+                  disabled={readAllMutation.isPending || unreadCount === 0}
+                  data-testid={`${testIdPrefix}-read-all`}
+                >
+                  {readAllMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  Marcar todas como leídas
+                </Button>
               </div>
 
-              {previewQuery.isLoading ? (
-                <div className="space-y-3">
-                  {[1, 2, 3].map((item) => (
-                    <div key={item} className="rounded-2xl border p-3 space-y-2">
-                      <Skeleton className="h-4 w-40" />
-                      <Skeleton className="h-3 w-full" />
-                      <Skeleton className="h-3 w-28" />
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                panelList
-              )}
+              <div
+                className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 pr-3 [scrollbar-gutter:stable]"
+                onWheelCapture={(event) => event.stopPropagation()}
+              >
+                {previewQuery.isLoading ? (
+                  <div className="space-y-3">
+                    {[1, 2, 3].map((item) => (
+                      <div key={item} className="rounded-2xl border p-3 space-y-2">
+                        <Skeleton className="h-4 w-40" />
+                        <Skeleton className="h-3 w-full" />
+                        <Skeleton className="h-3 w-28" />
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  panelList
+                )}
+              </div>
 
-              <div className="flex items-center justify-between gap-2 border-t pt-3">
+              <div className="flex shrink-0 items-center justify-between gap-2 border-t border-border/60 px-4 py-3">
                 <p className="text-xs text-muted-foreground">
                   {unreadCount > 0 ? `${unreadCount} sin leer` : "Todo al día"}
                 </p>
@@ -1072,7 +1099,7 @@ export default function NotificationsPanel({
                   }}
                   data-testid={`${testIdPrefix}-popover-view-all`}
                 >
-                  Ver todas
+                  Ver historial completo
                 </Button>
               </div>
             </div>

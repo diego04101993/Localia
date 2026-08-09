@@ -310,6 +310,7 @@ export const attendances = pgTable("attendances", {
   registeredBy: varchar("registered_by", { length: 36 })
     .notNull()
     .references(() => users.id),
+  bookingId: varchar("booking_id", { length: 36 }).references(() => classBookings.id, { onDelete: "set null" }),
   checkedInAt: timestamp("checked_in_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -608,6 +609,8 @@ export const classBookings = pgTable("class_bookings", {
   bookingDate: text("booking_date").notNull(),
   status: bookingStatusEnum("status").notNull().default("confirmed"),
   lateCancellation: boolean("late_cancellation").notNull().default(false),
+  classConsumed: boolean("class_consumed"),
+  classConsumedAt: timestamp("class_consumed_at", { withTimezone: true }),
   source: bookingSourceEnum("source").notNull().default("dashboard"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
