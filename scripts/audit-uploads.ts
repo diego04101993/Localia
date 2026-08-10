@@ -13,10 +13,11 @@ import fs from "fs";
 import path from "path";
 import pg from "pg";
 import dotenv from "dotenv";
+import { getUploadsDir } from "../server/media-storage";
 
 dotenv.config();
 
-const UPLOADS_DIR = path.join(process.cwd(), "uploads");
+const UPLOADS_DIR = getUploadsDir();
 
 type SourceDefinition = {
   key: string;

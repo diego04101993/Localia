@@ -20,10 +20,11 @@ import os from "os";
 import path from "path";
 import pg from "pg";
 import sharp from "sharp";
+import { getUploadsDir } from "../server/media-storage";
 
 dotenv.config();
 
-const UPLOADS_DIR = path.join(process.cwd(), "uploads");
+const UPLOADS_DIR = getUploadsDir();
 const REPORT_ROOT_DEFAULT = path.join(os.tmpdir(), `webcool-upload-investigation-${Date.now()}`);
 
 const VERY_CLOSE_DHASH_MAX = 4;

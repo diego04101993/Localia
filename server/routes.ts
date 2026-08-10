@@ -11,6 +11,12 @@ import { storage } from "./storage";
 import { db } from "./db";
 import { and, count, eq, ne, or } from "drizzle-orm";
 import {
+  buildUploadPublicUrl,
+  ensureUploadsDirExists,
+  resolveLocalUploadPath,
+  resolveSafeUploadPath,
+} from "./media-storage";
+import {
   getBranchClientAccessState,
   getBranchClientCreateAccessEligibility,
   getBranchClientIdentityControl,
@@ -186,30 +192,7 @@ function addCalendarMonths(from: Date, months: number): Date {
   return result;
 }
 
-const uploadsDir = path.join(process.cwd(), "uploads");
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-}
-
-function resolveLocalUploadPath(fileUrl: string | null | undefined): string | null {
-  if (typeof fileUrl !== "string") return null;
-
-  const trimmed = fileUrl.trim();
-  if (!trimmed.startsWith("/uploads/")) {
-    return null;
-  }
-
-  const relativePath = trimmed.replace(/^\/+/, "");
-  const resolvedPath = path.resolve(process.cwd(), relativePath);
-  const uploadsRoot = path.resolve(uploadsDir);
-  const relativeToUploads = path.relative(uploadsRoot, resolvedPath);
-
-  if (relativeToUploads.startsWith("..") || path.isAbsolute(relativeToUploads)) {
-    return null;
-  }
-
-  return resolvedPath;
-}
+const uploadsDir = ensureUploadsDirExists();
 
 function deleteLocalUploadFiles(fileUrls: Array<string | null | undefined>): number {
   const uniqueUrls = Array.from(
@@ -362,7 +345,7 @@ async function optimizeCommercialProductImage(file: Express.Multer.File) {
   }
 
   const filename = `${Date.now()}-${crypto.randomBytes(6).toString("hex")}.webp`;
-  const filePath = path.join(uploadsDir, filename);
+  const filePath = resolveSafeUploadPath(filename);
   const buffer = await sharp(file.buffer, { failOn: "error", limitInputPixels: 40_000_000 })
     .rotate()
     .resize({
@@ -377,7 +360,7 @@ async function optimizeCommercialProductImage(file: Express.Multer.File) {
   fs.writeFileSync(filePath, buffer);
 
   return {
-    url: `/uploads/${filename}`,
+    url: buildUploadPublicUrl(filename),
     width: metadata.width ?? null,
     height: metadata.height ?? null,
     optimized: true,
@@ -1399,7 +1382,7 @@ export async function registerRoutes(
       if (!req.file) {
         return res.status(400).json({ message: "No se proporcionó ningún archivo" });
       }
-      const url = `/uploads/${req.file.filename}`;
+      const url = buildUploadPublicUrl(req.file.filename);
       console.log(`[UPLOAD] File uploaded: ${url} by ${(req.user as any).email}`);
       res.json({ url });
     });
@@ -2548,7 +2531,7 @@ if (!user) {
           deleteLocalUploadFiles([existingUser.avatarUrl]);
         }
 
-        const avatarUrl = `/uploads/${req.file.filename}`;
+        const avatarUrl = buildUploadPublicUrl(req.file.filename);
         await storage.updateClient(actor.id, { avatarUrl });
 
         console.log(`[AVATAR] Self-upload for user ${actor.id} (${actor.email})`);
@@ -5619,7 +5602,7 @@ if (!user) {
           deleteLocalUploadFiles([existingUser.avatarUrl]);
         }
 
-        const avatarUrl = `/uploads/${req.file.filename}`;
+        const avatarUrl = buildUploadPublicUrl(req.file.filename);
         await storage.updateClient(clientId, { avatarUrl });
 
         console.log(`[AVATAR] Uploaded for client ${clientId} by ${actor.email}`);
@@ -9585,7 +9568,7 @@ if (!user) {
         // Acepta archivo subido O URL externa (compatibilidad hacia atrás)
         let videoUrl: string | undefined;
         if (req.file) {
-          videoUrl = `/uploads/${req.file.filename}`;
+          videoUrl = buildUploadPublicUrl(req.file.filename);
         } else if (req.body.url) {
           videoUrl = req.body.url;
         }
@@ -10761,7 +10744,7 @@ if (!user) {
       if (!title || !title.trim()) return res.status(400).json({ message: "El título es requerido" });
       let imageUrl: string | undefined;
       if (req.file) {
-        imageUrl = `/uploads/${req.file.filename}`;
+        imageUrl = buildUploadPublicUrl(req.file.filename);
       }
       const promo = await storage.createPromotion({
         branchId,
