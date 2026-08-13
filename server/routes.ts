@@ -142,6 +142,7 @@ import {
   upsertBranchMonthlyBillingSchema,
 } from "@shared/schema";
 import { buildMembershipActivePatch, buildMembershipLeftPatch } from "./membership-state";
+import { shouldRunBackgroundJobs, shouldRunSeedOnStartup } from "./runtime-safety";
 import {
   branches,
   users,
@@ -161,11 +162,14 @@ import { z } from "zod";
 import { normalizeSearchText } from "./search-utils";
 
 const DEFAULT_CANCEL_CUTOFF_MINUTES = 180;
+const membershipBillingIdempotencyKeySchema = z.string().trim().min(8, "Idempotency key invalida").max(120, "Maximo 120 caracteres").optional();
 const membershipFinancePayloadSchema = z.object({
   paymentMethod: z.enum(branchFinancePaymentMethodValues).nullable().optional(),
+  idempotencyKey: membershipBillingIdempotencyKeySchema,
 });
 const assignPlanWithFinanceSchema = assignPlanSchema.extend({
   paymentMethod: z.enum(branchFinancePaymentMethodValues).nullable().optional(),
+  idempotencyKey: membershipBillingIdempotencyKeySchema,
 });
 const AUTOMATED_FINANCE_SOURCES = new Set(["commercial_sale", "sales_commission_payment"]);
 const updateBranchClientGlobalSchema = z.object({
@@ -1010,6 +1014,40 @@ function calculatePlanExpirationDateFromMxIsoDate(
   }
 
   return addCalendarMonthsFromMxIsoDate(startDate, plan.cycleMonths ?? 1);
+}
+
+function handleMembershipBillingRouteError(
+  res: any,
+  err: any,
+  logMessage: string,
+  userMessage = "Error al procesar la operación de membresía",
+) {
+  const code = err instanceof Error ? err.message : "";
+
+  if (code === "PLAN_NOT_FOUND") {
+    return res.status(404).json({ message: "Plan no encontrado" });
+  }
+  if (code === "PLAN_INACTIVE") {
+    return res.status(400).json({ message: "Este plan está desactivado" });
+  }
+  if (code === "PLAN_NOT_ASSIGNED") {
+    return res.status(400).json({ message: "No hay plan asignado para renovar" });
+  }
+  if (code === "MEMBERSHIP_NOT_FOUND") {
+    return res.status(404).json({ message: "Membresía no encontrada" });
+  }
+  if (code === "START_DATE_IN_FUTURE") {
+    return res.status(400).json({ message: "La fecha de inicio no puede estar en el futuro" });
+  }
+  if (code === "START_DATE_INVALID") {
+    return res.status(400).json({ message: "La fecha de inicio no es válida" });
+  }
+  if (code === "MEMBERSHIP_OPERATION_KEY_CONFLICT") {
+    return res.status(409).json({ message: "Esta operación ya fue usada para otra acción de membresía" });
+  }
+
+  console.error(logMessage, err?.stack || err);
+  return res.status(500).json({ message: userMessage });
 }
 
 function normalizeSearchKeywords(value: unknown): string | null | undefined {
@@ -6208,90 +6246,27 @@ if (!user) {
     const actor = req.user as any;
     const membershipId = req.params.id as string;
     try {
-      const { planId, paymentMethod, startDate } = assignPlanWithFinanceSchema.parse(req.body);
-
-      const plan = await storage.getPlan(planId);
-      if (!plan || plan.branchId !== actor.branchId) {
-        return res.status(404).json({ message: "Plan no encontrado" });
-      }
-      if (!plan.isActive) {
-        return res.status(400).json({ message: "Este plan está desactivado" });
-      }
-
-      const membershipCheck = await storage.getMembershipById(membershipId);
-
-      if (!membershipCheck || membershipCheck.branchId !== actor.branchId) {
-        return res.status(404).json({ message: "Membresía no encontrada" });
-      }
-
-      const effectiveStartDate = startDate ?? getMxIsoDate();
-      const todayMx = getMxIsoDate();
-      if (effectiveStartDate > todayMx) {
-        return res.status(400).json({ message: "La fecha de inicio no puede estar en el futuro" });
-      }
-
-      const startDateValue = parseMxIsoDateInput(effectiveStartDate);
-      if (!startDateValue) {
-        return res.status(400).json({ message: "La fecha de inicio no es válida" });
-      }
-
-      const classesRemaining = plan.classLimit ?? null;
-      const classesTotal = plan.classLimit ?? null;
-      const expiresAt = calculatePlanExpirationDateFromMxIsoDate(plan, effectiveStartDate);
-
-      const membership = await storage.assignPlanToMembership(
-        membershipId,
-        planId,
-        classesRemaining,
-        classesTotal,
-        expiresAt,
-        startDateValue,
-      );
-      if (!membership) {
-        return res.status(404).json({ message: "Membresía no encontrada" });
-      }
-
-      const cancelled = await storage.cancelFutureBookingsForUser(membership.userId, actor.branchId);
-      if (cancelled > 0) {
-        console.log(`[PLAN] Cancelled ${cancelled} future bookings for user ${membership.userId} on plan assignment`);
-      }
-
-      await storage.createAuditLog({
-        actorUserId: actor.id,
-        action: "ASSIGN_PLAN",
-        branchId: actor.branchId,
-        metadata: {
+      const { planId, paymentMethod, startDate, idempotencyKey } = assignPlanWithFinanceSchema.parse(req.body);
+      try {
+        const result = await storage.commitAssignMembershipBillingOperation({
+          branchId: actor.branchId,
           membershipId,
           planId,
-          planName: plan.name,
-          startDate: effectiveStartDate,
-          expiresAt: membership.expiresAt ? new Date(membership.expiresAt).toISOString() : null,
-          cancelledBookings: cancelled,
-        },
-      });
+          paymentMethod: normalizeOptionalText(paymentMethod) ?? null,
+          startDate: startDate ?? getMxIsoDate(),
+          idempotencyKey: idempotencyKey ?? null,
+          actorUserId: actor.id,
+        });
 
-      if (plan.price > 0) {
-        try {
-          await storage.createMembershipFinanceEntry({
-            branchId: actor.branchId,
-            membershipId: membership.id,
-            userId: membership.userId,
-            planId: plan.id,
-            planName: plan.name,
-            amount: plan.price / 100,
-            paidAt: effectiveStartDate,
-            expiresAt: membership.expiresAt,
-            paymentMethod: normalizeOptionalText(paymentMethod) ?? null,
-            createdBy: actor.id,
-            eventType: "assign",
-          });
-        } catch (financeErr: any) {
-          console.error("[PLAN_FINANCE_ASSIGN]", financeErr?.stack || financeErr);
+        if (result.cancelledBookings > 0) {
+          console.log(`[PLAN] Cancelled ${result.cancelledBookings} future bookings for user ${result.membership.userId} on plan assignment`);
         }
-      }
 
-      console.log(`[PLAN] Assigned "${plan.name}" to membership ${membershipId} by ${actor.email}`);
-      res.json(membership);
+        console.log(`[PLAN] Assigned plan to membership ${membershipId} by ${actor.email}${result.idempotentReplay ? " (idempotent replay)" : ""}`);
+        return res.json(result.membership);
+      } catch (billingErr: any) {
+        return handleMembershipBillingRouteError(res, billingErr, "[PLAN] Error assigning", "Error al asignar plan");
+      }
     } catch (err: any) {
       if (err.name === "ZodError") {
         return res.status(400).json({ message: err.errors[0]?.message || "Datos inválidos" });
@@ -6305,7 +6280,7 @@ if (!user) {
     const actor = req.user as any;
     const membershipId = req.params.id as string;
     try {
-      const membership = await storage.removePlanFromMembership(membershipId);
+      const membership = await storage.removePlanFromMembership(membershipId, actor.branchId);
       if (!membership) {
         return res.status(404).json({ message: "Membresía no encontrada" });
       }
@@ -6334,60 +6309,21 @@ if (!user) {
     const actor = req.user as any;
     const membershipId = req.params.id as string;
     try {
-      const { paymentMethod } = membershipFinancePayloadSchema.parse(req.body ?? {});
-      const targetMembership = await storage.getMembershipById(membershipId);
-      if (!targetMembership || targetMembership.branchId !== actor.branchId) {
-        return res.status(404).json({ message: "Membresía no encontrada" });
+      const { paymentMethod, idempotencyKey } = membershipFinancePayloadSchema.parse(req.body ?? {});
+      try {
+        const result = await storage.commitRenewMembershipBillingOperation({
+          branchId: actor.branchId,
+          membershipId,
+          paymentMethod: normalizeOptionalText(paymentMethod) ?? null,
+          idempotencyKey: idempotencyKey ?? null,
+          actorUserId: actor.id,
+        });
+
+        console.log(`[RENEW] Renewed membership ${membershipId} by ${actor.email}${result.idempotentReplay ? " (idempotent replay)" : ""}`);
+        return res.json(result.membership);
+      } catch (billingErr: any) {
+        return handleMembershipBillingRouteError(res, billingErr, "[RENEW] Error", "Error al renovar membresía");
       }
-
-      if (!targetMembership.planId) {
-        return res.status(400).json({ message: "No hay plan asignado para renovar" });
-      }
-
-      const plan = await storage.getPlan(targetMembership.planId);
-      if (!plan) {
-        return res.status(404).json({ message: "Plan no encontrado" });
-      }
-
-      const now = new Date();
-      const expiresAt = calculatePlanExpirationDate(plan, now);
-
-      const classesRemaining = plan.classLimit ?? null;
-      const classesTotal = plan.classLimit ?? null;
-
-      const renewed = await storage.renewMembership(
-        targetMembership.id, plan.id, classesRemaining, classesTotal, expiresAt, now
-      );
-
-      await storage.createAuditLog({
-        actorUserId: actor.id,
-        action: "RENEW_MEMBERSHIP",
-        branchId: actor.branchId,
-        metadata: { membershipId: targetMembership.id, planId: plan.id, planName: plan.name, paidAt: now.toISOString(), expiresAt: expiresAt.toISOString() },
-      });
-
-      if (plan.price > 0 && renewed) {
-        try {
-          await storage.createMembershipFinanceEntry({
-            branchId: actor.branchId,
-            membershipId: renewed.id,
-            userId: renewed.userId,
-            planId: plan.id,
-            planName: plan.name,
-            amount: plan.price / 100,
-            paidAt: renewed.paidAt,
-            expiresAt: renewed.expiresAt,
-            paymentMethod: normalizeOptionalText(paymentMethod) ?? null,
-            createdBy: actor.id,
-            eventType: "renew",
-          });
-        } catch (financeErr: any) {
-          console.error("[PLAN_FINANCE_RENEW]", financeErr?.stack || financeErr);
-        }
-      }
-
-      console.log(`[RENEW] Renewed "${plan.name}" for membership ${targetMembership.id} by ${actor.email}`);
-      res.json(renewed);
     } catch (err: any) {
       if (err.name === "ZodError") {
         return res.status(400).json({ message: err.errors[0]?.message || "Datos inválidos" });
@@ -10676,7 +10612,7 @@ if (!user) {
     return res.json({ message: "No membership to update" });
   });
 
-  const shouldRunSeed = process.env.RUN_SEED === "true" || process.env.NODE_ENV !== "production";
+  const shouldRunSeed = shouldRunSeedOnStartup();
   if (shouldRunSeed) {
     try {
       await seedDatabase();
@@ -10827,19 +10763,23 @@ if (!user) {
   // Background job: every 60 seconds, auto-mark managed confirmed bookings as attended
   // once their class start time has been reached in America/Mexico_City.
   // Historical bookings (class_consumed IS NULL) are intentionally skipped.
-  setInterval(async () => {
-    try {
-      const branchIds = await storage.getAllActiveBranchIds();
-      for (const branchId of branchIds) {
-        const count = await storage.reconcilePastBookings(branchId);
-        if (count > 0) {
-          console.log(`[RECONCILE] Marked ${count} booking(s) as attended for branch ${branchId}`);
+  if (shouldRunBackgroundJobs()) {
+    setInterval(async () => {
+      try {
+        const branchIds = await storage.getAllActiveBranchIds();
+        for (const branchId of branchIds) {
+          const count = await storage.reconcilePastBookings(branchId);
+          if (count > 0) {
+            console.log(`[RECONCILE] Marked ${count} booking(s) as attended for branch ${branchId}`);
+          }
         }
+      } catch (err: any) {
+        console.error("[RECONCILE] Background job error:", err.message);
       }
-    } catch (err: any) {
-      console.error("[RECONCILE] Background job error:", err.message);
-    }
-  }, 60_000);
+    }, 60_000);
+  } else {
+    console.log("[RECONCILE] Background reconcile disabled outside production");
+  }
 
   return httpServer;
 }

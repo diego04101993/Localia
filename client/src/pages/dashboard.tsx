@@ -82,6 +82,7 @@ import {
 } from "@/components/ui/drawer";
 import { apiRequest, fetchJson, queryClient } from "@/lib/queryClient";
 import { invalidateBranchMembershipQueries } from "@/lib/branch-dashboard-cache";
+import { useStableOperationKey } from "@/lib/stable-operation-key";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
 import { Area, AreaChart, CartesianGrid, Line, XAxis, YAxis } from "recharts";
@@ -592,8 +593,10 @@ function AlertsSection({ alerts, isLoading, onViewClient, branchName, whatsappTe
   const [birthdayExpanded, setBirthdayExpanded] = useState(true);
 
   const renewMutation = useMutation({
-    mutationFn: async (membershipId: string) => {
-      const resp = await apiRequest("POST", `/api/branch/memberships/${membershipId}/renew`);
+    mutationFn: async ({ membershipId, idempotencyKey }: { membershipId: string; idempotencyKey: string }) => {
+      const resp = await apiRequest("POST", `/api/branch/memberships/${membershipId}/renew`, {
+        idempotencyKey,
+      });
       return resp.json();
     },
     onSuccess: async () => {
@@ -604,6 +607,25 @@ function AlertsSection({ alerts, isLoading, onViewClient, branchName, whatsappTe
       toast({ title: "Error", description: err.message || "Error al renovar", variant: "destructive" });
     },
   });
+  const renewPlanOperation = useStableOperationKey();
+
+  async function handleRenewMembership(membershipId: string) {
+    const fingerprint = JSON.stringify({ membershipId });
+    const attempt = renewPlanOperation.begin(fingerprint);
+    if (!attempt.allowed) {
+      return;
+    }
+
+    try {
+      await renewMutation.mutateAsync({
+        membershipId,
+        idempotencyKey: attempt.key,
+      });
+      renewPlanOperation.markSuccess(fingerprint);
+    } catch {
+      renewPlanOperation.markError(fingerprint);
+    }
+  }
 
   const expiredCount = alerts?.expiredMemberships?.length || 0;
   const expiringCount = alerts?.expiringMemberships?.length || 0;
@@ -739,7 +761,9 @@ function AlertsSection({ alerts, isLoading, onViewClient, branchName, whatsappTe
                       <Button
                         size="sm"
                         className="h-6 px-2 text-[10px]"
-                        onClick={() => renewMutation.mutate(m.membershipId)}
+                        onClick={() => {
+                          void handleRenewMembership(m.membershipId);
+                        }}
                         disabled={renewMutation.isPending}
                         data-testid={`button-renew-expired-${m.userId}`}
                       >

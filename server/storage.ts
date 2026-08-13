@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { eq, and, sql, or, ne, isNull, count, desc, asc, gte, inArray, lte } from "drizzle-orm";
 import { db } from "./db";
 import {
@@ -144,8 +145,10 @@ import {
   type NotificationJob,
   type InsertNotificationJob,
   branchFinanceEntries,
+  branchChargeEvents,
   type BranchFinanceEntry,
   type InsertBranchFinanceEntry,
+  type BranchChargeEvent,
   branchRecurringExpenses,
   type BranchRecurringExpense,
   type InsertBranchRecurringExpense,
@@ -167,6 +170,11 @@ import {
   type InsertPromotion,
 } from "@shared/schema";
 import { ACTIVE_MEMBERSHIP_CLIENT_STATUSES, buildMembershipActivePatch, buildMembershipLeftPatch } from "./membership-state";
+import {
+  calculatePlanExpirationDate,
+  calculatePlanExpirationDateFromMxIsoDate,
+  parseMxIsoDateInput,
+} from "./membership-plan-dates";
 import { normalizeSearchText } from "./search-utils";
 
 const BRANCH_CLIENT_PASSWORD_RESET_COOLDOWN_MS = 60_000;
@@ -196,6 +204,14 @@ export type PublicPasswordResetResult =
       code: string;
       message: string;
     };
+
+export interface MembershipBillingOperationResult {
+  membership: Membership;
+  idempotentReplay: boolean;
+  chargeEventId: string;
+  financeEntryId: string | null;
+  cancelledBookings: number;
+}
 
 const BRANCH_TIMEZONE = "America/Mexico_City";
 const COMMERCIAL_LARGE_SALE_THRESHOLD = 10000;
@@ -566,6 +582,18 @@ function formatDateOnly(date: Date): string {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function formatMoneyCentsAsNumericString(value: number): string {
+  if (!Number.isInteger(value)) {
+    throw new Error("MONEY_CENTS_INTEGER_REQUIRED");
+  }
+
+  const sign = value < 0 ? "-" : "";
+  const absoluteValue = Math.abs(value);
+  const wholePart = Math.floor(absoluteValue / 100);
+  const centsPart = String(absoluteValue % 100).padStart(2, "0");
+  return `${sign}${wholePart}.${centsPart}`;
 }
 
 function computeCurrentCyclePaymentDate(paymentDay: number, fromDate = new Date()): string {
@@ -1910,7 +1938,7 @@ export interface IStorage {
     expiresAt: Date | null,
     startDate: Date,
   ): Promise<Membership | undefined>;
-  removePlanFromMembership(membershipId: string): Promise<Membership | undefined>;
+  removePlanFromMembership(membershipId: string, branchId: string): Promise<Membership | undefined>;
   createMembershipFinanceEntry(data: {
     branchId: string;
     membershipId: string;
@@ -4442,14 +4470,21 @@ export class DatabaseStorage implements IStorage {
     return user;
   }
 
-  async createAuditLog(data: { actorUserId: string; action: string; branchId?: string; metadata?: any }): Promise<AuditLog> {
-    const [log] = await db.insert(auditLogs).values({
+  private async createAuditLogTx(
+    executor: any,
+    data: { actorUserId: string; action: string; branchId?: string; metadata?: any },
+  ): Promise<AuditLog> {
+    const [log] = await executor.insert(auditLogs).values({
       actorUserId: data.actorUserId,
       action: data.action,
       branchId: data.branchId || null,
       metadata: data.metadata || null,
     }).returning();
     return log;
+  }
+
+  async createAuditLog(data: { actorUserId: string; action: string; branchId?: string; metadata?: any }): Promise<AuditLog> {
+    return this.createAuditLogTx(db, data);
   }
 
   async findAuditLogByReference(params: { action: string; branchId?: string | null; referenceId: string }): Promise<AuditLog | undefined> {
@@ -6289,7 +6324,124 @@ export class DatabaseStorage implements IStorage {
     return plan;
   }
 
-  async assignPlanToMembership(
+  private resolveMembershipChargeOperationKey(idempotencyKey?: string | null): {
+    operationKey: string;
+    isLegacyRequest: boolean;
+  } {
+    const normalizedKey = normalizeOptionalTextValue(idempotencyKey);
+    if (normalizedKey) {
+      return {
+        operationKey: normalizedKey,
+        isLegacyRequest: false,
+      };
+    }
+
+    return {
+      operationKey: `legacy:${crypto.randomUUID()}`,
+      isLegacyRequest: true,
+    };
+  }
+
+  private async lockMembershipTx(tx: any, membershipId: string): Promise<Membership | undefined> {
+    await tx.execute(sql`
+      SELECT id
+      FROM memberships
+      WHERE id = ${membershipId}
+      FOR UPDATE
+    `);
+
+    const [membership] = await tx
+      .select()
+      .from(memberships)
+      .where(eq(memberships.id, membershipId))
+      .limit(1);
+
+    return membership;
+  }
+
+  private async getPlanTx(tx: any, planId: string): Promise<MembershipPlan | undefined> {
+    const [plan] = await tx
+      .select()
+      .from(membershipPlans)
+      .where(eq(membershipPlans.id, planId))
+      .limit(1);
+    return plan;
+  }
+
+  private async getBranchChargeEventByOperationKeyTx(
+    tx: any,
+    branchId: string,
+    operationKey: string,
+  ): Promise<BranchChargeEvent | undefined> {
+    const [chargeEvent] = await tx
+      .select()
+      .from(branchChargeEvents)
+      .where(and(
+        eq(branchChargeEvents.branchId, branchId),
+        eq(branchChargeEvents.operationKey, operationKey),
+      ))
+      .limit(1);
+    return chargeEvent;
+  }
+
+  private async claimMembershipChargeEventTx(tx: any, data: {
+    branchId: string;
+    eventType: "assign" | "renew";
+    operationKey: string;
+    membershipId: string;
+    planId: string;
+    clientUserId: string;
+    planNameSnapshot: string;
+    basePriceCents: number;
+    finalTotalCents: number;
+    chargedAt: Date;
+    contextJson?: any;
+    createdBy: string;
+  }): Promise<{ created: boolean; chargeEvent: BranchChargeEvent }> {
+    const [created] = await tx
+      .insert(branchChargeEvents)
+      .values({
+        branchId: data.branchId,
+        chargeDomain: "membership_plan",
+        eventType: data.eventType,
+        operationKey: data.operationKey,
+        membershipId: data.membershipId,
+        planId: data.planId,
+        clientUserId: data.clientUserId,
+        planNameSnapshot: data.planNameSnapshot,
+        basePriceCents: data.basePriceCents,
+        finalTotalCents: data.finalTotalCents,
+        currencyCode: "MXN",
+        chargedAt: data.chargedAt,
+        snapshotVersion: 1,
+        contextJson: data.contextJson ?? null,
+        createdBy: data.createdBy,
+      } as any)
+      .onConflictDoNothing({
+        target: [branchChargeEvents.branchId, branchChargeEvents.operationKey],
+      })
+      .returning();
+
+    if (created) {
+      return {
+        created: true,
+        chargeEvent: created,
+      };
+    }
+
+    const existing = await this.getBranchChargeEventByOperationKeyTx(tx, data.branchId, data.operationKey);
+    if (!existing) {
+      throw new Error("MEMBERSHIP_CHARGE_EVENT_CLAIM_FAILED");
+    }
+
+    return {
+      created: false,
+      chargeEvent: existing,
+    };
+  }
+
+  private async assignPlanToMembershipTx(
+    executor: any,
     membershipId: string,
     planId: string,
     classesRemaining: number | null,
@@ -6297,7 +6449,7 @@ export class DatabaseStorage implements IStorage {
     expiresAt: Date | null,
     startDate: Date,
   ): Promise<Membership | undefined> {
-    const [m] = await db
+    const [membership] = await executor
       .update(memberships)
       .set({
         ...buildMembershipActivePatch(),
@@ -6312,14 +6464,33 @@ export class DatabaseStorage implements IStorage {
       })
       .where(eq(memberships.id, membershipId))
       .returning();
-    return m;
+    return membership;
   }
 
-  async removePlanFromMembership(membershipId: string): Promise<Membership | undefined> {
+  async assignPlanToMembership(
+    membershipId: string,
+    planId: string,
+    classesRemaining: number | null,
+    classesTotal: number | null,
+    expiresAt: Date | null,
+    startDate: Date,
+  ): Promise<Membership | undefined> {
+    return this.assignPlanToMembershipTx(
+      db,
+      membershipId,
+      planId,
+      classesRemaining,
+      classesTotal,
+      expiresAt,
+      startDate,
+    );
+  }
+
+  async removePlanFromMembership(membershipId: string, branchId: string): Promise<Membership | undefined> {
     const [m] = await db
       .update(memberships)
       .set({ planId: null, classesRemaining: null, classesTotal: null, expiresAt: null, membershipStartDate: null, membershipEndDate: null, paidAt: null, renewedFromId: null })
-      .where(eq(memberships.id, membershipId))
+      .where(and(eq(memberships.id, membershipId), eq(memberships.branchId, branchId)))
       .returning();
     return m;
   }
@@ -6328,6 +6499,158 @@ export class DatabaseStorage implements IStorage {
     const [m] = await db.select().from(memberships)
       .where(and(eq(memberships.userId, userId), eq(memberships.branchId, branchId)));
     return m;
+  }
+
+  async commitAssignMembershipBillingOperation(data: {
+    branchId: string;
+    membershipId: string;
+    planId: string;
+    paymentMethod?: string | null;
+    startDate?: string | null;
+    idempotencyKey?: string | null;
+    actorUserId: string;
+  }): Promise<MembershipBillingOperationResult> {
+    const { operationKey, isLegacyRequest } = this.resolveMembershipChargeOperationKey(data.idempotencyKey);
+    const normalizedPaymentMethod = normalizeOptionalTextValue(data.paymentMethod) ?? null;
+
+    return db.transaction(async (tx) => {
+      const membership = await this.lockMembershipTx(tx, data.membershipId);
+      if (!membership || membership.branchId !== data.branchId) {
+        throw new Error("MEMBERSHIP_NOT_FOUND");
+      }
+
+      const plan = await this.getPlanTx(tx, data.planId);
+      if (!plan || plan.branchId !== data.branchId) {
+        throw new Error("PLAN_NOT_FOUND");
+      }
+      if (!plan.isActive) {
+        throw new Error("PLAN_INACTIVE");
+      }
+
+      const effectiveStartDate = normalizeOptionalTextValue(data.startDate) ?? getMxLocalDate();
+      if (effectiveStartDate > getMxLocalDate()) {
+        throw new Error("START_DATE_IN_FUTURE");
+      }
+
+      const startDateValue = parseMxIsoDateInput(effectiveStartDate);
+      const expiresAt = calculatePlanExpirationDateFromMxIsoDate(plan, effectiveStartDate);
+      if (!startDateValue || !expiresAt) {
+        throw new Error("START_DATE_INVALID");
+      }
+
+      const chargeClaim = await this.claimMembershipChargeEventTx(tx, {
+        branchId: data.branchId,
+        eventType: "assign",
+        operationKey,
+        membershipId: membership.id,
+        planId: plan.id,
+        clientUserId: membership.userId,
+        planNameSnapshot: plan.name,
+        basePriceCents: plan.price,
+        finalTotalCents: plan.price,
+        chargedAt: startDateValue,
+        contextJson: {
+          legacyRequest: isLegacyRequest,
+          paymentMethod: normalizedPaymentMethod,
+          startDate: effectiveStartDate,
+        },
+        createdBy: data.actorUserId,
+      });
+
+      if (!chargeClaim.created) {
+        if (
+          chargeClaim.chargeEvent.chargeDomain !== "membership_plan"
+          || chargeClaim.chargeEvent.eventType !== "assign"
+          || chargeClaim.chargeEvent.membershipId !== membership.id
+          || chargeClaim.chargeEvent.planId !== plan.id
+        ) {
+          throw new Error("MEMBERSHIP_OPERATION_KEY_CONFLICT");
+        }
+
+        const replayMembership = await this.lockMembershipTx(tx, data.membershipId);
+        if (!replayMembership) {
+          throw new Error("MEMBERSHIP_NOT_FOUND");
+        }
+
+        return {
+          membership: replayMembership,
+          idempotentReplay: true,
+          chargeEventId: chargeClaim.chargeEvent.id,
+          financeEntryId: chargeClaim.chargeEvent.financeEntryId ?? null,
+          cancelledBookings: 0,
+        };
+      }
+
+      const classesRemaining = plan.classLimit ?? null;
+      const classesTotal = plan.classLimit ?? null;
+
+      const updatedMembership = await this.assignPlanToMembershipTx(
+        tx,
+        membership.id,
+        plan.id,
+        classesRemaining,
+        classesTotal,
+        expiresAt,
+        startDateValue,
+      );
+
+      if (!updatedMembership) {
+        throw new Error("MEMBERSHIP_NOT_FOUND");
+      }
+
+      const cancelledBookings = await this.cancelFutureBookingsForUserTx(tx, updatedMembership.userId, data.branchId);
+
+      let financeEntryId: string | null = null;
+      if (plan.price > 0) {
+        const financeOutcome = await this.createMembershipFinanceEntryTx(tx, {
+          branchId: data.branchId,
+          membershipId: updatedMembership.id,
+          userId: updatedMembership.userId,
+          planId: plan.id,
+          planName: plan.name,
+          amountCents: plan.price,
+          paidAt: effectiveStartDate,
+          expiresAt: updatedMembership.expiresAt,
+          paymentMethod: normalizedPaymentMethod,
+          createdBy: data.actorUserId,
+          financeSourceId: chargeClaim.chargeEvent.id,
+          chargeEventId: chargeClaim.chargeEvent.id,
+          eventType: "assign",
+        });
+
+        financeEntryId = financeOutcome.entry.id;
+        if (!financeEntryId) {
+          throw new Error("FINANCE_ENTRY_LINK_REQUIRED");
+        }
+
+        await tx
+          .update(branchChargeEvents)
+          .set({ financeEntryId })
+          .where(eq(branchChargeEvents.id, chargeClaim.chargeEvent.id));
+      }
+
+      await this.createAuditLogTx(tx, {
+        actorUserId: data.actorUserId,
+        action: "ASSIGN_PLAN",
+        branchId: data.branchId,
+        metadata: {
+          membershipId: updatedMembership.id,
+          planId: plan.id,
+          planName: plan.name,
+          startDate: effectiveStartDate,
+          expiresAt: updatedMembership.expiresAt ? new Date(updatedMembership.expiresAt).toISOString() : null,
+          cancelledBookings,
+        },
+      });
+
+      return {
+        membership: updatedMembership,
+        idempotentReplay: false,
+        chargeEventId: chargeClaim.chargeEvent.id,
+        financeEntryId,
+        cancelledBookings,
+      };
+    });
   }
 
   async transitionBookingStatus(params: {
@@ -6429,9 +6752,9 @@ export class DatabaseStorage implements IStorage {
     return result.map(r => r.id);
   }
 
-  async cancelFutureBookingsForUser(userId: string, branchId: string): Promise<number> {
+  private async cancelFutureBookingsForUserTx(executor: any, userId: string, branchId: string): Promise<number> {
     const today = getMxLocalDate();
-    const result = await db
+    const result = await executor
       .update(classBookings)
       .set({ status: "cancelled" as any })
       .where(
@@ -6445,6 +6768,10 @@ export class DatabaseStorage implements IStorage {
       )
       .returning({ id: classBookings.id });
     return result.length;
+  }
+
+  async cancelFutureBookingsForUser(userId: string, branchId: string): Promise<number> {
+    return this.cancelFutureBookingsForUserTx(db, userId, branchId);
   }
 
   async decrementClassesRemaining(membershipId: string): Promise<Membership | undefined> {
@@ -12482,8 +12809,16 @@ export class DatabaseStorage implements IStorage {
     return result.length;
   }
 
-  async renewMembership(membershipId: string, planId: string, classesRemaining: number | null, classesTotal: number | null, expiresAt: Date, paidAt: Date): Promise<Membership | undefined> {
-    const [m] = await db
+  private async renewMembershipTx(
+    executor: any,
+    membershipId: string,
+    planId: string,
+    classesRemaining: number | null,
+    classesTotal: number | null,
+    expiresAt: Date,
+    paidAt: Date,
+  ): Promise<Membership | undefined> {
+    const [membership] = await executor
       .update(memberships)
       .set({
         ...buildMembershipActivePatch(),
@@ -12497,7 +12832,157 @@ export class DatabaseStorage implements IStorage {
       })
       .where(eq(memberships.id, membershipId))
       .returning();
-    return m;
+    return membership;
+  }
+
+  async renewMembership(membershipId: string, planId: string, classesRemaining: number | null, classesTotal: number | null, expiresAt: Date, paidAt: Date): Promise<Membership | undefined> {
+    return this.renewMembershipTx(
+      db,
+      membershipId,
+      planId,
+      classesRemaining,
+      classesTotal,
+      expiresAt,
+      paidAt,
+    );
+  }
+
+  async commitRenewMembershipBillingOperation(data: {
+    branchId: string;
+    membershipId: string;
+    paymentMethod?: string | null;
+    idempotencyKey?: string | null;
+    actorUserId: string;
+  }): Promise<MembershipBillingOperationResult> {
+    const { operationKey, isLegacyRequest } = this.resolveMembershipChargeOperationKey(data.idempotencyKey);
+    const normalizedPaymentMethod = normalizeOptionalTextValue(data.paymentMethod) ?? null;
+
+    return db.transaction(async (tx) => {
+      const membership = await this.lockMembershipTx(tx, data.membershipId);
+      if (!membership || membership.branchId !== data.branchId) {
+        throw new Error("MEMBERSHIP_NOT_FOUND");
+      }
+      if (!membership.planId) {
+        throw new Error("PLAN_NOT_ASSIGNED");
+      }
+
+      const plan = await this.getPlanTx(tx, membership.planId);
+      if (!plan || plan.branchId !== data.branchId) {
+        throw new Error("PLAN_NOT_FOUND");
+      }
+
+      const paidAt = new Date();
+      const expiresAt = calculatePlanExpirationDate(plan, paidAt);
+
+      const chargeClaim = await this.claimMembershipChargeEventTx(tx, {
+        branchId: data.branchId,
+        eventType: "renew",
+        operationKey,
+        membershipId: membership.id,
+        planId: plan.id,
+        clientUserId: membership.userId,
+        planNameSnapshot: plan.name,
+        basePriceCents: plan.price,
+        finalTotalCents: plan.price,
+        chargedAt: paidAt,
+        contextJson: {
+          legacyRequest: isLegacyRequest,
+          paymentMethod: normalizedPaymentMethod,
+        },
+        createdBy: data.actorUserId,
+      });
+
+      if (!chargeClaim.created) {
+        if (
+          chargeClaim.chargeEvent.chargeDomain !== "membership_plan"
+          || chargeClaim.chargeEvent.eventType !== "renew"
+          || chargeClaim.chargeEvent.membershipId !== membership.id
+          || chargeClaim.chargeEvent.planId !== plan.id
+        ) {
+          throw new Error("MEMBERSHIP_OPERATION_KEY_CONFLICT");
+        }
+
+        const replayMembership = await this.lockMembershipTx(tx, data.membershipId);
+        if (!replayMembership) {
+          throw new Error("MEMBERSHIP_NOT_FOUND");
+        }
+
+        return {
+          membership: replayMembership,
+          idempotentReplay: true,
+          chargeEventId: chargeClaim.chargeEvent.id,
+          financeEntryId: chargeClaim.chargeEvent.financeEntryId ?? null,
+          cancelledBookings: 0,
+        };
+      }
+
+      const classesRemaining = plan.classLimit ?? null;
+      const classesTotal = plan.classLimit ?? null;
+
+      const renewedMembership = await this.renewMembershipTx(
+        tx,
+        membership.id,
+        plan.id,
+        classesRemaining,
+        classesTotal,
+        expiresAt,
+        paidAt,
+      );
+
+      if (!renewedMembership) {
+        throw new Error("MEMBERSHIP_NOT_FOUND");
+      }
+
+      let financeEntryId: string | null = null;
+      if (plan.price > 0) {
+        const financeOutcome = await this.createMembershipFinanceEntryTx(tx, {
+          branchId: data.branchId,
+          membershipId: renewedMembership.id,
+          userId: renewedMembership.userId,
+          planId: plan.id,
+          planName: plan.name,
+          amountCents: plan.price,
+          paidAt: renewedMembership.paidAt,
+          expiresAt: renewedMembership.expiresAt,
+          paymentMethod: normalizedPaymentMethod,
+          createdBy: data.actorUserId,
+          financeSourceId: chargeClaim.chargeEvent.id,
+          chargeEventId: chargeClaim.chargeEvent.id,
+          eventType: "renew",
+        });
+
+        financeEntryId = financeOutcome.entry.id;
+        if (!financeEntryId) {
+          throw new Error("FINANCE_ENTRY_LINK_REQUIRED");
+        }
+
+        await tx
+          .update(branchChargeEvents)
+          .set({ financeEntryId })
+          .where(eq(branchChargeEvents.id, chargeClaim.chargeEvent.id));
+      }
+
+      await this.createAuditLogTx(tx, {
+        actorUserId: data.actorUserId,
+        action: "RENEW_MEMBERSHIP",
+        branchId: data.branchId,
+        metadata: {
+          membershipId: renewedMembership.id,
+          planId: plan.id,
+          planName: plan.name,
+          paidAt: paidAt.toISOString(),
+          expiresAt: expiresAt.toISOString(),
+        },
+      });
+
+      return {
+        membership: renewedMembership,
+        idempotentReplay: false,
+        chargeEventId: chargeClaim.chargeEvent.id,
+        financeEntryId,
+        cancelledBookings: 0,
+      };
+    });
   }
 
   async getMembershipsAssignedToPlan(planId: string): Promise<number> {
@@ -13348,8 +13833,8 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
-  private async getBranchFinanceEntryById(branchId: string, entryId: string): Promise<BranchFinanceEntryRow | undefined> {
-    const [row] = await db
+  private async getBranchFinanceEntryByIdTx(executor: any, branchId: string, entryId: string): Promise<BranchFinanceEntryRow | undefined> {
+    const [row] = await executor
       .select({
         id: branchFinanceEntries.id,
         branchId: branchFinanceEntries.branchId,
@@ -13384,12 +13869,25 @@ export class DatabaseStorage implements IStorage {
     return row ? this.mapBranchFinanceEntryRow(row) : undefined;
   }
 
+  private async getBranchFinanceEntryById(branchId: string, entryId: string): Promise<BranchFinanceEntryRow | undefined> {
+    return this.getBranchFinanceEntryByIdTx(db, branchId, entryId);
+  }
+
   private async getBranchFinanceEntryBySource(
     branchId: string,
     source: string,
     sourceId: string,
   ): Promise<BranchFinanceEntryRow | undefined> {
-    const [row] = await db
+    return this.getBranchFinanceEntryBySourceTx(db, branchId, source, sourceId);
+  }
+
+  private async getBranchFinanceEntryBySourceTx(
+    executor: any,
+    branchId: string,
+    source: string,
+    sourceId: string,
+  ): Promise<BranchFinanceEntryRow | undefined> {
+    const [row] = await executor
       .select({
         id: branchFinanceEntries.id,
         branchId: branchFinanceEntries.branchId,
@@ -13423,6 +13921,40 @@ export class DatabaseStorage implements IStorage {
       .limit(1);
 
     return row ? this.mapBranchFinanceEntryRow(row) : undefined;
+  }
+
+  private async createBranchFinanceEntryTx(
+    executor: any,
+    data: InsertBranchFinanceEntry,
+  ): Promise<{ entry: BranchFinanceEntryRow; created: boolean }> {
+    try {
+      const [created] = await executor
+        .insert(branchFinanceEntries)
+        .values({
+          ...data,
+          amount: String(data.amount),
+        })
+        .returning({
+          id: branchFinanceEntries.id,
+          branchId: branchFinanceEntries.branchId,
+        });
+
+      return {
+        entry: (await this.getBranchFinanceEntryByIdTx(executor, created.branchId, created.id))!,
+        created: true,
+      };
+    } catch (error: any) {
+      if (isPgUniqueViolation(error) && data.source && data.sourceId) {
+        const existing = await this.getBranchFinanceEntryBySourceTx(executor, data.branchId, data.source, data.sourceId);
+        if (existing) {
+          return {
+            entry: existing,
+            created: false,
+          };
+        }
+      }
+      throw error;
+    }
   }
 
   private mapBranchServiceSaleOptionRow(row: BranchServiceSaleOption): BranchServiceSaleOptionRow {
@@ -13844,28 +14376,8 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createBranchFinanceEntry(data: InsertBranchFinanceEntry): Promise<BranchFinanceEntryRow> {
-    try {
-      const [created] = await db
-        .insert(branchFinanceEntries)
-        .values({
-          ...data,
-          amount: String(data.amount),
-        })
-        .returning({
-          id: branchFinanceEntries.id,
-          branchId: branchFinanceEntries.branchId,
-        });
-
-      return (await this.getBranchFinanceEntryById(created.branchId, created.id))!;
-    } catch (error: any) {
-      if (isPgUniqueViolation(error) && data.source && data.sourceId) {
-        const existing = await this.getBranchFinanceEntryBySource(data.branchId, data.source, data.sourceId);
-        if (existing) {
-          return existing;
-        }
-      }
-      throw error;
-    }
+    const result = await this.createBranchFinanceEntryTx(db, data);
+    return result.entry;
   }
 
   async findBranchFinanceEntryBySource(
@@ -14251,6 +14763,64 @@ export class DatabaseStorage implements IStorage {
       .where(eq(branchFinanceEntries.id, financeEntry.id));
 
     return (await this.getBranchStaffClassLogById(data.branchId, created.id))!;
+  }
+
+  private async createMembershipFinanceEntryTx(executor: any, data: {
+    branchId: string;
+    membershipId: string;
+    userId: string;
+    planId: string;
+    planName: string;
+    amountCents: number;
+    paidAt: Date | string | null | undefined;
+    expiresAt?: Date | string | null;
+    paymentMethod?: string | null;
+    createdBy?: string | null;
+    financeSourceId: string;
+    chargeEventId: string;
+    eventType: "assign" | "renew";
+  }): Promise<{ entry: BranchFinanceEntryRow; created: boolean }> {
+    const [user] = await executor
+      .select({
+        name: users.name,
+        lastName: users.lastName,
+      })
+      .from(users)
+      .where(eq(users.id, data.userId))
+      .limit(1);
+
+    const clientDisplayName = [user?.name, user?.lastName].filter(Boolean).join(" ").trim() || "Cliente";
+    const paidAtDate =
+      typeof data.paidAt === "string" && /^\d{4}-\d{2}-\d{2}$/.test(data.paidAt)
+        ? data.paidAt
+        : data.paidAt
+          ? formatDateOnly(new Date(data.paidAt))
+          : getMxLocalDate();
+
+    return this.createBranchFinanceEntryTx(executor, {
+      branchId: data.branchId,
+      type: "income",
+      category: "membresia",
+      concept: data.planName,
+      amount: formatMoneyCentsAsNumericString(data.amountCents),
+      paymentMethod: data.paymentMethod ?? null,
+      clientUserId: data.userId,
+      clientName: null,
+      notes: data.eventType === "renew" ? "Ingreso automatico por renovacion de membresia" : "Ingreso automatico por asignacion de membresia",
+      entryDate: paidAtDate,
+      source: `membership_${data.eventType}`,
+      sourceId: data.financeSourceId,
+      metadata: {
+        membershipId: data.membershipId,
+        planId: data.planId,
+        planName: data.planName,
+        eventType: data.eventType,
+        expiresAt: data.expiresAt ? new Date(data.expiresAt).toISOString() : null,
+        clientDisplayName,
+        chargeEventId: data.chargeEventId,
+      },
+      createdBy: data.createdBy ?? null,
+    } as any);
   }
 
   async createMembershipFinanceEntry(data: {

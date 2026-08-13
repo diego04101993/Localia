@@ -7,6 +7,7 @@ import type { Express, Request, Response, NextFunction } from "express";
 import { storage } from "./storage";
 import { pool } from "./db";
 import { supportsLocalPasswordAuth } from "./branch-client-identity";
+import { shouldEnableSessionStoreMaintenance } from "./runtime-safety";
 
 const PgSession = connectPgSimple(session);
 export const CUSTOMER_BLOCKED_MESSAGE = "Tu cuenta ha sido bloqueada. Contacta a soporte.";
@@ -168,6 +169,7 @@ async function clearExpiredImpersonationIfNeeded(req: Request): Promise<void> {
 
 export function setupAuth(app: Express) {
   const isProduction = process.env.NODE_ENV === "production";
+  const enableSessionStoreMaintenance = shouldEnableSessionStoreMaintenance();
   const sessionSecret = process.env.SESSION_SECRET?.trim();
   const customerSessionMaxAgeDays = resolveSessionMaxAgeDays();
   const adminSessionMaxAgeDays = resolveAdminSessionMaxAgeDays(customerSessionMaxAgeDays);
@@ -187,16 +189,21 @@ export function setupAuth(app: Express) {
     app.set("trust proxy", 1);
   }
 
-  const sessionStore = new PgSession({
+  const sessionStoreConfig: ConstructorParameters<typeof PgSession>[0] = {
     pool: pool as any,
     tableName: "session",
-    createTableIfMissing: true,
+    createTableIfMissing: enableSessionStoreMaintenance,
     ttl: sessionTtlSeconds,
-    pruneSessionInterval: 60 * 60,
-  });
+  };
+
+  if (enableSessionStoreMaintenance) {
+    sessionStoreConfig.pruneSessionInterval = 60 * 60;
+  }
+
+  const sessionStore = new PgSession(sessionStoreConfig);
 
   authDebugLog(
-    `Session store configurado: customer=${customerSessionMaxAgeDays} dias, admin=${adminSessionMaxAgeDays} dias, rolling=true, secure=${isProduction}, sameSite=lax, domain=${cookieDomain || "(default)"}`,
+    `Session store configurado: customer=${customerSessionMaxAgeDays} dias, admin=${adminSessionMaxAgeDays} dias, rolling=true, secure=${isProduction}, sameSite=lax, domain=${cookieDomain || "(default)"}, maintenance=${enableSessionStoreMaintenance}`,
   );
 
   app.use(

@@ -1710,6 +1710,39 @@ export const branchFinanceEntries = pgTable("branch_finance_entries", {
   index("branch_finance_entries_client_user_idx").on(table.clientUserId),
 ]);
 
+export const branchChargeEventDomainValues = ["membership_plan"] as const;
+export const branchChargeEventTypeValues = ["assign", "renew"] as const;
+
+export const branchChargeEvents = pgTable("branch_charge_events", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  chargeDomain: text("charge_domain").notNull(),
+  eventType: text("event_type").notNull(),
+  operationKey: varchar("operation_key", { length: 120 }).notNull(),
+  membershipId: varchar("membership_id", { length: 36 }).references(() => memberships.id, { onDelete: "set null" }),
+  planId: varchar("plan_id", { length: 36 }).references(() => membershipPlans.id, { onDelete: "set null" }),
+  clientUserId: varchar("client_user_id", { length: 36 }).references(() => users.id, { onDelete: "set null" }),
+  financeEntryId: varchar("finance_entry_id", { length: 36 }).references(() => branchFinanceEntries.id, { onDelete: "set null" }),
+  planNameSnapshot: text("plan_name_snapshot").notNull(),
+  basePriceCents: integer("base_price_cents").notNull().default(0),
+  finalTotalCents: integer("final_total_cents").notNull().default(0),
+  currencyCode: varchar("currency_code", { length: 3 }).notNull().default("MXN"),
+  chargedAt: timestamp("charged_at", { withTimezone: true }).defaultNow().notNull(),
+  snapshotVersion: integer("snapshot_version").notNull().default(1),
+  contextJson: jsonb("context_json"),
+  createdBy: varchar("created_by", { length: 36 }).references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("branch_charge_events_branch_operation_key_unique").on(table.branchId, table.operationKey),
+  index("branch_charge_events_branch_membership_created_idx").on(table.branchId, table.membershipId, table.createdAt),
+  index("branch_charge_events_branch_client_charged_idx").on(table.branchId, table.clientUserId, table.chargedAt),
+  index("branch_charge_events_branch_domain_event_charged_idx").on(table.branchId, table.chargeDomain, table.eventType, table.chargedAt),
+]);
+
 export const branchRecurringExpenses = pgTable("branch_recurring_expenses", {
   id: varchar("id", { length: 36 })
     .primaryKey()
@@ -1834,6 +1867,11 @@ export const insertBranchFinanceEntrySchema = createInsertSchema(branchFinanceEn
   deletedAt: true,
 });
 
+export const insertBranchChargeEventSchema = createInsertSchema(branchChargeEvents).omit({
+  id: true,
+  createdAt: true,
+});
+
 export const insertBranchRecurringExpenseSchema = createInsertSchema(branchRecurringExpenses).omit({
   id: true,
   createdAt: true,
@@ -1871,6 +1909,8 @@ export type NotificationJob = typeof notificationJobs.$inferSelect;
 export type InsertNotificationJob = z.infer<typeof insertNotificationJobSchema>;
 export type BranchFinanceEntry = typeof branchFinanceEntries.$inferSelect;
 export type InsertBranchFinanceEntry = z.infer<typeof insertBranchFinanceEntrySchema>;
+export type BranchChargeEvent = typeof branchChargeEvents.$inferSelect;
+export type InsertBranchChargeEvent = z.infer<typeof insertBranchChargeEventSchema>;
 export type BranchRecurringExpense = typeof branchRecurringExpenses.$inferSelect;
 export type InsertBranchRecurringExpense = z.infer<typeof insertBranchRecurringExpenseSchema>;
 export type BranchStaffMember = typeof branchStaffMembers.$inferSelect;

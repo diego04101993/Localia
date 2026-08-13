@@ -73,6 +73,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { invalidateBranchClientQueries, invalidateBranchMembershipQueries } from "@/lib/branch-dashboard-cache";
+import { useStableOperationKey } from "@/lib/stable-operation-key";
 import { useToast } from "@/hooks/use-toast";
 
 type ClientIdentityControl = {
@@ -2212,11 +2213,12 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
   });
 
   const assignPlanMutation = useMutation({
-    mutationFn: async ({ planId, paymentMethod, startDate }: { planId: string; paymentMethod: string; startDate: string }) => {
+    mutationFn: async ({ planId, paymentMethod, startDate, idempotencyKey }: { planId: string; paymentMethod: string; startDate: string; idempotencyKey: string }) => {
       const resp = await apiRequest("POST", `/api/branch/memberships/${profile!.membership.id}/assign-plan`, {
         planId,
         paymentMethod,
         startDate,
+        idempotencyKey,
       });
       return resp.json();
     },
@@ -2247,9 +2249,10 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
   });
 
   const renewMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async ({ idempotencyKey }: { idempotencyKey: string }) => {
       const resp = await apiRequest("POST", `/api/branch/memberships/${profile!.membership.id}/renew`, {
         paymentMethod: membershipPaymentMethod,
+        idempotencyKey,
       });
       return resp.json();
     },
@@ -2312,6 +2315,9 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
       return (await resp.json()) as ClientAccessCredentialResult;
     },
   });
+
+  const assignPlanOperation = useStableOperationKey();
+  const renewPlanOperation = useStableOperationKey();
 
   const resetClientAccessMutation = useMutation({
     mutationFn: async () => {
@@ -2408,6 +2414,72 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
     createClientAccessMutation.isPending
     || verifyLegacyClientAccessMutation.isPending
     || resetClientAccessMutation.isPending;
+
+  useEffect(() => {
+    assignPlanOperation.reset();
+    renewPlanOperation.reset();
+  }, [open, clientId, assignPlanOperation, renewPlanOperation]);
+
+  useEffect(() => {
+    if (!showPlanSelect) {
+      assignPlanOperation.reset();
+    }
+  }, [showPlanSelect, assignPlanOperation]);
+
+  async function handleAssignPlanSubmit() {
+    if (!selectedAssignPlan || !profile?.membership.id || !assignmentStartDate) {
+      return;
+    }
+
+    const fingerprint = JSON.stringify({
+      membershipId: profile.membership.id,
+      planId: selectedAssignPlan.id,
+      paymentMethod: membershipPaymentMethod,
+      startDate: assignmentStartDate,
+    });
+
+    const attempt = assignPlanOperation.begin(fingerprint);
+    if (!attempt.allowed) {
+      return;
+    }
+
+    try {
+      await assignPlanMutation.mutateAsync({
+        planId: selectedAssignPlan.id,
+        paymentMethod: membershipPaymentMethod,
+        startDate: assignmentStartDate,
+        idempotencyKey: attempt.key,
+      });
+      assignPlanOperation.markSuccess(fingerprint);
+    } catch {
+      assignPlanOperation.markError(fingerprint);
+    }
+  }
+
+  async function handleRenewPlanSubmit() {
+    if (!profile?.membership.id) {
+      return;
+    }
+
+    const fingerprint = JSON.stringify({
+      membershipId: profile.membership.id,
+      paymentMethod: membershipPaymentMethod,
+    });
+
+    const attempt = renewPlanOperation.begin(fingerprint);
+    if (!attempt.allowed) {
+      return;
+    }
+
+    try {
+      await renewMutation.mutateAsync({
+        idempotencyKey: attempt.key,
+      });
+      renewPlanOperation.markSuccess(fingerprint);
+    } catch {
+      renewPlanOperation.markError(fingerprint);
+    }
+  }
 
   function handleCopyAccessUser() {
     if (!normalizedAccessEmail) return;
@@ -2606,14 +2678,9 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
           size="sm"
           className="h-10 sm:h-9"
           disabled={!selectedAssignPlan || assignPlanMutation.isPending || !assignmentStartDate}
-          onClick={() =>
-            selectedAssignPlan &&
-            assignPlanMutation.mutate({
-              planId: selectedAssignPlan.id,
-              paymentMethod: membershipPaymentMethod,
-              startDate: assignmentStartDate,
-            })
-          }
+          onClick={() => {
+            void handleAssignPlanSubmit();
+          }}
           data-testid="button-confirm-assign-plan"
         >
           {assignPlanMutation.isPending ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : <Package className="mr-1 h-3.5 w-3.5" />}
@@ -3049,7 +3116,9 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                       <Button
                         size="sm"
                         className="h-10 w-full sm:h-9"
-                        onClick={() => renewMutation.mutate()}
+                        onClick={() => {
+                          void handleRenewPlanSubmit();
+                        }}
                         disabled={renewMutation.isPending}
                         data-testid="button-renew-plan"
                       >

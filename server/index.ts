@@ -1,6 +1,12 @@
 import dotenv from "dotenv";
 import express, { type Request, Response, NextFunction } from "express";
 import { createServer } from "http";
+import {
+  assertDevelopmentDatabaseSafety,
+  getRuntimeDatabaseTarget,
+  isRemoteDatabaseAllowedInDevelopment,
+  shouldRunStartupMaintenance,
+} from "./runtime-safety";
 
 dotenv.config();
 
@@ -81,17 +87,35 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  assertDevelopmentDatabaseSafety();
+
+  const databaseTarget = getRuntimeDatabaseTarget();
+  if (process.env.NODE_ENV === "production") {
+    log(`database target ${databaseTarget.redactedUrl ?? "(unknown)"}`, "runtime");
+  } else if (databaseTarget.isLocal) {
+    log(`development database target ${databaseTarget.redactedUrl ?? "(unknown)"} [local]`, "runtime");
+  } else {
+    log(
+      `development database target ${databaseTarget.redactedUrl ?? "(unknown)"} [remote allowed=${isRemoteDatabaseAllowedInDevelopment()}]`,
+      "runtime",
+    );
+  }
+
   const { registerRoutes } = await import("./routes");
   const { createNotificationCleanupJob } = await import("./notifications");
   const { storage } = await import("./storage");
   await registerRoutes(httpServer, app);
-  createNotificationCleanupJob();
+  if (shouldRunStartupMaintenance()) {
+    createNotificationCleanupJob();
 
-  try {
-    const deletedFinanceEntries = await storage.cleanupOldBranchFinanceEntries(90);
-    log(`finance cleanup removed ${deletedFinanceEntries} entries older than 90 days`, "finance-cleanup");
-  } catch (err: any) {
-    console.error("[FINANCE_CLEANUP]", err?.stack || err);
+    try {
+      const deletedFinanceEntries = await storage.cleanupOldBranchFinanceEntries(90);
+      log(`finance cleanup removed ${deletedFinanceEntries} entries older than 90 days`, "finance-cleanup");
+    } catch (err: any) {
+      console.error("[FINANCE_CLEANUP]", err?.stack || err);
+    }
+  } else {
+    log("startup maintenance disabled outside production", "runtime");
   }
 
   app.use("/api", (_req, res) => {
