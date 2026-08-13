@@ -19,6 +19,7 @@ import {
   Hash,
   XCircle,
   Download,
+  FileText,
   Pencil,
   Trash2,
   ChevronDown,
@@ -73,6 +74,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { invalidateBranchClientQueries, invalidateBranchMembershipQueries } from "@/lib/branch-dashboard-cache";
+import { downloadAuthenticatedFile } from "@/lib/download-file";
 import { useStableOperationKey } from "@/lib/stable-operation-key";
 import { useToast } from "@/hooks/use-toast";
 
@@ -4014,6 +4016,7 @@ export default function ClientesTab({ focusRequest }: { focusRequest?: ClientFoc
   const branchName = ((user?.branch as any)?.name ?? "");
   const [search, setSearch] = useState("");
   const [activeFilter, setActiveFilter] = useState<ClientFilterKey>("with_plan");
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [showInviteDialog, setShowInviteDialog] = useState(false);
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
@@ -4128,6 +4131,21 @@ export default function ClientesTab({ focusRequest }: { focusRequest?: ClientFoc
     setDeleteTarget({ id: userId, name });
   }
 
+  async function handleExportClientsPdf() {
+    try {
+      setIsExportingPdf(true);
+      await downloadAuthenticatedFile("/api/branch/clients/export.pdf", "clientes.pdf");
+    } catch (error) {
+      toast({
+        title: "No se pudo exportar el PDF",
+        description: error instanceof Error ? error.message : "Intenta nuevamente en unos segundos.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsExportingPdf(false);
+    }
+  }
+
   return (
     <div className="space-y-4 overflow-x-hidden">
       <ClientAlertsHub
@@ -4200,6 +4218,16 @@ export default function ClientesTab({ focusRequest }: { focusRequest?: ClientFoc
           >
             <Download className="h-4 w-4 mr-1" />
             Exportar CSV
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-full justify-center md:w-auto"
+            onClick={handleExportClientsPdf}
+            disabled={isExportingPdf}
+          >
+            {isExportingPdf ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <FileText className="h-4 w-4 mr-1" />}
+            Exportar PDF
           </Button>
           <Button variant="outline" size="sm" className="w-full justify-center md:w-auto" onClick={() => setShowInviteDialog(true)} data-testid="button-invite-client">
             <Link2 className="h-4 w-4 mr-1" />

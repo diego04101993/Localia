@@ -67,6 +67,10 @@ import {
   verifyGoogleMobileIdToken,
 } from "./google-auth";
 import {
+  buildBranchClientsPdfReport,
+  buildBranchFinancePdfReport,
+} from "./pdf-reports";
+import {
   FirebaseAdminConfigurationError,
   FirebaseAdminTokenError,
   deleteFirebaseUserByUid,
@@ -1212,6 +1216,190 @@ function escapeCsvValue(value: string | number | null | undefined): string {
     return `"${stringValue.replace(/"/g, '""')}"`;
   }
   return stringValue;
+}
+
+type FinanceExportFilters = {
+  from?: string;
+  to?: string;
+  type?: "income" | "expense";
+};
+
+type BranchReportBranding = {
+  branchName: string;
+  branchSlug: string;
+  logoUrl: string | null;
+};
+
+type FinanceExportRow = {
+  entryDate: string;
+  typeLabel: "Ingreso" | "Gasto";
+  category: string | null;
+  concept: string | null;
+  clientDisplayName: string | null;
+  clientEmail: string | null;
+  paymentMethod: string | null;
+  amount: number;
+  notes: string | null;
+};
+
+type ClientExportRow = {
+  name: string;
+  lastName: string | null;
+  email: string | null;
+  phone: string | null;
+  gender: string | null;
+  birthDate: string | null;
+  membershipStatus: string | null;
+  joinedAt: string | null;
+  lastSeenAt: string | null;
+  planName: string | null;
+  classesRemaining: number | null;
+  fullName: string;
+};
+
+const reportDateFormatter = new Intl.DateTimeFormat("es-MX", {
+  day: "2-digit",
+  month: "short",
+  year: "numeric",
+  timeZone: "America/Mexico_City",
+});
+
+function sanitizeReportFilenameSegment(value: string | null | undefined, fallback: string): string {
+  const normalized = (value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+
+  return normalized || fallback;
+}
+
+function formatReportDate(value: string): string {
+  const parsed = parseMxIsoDateInput(value);
+  if (!parsed) return value;
+  return reportDateFormatter.format(parsed);
+}
+
+function parseFinanceExportFilters(query: Request["query"]): FinanceExportFilters {
+  return {
+    from: parseDateQueryValue(query.from),
+    to: parseDateQueryValue(query.to),
+    type:
+      typeof query.type === "string" && ["income", "expense"].includes(query.type)
+        ? (query.type as "income" | "expense")
+        : undefined,
+  };
+}
+
+function buildFinancePeriodLabel(filters: FinanceExportFilters): string {
+  const today = getMxIsoDate();
+  const resolvedFrom = filters.from ?? `${today.slice(0, 7)}-01`;
+  const resolvedTo = filters.to ?? today;
+  const typeLabel =
+    filters.type === "income" ? " · Solo ingresos" : filters.type === "expense" ? " · Solo egresos" : "";
+
+  if (resolvedFrom === resolvedTo) {
+    return `Periodo: ${formatReportDate(resolvedFrom)}${typeLabel}`;
+  }
+
+  return `Periodo: ${formatReportDate(resolvedFrom)} - ${formatReportDate(resolvedTo)}${typeLabel}`;
+}
+
+function buildFinanceFilenameDateToken(filters: FinanceExportFilters): string {
+  const today = getMxIsoDate();
+  const resolvedFrom = filters.from ?? `${today.slice(0, 7)}-01`;
+  const resolvedTo = filters.to ?? today;
+  if (resolvedFrom.slice(0, 7) === resolvedTo.slice(0, 7)) {
+    return resolvedFrom.slice(0, 7);
+  }
+  return `${resolvedFrom}_a_${resolvedTo}`;
+}
+
+async function getBranchReportBranding(branchId: string): Promise<BranchReportBranding> {
+  const [[branch], photos] = await Promise.all([
+    db
+      .select({
+        name: branches.name,
+        slug: branches.slug,
+      })
+      .from(branches)
+      .where(eq(branches.id, branchId))
+      .limit(1),
+    storage.getBranchPhotos(branchId),
+  ]);
+
+  return {
+    branchName: branch?.name?.trim() || "Sucursal WebCool",
+    branchSlug: sanitizeReportFilenameSegment(branch?.slug || branch?.name || "sucursal", "sucursal"),
+    logoUrl: photos.find((photo) => photo.type === "profile")?.url ?? null,
+  };
+}
+
+function mapFinanceExportRows(entries: Awaited<ReturnType<typeof storage.listBranchFinanceEntriesForExport>>): FinanceExportRow[] {
+  return entries.map((entry) => ({
+    entryDate: entry.entryDate,
+    typeLabel: entry.type === "income" ? "Ingreso" : "Gasto",
+    category: entry.category,
+    concept: entry.concept,
+    clientDisplayName: entry.clientDisplayName,
+    clientEmail: entry.clientEmail,
+    paymentMethod: entry.paymentMethod,
+    amount: entry.amount,
+    notes: entry.notes,
+  }));
+}
+
+async function loadFinanceExportData(branchId: string, query: Request["query"]) {
+  const filters = parseFinanceExportFilters(query);
+  const [branding, entries, summary] = await Promise.all([
+    getBranchReportBranding(branchId),
+    storage.listBranchFinanceEntriesForExport(branchId, filters),
+    storage.getBranchFinanceSummary(branchId, { from: filters.from, to: filters.to }),
+  ]);
+
+  return {
+    branding,
+    filters,
+    summary,
+    rows: mapFinanceExportRows(entries),
+  };
+}
+
+function mapClientExportRows(clients: Awaited<ReturnType<typeof storage.getBranchClients>>): ClientExportRow[] {
+  return clients.map((client) => ({
+    name: client.name,
+    lastName: client.lastName,
+    email: client.email,
+    phone: client.phone,
+    gender: client.gender,
+    birthDate: client.birthDate,
+    membershipStatus: client.membershipStatus,
+    joinedAt: client.joinedAt ? new Date(client.joinedAt).toISOString().split("T")[0] : null,
+    lastSeenAt: client.lastSeenAt ? new Date(client.lastSeenAt).toISOString().split("T")[0] : null,
+    planName: client.planName,
+    classesRemaining: client.classesRemaining ?? null,
+    fullName: [client.name, client.lastName].filter(Boolean).join(" ").trim() || "Cliente",
+  }));
+}
+
+async function loadClientsExportData(branchId: string) {
+  const [branding, clients] = await Promise.all([
+    getBranchReportBranding(branchId),
+    storage.getBranchClients(branchId),
+  ]);
+
+  const rows = mapClientExportRows(clients);
+  return {
+    branding,
+    rows,
+    summary: {
+      totalClients: rows.length,
+      activeClients: rows.filter((row) => row.membershipStatus === "active").length,
+      withPlanCount: rows.filter((row) => typeof row.planName === "string" && row.planName.trim().length > 0).length,
+    },
+  };
 }
 
 function inferSearchSource(req: Request): "web" | "mobile" | "unknown" {
@@ -4347,15 +4535,11 @@ if (!user) {
   app.get("/api/branch/finance/export.csv", requireBranchAdmin, async (req, res) => {
     const user = req.user as any;
     try {
-      const from = parseDateQueryValue(req.query.from);
-      const to = parseDateQueryValue(req.query.to);
-      const type = typeof req.query.type === "string" && ["income", "expense"].includes(req.query.type) ? req.query.type : undefined;
-      const entries = await storage.listBranchFinanceEntriesForExport(user.branchId, { from, to, type });
-
+      const exportData = await loadFinanceExportData(user.branchId, req.query);
       const header = "fecha,tipo,categoria,concepto,cliente,correo_cliente,metodo_pago,monto,notas";
-      const rows = entries.map((entry) => [
+      const rows = exportData.rows.map((entry) => [
         escapeCsvValue(entry.entryDate),
-        escapeCsvValue(entry.type === "income" ? "Ingreso" : "Gasto"),
+        escapeCsvValue(entry.typeLabel),
         escapeCsvValue(entry.category),
         escapeCsvValue(entry.concept),
         escapeCsvValue(entry.clientDisplayName),
@@ -4372,6 +4556,36 @@ if (!user) {
     } catch (err: any) {
       console.error("[BRANCH_FINANCE_EXPORT]", err.stack || err);
       res.status(500).json({ message: "Error al exportar movimientos de caja" });
+    }
+  });
+
+  app.get("/api/branch/finance/export.pdf", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    try {
+      const exportData = await loadFinanceExportData(user.branchId, req.query);
+      const pdfBuffer = await buildBranchFinancePdfReport({
+        branding: {
+          branchName: exportData.branding.branchName,
+          logoUrl: exportData.branding.logoUrl,
+        },
+        generatedAt: new Date(),
+        periodLabel: buildFinancePeriodLabel(exportData.filters),
+        summary: {
+          totalIncome: exportData.summary.totalIncome,
+          totalExpense: exportData.summary.totalExpense,
+          netProfit: exportData.summary.netProfit,
+        },
+        rows: exportData.rows,
+      });
+
+      const filename = `caja-${exportData.branding.branchSlug}-${buildFinanceFilenameDateToken(exportData.filters)}.pdf`;
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename=\"${filename}\"`);
+      res.setHeader("Cache-Control", "no-store");
+      res.send(pdfBuffer);
+    } catch (err: any) {
+      console.error("[BRANCH_FINANCE_EXPORT_PDF]", err.stack || err);
+      res.status(500).json({ message: "Error al exportar PDF de caja" });
     }
   });
 
@@ -4682,28 +4896,20 @@ if (!user) {
   app.get("/api/branch/clients/export", requireBranchAdmin, async (req, res) => {
     const user = req.user as any;
     try {
-      const clients = await storage.getBranchClients(user.branchId);
+      const exportData = await loadClientsExportData(user.branchId);
       const header = "nombre,apellido,email,telefono,genero,fechaNacimiento,status,ingreso,ultimaVisita,plan,clasesRestantes";
-      const escCsv = (val: string | null | undefined) => {
-        if (val === null || val === undefined) return "";
-        const s = String(val);
-        if (s.includes(",") || s.includes('"') || s.includes("\n")) {
-          return `"${s.replace(/"/g, '""')}"`;
-        }
-        return s;
-      };
-      const rows = clients.map((c: any) => [
-        escCsv(c.name),
-        escCsv(c.lastName),
-        escCsv(c.email),
-        escCsv(c.phone),
-        escCsv(c.gender),
-        escCsv(c.birthDate),
-        escCsv(c.membershipStatus),
-        escCsv(c.joinedAt ? new Date(c.joinedAt).toISOString().split("T")[0] : null),
-        escCsv(c.lastSeenAt ? new Date(c.lastSeenAt).toISOString().split("T")[0] : null),
-        escCsv(c.planName),
-        c.classesRemaining !== null && c.classesRemaining !== undefined ? String(c.classesRemaining) : "",
+      const rows = exportData.rows.map((client) => [
+        escapeCsvValue(client.name),
+        escapeCsvValue(client.lastName),
+        escapeCsvValue(client.email),
+        escapeCsvValue(client.phone),
+        escapeCsvValue(client.gender),
+        escapeCsvValue(client.birthDate),
+        escapeCsvValue(client.membershipStatus),
+        escapeCsvValue(client.joinedAt),
+        escapeCsvValue(client.lastSeenAt),
+        escapeCsvValue(client.planName),
+        client.classesRemaining !== null && client.classesRemaining !== undefined ? String(client.classesRemaining) : "",
       ].join(","));
       const csv = [header, ...rows].join("\n");
       res.setHeader("Content-Type", "text/csv; charset=utf-8");
@@ -4712,6 +4918,31 @@ if (!user) {
     } catch (err: any) {
       console.error(`[EXPORT_CSV] Error:`, err.stack || err);
       res.status(500).json({ message: "Error al exportar clientes" });
+    }
+  });
+
+  app.get("/api/branch/clients/export.pdf", requireBranchAdmin, async (req, res) => {
+    const user = req.user as any;
+    try {
+      const exportData = await loadClientsExportData(user.branchId);
+      const pdfBuffer = await buildBranchClientsPdfReport({
+        branding: {
+          branchName: exportData.branding.branchName,
+          logoUrl: exportData.branding.logoUrl,
+        },
+        generatedAt: new Date(),
+        summary: exportData.summary,
+        rows: exportData.rows,
+      });
+
+      const filename = `clientes-${exportData.branding.branchSlug}-${getMxIsoDate()}.pdf`;
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename=\"${filename}\"`);
+      res.setHeader("Cache-Control", "no-store");
+      res.send(pdfBuffer);
+    } catch (err: any) {
+      console.error("[EXPORT_CLIENTS_PDF]", err.stack || err);
+      res.status(500).json({ message: "Error al exportar PDF de clientes" });
     }
   });
 

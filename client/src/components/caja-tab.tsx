@@ -8,6 +8,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Download,
+  FileText,
   Loader2,
   Pencil,
   PiggyBank,
@@ -27,6 +28,7 @@ import {
   branchRecurringExpenseFrequencyValues,
 } from "@shared/schema";
 import { apiRequest } from "@/lib/queryClient";
+import { downloadAuthenticatedFile } from "@/lib/download-file";
 import {
   invalidateBranchCommercialQueries,
   invalidateBranchFinanceQueries,
@@ -482,6 +484,14 @@ function buildExportUrl(from: string, to: string, typeFilter: string) {
   return `/api/branch/finance/export.csv?${params.toString()}`;
 }
 
+function buildExportPdfUrl(from: string, to: string, typeFilter: string) {
+  const params = new URLSearchParams();
+  if (from) params.set("from", from);
+  if (to) params.set("to", to);
+  if (typeFilter && typeFilter !== "all") params.set("type", typeFilter);
+  return `/api/branch/finance/export.pdf?${params.toString()}`;
+}
+
 function scrollSectionIntoView(ref: RefObject<HTMLDivElement | null>) {
   if (typeof window === "undefined") return;
   window.requestAnimationFrame(() => {
@@ -657,6 +667,7 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
   const [commissionPaymentDetailId, setCommissionPaymentDetailId] = useState<string | null>(null);
   const [saleCancellationReason, setSaleCancellationReason] = useState("");
   const [saleCancellationRequestId, setSaleCancellationRequestId] = useState(() => crypto.randomUUID());
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
   const recurringExpenseFormRef = useRef<HTMLDivElement | null>(null);
   const staffFormRef = useRef<HTMLDivElement | null>(null);
   const financeFormRef = useRef<HTMLDivElement | null>(null);
@@ -1186,6 +1197,21 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
     link.href = buildExportUrl(from, to, typeFilter);
     link.download = "caja.csv";
     link.click();
+  }
+
+  async function handleExportPdf() {
+    try {
+      setIsExportingPdf(true);
+      await downloadAuthenticatedFile(buildExportPdfUrl(from, to, typeFilter), "caja.pdf");
+    } catch (error) {
+      toast({
+        title: "No se pudo exportar el PDF",
+        description: error instanceof Error ? error.message : "Intenta nuevamente en unos segundos.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsExportingPdf(false);
+    }
   }
 
   function handleSaveGoal() {
@@ -2317,10 +2343,22 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
                 <CardTitle className="text-base">Movimientos</CardTitle>
                 <CardDescription>{pageLabel}</CardDescription>
               </div>
-              <Button className="w-full justify-center md:w-auto" variant="outline" size="sm" onClick={handleExport}>
-                <Download className="mr-2 h-4 w-4" />
-                Exportar CSV
-              </Button>
+              <div className="flex w-full flex-col gap-2 md:w-auto md:flex-row">
+                <Button className="w-full justify-center md:w-auto" variant="outline" size="sm" onClick={handleExport}>
+                  <Download className="mr-2 h-4 w-4" />
+                  Exportar CSV
+                </Button>
+                <Button
+                  className="w-full justify-center md:w-auto"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleExportPdf}
+                  disabled={isExportingPdf}
+                >
+                  {isExportingPdf ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileText className="mr-2 h-4 w-4" />}
+                  Exportar PDF
+                </Button>
+              </div>
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
