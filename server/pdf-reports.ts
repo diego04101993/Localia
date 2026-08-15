@@ -67,7 +67,9 @@ export interface FinancePdfRow {
   clientDisplayName: string | null;
   clientEmail: string | null;
   paymentMethod: string | null;
-  amount: number;
+  subtotalAmount: number | null;
+  taxAmount: number | null;
+  totalAmount: number;
   notes: string | null;
 }
 
@@ -77,6 +79,8 @@ export interface FinancePdfReportData {
   periodLabel: string;
   summary: {
     totalIncome: number;
+    incomeBaseBeforeTax: number;
+    incomeTransferredTax: number;
     totalExpense: number;
     netProfit: number;
   };
@@ -157,6 +161,10 @@ function truncateText(value: string | null | undefined, maxLength: number): stri
   if (!resolved) return "-";
   if (resolved.length <= maxLength) return resolved;
   return `${resolved.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+}
+
+function wrapTableText(value: string | null | undefined, fallback = "-"): string {
+  return safeText(value, fallback);
 }
 
 function buildStackCell(lines: Array<string | null | undefined>): { stack: Array<{ text: string }> } {
@@ -398,24 +406,53 @@ export async function buildBranchFinancePdfReport(data: FinancePdfReportData): P
       { text: "Cliente", style: "tableHeader", fillColor: TABLE_HEADER_FILL },
       { text: "Correo cliente", style: "tableHeader", fillColor: TABLE_HEADER_FILL },
       { text: "Método de pago", style: "tableHeader", fillColor: TABLE_HEADER_FILL },
-      { text: "Monto", style: "tableHeader", fillColor: TABLE_HEADER_FILL, alignment: "right" },
+      { text: "Subtotal", style: "tableHeader", fillColor: TABLE_HEADER_FILL, alignment: "right" },
+      { text: "IVA", style: "tableHeader", fillColor: TABLE_HEADER_FILL, alignment: "right" },
+      { text: "Total", style: "tableHeader", fillColor: TABLE_HEADER_FILL, alignment: "right" },
       { text: "Notas", style: "tableHeader", fillColor: TABLE_HEADER_FILL },
     ],
     ...data.rows.map((row) => [
       { text: formatDateOnly(row.entryDate), style: "tableCell" },
       { text: safeText(row.typeLabel), style: "tableCell" },
-      { text: truncateText(row.category, 22), style: "tableCell" },
-      { text: truncateText(row.concept, 48), style: "tableCell" },
-      { text: truncateText(row.clientDisplayName, 34), style: "tableCell" },
-      { text: truncateText(row.clientEmail, 42), style: "tableCell" },
-      { text: truncateText(row.paymentMethod, 18), style: "tableCell" },
+      { text: wrapTableText(row.category), style: "tableCell" },
+      { text: wrapTableText(row.concept), style: "tableCell" },
+      { text: wrapTableText(row.clientDisplayName), style: "tableCell" },
+      { text: wrapTableText(row.clientEmail), style: "tableCell" },
+      { text: wrapTableText(row.paymentMethod), style: "tableCell" },
       {
-        text: formatCurrency(row.amount),
+        text: row.subtotalAmount === null ? "-" : formatCurrency(row.subtotalAmount),
+        style: "tableCell",
+        alignment: "right",
+      },
+      {
+        text: row.taxAmount === null ? "-" : formatCurrency(row.taxAmount),
+        style: "tableCell",
+        alignment: "right",
+      },
+      {
+        text: formatCurrency(row.totalAmount),
         style: row.typeLabel === "Ingreso" ? "amountIncome" : "amountExpense",
       },
-      { text: truncateText(row.notes, 110), style: "tableCell" },
+      { text: wrapTableText(row.notes), style: "tableCell" },
     ]),
   ];
+
+  const commonStyles = getCommonStyles() as {
+    styles?: Record<string, Record<string, unknown>>;
+  };
+  if (commonStyles.styles?.tableHeader) {
+    commonStyles.styles.tableHeader.fontSize = 7.6;
+  }
+  if (commonStyles.styles?.tableCell) {
+    commonStyles.styles.tableCell.fontSize = 7.25;
+    commonStyles.styles.tableCell.lineHeight = 1.12;
+  }
+  if (commonStyles.styles?.amountIncome) {
+    commonStyles.styles.amountIncome.fontSize = 7.25;
+  }
+  if (commonStyles.styles?.amountExpense) {
+    commonStyles.styles.amountExpense.fontSize = 7.25;
+  }
 
   const docDefinition: Record<string, unknown> = {
     pageSize: "A4",
@@ -436,9 +473,11 @@ export async function buildBranchFinancePdfReport(data: FinancePdfReportData): P
     },
     content: [
       buildSummaryCards([
-        { label: "Ingresos", value: formatCurrency(data.summary.totalIncome), accent: "#0f766e" },
+        { label: "Ingresos cobrados", value: formatCurrency(data.summary.totalIncome), accent: "#0f766e" },
+        { label: "Base antes de IVA", value: formatCurrency(data.summary.incomeBaseBeforeTax), accent: "#2563eb" },
+        { label: "IVA trasladado", value: formatCurrency(data.summary.incomeTransferredTax), accent: "#ea580c" },
         { label: "Egresos", value: formatCurrency(data.summary.totalExpense), accent: "#b91c1c" },
-        { label: "Resultado neto", value: formatCurrency(data.summary.netProfit), accent: "#1d4ed8" },
+        { label: "Resultado", value: formatCurrency(data.summary.netProfit), accent: "#1d4ed8" },
       ]),
       { text: "Movimientos", style: "sectionTitle" },
       {
@@ -446,21 +485,21 @@ export async function buildBranchFinancePdfReport(data: FinancePdfReportData): P
           fillColor: (rowIndex: number) => (rowIndex === 0 ? TABLE_HEADER_FILL : rowIndex % 2 === 0 ? "#f8fafc" : null),
           hLineColor: () => BORDER_COLOR,
           vLineColor: () => BORDER_COLOR,
-          paddingLeft: () => 6,
-          paddingRight: () => 6,
-          paddingTop: () => 5,
-          paddingBottom: () => 5,
+          paddingLeft: () => 4,
+          paddingRight: () => 4,
+          paddingTop: () => 4,
+          paddingBottom: () => 4,
         },
         table: {
           headerRows: 1,
-          widths: [52, 48, 58, "*", 74, 112, 60, 62, 132],
+          widths: [42, 36, 42, 160, 68, 96, 42, 50, 40, 54, "*"],
           body,
           dontBreakRows: true,
           keepWithHeaderRows: 1,
         },
       },
     ],
-    ...getCommonStyles(),
+    ...commonStyles,
   };
 
   return renderPdfBuffer(docDefinition);

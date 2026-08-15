@@ -71,6 +71,10 @@ import {
   buildBranchFinancePdfReport,
 } from "./pdf-reports";
 import {
+  computeMembershipPlanChargeSnapshot,
+  resolveMembershipPlanTaxConfig,
+} from "@shared/membership-plan-tax";
+import {
   FirebaseAdminConfigurationError,
   FirebaseAdminTokenError,
   deleteFirebaseUserByUid,
@@ -1050,6 +1054,18 @@ function handleMembershipBillingRouteError(
     return res.status(409).json({ message: "Esta operación ya fue usada para otra acción de membresía" });
   }
 
+  if (
+    code === "INVALID_TAX_MODE"
+    || code === "INVALID_TAX_RATE"
+    || code === "INVALID_TAX_RATE_RANGE"
+    || code === "TAX_MODE_REQUIRED"
+    || code === "TAX_RATE_REQUIRED"
+    || code === "TAX_RATE_MUST_BE_POSITIVE"
+    || code === "TAX_RATE_NOT_ALLOWED_FOR_TAX_EXEMPT"
+  ) {
+    return res.status(400).json({ message: "La configuracion fiscal del plan no es valida" });
+  }
+
   console.error(logMessage, err?.stack || err);
   return res.status(500).json({ message: userMessage });
 }
@@ -1239,6 +1255,9 @@ type FinanceExportRow = {
   clientEmail: string | null;
   paymentMethod: string | null;
   amount: number;
+  subtotalAmount: number | null;
+  taxAmount: number | null;
+  totalAmount: number;
   notes: string | null;
 };
 
@@ -1338,17 +1357,27 @@ async function getBranchReportBranding(branchId: string): Promise<BranchReportBr
 }
 
 function mapFinanceExportRows(entries: Awaited<ReturnType<typeof storage.listBranchFinanceEntriesForExport>>): FinanceExportRow[] {
-  return entries.map((entry) => ({
-    entryDate: entry.entryDate,
-    typeLabel: entry.type === "income" ? "Ingreso" : "Gasto",
-    category: entry.category,
-    concept: entry.concept,
-    clientDisplayName: entry.clientDisplayName,
-    clientEmail: entry.clientEmail,
-    paymentMethod: entry.paymentMethod,
-    amount: entry.amount,
-    notes: entry.notes,
-  }));
+  return entries.map((entry) => {
+    const fiscalSnapshot =
+      entry.fiscalSnapshot && entry.fiscalSnapshot.taxTransferred > 0
+        ? entry.fiscalSnapshot
+        : null;
+
+    return {
+      entryDate: entry.entryDate,
+      typeLabel: entry.type === "income" ? "Ingreso" : "Gasto",
+      category: entry.category,
+      concept: entry.concept,
+      clientDisplayName: entry.clientDisplayName,
+      clientEmail: entry.clientEmail,
+      paymentMethod: entry.paymentMethod,
+      amount: entry.amount,
+      subtotalAmount: fiscalSnapshot?.baseBeforeTax ?? null,
+      taxAmount: fiscalSnapshot?.taxTransferred ?? null,
+      totalAmount: fiscalSnapshot?.totalCharged ?? entry.amount,
+      notes: entry.notes,
+    };
+  });
 }
 
 async function loadFinanceExportData(branchId: string, query: Request["query"]) {
@@ -1356,7 +1385,7 @@ async function loadFinanceExportData(branchId: string, query: Request["query"]) 
   const [branding, entries, summary] = await Promise.all([
     getBranchReportBranding(branchId),
     storage.listBranchFinanceEntriesForExport(branchId, filters),
-    storage.getBranchFinanceSummary(branchId, { from: filters.from, to: filters.to }),
+    storage.getBranchFinanceSummary(branchId, { from: filters.from, to: filters.to, type: filters.type }),
   ]);
 
   return {
@@ -4349,7 +4378,8 @@ if (!user) {
     try {
       const from = parseDateQueryValue(req.query.from);
       const to = parseDateQueryValue(req.query.to);
-      const summary = await storage.getBranchFinanceSummary(user.branchId, { from, to });
+      const type = typeof req.query.type === "string" && ["income", "expense"].includes(req.query.type) ? (req.query.type as "income" | "expense") : undefined;
+      const summary = await storage.getBranchFinanceSummary(user.branchId, { from, to, type });
       res.json(summary);
     } catch (err: any) {
       console.error("[BRANCH_FINANCE_SUMMARY]", err.stack || err);
@@ -4572,6 +4602,8 @@ if (!user) {
         periodLabel: buildFinancePeriodLabel(exportData.filters),
         summary: {
           totalIncome: exportData.summary.totalIncome,
+          incomeBaseBeforeTax: exportData.summary.incomeBaseBeforeTax,
+          incomeTransferredTax: exportData.summary.incomeTransferredTax,
           totalExpense: exportData.summary.totalExpense,
           netProfit: exportData.summary.netProfit,
         },
@@ -6207,12 +6239,18 @@ if (!user) {
     const actor = req.user as any;
     try {
       const data = createPlanSchema.parse(req.body);
+      const resolvedTaxConfig = resolveMembershipPlanTaxConfig({
+        taxMode: data.taxMode,
+        taxRate: data.taxRate,
+      });
       const cm = data.cycleMonths ?? 1;
       const plan = await storage.createPlan({
         branchId: actor.branchId,
         name: data.name,
         description: data.description || null,
         price: data.price,
+        taxMode: resolvedTaxConfig.taxMode,
+        taxRate: resolvedTaxConfig.taxRate == null ? null : resolvedTaxConfig.taxRate.toFixed(4),
         durationDays: cm === 0 ? 1 : cm * 30,
         classLimit: data.classLimit ?? null,
         cycleMonths: cm,
@@ -6222,7 +6260,12 @@ if (!user) {
         actorUserId: actor.id,
         action: "CREATE_PLAN",
         branchId: actor.branchId,
-        metadata: { planId: plan.id, name: plan.name },
+        metadata: {
+          planId: plan.id,
+          name: plan.name,
+          taxMode: resolvedTaxConfig.taxMode,
+          taxRate: resolvedTaxConfig.taxRate,
+        },
       });
 
       console.log(`[PLAN] Created "${plan.name}" by ${actor.email}`);
@@ -6230,6 +6273,20 @@ if (!user) {
     } catch (err: any) {
       if (err.name === "ZodError") {
         return res.status(400).json({ message: err.errors[0]?.message || "Datos inválidos" });
+      }
+      if (
+        err instanceof Error
+        && [
+          "INVALID_TAX_MODE",
+          "INVALID_TAX_RATE",
+          "INVALID_TAX_RATE_RANGE",
+          "TAX_MODE_REQUIRED",
+          "TAX_RATE_REQUIRED",
+          "TAX_RATE_MUST_BE_POSITIVE",
+          "TAX_RATE_NOT_ALLOWED_FOR_TAX_EXEMPT",
+        ].includes(err.message)
+      ) {
+        return res.status(400).json({ message: "La configuracion fiscal del plan no es valida" });
       }
       console.error(`[PLAN] Error creating:`, err.stack || err);
       res.status(500).json({ message: "Error al crear plan" });
@@ -6247,10 +6304,16 @@ if (!user) {
 
       const updatePlanSchema = createPlanSchema.partial().extend({ isActive: z.boolean().optional() });
       const data = updatePlanSchema.parse(req.body);
+      const resolvedTaxConfig = resolveMembershipPlanTaxConfig({
+        taxMode: data.taxMode !== undefined ? data.taxMode : existing.taxMode,
+        taxRate: data.taxRate !== undefined ? data.taxRate : existing.taxRate,
+      });
       const updated = await storage.updatePlan(planId, {
         ...(data.name !== undefined && { name: data.name }),
         ...(data.description !== undefined && { description: data.description || null }),
         ...(data.price !== undefined && { price: data.price }),
+        taxMode: resolvedTaxConfig.taxMode,
+        taxRate: resolvedTaxConfig.taxRate == null ? null : resolvedTaxConfig.taxRate.toFixed(4),
         ...(data.cycleMonths !== undefined && { cycleMonths: data.cycleMonths, durationDays: data.cycleMonths === 0 ? 1 : (data.cycleMonths ?? 1) * 30 }),
         ...(data.classLimit !== undefined && { classLimit: data.classLimit ?? null }),
         ...(data.isActive !== undefined && { isActive: data.isActive }),
@@ -6260,7 +6323,12 @@ if (!user) {
         actorUserId: actor.id,
         action: "UPDATE_PLAN",
         branchId: actor.branchId,
-        metadata: { planId, changes: data },
+        metadata: {
+          planId,
+          changes: data,
+          taxMode: resolvedTaxConfig.taxMode,
+          taxRate: resolvedTaxConfig.taxRate,
+        },
       });
 
       console.log(`[PLAN] Updated "${planId}" by ${actor.email}`);
@@ -6268,6 +6336,20 @@ if (!user) {
     } catch (err: any) {
       if (err.name === "ZodError") {
         return res.status(400).json({ message: err.errors[0]?.message || "Datos inválidos" });
+      }
+      if (
+        err instanceof Error
+        && [
+          "INVALID_TAX_MODE",
+          "INVALID_TAX_RATE",
+          "INVALID_TAX_RATE_RANGE",
+          "TAX_MODE_REQUIRED",
+          "TAX_RATE_REQUIRED",
+          "TAX_RATE_MUST_BE_POSITIVE",
+          "TAX_RATE_NOT_ALLOWED_FOR_TAX_EXEMPT",
+        ].includes(err.message)
+      ) {
+        return res.status(400).json({ message: "La configuracion fiscal del plan no es valida" });
       }
       console.error(`[PLAN] Error updating:`, err.stack || err);
       res.status(500).json({ message: "Error al actualizar plan" });
@@ -6341,6 +6423,12 @@ if (!user) {
           return res.status(200).json({ success: true, duplicate: true, financeEntry: existingEntry });
         }
       }
+
+      const taxSnapshot = computeMembershipPlanChargeSnapshot({
+        priceCents: plan.price,
+        taxMode: plan.taxMode,
+        taxRate: plan.taxRate,
+      });
 
       const existingClients = await storage.getBranchClients(actor.branchId, true);
       const phoneMatches = normalizedPhone
@@ -6420,7 +6508,7 @@ if (!user) {
         type: "income",
         category: "servicio",
         concept: plan.name,
-        amount: plan.price / 100,
+        amount: (taxSnapshot.finalTotalCents / 100).toFixed(2),
         paymentMethod: result.data.paymentMethod,
         clientUserId,
         clientName: clientDisplayName,
@@ -6439,6 +6527,14 @@ if (!user) {
           matchedByPhone: !!matchedClient,
           clientAction,
           normalizedPhone,
+          taxMode: taxSnapshot.taxMode,
+          taxRate: taxSnapshot.taxRate,
+          taxConfigured: !taxSnapshot.isLegacy,
+          basePriceCents: taxSnapshot.basePriceCents,
+          subtotalBeforeTaxCents: taxSnapshot.subtotalBeforeTaxCents,
+          taxableSubtotalCents: taxSnapshot.taxableSubtotalCents,
+          taxTotalCents: taxSnapshot.taxTotalCents,
+          finalTotalCents: taxSnapshot.finalTotalCents,
         },
         createdBy: actor.id,
       } as any);
@@ -6451,7 +6547,11 @@ if (!user) {
           planId: plan.id,
           membershipId,
           userId: clientUserId,
-          amount: plan.price,
+          basePriceCents: taxSnapshot.basePriceCents,
+          taxMode: taxSnapshot.taxMode,
+          taxRate: taxSnapshot.taxRate,
+          taxTotalCents: taxSnapshot.taxTotalCents,
+          finalTotalCents: taxSnapshot.finalTotalCents,
           financeEntryId: financeEntry.id,
           clientAction,
         },
@@ -6468,6 +6568,20 @@ if (!user) {
         financeEntry,
       });
     } catch (err: any) {
+      if (
+        err instanceof Error
+        && [
+          "INVALID_TAX_MODE",
+          "INVALID_TAX_RATE",
+          "INVALID_TAX_RATE_RANGE",
+          "TAX_MODE_REQUIRED",
+          "TAX_RATE_REQUIRED",
+          "TAX_RATE_MUST_BE_POSITIVE",
+          "TAX_RATE_NOT_ALLOWED_FOR_TAX_EXEMPT",
+        ].includes(err.message)
+      ) {
+        return res.status(400).json({ message: "La configuracion fiscal del plan no es valida" });
+      }
       console.error("[PLAN_QUICK_CHARGE]", err.stack || err);
       res.status(500).json({ message: "Error al registrar el cobro rápido" });
     }

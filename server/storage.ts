@@ -176,6 +176,7 @@ import {
   parseMxIsoDateInput,
 } from "./membership-plan-dates";
 import { normalizeSearchText } from "./search-utils";
+import { computeMembershipPlanChargeSnapshot } from "@shared/membership-plan-tax";
 
 const BRANCH_CLIENT_PASSWORD_RESET_COOLDOWN_MS = 60_000;
 
@@ -367,6 +368,207 @@ function toFinanceAmount(value: unknown): number {
 
 function roundMoney(value: number): number {
   return Number(value.toFixed(2));
+}
+
+function toNullableFinanceAmount(value: unknown): number | null {
+  if (value == null || value === "") return null;
+  const amount = Number(value);
+  return Number.isFinite(amount) ? Number(amount.toFixed(2)) : null;
+}
+
+function toNullableInteger(value: unknown): number | null {
+  if (value == null || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.round(parsed) : null;
+}
+
+type BranchFinanceFiscalRowLike = {
+  source: string | null;
+  amount: number;
+  metadata: any;
+  chargeEventTaxMode?: string | null;
+  chargeEventTaxRate?: unknown;
+  chargeEventSubtotalBeforeTaxCents?: unknown;
+  chargeEventTaxableSubtotalCents?: unknown;
+  chargeEventTaxTotalCents?: unknown;
+  chargeEventFinalTotalCents?: unknown;
+};
+
+type BranchFinanceFiscalContribution = {
+  groupKey: string | null;
+  baseBeforeTax: number;
+  taxTransferred: number;
+};
+
+function buildBranchFinanceFiscalSnapshot(params: {
+  taxMode: CommercialTaxMode;
+  taxRate: number;
+  baseBeforeTax: number;
+  taxTransferred: number;
+  totalCharged: number;
+}): BranchFinanceFiscalSnapshotRow {
+  return {
+    taxMode: params.taxMode,
+    taxRate: roundMoney(Math.max(0, params.taxRate || 0)),
+    baseBeforeTax: roundMoney(Math.max(0, params.baseBeforeTax || 0)),
+    taxTransferred: roundMoney(Math.max(0, params.taxTransferred || 0)),
+    totalCharged: roundMoney(Math.max(0, params.totalCharged || 0)),
+  };
+}
+
+function buildBranchFinanceFiscalSnapshotFromChargeEvent(entry: BranchFinanceFiscalRowLike): BranchFinanceFiscalSnapshotRow | null {
+  const taxMode = entry.chargeEventTaxMode;
+  const subtotalBeforeTaxCents = toNullableInteger(entry.chargeEventSubtotalBeforeTaxCents);
+  const taxableSubtotalCents = toNullableInteger(entry.chargeEventTaxableSubtotalCents);
+  const taxTotalCents = toNullableInteger(entry.chargeEventTaxTotalCents);
+  const finalTotalCents = toNullableInteger(entry.chargeEventFinalTotalCents);
+
+  if (
+    taxMode == null
+    && subtotalBeforeTaxCents == null
+    && taxableSubtotalCents == null
+    && taxTotalCents == null
+  ) {
+    return null;
+  }
+
+  const normalizedTaxMode = (taxMode ?? "tax_exempt") as CommercialTaxMode;
+  const baseBeforeTax = roundMoney(((taxableSubtotalCents ?? subtotalBeforeTaxCents ?? finalTotalCents ?? 0) || 0) / 100);
+  const totalCharged = roundMoney(((finalTotalCents ?? Math.round(entry.amount * 100)) || 0) / 100);
+  const taxTransferred = roundMoney(((taxTotalCents ?? Math.round((totalCharged - baseBeforeTax) * 100)) || 0) / 100);
+
+  return buildBranchFinanceFiscalSnapshot({
+    taxMode: normalizedTaxMode,
+    taxRate: toNullableFinanceAmount(entry.chargeEventTaxRate) ?? 0,
+    baseBeforeTax,
+    taxTransferred,
+    totalCharged,
+  });
+}
+
+function buildBranchFinanceFiscalSnapshotFromServiceSale(entry: BranchFinanceFiscalRowLike): BranchFinanceFiscalSnapshotRow | null {
+  const metadata = entry.metadata && typeof entry.metadata === "object" ? entry.metadata : null;
+  if (!metadata) return null;
+
+  const taxMode = typeof metadata.taxMode === "string" ? metadata.taxMode : null;
+  const subtotalBeforeTaxCents = toNullableInteger(metadata.subtotalBeforeTaxCents);
+  const taxableSubtotalCents = toNullableInteger(metadata.taxableSubtotalCents);
+  const taxTotalCents = toNullableInteger(metadata.taxTotalCents);
+  const finalTotalCents = toNullableInteger(metadata.finalTotalCents);
+
+  if (
+    taxMode == null
+    && subtotalBeforeTaxCents == null
+    && taxableSubtotalCents == null
+    && taxTotalCents == null
+  ) {
+    return null;
+  }
+
+  const normalizedTaxMode = (taxMode ?? "tax_exempt") as CommercialTaxMode;
+  const baseBeforeTax = roundMoney(((taxableSubtotalCents ?? subtotalBeforeTaxCents ?? finalTotalCents ?? 0) || 0) / 100);
+  const totalCharged = roundMoney(((finalTotalCents ?? Math.round(entry.amount * 100)) || 0) / 100);
+  const taxTransferred = roundMoney(((taxTotalCents ?? Math.round((totalCharged - baseBeforeTax) * 100)) || 0) / 100);
+
+  return buildBranchFinanceFiscalSnapshot({
+    taxMode: normalizedTaxMode,
+    taxRate: toNullableFinanceAmount(metadata.taxRate) ?? 0,
+    baseBeforeTax,
+    taxTransferred,
+    totalCharged,
+  });
+}
+
+function buildBranchFinanceFiscalSnapshotFromCommercialSale(
+  entry: BranchFinanceFiscalRowLike,
+  mode: "row" | "summary",
+): BranchFinanceFiscalSnapshotRow | null {
+  const metadata = entry.metadata && typeof entry.metadata === "object" ? entry.metadata : null;
+  if (!metadata) return null;
+
+  const taxMode = typeof metadata.taxMode === "string" ? metadata.taxMode : null;
+  const taxableSubtotal = toNullableFinanceAmount(metadata.taxableSubtotal);
+  const taxTotal = toNullableFinanceAmount(metadata.taxTotal);
+  const grandTotal = toNullableFinanceAmount(metadata.grandTotal);
+
+  if (taxMode == null || taxableSubtotal == null || taxTotal == null || grandTotal == null || grandTotal <= 0) {
+    return null;
+  }
+
+  if (mode === "summary") {
+    return buildBranchFinanceFiscalSnapshot({
+      taxMode: taxMode as CommercialTaxMode,
+      taxRate: toNullableFinanceAmount(metadata.taxRate) ?? 0,
+      baseBeforeTax: taxableSubtotal,
+      taxTransferred: taxTotal,
+      totalCharged: grandTotal,
+    });
+  }
+
+  const paymentCount = Math.max(1, Number(metadata.paymentCount || 1));
+  const isSinglePayment = paymentCount <= 1 || Math.abs(entry.amount - grandTotal) <= 0.01;
+  if (isSinglePayment) {
+    return buildBranchFinanceFiscalSnapshot({
+      taxMode: taxMode as CommercialTaxMode,
+      taxRate: toNullableFinanceAmount(metadata.taxRate) ?? 0,
+      baseBeforeTax: taxableSubtotal,
+      taxTransferred: taxTotal,
+      totalCharged: grandTotal,
+    });
+  }
+
+  const ratio = grandTotal > 0 ? entry.amount / grandTotal : 0;
+  const baseBeforeTax = roundMoney(taxableSubtotal * ratio);
+  const totalCharged = roundMoney(entry.amount);
+  const taxTransferred = roundMoney(Math.max(0, totalCharged - baseBeforeTax));
+
+  return buildBranchFinanceFiscalSnapshot({
+    taxMode: taxMode as CommercialTaxMode,
+    taxRate: toNullableFinanceAmount(metadata.taxRate) ?? 0,
+    baseBeforeTax,
+    taxTransferred,
+    totalCharged,
+  });
+}
+
+function getBranchFinanceEntryFiscalSnapshot(entry: BranchFinanceFiscalRowLike): BranchFinanceFiscalSnapshotRow | null {
+  if (entry.source === "membership_assign" || entry.source === "membership_renew") {
+    return buildBranchFinanceFiscalSnapshotFromChargeEvent(entry);
+  }
+
+  if (entry.source === "service_sale") {
+    return buildBranchFinanceFiscalSnapshotFromServiceSale(entry);
+  }
+
+  if (entry.source === "commercial_sale") {
+    return buildBranchFinanceFiscalSnapshotFromCommercialSale(entry, "row");
+  }
+
+  return null;
+}
+
+function getBranchFinanceSummaryFiscalContribution(entry: BranchFinanceFiscalRowLike): BranchFinanceFiscalContribution | null {
+  if (entry.source === "commercial_sale") {
+    const snapshot = buildBranchFinanceFiscalSnapshotFromCommercialSale(entry, "summary");
+    if (!snapshot) return null;
+    const saleId =
+      entry.metadata && typeof entry.metadata === "object" && typeof entry.metadata.saleId === "string"
+        ? entry.metadata.saleId.trim()
+        : "";
+    return {
+      groupKey: saleId ? `commercial_sale:${saleId}` : null,
+      baseBeforeTax: snapshot.baseBeforeTax,
+      taxTransferred: snapshot.taxTransferred,
+    };
+  }
+
+  const snapshot = getBranchFinanceEntryFiscalSnapshot(entry);
+  if (!snapshot) return null;
+  return {
+    groupKey: null,
+    baseBeforeTax: snapshot.baseBeforeTax,
+    taxTransferred: snapshot.taxTransferred,
+  };
 }
 
 type CommercialTaxSnapshotLike = {
@@ -851,9 +1053,18 @@ export interface BranchFinanceEntryRow {
   source: string | null;
   sourceId: string | null;
   metadata: any;
+  fiscalSnapshot: BranchFinanceFiscalSnapshotRow | null;
   createdBy: string | null;
   createdAt: Date | string;
   updatedAt: Date | string;
+}
+
+export interface BranchFinanceFiscalSnapshotRow {
+  taxMode: CommercialTaxMode;
+  taxRate: number;
+  baseBeforeTax: number;
+  taxTransferred: number;
+  totalCharged: number;
 }
 
 export interface BranchFinanceSummary {
@@ -864,6 +1075,8 @@ export interface BranchFinanceSummary {
   todayExpense: number;
   monthIncome: number;
   monthExpense: number;
+  incomeBaseBeforeTax: number;
+  incomeTransferredTax: number;
   dailyBreakdown: Array<{ date: string; income: number; expense: number; net: number }>;
   topIncomeCategories: Array<{ category: string; total: number }>;
   topExpenseCategories: Array<{ category: string; total: number }>;
@@ -1776,7 +1989,7 @@ export interface IStorage {
   getSearchMetrics(limit?: number): Promise<SearchMetrics>;
   getSearchSuggestions(q: string, limit?: number): Promise<SearchSuggestion[]>;
   updateSearchLogSelection(logId: string, selectedBranchId: string): Promise<SearchLog | undefined>;
-  getBranchFinanceSummary(branchId: string, filters?: { from?: string; to?: string }): Promise<BranchFinanceSummary>;
+  getBranchFinanceSummary(branchId: string, filters?: { from?: string; to?: string; type?: "income" | "expense" }): Promise<BranchFinanceSummary>;
   getBranchFinanceEntries(branchId: string, filters?: {
     from?: string;
     to?: string;
@@ -5667,6 +5880,97 @@ export class DatabaseStorage implements IStorage {
       plan = p || null;
     }
 
+    let currentChargeSnapshot:
+      | {
+          chargeEventId: string;
+          eventType: string;
+          chargedAt: Date;
+          planNameSnapshot: string;
+          basePriceCents: number;
+          taxMode: string | null;
+          taxRate: number | null;
+          subtotalBeforeTaxCents: number | null;
+          taxableSubtotalCents: number | null;
+          taxTotalCents: number | null;
+          finalTotalCents: number;
+        }
+      | null = null;
+
+    if (membership.planId) {
+      const chargeEventSelection = {
+        chargeEventId: branchChargeEvents.id,
+        eventType: branchChargeEvents.eventType,
+        chargedAt: branchChargeEvents.chargedAt,
+        planNameSnapshot: branchChargeEvents.planNameSnapshot,
+        basePriceCents: branchChargeEvents.basePriceCents,
+        taxMode: branchChargeEvents.taxMode,
+        taxRate: branchChargeEvents.taxRate,
+        subtotalBeforeTaxCents: branchChargeEvents.subtotalBeforeTaxCents,
+        taxableSubtotalCents: branchChargeEvents.taxableSubtotalCents,
+        taxTotalCents: branchChargeEvents.taxTotalCents,
+        finalTotalCents: branchChargeEvents.finalTotalCents,
+      };
+
+      let matchedChargeEvent:
+        | {
+            chargeEventId: string;
+            eventType: string;
+            chargedAt: Date;
+            planNameSnapshot: string;
+            basePriceCents: number;
+            taxMode: string | null;
+            taxRate: string | null;
+            subtotalBeforeTaxCents: number | null;
+            taxableSubtotalCents: number | null;
+            taxTotalCents: number | null;
+            finalTotalCents: number;
+          }
+        | undefined;
+
+      if (membership.paidAt) {
+        [matchedChargeEvent] = await db
+          .select(chargeEventSelection)
+          .from(branchChargeEvents)
+          .where(and(
+            eq(branchChargeEvents.branchId, branchId),
+            eq(branchChargeEvents.membershipId, membership.id),
+            eq(branchChargeEvents.planId, membership.planId),
+            eq(branchChargeEvents.chargedAt, membership.paidAt),
+          ))
+          .orderBy(desc(branchChargeEvents.createdAt))
+          .limit(1);
+      }
+
+      if (!matchedChargeEvent) {
+        [matchedChargeEvent] = await db
+          .select(chargeEventSelection)
+          .from(branchChargeEvents)
+          .where(and(
+            eq(branchChargeEvents.branchId, branchId),
+            eq(branchChargeEvents.membershipId, membership.id),
+            eq(branchChargeEvents.planId, membership.planId),
+          ))
+          .orderBy(desc(branchChargeEvents.chargedAt), desc(branchChargeEvents.createdAt))
+          .limit(1);
+      }
+
+      if (matchedChargeEvent) {
+        currentChargeSnapshot = {
+          chargeEventId: matchedChargeEvent.chargeEventId,
+          eventType: matchedChargeEvent.eventType,
+          chargedAt: matchedChargeEvent.chargedAt,
+          planNameSnapshot: matchedChargeEvent.planNameSnapshot,
+          basePriceCents: matchedChargeEvent.basePriceCents,
+          taxMode: matchedChargeEvent.taxMode,
+          taxRate: matchedChargeEvent.taxRate == null ? null : Number(matchedChargeEvent.taxRate),
+          subtotalBeforeTaxCents: matchedChargeEvent.subtotalBeforeTaxCents,
+          taxableSubtotalCents: matchedChargeEvent.taxableSubtotalCents,
+          taxTotalCents: matchedChargeEvent.taxTotalCents,
+          finalTotalCents: matchedChargeEvent.finalTotalCents,
+        };
+      }
+    }
+
     const notes = await this.getClientNotes(userId, branchId);
     const recentAttendances = await this.getClientAttendances(userId, branchId, 10);
     const [crmEntry] = await db
@@ -5810,6 +6114,7 @@ export class DatabaseStorage implements IStorage {
       planStatus,
       planNameSnapshot: membership.planNameSnapshot,
       plan,
+      planChargeSnapshot: currentChargeSnapshot,
       notes,
       purchaseHistory: purchaseHistoryRows.map((row) => ({
         id: row.id,
@@ -6393,6 +6698,11 @@ export class DatabaseStorage implements IStorage {
     clientUserId: string;
     planNameSnapshot: string;
     basePriceCents: number;
+    taxMode: string | null;
+    taxRate: number | null;
+    subtotalBeforeTaxCents: number | null;
+    taxableSubtotalCents: number | null;
+    taxTotalCents: number | null;
     finalTotalCents: number;
     chargedAt: Date;
     contextJson?: any;
@@ -6410,6 +6720,11 @@ export class DatabaseStorage implements IStorage {
         clientUserId: data.clientUserId,
         planNameSnapshot: data.planNameSnapshot,
         basePriceCents: data.basePriceCents,
+        taxMode: data.taxMode,
+        taxRate: data.taxRate == null ? null : data.taxRate.toFixed(4),
+        subtotalBeforeTaxCents: data.subtotalBeforeTaxCents,
+        taxableSubtotalCents: data.taxableSubtotalCents,
+        taxTotalCents: data.taxTotalCents,
         finalTotalCents: data.finalTotalCents,
         currencyCode: "MXN",
         chargedAt: data.chargedAt,
@@ -6527,6 +6842,12 @@ export class DatabaseStorage implements IStorage {
         throw new Error("PLAN_INACTIVE");
       }
 
+      const taxSnapshot = computeMembershipPlanChargeSnapshot({
+        priceCents: plan.price,
+        taxMode: plan.taxMode,
+        taxRate: plan.taxRate,
+      });
+
       const effectiveStartDate = normalizeOptionalTextValue(data.startDate) ?? getMxLocalDate();
       if (effectiveStartDate > getMxLocalDate()) {
         throw new Error("START_DATE_IN_FUTURE");
@@ -6546,13 +6867,19 @@ export class DatabaseStorage implements IStorage {
         planId: plan.id,
         clientUserId: membership.userId,
         planNameSnapshot: plan.name,
-        basePriceCents: plan.price,
-        finalTotalCents: plan.price,
+        basePriceCents: taxSnapshot.basePriceCents,
+        taxMode: taxSnapshot.taxMode,
+        taxRate: taxSnapshot.taxRate,
+        subtotalBeforeTaxCents: taxSnapshot.subtotalBeforeTaxCents,
+        taxableSubtotalCents: taxSnapshot.taxableSubtotalCents,
+        taxTotalCents: taxSnapshot.taxTotalCents,
+        finalTotalCents: taxSnapshot.finalTotalCents,
         chargedAt: startDateValue,
         contextJson: {
           legacyRequest: isLegacyRequest,
           paymentMethod: normalizedPaymentMethod,
           startDate: effectiveStartDate,
+          taxConfigured: !taxSnapshot.isLegacy,
         },
         createdBy: data.actorUserId,
       });
@@ -6601,14 +6928,14 @@ export class DatabaseStorage implements IStorage {
       const cancelledBookings = await this.cancelFutureBookingsForUserTx(tx, updatedMembership.userId, data.branchId);
 
       let financeEntryId: string | null = null;
-      if (plan.price > 0) {
+      if (taxSnapshot.finalTotalCents > 0) {
         const financeOutcome = await this.createMembershipFinanceEntryTx(tx, {
           branchId: data.branchId,
           membershipId: updatedMembership.id,
           userId: updatedMembership.userId,
           planId: plan.id,
           planName: plan.name,
-          amountCents: plan.price,
+          amountCents: taxSnapshot.finalTotalCents,
           paidAt: effectiveStartDate,
           expiresAt: updatedMembership.expiresAt,
           paymentMethod: normalizedPaymentMethod,
@@ -6637,6 +6964,12 @@ export class DatabaseStorage implements IStorage {
           membershipId: updatedMembership.id,
           planId: plan.id,
           planName: plan.name,
+          taxMode: taxSnapshot.taxMode,
+          taxRate: taxSnapshot.taxRate,
+          subtotalBeforeTaxCents: taxSnapshot.subtotalBeforeTaxCents,
+          taxableSubtotalCents: taxSnapshot.taxableSubtotalCents,
+          taxTotalCents: taxSnapshot.taxTotalCents,
+          finalTotalCents: taxSnapshot.finalTotalCents,
           startDate: effectiveStartDate,
           expiresAt: updatedMembership.expiresAt ? new Date(updatedMembership.expiresAt).toISOString() : null,
           cancelledBookings,
@@ -12775,6 +13108,9 @@ export class DatabaseStorage implements IStorage {
         phone: users.phone,
         membershipId: memberships.id,
         planName: membershipPlans.name,
+        planPrice: membershipPlans.price,
+        planTaxMode: membershipPlans.taxMode,
+        planTaxRate: membershipPlans.taxRate,
         expiresAt: memberships.expiresAt,
         classesRemaining: memberships.classesRemaining,
         paidAt: memberships.paidAt,
@@ -12871,6 +13207,12 @@ export class DatabaseStorage implements IStorage {
         throw new Error("PLAN_NOT_FOUND");
       }
 
+      const taxSnapshot = computeMembershipPlanChargeSnapshot({
+        priceCents: plan.price,
+        taxMode: plan.taxMode,
+        taxRate: plan.taxRate,
+      });
+
       const paidAt = new Date();
       const expiresAt = calculatePlanExpirationDate(plan, paidAt);
 
@@ -12882,12 +13224,18 @@ export class DatabaseStorage implements IStorage {
         planId: plan.id,
         clientUserId: membership.userId,
         planNameSnapshot: plan.name,
-        basePriceCents: plan.price,
-        finalTotalCents: plan.price,
+        basePriceCents: taxSnapshot.basePriceCents,
+        taxMode: taxSnapshot.taxMode,
+        taxRate: taxSnapshot.taxRate,
+        subtotalBeforeTaxCents: taxSnapshot.subtotalBeforeTaxCents,
+        taxableSubtotalCents: taxSnapshot.taxableSubtotalCents,
+        taxTotalCents: taxSnapshot.taxTotalCents,
+        finalTotalCents: taxSnapshot.finalTotalCents,
         chargedAt: paidAt,
         contextJson: {
           legacyRequest: isLegacyRequest,
           paymentMethod: normalizedPaymentMethod,
+          taxConfigured: !taxSnapshot.isLegacy,
         },
         createdBy: data.actorUserId,
       });
@@ -12934,14 +13282,14 @@ export class DatabaseStorage implements IStorage {
       }
 
       let financeEntryId: string | null = null;
-      if (plan.price > 0) {
+      if (taxSnapshot.finalTotalCents > 0) {
         const financeOutcome = await this.createMembershipFinanceEntryTx(tx, {
           branchId: data.branchId,
           membershipId: renewedMembership.id,
           userId: renewedMembership.userId,
           planId: plan.id,
           planName: plan.name,
-          amountCents: plan.price,
+          amountCents: taxSnapshot.finalTotalCents,
           paidAt: renewedMembership.paidAt,
           expiresAt: renewedMembership.expiresAt,
           paymentMethod: normalizedPaymentMethod,
@@ -12970,6 +13318,12 @@ export class DatabaseStorage implements IStorage {
           membershipId: renewedMembership.id,
           planId: plan.id,
           planName: plan.name,
+          taxMode: taxSnapshot.taxMode,
+          taxRate: taxSnapshot.taxRate,
+          subtotalBeforeTaxCents: taxSnapshot.subtotalBeforeTaxCents,
+          taxableSubtotalCents: taxSnapshot.taxableSubtotalCents,
+          taxTotalCents: taxSnapshot.taxTotalCents,
+          finalTotalCents: taxSnapshot.finalTotalCents,
           paidAt: paidAt.toISOString(),
           expiresAt: expiresAt.toISOString(),
         },
@@ -13810,13 +14164,14 @@ export class DatabaseStorage implements IStorage {
 
   private mapBranchFinanceEntryRow(row: any): BranchFinanceEntryRow {
     const linkedFullName = [row.linkedClientName, row.linkedClientLastName].filter(Boolean).join(" ").trim();
+    const amount = toFinanceAmount(row.amount);
     return {
       id: row.id,
       branchId: row.branchId,
       type: row.type,
       category: row.category ?? null,
       concept: row.concept,
-      amount: toFinanceAmount(row.amount),
+      amount,
       paymentMethod: row.paymentMethod ?? null,
       clientUserId: row.clientUserId ?? null,
       clientName: row.clientName ?? null,
@@ -13827,6 +14182,17 @@ export class DatabaseStorage implements IStorage {
       source: row.source ?? null,
       sourceId: row.sourceId ?? null,
       metadata: row.metadata ?? null,
+      fiscalSnapshot: getBranchFinanceEntryFiscalSnapshot({
+        source: row.source ?? null,
+        amount,
+        metadata: row.metadata ?? null,
+        chargeEventTaxMode: row.chargeEventTaxMode ?? null,
+        chargeEventTaxRate: row.chargeEventTaxRate ?? null,
+        chargeEventSubtotalBeforeTaxCents: row.chargeEventSubtotalBeforeTaxCents ?? null,
+        chargeEventTaxableSubtotalCents: row.chargeEventTaxableSubtotalCents ?? null,
+        chargeEventTaxTotalCents: row.chargeEventTaxTotalCents ?? null,
+        chargeEventFinalTotalCents: row.chargeEventFinalTotalCents ?? null,
+      }),
       createdBy: row.createdBy ?? null,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -13856,9 +14222,19 @@ export class DatabaseStorage implements IStorage {
         linkedClientName: users.name,
         linkedClientLastName: users.lastName,
         linkedClientEmail: users.email,
+        chargeEventTaxMode: branchChargeEvents.taxMode,
+        chargeEventTaxRate: branchChargeEvents.taxRate,
+        chargeEventSubtotalBeforeTaxCents: branchChargeEvents.subtotalBeforeTaxCents,
+        chargeEventTaxableSubtotalCents: branchChargeEvents.taxableSubtotalCents,
+        chargeEventTaxTotalCents: branchChargeEvents.taxTotalCents,
+        chargeEventFinalTotalCents: branchChargeEvents.finalTotalCents,
       })
       .from(branchFinanceEntries)
       .leftJoin(users, eq(branchFinanceEntries.clientUserId, users.id))
+      .leftJoin(branchChargeEvents, and(
+        eq(branchChargeEvents.financeEntryId, branchFinanceEntries.id),
+        eq(branchChargeEvents.branchId, branchFinanceEntries.branchId),
+      ))
       .where(and(
         eq(branchFinanceEntries.branchId, branchId),
         eq(branchFinanceEntries.id, entryId),
@@ -13909,9 +14285,19 @@ export class DatabaseStorage implements IStorage {
         linkedClientName: users.name,
         linkedClientLastName: users.lastName,
         linkedClientEmail: users.email,
+        chargeEventTaxMode: branchChargeEvents.taxMode,
+        chargeEventTaxRate: branchChargeEvents.taxRate,
+        chargeEventSubtotalBeforeTaxCents: branchChargeEvents.subtotalBeforeTaxCents,
+        chargeEventTaxableSubtotalCents: branchChargeEvents.taxableSubtotalCents,
+        chargeEventTaxTotalCents: branchChargeEvents.taxTotalCents,
+        chargeEventFinalTotalCents: branchChargeEvents.finalTotalCents,
       })
       .from(branchFinanceEntries)
       .leftJoin(users, eq(branchFinanceEntries.clientUserId, users.id))
+      .leftJoin(branchChargeEvents, and(
+        eq(branchChargeEvents.financeEntryId, branchFinanceEntries.id),
+        eq(branchChargeEvents.branchId, branchFinanceEntries.branchId),
+      ))
       .where(and(
         eq(branchFinanceEntries.branchId, branchId),
         eq(branchFinanceEntries.source, source),
@@ -14104,23 +14490,28 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
-  async getBranchFinanceSummary(branchId: string, filters?: { from?: string; to?: string }): Promise<BranchFinanceSummary> {
+  async getBranchFinanceSummary(branchId: string, filters?: { from?: string; to?: string; type?: "income" | "expense" }): Promise<BranchFinanceSummary> {
     const today = getMxLocalDate();
     const monthRange = getCurrentMonthRange();
     const rangeFrom = filters?.from || monthRange.from;
     const rangeTo = filters?.to || monthRange.to;
+    const typeFilter = filters?.type;
+
+    const optionalTypeCondition = typeFilter ? [eq(branchFinanceEntries.type, typeFilter)] : [];
 
     const baseConditions = and(
       eq(branchFinanceEntries.branchId, branchId),
       isNull(branchFinanceEntries.deletedAt),
       gte(branchFinanceEntries.entryDate, rangeFrom),
       lte(branchFinanceEntries.entryDate, rangeTo),
+      ...optionalTypeCondition,
     )!;
 
     const todayConditions = and(
       eq(branchFinanceEntries.branchId, branchId),
       isNull(branchFinanceEntries.deletedAt),
       eq(branchFinanceEntries.entryDate, today),
+      ...optionalTypeCondition,
     )!;
 
     const monthConditions = and(
@@ -14128,9 +14519,10 @@ export class DatabaseStorage implements IStorage {
       isNull(branchFinanceEntries.deletedAt),
       gte(branchFinanceEntries.entryDate, monthRange.from),
       lte(branchFinanceEntries.entryDate, monthRange.to),
+      ...optionalTypeCondition,
     )!;
 
-    const [summaryRows, todayRows, monthRows, dailyRows, topIncomeRows, topExpenseRows] = await Promise.all([
+    const [summaryRows, todayRows, monthRows, dailyRows, topIncomeRows, topExpenseRows, incomeFiscalRows] = await Promise.all([
       db
         .select({
           totalIncome: sql<string>`COALESCE(SUM(CASE WHEN ${branchFinanceEntries.type} = 'income' THEN ${branchFinanceEntries.amount} ELSE 0 END), 0)`,
@@ -14182,6 +14574,25 @@ export class DatabaseStorage implements IStorage {
         .groupBy(sql`COALESCE(NULLIF(${branchFinanceEntries.category}, ''), 'otro')`)
         .orderBy(desc(sql`COALESCE(SUM(${branchFinanceEntries.amount}), 0)`))
         .limit(5),
+      db
+        .select({
+          id: branchFinanceEntries.id,
+          amount: branchFinanceEntries.amount,
+          source: branchFinanceEntries.source,
+          metadata: branchFinanceEntries.metadata,
+          chargeEventTaxMode: branchChargeEvents.taxMode,
+          chargeEventTaxRate: branchChargeEvents.taxRate,
+          chargeEventSubtotalBeforeTaxCents: branchChargeEvents.subtotalBeforeTaxCents,
+          chargeEventTaxableSubtotalCents: branchChargeEvents.taxableSubtotalCents,
+          chargeEventTaxTotalCents: branchChargeEvents.taxTotalCents,
+          chargeEventFinalTotalCents: branchChargeEvents.finalTotalCents,
+        })
+        .from(branchFinanceEntries)
+        .leftJoin(branchChargeEvents, and(
+          eq(branchChargeEvents.financeEntryId, branchFinanceEntries.id),
+          eq(branchChargeEvents.branchId, branchFinanceEntries.branchId),
+        ))
+        .where(and(baseConditions, eq(branchFinanceEntries.type, "income"))!),
     ]);
 
     const totalIncome = toFinanceAmount(summaryRows[0]?.totalIncome);
@@ -14190,6 +14601,32 @@ export class DatabaseStorage implements IStorage {
     const todayExpense = toFinanceAmount(todayRows[0]?.totalExpense);
     const monthIncome = toFinanceAmount(monthRows[0]?.totalIncome);
     const monthExpense = toFinanceAmount(monthRows[0]?.totalExpense);
+    const seenContributionKeys = new Set<string>();
+    let incomeBaseBeforeTax = 0;
+    let incomeTransferredTax = 0;
+
+    for (const row of incomeFiscalRows) {
+      const contribution = getBranchFinanceSummaryFiscalContribution({
+        source: row.source ?? null,
+        amount: toFinanceAmount(row.amount),
+        metadata: row.metadata ?? null,
+        chargeEventTaxMode: row.chargeEventTaxMode ?? null,
+        chargeEventTaxRate: row.chargeEventTaxRate ?? null,
+        chargeEventSubtotalBeforeTaxCents: row.chargeEventSubtotalBeforeTaxCents ?? null,
+        chargeEventTaxableSubtotalCents: row.chargeEventTaxableSubtotalCents ?? null,
+        chargeEventTaxTotalCents: row.chargeEventTaxTotalCents ?? null,
+        chargeEventFinalTotalCents: row.chargeEventFinalTotalCents ?? null,
+      });
+
+      if (!contribution) continue;
+      if (contribution.groupKey) {
+        if (seenContributionKeys.has(contribution.groupKey)) continue;
+        seenContributionKeys.add(contribution.groupKey);
+      }
+
+      incomeBaseBeforeTax = roundMoney(incomeBaseBeforeTax + contribution.baseBeforeTax);
+      incomeTransferredTax = roundMoney(incomeTransferredTax + contribution.taxTransferred);
+    }
 
     return {
       totalIncome,
@@ -14199,6 +14636,8 @@ export class DatabaseStorage implements IStorage {
       todayExpense,
       monthIncome,
       monthExpense,
+      incomeBaseBeforeTax,
+      incomeTransferredTax,
       dailyBreakdown: dailyRows.map((row) => {
         const income = toFinanceAmount(row.income);
         const expense = toFinanceAmount(row.expense);
@@ -14301,9 +14740,19 @@ export class DatabaseStorage implements IStorage {
           linkedClientName: users.name,
           linkedClientLastName: users.lastName,
           linkedClientEmail: users.email,
+          chargeEventTaxMode: branchChargeEvents.taxMode,
+          chargeEventTaxRate: branchChargeEvents.taxRate,
+          chargeEventSubtotalBeforeTaxCents: branchChargeEvents.subtotalBeforeTaxCents,
+          chargeEventTaxableSubtotalCents: branchChargeEvents.taxableSubtotalCents,
+          chargeEventTaxTotalCents: branchChargeEvents.taxTotalCents,
+          chargeEventFinalTotalCents: branchChargeEvents.finalTotalCents,
         })
         .from(branchFinanceEntries)
         .leftJoin(users, eq(branchFinanceEntries.clientUserId, users.id))
+        .leftJoin(branchChargeEvents, and(
+          eq(branchChargeEvents.financeEntryId, branchFinanceEntries.id),
+          eq(branchChargeEvents.branchId, branchFinanceEntries.branchId),
+        ))
         .where(whereClause)
         .orderBy(desc(branchFinanceEntries.entryDate), desc(branchFinanceEntries.createdAt))
         .limit(limit)
@@ -14362,9 +14811,19 @@ export class DatabaseStorage implements IStorage {
         linkedClientName: users.name,
         linkedClientLastName: users.lastName,
         linkedClientEmail: users.email,
+        chargeEventTaxMode: branchChargeEvents.taxMode,
+        chargeEventTaxRate: branchChargeEvents.taxRate,
+        chargeEventSubtotalBeforeTaxCents: branchChargeEvents.subtotalBeforeTaxCents,
+        chargeEventTaxableSubtotalCents: branchChargeEvents.taxableSubtotalCents,
+        chargeEventTaxTotalCents: branchChargeEvents.taxTotalCents,
+        chargeEventFinalTotalCents: branchChargeEvents.finalTotalCents,
       })
       .from(branchFinanceEntries)
       .leftJoin(users, eq(branchFinanceEntries.clientUserId, users.id))
+      .leftJoin(branchChargeEvents, and(
+        eq(branchChargeEvents.financeEntryId, branchFinanceEntries.id),
+        eq(branchChargeEvents.branchId, branchFinanceEntries.branchId),
+      ))
       .where(and(...conditions))
       .orderBy(desc(branchFinanceEntries.entryDate), desc(branchFinanceEntries.createdAt));
 

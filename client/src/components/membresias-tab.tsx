@@ -39,6 +39,11 @@ import {
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { invalidateBranchMembershipQueries } from "@/lib/branch-dashboard-cache";
 import { useToast } from "@/hooks/use-toast";
+import {
+  computeMembershipPlanChargeSnapshot,
+  type MembershipPlanTaxMode,
+  resolveMembershipPlanTaxConfig,
+} from "@shared/membership-plan-tax";
 
 interface MembershipPlan {
   id: string;
@@ -46,12 +51,16 @@ interface MembershipPlan {
   name: string;
   description: string | null;
   price: number;
+  taxMode: MembershipPlanTaxMode | null;
+  taxRate: string | null;
   durationDays: number | null;
   classLimit: number | null;
   cycleMonths: number;
   isActive: boolean;
   createdAt: string;
 }
+
+type PlanTaxSelectValue = MembershipPlanTaxMode | "legacy";
 
 const CYCLE_OPTIONS = [
   { value: "0", label: "Clase suelta / sesión única", months: 0 },
@@ -82,6 +91,56 @@ function formatPrice(cents: number): string {
   return `$${(cents / 100).toLocaleString("es-MX", { minimumFractionDigits: 2 })}`;
 }
 
+function getPlanTaxErrorMessage(error: unknown) {
+  if (!(error instanceof Error)) return "La configuración fiscal del plan no es válida";
+  switch (error.message) {
+    case "TAX_RATE_REQUIRED":
+      return "La tasa de IVA es obligatoria";
+    case "TAX_RATE_MUST_BE_POSITIVE":
+      return "La tasa de IVA debe ser mayor a 0";
+    case "INVALID_TAX_RATE_RANGE":
+      return "La tasa de IVA debe estar entre 0 y 100";
+    case "TAX_RATE_NOT_ALLOWED_FOR_TAX_EXEMPT":
+      return "Sin IVA no debe llevar una tasa distinta de 0";
+    case "TAX_MODE_REQUIRED":
+      return "Selecciona un tratamiento de IVA válido";
+    default:
+      return "La configuración fiscal del plan no es válida";
+  }
+}
+
+function formatTaxRateLabel(taxRate: number | null) {
+  if (taxRate == null || taxRate <= 0) return "0%";
+  return `${taxRate.toFixed(2).replace(/\.00$/, "")}%`;
+}
+
+function getPlanChargeSnapshot(plan: Pick<MembershipPlan, "price" | "taxMode" | "taxRate">) {
+  try {
+    return computeMembershipPlanChargeSnapshot({
+      priceCents: plan.price,
+      taxMode: plan.taxMode,
+      taxRate: plan.taxRate,
+    });
+  } catch {
+    return null;
+  }
+}
+
+function getPlanTaxDisplayLine(plan: Pick<MembershipPlan, "price" | "taxMode" | "taxRate">) {
+  const snapshot = getPlanChargeSnapshot(plan);
+  if (!snapshot || snapshot.isLegacy || !snapshot.taxMode) return null;
+
+  if (snapshot.taxMode === "tax_added") {
+    return `+ IVA ${formatTaxRateLabel(snapshot.taxRate)} · Total ${formatPrice(snapshot.finalTotalCents)}`;
+  }
+
+  if (snapshot.taxMode === "tax_included") {
+    return `IVA incluido ${formatTaxRateLabel(snapshot.taxRate)}`;
+  }
+
+  return "Sin IVA";
+}
+
 function PlanFormDialog({
   open,
   onOpenChange,
@@ -107,8 +166,23 @@ function PlanFormDialog({
   const [customMonthsStr, setCustomMonthsStr] = useState(
     !isPresetCycle && editCycleMonths > 0 ? String(editCycleMonths) : ""
   );
+  const [taxModeSelection, setTaxModeSelection] = useState<PlanTaxSelectValue>(() => {
+    if (editPlan?.taxMode) return editPlan.taxMode;
+    return isEdit ? "legacy" : "tax_exempt";
+  });
+  const [taxRateStr, setTaxRateStr] = useState(() => {
+    if (editPlan?.taxMode && editPlan.taxRate != null) {
+      const parsed = Number.parseFloat(editPlan.taxRate);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return parsed.toFixed(2).replace(/\.00$/, "");
+      }
+    }
+    return "16";
+  });
 
   const isDropIn = cycleSelect === "0";
+  const isLegacyTaxConfig = taxModeSelection === "legacy";
+  const activeTaxMode = isLegacyTaxConfig ? null : taxModeSelection;
 
   const cycleMonths =
     cycleSelect === "custom"
@@ -123,7 +197,28 @@ function PlanFormDialog({
   const isValidName = name.trim().length > 0 && name.length <= 60;
   const isValidDesc = description.length <= 200;
   const isValidCycle = isDropIn || (cycleMonths >= 1 && cycleMonths <= 36);
-  const canSubmit = isValidName && isValidPrice && isValidClasses && isValidDesc && isValidCycle;
+  let resolvedTaxConfig: ReturnType<typeof resolveMembershipPlanTaxConfig> | null = null;
+  let taxConfigError: string | null = null;
+
+  try {
+    resolvedTaxConfig = resolveMembershipPlanTaxConfig({
+      taxMode: activeTaxMode,
+      taxRate: activeTaxMode === "tax_exempt" ? 0 : taxRateStr,
+    });
+  } catch (error) {
+    taxConfigError = getPlanTaxErrorMessage(error);
+  }
+
+  const previewPriceCents = Math.max(0, Math.round((Number.isFinite(priceValue) ? priceValue : 0) * 100));
+  const taxPreview = resolvedTaxConfig
+    ? computeMembershipPlanChargeSnapshot({
+        priceCents: previewPriceCents,
+        taxMode: resolvedTaxConfig.taxMode,
+        taxRate: resolvedTaxConfig.taxRate,
+      })
+    : null;
+
+  const canSubmit = isValidName && isValidPrice && isValidClasses && isValidDesc && isValidCycle && !taxConfigError;
 
   const mutation = useMutation({
     mutationFn: async (data: any) => {
@@ -157,6 +252,8 @@ function PlanFormDialog({
       name: name.trim(),
       description: description.trim() || undefined,
       price,
+      taxMode: resolvedTaxConfig?.taxMode ?? null,
+      taxRate: resolvedTaxConfig?.taxRate ?? null,
       durationDays,
       classLimit,
       cycleMonths,
@@ -272,6 +369,51 @@ function PlanFormDialog({
               )}
             </div>
 
+            <div className="space-y-2 sm:col-span-2">
+              <Label>Tratamiento de IVA</Label>
+              <Select value={taxModeSelection} onValueChange={(value) => setTaxModeSelection(value as PlanTaxSelectValue)}>
+                <SelectTrigger data-testid="select-plan-tax-mode">
+                  <SelectValue placeholder="Selecciona un tratamiento de IVA" />
+                </SelectTrigger>
+                <SelectContent>
+                  {isEdit && editPlan?.taxMode == null ? (
+                    <SelectItem value="legacy">Sin configuración fiscal (actual)</SelectItem>
+                  ) : null}
+                  <SelectItem value="tax_exempt">Sin IVA</SelectItem>
+                  <SelectItem value="tax_included">IVA incluido en el precio</SelectItem>
+                  <SelectItem value="tax_added">Agregar IVA al precio</SelectItem>
+                </SelectContent>
+              </Select>
+              {isLegacyTaxConfig ? (
+                <p className="text-[10px] text-muted-foreground">
+                  Este plan seguirá cobrando exactamente como hoy hasta que elijas un tratamiento fiscal.
+                </p>
+              ) : null}
+              {!isLegacyTaxConfig && activeTaxMode !== "tax_exempt" ? (
+                <div className="space-y-2">
+                  <Label htmlFor="plan-tax-rate">Tasa de IVA</Label>
+                  <div className="relative max-w-xs">
+                    <Input
+                      id="plan-tax-rate"
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      max="100"
+                      value={taxRateStr}
+                      onChange={(e) => setTaxRateStr(e.target.value)}
+                      placeholder="16"
+                      className="pr-12"
+                      data-testid="input-plan-tax-rate"
+                    />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">%</span>
+                  </div>
+                </div>
+              ) : null}
+              {taxConfigError ? (
+                <p className="text-[10px] text-red-500">{taxConfigError}</p>
+              ) : null}
+            </div>
+
             {isDropIn ? (
               <div className="sm:col-span-2 rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3 text-xs text-amber-800 dark:text-amber-300">
                 <strong>Pago por clase:</strong> cada asignación de este plan otorga 1 clase con vigencia de 1 día. Sin ciclo mensual.
@@ -328,6 +470,26 @@ function PlanFormDialog({
                   <span>Equivalente mensual: <strong className="text-foreground">${(priceValue / cycleMonths).toFixed(2)} MXN</strong></span>
                 )}
               </div>
+              {taxPreview && !taxPreview.isLegacy ? (
+                <div className="mt-3 grid grid-cols-1 gap-1 text-xs text-muted-foreground sm:grid-cols-2">
+                  {taxPreview.taxMode === "tax_included" ? (
+                    <>
+                      <span>Precio final: <strong className="text-foreground">{formatPrice(taxPreview.finalTotalCents)}</strong></span>
+                      <span>Subtotal: <strong className="text-foreground">{formatPrice(taxPreview.subtotalBeforeTaxCents ?? 0)}</strong></span>
+                      <span>IVA incluido {formatTaxRateLabel(taxPreview.taxRate)}: <strong className="text-foreground">{formatPrice(taxPreview.taxTotalCents ?? 0)}</strong></span>
+                      <span>Total al cobrar: <strong className="text-foreground">{formatPrice(taxPreview.finalTotalCents)}</strong></span>
+                    </>
+                  ) : taxPreview.taxMode === "tax_added" ? (
+                    <>
+                      <span>Precio base: <strong className="text-foreground">{formatPrice(taxPreview.basePriceCents)}</strong></span>
+                      <span>IVA {formatTaxRateLabel(taxPreview.taxRate)}: <strong className="text-foreground">{formatPrice(taxPreview.taxTotalCents ?? 0)}</strong></span>
+                      <span>Total al cobrar: <strong className="text-foreground">{formatPrice(taxPreview.finalTotalCents)}</strong></span>
+                    </>
+                  ) : (
+                    <span>Sin IVA: <strong className="text-foreground">{formatPrice(taxPreview.finalTotalCents)}</strong></span>
+                  )}
+                </div>
+              ) : null}
             </div>
           )}
 
@@ -405,6 +567,9 @@ function QuickChargeDialog({
     },
   });
 
+  const chargeSnapshot = plan ? getPlanChargeSnapshot(plan) : null;
+  const chargeTotalCents = chargeSnapshot?.finalTotalCents ?? plan?.price ?? 0;
+
   return (
     <Dialog
       open={open}
@@ -436,8 +601,14 @@ function QuickChargeDialog({
               </div>
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 <div>
-                  <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Precio</p>
-                  <p className="mt-1 text-lg font-semibold text-primary">{formatPrice(plan.price)}</p>
+                  <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                    {chargeSnapshot && !chargeSnapshot.isLegacy && chargeSnapshot.taxMode === "tax_added"
+                      ? "Total a cobrar"
+                      : chargeSnapshot && !chargeSnapshot.isLegacy && chargeSnapshot.taxMode === "tax_included"
+                        ? "Precio final"
+                        : "Precio"}
+                  </p>
+                  <p className="mt-1 text-lg font-semibold text-primary">{formatPrice(chargeTotalCents)}</p>
                 </div>
                 <div>
                   <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Fecha</p>
@@ -446,6 +617,31 @@ function QuickChargeDialog({
                   </p>
                 </div>
               </div>
+              {chargeSnapshot ? (
+                chargeSnapshot.isLegacy ? (
+                  <div className="mt-3 rounded-xl border border-dashed border-muted-foreground/30 bg-background/80 p-3 text-xs text-muted-foreground">
+                    Sin configuraciÃ³n fiscal: este cobro rÃ¡pido usarÃ¡ exactamente el precio actual del plan.
+                  </div>
+                ) : (
+                  <div className="mt-3 grid gap-2 rounded-xl border bg-background/80 p-3 text-xs text-muted-foreground sm:grid-cols-2">
+                    {chargeSnapshot.taxMode === "tax_added" ? (
+                      <>
+                        <span>Precio base: <strong className="text-foreground">{formatPrice(chargeSnapshot.basePriceCents)}</strong></span>
+                        <span>IVA {formatTaxRateLabel(chargeSnapshot.taxRate)}: <strong className="text-foreground">{formatPrice(chargeSnapshot.taxTotalCents ?? 0)}</strong></span>
+                        <span className="sm:col-span-2">Total a cobrar: <strong className="text-foreground">{formatPrice(chargeSnapshot.finalTotalCents)}</strong></span>
+                      </>
+                    ) : chargeSnapshot.taxMode === "tax_included" ? (
+                      <>
+                        <span>Precio final: <strong className="text-foreground">{formatPrice(chargeSnapshot.finalTotalCents)}</strong></span>
+                        <span>Subtotal: <strong className="text-foreground">{formatPrice(chargeSnapshot.subtotalBeforeTaxCents ?? 0)}</strong></span>
+                        <span className="sm:col-span-2">IVA incluido {formatTaxRateLabel(chargeSnapshot.taxRate)}: <strong className="text-foreground">{formatPrice(chargeSnapshot.taxTotalCents ?? 0)}</strong></span>
+                      </>
+                    ) : (
+                      <span className="sm:col-span-2">Sin IVA: <strong className="text-foreground">{formatPrice(chargeSnapshot.finalTotalCents)}</strong></span>
+                    )}
+                  </div>
+                )
+              ) : null}
             </div>
 
             <div className="space-y-2">
@@ -647,6 +843,9 @@ export default function MembresiasTab() {
                       <p className="text-xl font-bold text-primary mt-1" data-testid={`text-plan-price-${plan.id}`}>
                         {formatPrice(plan.price)}
                       </p>
+                      {getPlanTaxDisplayLine(plan) ? (
+                        <p className="mt-1 text-xs text-muted-foreground">{getPlanTaxDisplayLine(plan)}</p>
+                      ) : null}
                     </div>
                     <Badge variant="default" data-testid={`badge-plan-status-${plan.id}`}>Disponible</Badge>
                   </div>
@@ -732,6 +931,9 @@ export default function MembresiasTab() {
                         <div className="min-w-0 flex-1">
                           <h4 className="break-words font-semibold" data-testid={`text-plan-name-${plan.id}`}>{plan.name}</h4>
                           <p className="text-lg font-bold mt-1">{formatPrice(plan.price)}</p>
+                          {getPlanTaxDisplayLine(plan) ? (
+                            <p className="mt-1 text-xs text-muted-foreground">{getPlanTaxDisplayLine(plan)}</p>
+                          ) : null}
                         </div>
                         <Badge variant="secondary" data-testid={`badge-plan-status-${plan.id}`}>Desactivado</Badge>
                       </div>

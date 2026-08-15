@@ -100,6 +100,7 @@ import NotificationsPanel, { type NotificationItem } from "@/components/notifica
 import CajaTab from "@/components/caja-tab";
 import CobrarTab from "@/components/cobrar-tab";
 import DashboardModuleErrorBoundary from "@/components/dashboard-module-error-boundary";
+import { computeMembershipPlanChargeSnapshot, type MembershipPlanTaxMode } from "@shared/membership-plan-tax";
 
 const DASHBOARD_TABS = [
   { value: "resumen", label: "Resumen", icon: LayoutDashboard },
@@ -398,6 +399,9 @@ interface AlertsData {
     phone: string | null;
     membershipId: string;
     planName: string | null;
+    planPrice: number | null;
+    planTaxMode: MembershipPlanTaxMode | null;
+    planTaxRate: string | null;
     expiresAt: string;
     classesRemaining: number | null;
     paidAt: string | null;
@@ -474,6 +478,37 @@ function formatCurrencyMx(value: number) {
     currency: "MXN",
     maximumFractionDigits: 0,
   }).format(value || 0);
+}
+
+function formatCurrencyMxExact(value: number) {
+  return new Intl.NumberFormat("es-MX", {
+    style: "currency",
+    currency: "MXN",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value || 0);
+}
+
+function formatTaxRateLabel(taxRate: number | null) {
+  if (taxRate == null || taxRate <= 0) return "0%";
+  return `${taxRate.toFixed(2).replace(/\.00$/, "")}%`;
+}
+
+function getDashboardMembershipChargeSnapshot(plan: {
+  planPrice: number | null;
+  planTaxMode: MembershipPlanTaxMode | null;
+  planTaxRate: string | null;
+}) {
+  if (plan.planPrice == null) return null;
+  try {
+    return computeMembershipPlanChargeSnapshot({
+      priceCents: plan.planPrice,
+      taxMode: plan.planTaxMode,
+      taxRate: plan.planTaxRate,
+    });
+  } catch {
+    return null;
+  }
 }
 
 function formatCompactNumber(value: number) {
@@ -735,6 +770,28 @@ function AlertsSection({ alerts, isLoading, onViewClient, branchName, whatsappTe
                     <div className="min-w-0">
                       <p className="text-sm font-medium truncate">{m.name} {m.lastName || ""}</p>
                       <p className="text-xs text-muted-foreground truncate">{m.planName || "Sin plan"}</p>
+                      {(() => {
+                        const chargeSnapshot = getDashboardMembershipChargeSnapshot(m);
+                        if (!chargeSnapshot || chargeSnapshot.isLegacy) return null;
+
+                        return (
+                          <div className="mt-1 space-y-0.5 text-[10px] text-muted-foreground">
+                            {chargeSnapshot.taxMode === "tax_added" ? (
+                              <>
+                                <p>Base {formatCurrencyMxExact(chargeSnapshot.basePriceCents / 100)} · IVA {formatTaxRateLabel(chargeSnapshot.taxRate)} {formatCurrencyMxExact((chargeSnapshot.taxTotalCents ?? 0) / 100)}</p>
+                                <p>Total {formatCurrencyMxExact(chargeSnapshot.finalTotalCents / 100)}</p>
+                              </>
+                            ) : chargeSnapshot.taxMode === "tax_included" ? (
+                              <>
+                                <p>Total {formatCurrencyMxExact(chargeSnapshot.finalTotalCents / 100)}</p>
+                                <p>IVA incluido {formatTaxRateLabel(chargeSnapshot.taxRate)} · {formatCurrencyMxExact((chargeSnapshot.taxTotalCents ?? 0) / 100)}</p>
+                              </>
+                            ) : (
+                              <p>Sin IVA · Total {formatCurrencyMxExact(chargeSnapshot.finalTotalCents / 100)}</p>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       <div className="text-right">

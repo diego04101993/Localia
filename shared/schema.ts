@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import { pgTable, text, varchar, timestamp, pgEnum, doublePrecision, boolean, uniqueIndex, jsonb, integer, index, numeric, date, foreignKey } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
+import { membershipPlanTaxModeValues } from "./membership-plan-tax";
 
 export const userRoleEnum = pgEnum("user_role", [
   "SUPER_ADMIN",
@@ -213,6 +214,8 @@ export const membershipPlans = pgTable("membership_plans", {
   name: text("name").notNull(),
   description: text("description"),
   price: integer("price").notNull().default(0),
+  taxMode: text("tax_mode"),
+  taxRate: numeric("tax_rate", { precision: 8, scale: 4 }),
   durationDays: integer("duration_days"),
   classLimit: integer("class_limit"),
   cycleMonths: integer("cycle_months").notNull().default(1),
@@ -688,6 +691,8 @@ export const createPlanSchema = z.object({
   name: z.string().min(1, "El nombre es obligatorio"),
   description: z.string().optional(),
   price: z.number().int().min(0, "El precio no puede ser negativo"),
+  taxMode: z.enum(membershipPlanTaxModeValues).nullable().optional(),
+  taxRate: z.coerce.number().min(0, "La tasa de IVA no puede ser negativa").max(100, "La tasa de IVA no puede ser mayor a 100").nullable().optional(),
   durationDays: z.number().int().min(1).nullable().optional(),
   classLimit: z.number().int().min(1).nullable().optional(),
   cycleMonths: z.number().int().min(0).default(1),
@@ -1729,6 +1734,11 @@ export const branchChargeEvents = pgTable("branch_charge_events", {
   financeEntryId: varchar("finance_entry_id", { length: 36 }).references(() => branchFinanceEntries.id, { onDelete: "set null" }),
   planNameSnapshot: text("plan_name_snapshot").notNull(),
   basePriceCents: integer("base_price_cents").notNull().default(0),
+  taxMode: text("tax_mode"),
+  taxRate: numeric("tax_rate", { precision: 8, scale: 4 }),
+  subtotalBeforeTaxCents: integer("subtotal_before_tax_cents"),
+  taxableSubtotalCents: integer("taxable_subtotal_cents"),
+  taxTotalCents: integer("tax_total_cents"),
   finalTotalCents: integer("final_total_cents").notNull().default(0),
   currencyCode: varchar("currency_code", { length: 3 }).notNull().default("MXN"),
   chargedAt: timestamp("charged_at", { withTimezone: true }).defaultNow().notNull(),
@@ -2075,11 +2085,7 @@ export const branchSaleChannelValues = [
   "dashboard_manual",
   "pos_future",
 ] as const;
-export const branchSaleTaxModeValues = [
-  "tax_included",
-  "tax_added",
-  "tax_exempt",
-] as const;
+export const branchSaleTaxModeValues = membershipPlanTaxModeValues;
 export const branchCommissionRuleTypeValues = [
   "percentage_all_sales",
   "fixed_per_sale",

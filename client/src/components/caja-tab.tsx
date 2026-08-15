@@ -76,6 +76,14 @@ type RangePreset = "thirty_days" | "ninety_days" | "six_months" | "twelve_months
 type CalendarMonthOffset = 0 | 1 | 2;
 type CalendarComparisonSpan = 1 | 2 | 3;
 
+interface BranchFinanceFiscalSnapshot {
+  taxMode: "tax_included" | "tax_added" | "tax_exempt";
+  taxRate: number;
+  baseBeforeTax: number;
+  taxTransferred: number;
+  totalCharged: number;
+}
+
 interface BranchFinanceSummary {
   totalIncome: number;
   totalExpense: number;
@@ -84,6 +92,8 @@ interface BranchFinanceSummary {
   todayExpense: number;
   monthIncome: number;
   monthExpense: number;
+  incomeBaseBeforeTax: number;
+  incomeTransferredTax: number;
   dailyBreakdown: Array<{ date: string; income: number; expense: number; net: number }>;
   topIncomeCategories: Array<{ category: string; total: number }>;
   topExpenseCategories: Array<{ category: string; total: number }>;
@@ -106,6 +116,7 @@ interface BranchFinanceEntry {
   source: string | null;
   sourceId: string | null;
   metadata: any;
+  fiscalSnapshot: BranchFinanceFiscalSnapshot | null;
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;
@@ -447,10 +458,11 @@ function getCalendarMonthRange(offset: CalendarMonthOffset, span: CalendarCompar
   };
 }
 
-function buildSummaryUrl(from: string, to: string) {
+function buildSummaryUrl(from: string, to: string, typeFilter?: string) {
   const params = new URLSearchParams();
   if (from) params.set("from", from);
   if (to) params.set("to", to);
+  if (typeFilter && typeFilter !== "all") params.set("type", typeFilter);
   return `/api/branch/finance/summary?${params.toString()}`;
 }
 
@@ -624,6 +636,18 @@ function getFinanceEntrySecondaryConcept(entry: BranchFinanceEntry) {
   return getFinanceEntryContextLine(entry);
 }
 
+function getFinanceEntryFiscalCaption(entry: BranchFinanceEntry) {
+  const snapshot = entry.fiscalSnapshot;
+  if (!snapshot) return null;
+
+  const baseLabel = `Base ${formatCurrency(snapshot.baseBeforeTax)}`;
+  if (snapshot.taxMode === "tax_exempt" || snapshot.taxTransferred <= 0) {
+    return `${baseLabel} · Sin IVA`;
+  }
+
+  return `${baseLabel} · IVA ${formatCurrency(snapshot.taxTransferred)}`;
+}
+
 function getExpenseBucketLabel(category: string) {
   switch (category) {
     case "renta":
@@ -673,7 +697,8 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
   const financeFormRef = useRef<HTMLDivElement | null>(null);
   const entriesTableScroll = useHorizontalScrollNav();
 
-  const summaryUrl = buildSummaryUrl(from, to);
+  const overviewSummaryUrl = buildSummaryUrl(from, to);
+  const summaryUrl = buildSummaryUrl(from, to, typeFilter);
   const entriesUrl = buildEntriesUrl({
     from,
     to,
@@ -690,6 +715,10 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
   const financeGoalStorageKey = user?.branchId
     ? `webcool:caja:goal:${user.branchId}:${currentMonthRange.from.slice(0, 7)}`
     : null;
+
+  const { data: overviewSummary, isLoading: overviewSummaryLoading } = useQuery<BranchFinanceSummary>({
+    queryKey: [overviewSummaryUrl],
+  });
 
   const { data: summary, isLoading: summaryLoading } = useQuery<BranchFinanceSummary>({
     queryKey: [summaryUrl],
@@ -1308,7 +1337,7 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        {summaryLoading ? (
+        {overviewSummaryLoading ? (
           Array.from({ length: 4 }).map((_, index) => (
             <Card key={index}>
               <CardContent className="p-5">
@@ -1323,7 +1352,7 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
               <CardContent className="flex items-center justify-between p-5">
                 <div>
                   <p className="text-sm text-muted-foreground">Ingresos hoy</p>
-                  <p className="text-2xl font-semibold text-emerald-600">{formatCurrency(summary?.todayIncome || 0)}</p>
+                  <p className="text-2xl font-semibold text-emerald-600">{formatCurrency(overviewSummary?.todayIncome || 0)}</p>
                 </div>
                 <ArrowUpRight className="h-8 w-8 text-emerald-500" />
               </CardContent>
@@ -1332,7 +1361,7 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
               <CardContent className="flex items-center justify-between p-5">
                 <div>
                   <p className="text-sm text-muted-foreground">Gastos hoy</p>
-                  <p className="text-2xl font-semibold text-rose-600">{formatCurrency(summary?.todayExpense || 0)}</p>
+                  <p className="text-2xl font-semibold text-rose-600">{formatCurrency(overviewSummary?.todayExpense || 0)}</p>
                 </div>
                 <ArrowDownRight className="h-8 w-8 text-rose-500" />
               </CardContent>
@@ -1341,7 +1370,7 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
               <CardContent className="flex items-center justify-between p-5">
                 <div>
                   <p className="text-sm text-muted-foreground">Ganancia hoy</p>
-                  <p className="text-2xl font-semibold">{formatCurrency((summary?.todayIncome || 0) - (summary?.todayExpense || 0))}</p>
+                  <p className="text-2xl font-semibold">{formatCurrency((overviewSummary?.todayIncome || 0) - (overviewSummary?.todayExpense || 0))}</p>
                 </div>
                 <PiggyBank className="h-8 w-8 text-primary" />
               </CardContent>
@@ -1350,7 +1379,7 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
               <CardContent className="flex items-center justify-between p-5">
                 <div>
                   <p className="text-sm text-muted-foreground">Ganancia del mes</p>
-                  <p className="text-2xl font-semibold">{formatCurrency((summary?.monthIncome || 0) - (summary?.monthExpense || 0))}</p>
+                  <p className="text-2xl font-semibold">{formatCurrency((overviewSummary?.monthIncome || 0) - (overviewSummary?.monthExpense || 0))}</p>
                 </div>
                 <Wallet className="h-8 w-8 text-amber-500" />
               </CardContent>
@@ -1735,26 +1764,41 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
             </div>
           </div>
 
-          <div className="grid gap-4 lg:grid-cols-3">
+          <div className="grid gap-4 lg:grid-cols-5">
             <Card className="border-dashed">
               <CardContent className="p-4">
-                <p className="text-xs uppercase tracking-wide text-muted-foreground">Ingresos del rango</p>
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Ingresos cobrados</p>
                 <p className="mt-2 text-xl font-semibold text-emerald-600">{formatCurrency(summary?.totalIncome || 0)}</p>
               </CardContent>
             </Card>
             <Card className="border-dashed">
               <CardContent className="p-4">
-                <p className="text-xs uppercase tracking-wide text-muted-foreground">Gastos del rango</p>
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Base antes de IVA</p>
+                <p className="mt-2 text-xl font-semibold text-sky-700">{formatCurrency(summary?.incomeBaseBeforeTax || 0)}</p>
+              </CardContent>
+            </Card>
+            <Card className="border-dashed">
+              <CardContent className="p-4">
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">IVA trasladado</p>
+                <p className="mt-2 text-xl font-semibold text-amber-700">{formatCurrency(summary?.incomeTransferredTax || 0)}</p>
+              </CardContent>
+            </Card>
+            <Card className="border-dashed">
+              <CardContent className="p-4">
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Egresos</p>
                 <p className="mt-2 text-xl font-semibold text-rose-600">{formatCurrency(summary?.totalExpense || 0)}</p>
               </CardContent>
             </Card>
             <Card className="border-dashed">
               <CardContent className="p-4">
-                <p className="text-xs uppercase tracking-wide text-muted-foreground">Ganancia del rango</p>
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Resultado</p>
                 <p className="mt-2 text-xl font-semibold">{formatCurrency(summary?.netProfit || 0)}</p>
               </CardContent>
             </Card>
           </div>
+          <p className="text-xs text-muted-foreground">
+            La base y el IVA solo se suman cuando el movimiento conserva un snapshot fiscal persistido de esa misma operación.
+          </p>
         </CardContent>
       </Card>
 
@@ -2404,6 +2448,7 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
                           Cliente: {entry.clientDisplayName || "Sin cliente"}
                         </p>
                         {entry.clientEmail ? <p className="break-all text-xs text-muted-foreground">{entry.clientEmail}</p> : null}
+                        {getFinanceEntryFiscalCaption(entry) ? <p className="break-words text-xs text-muted-foreground">{getFinanceEntryFiscalCaption(entry)}</p> : null}
                         <p className="text-muted-foreground">Método: {getPaymentMethodLabel(entry.paymentMethod)}</p>
                         {getFinanceEntrySecondaryConcept(entry) ? <p className="break-words text-xs text-muted-foreground">{getFinanceEntrySecondaryConcept(entry)}</p> : null}
                         {entry.notes ? <p className="break-words text-xs text-muted-foreground">{entry.notes}</p> : null}
@@ -2535,7 +2580,12 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
                           </div>
                         </TableCell>
                         <TableCell className="align-top text-sm">{getPaymentMethodLabel(entry.paymentMethod)}</TableCell>
-                        <TableCell className="align-top text-right font-medium">{formatCurrency(entry.amount)}</TableCell>
+                        <TableCell className="align-top text-right">
+                          <div className="space-y-1">
+                            <p className="font-medium">{formatCurrency(entry.amount)}</p>
+                            {getFinanceEntryFiscalCaption(entry) ? <p className="text-xs text-muted-foreground">{getFinanceEntryFiscalCaption(entry)}</p> : null}
+                          </div>
+                        </TableCell>
                         <TableCell className={`sticky right-0 z-[14] align-top shadow-[-8px_0_12px_-10px_rgba(15,23,42,0.18)] ${editingEntry?.id === entry.id ? "bg-primary/5" : "bg-background group-hover:bg-muted/50"}`}>
                           <div className="flex justify-end gap-2">
                             {isReadOnlyFinanceSource(entry.source) ? (

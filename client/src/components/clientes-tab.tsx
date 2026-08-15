@@ -77,6 +77,10 @@ import { invalidateBranchClientQueries, invalidateBranchMembershipQueries } from
 import { downloadAuthenticatedFile } from "@/lib/download-file";
 import { useStableOperationKey } from "@/lib/stable-operation-key";
 import { useToast } from "@/hooks/use-toast";
+import {
+  computeMembershipPlanChargeSnapshot,
+  type MembershipPlanTaxMode,
+} from "@shared/membership-plan-tax";
 
 type ClientIdentityControl = {
   originType: "manual" | "counter" | "app";
@@ -135,6 +139,8 @@ interface MembershipPlan {
   id: string;
   name: string;
   price: number;
+  taxMode: MembershipPlanTaxMode | null;
+  taxRate: string | null;
   durationDays: number | null;
   classLimit: number | null;
   cycleMonths: number;
@@ -178,7 +184,29 @@ interface ClientProfile {
   };
   planStatus: "active" | "expired" | "deleted" | null;
   planNameSnapshot: string | null;
-  plan: { id: string; name: string; price: number; durationDays: number | null; classLimit: number | null; cycleMonths: number } | null;
+  plan: {
+    id: string;
+    name: string;
+    price: number;
+    taxMode: MembershipPlanTaxMode | null;
+    taxRate: string | null;
+    durationDays: number | null;
+    classLimit: number | null;
+    cycleMonths: number;
+  } | null;
+  planChargeSnapshot: {
+    chargeEventId: string;
+    eventType: "assign" | "renew";
+    chargedAt: string;
+    planNameSnapshot: string;
+    basePriceCents: number;
+    taxMode: MembershipPlanTaxMode | null;
+    taxRate: number | null;
+    subtotalBeforeTaxCents: number | null;
+    taxableSubtotalCents: number | null;
+    taxTotalCents: number | null;
+    finalTotalCents: number;
+  } | null;
   notes: { id: string; content: string; createdAt: string; createdByName: string }[];
   recentAttendances: { id: string; checkedInAt: string }[];
   purchaseHistory: {
@@ -467,6 +495,85 @@ function formatCurrencyMx(value: number) {
     currency: "MXN",
     minimumFractionDigits: 2,
   }).format(value || 0);
+}
+
+function formatTaxRateLabel(taxRate: number | null) {
+  if (taxRate == null || taxRate <= 0) return "0%";
+  return `${taxRate.toFixed(2).replace(/\.00$/, "")}%`;
+}
+
+function getMembershipPlanChargeSnapshot(plan: Pick<MembershipPlan, "price" | "taxMode" | "taxRate">) {
+  try {
+    return computeMembershipPlanChargeSnapshot({
+      priceCents: plan.price,
+      taxMode: plan.taxMode,
+      taxRate: plan.taxRate,
+    });
+  } catch {
+    return null;
+  }
+}
+
+function getMembershipPlanChargeLabel(plan: Pick<MembershipPlan, "price" | "taxMode" | "taxRate">) {
+  const snapshot = getMembershipPlanChargeSnapshot(plan);
+  if (!snapshot || snapshot.isLegacy || !snapshot.taxMode) return null;
+
+  if (snapshot.taxMode === "tax_added") {
+    return `+ IVA ${formatTaxRateLabel(snapshot.taxRate)} · Total ${formatCurrencyMx(snapshot.finalTotalCents / 100)}`;
+  }
+
+  if (snapshot.taxMode === "tax_included") {
+    return `IVA incluido ${formatTaxRateLabel(snapshot.taxRate)}`;
+  }
+
+  return "Sin IVA";
+}
+
+function getClientPlanPriceDisplay(profile: Pick<ClientProfile, "plan" | "planChargeSnapshot">) {
+  const snapshot = profile.planChargeSnapshot;
+
+  if (snapshot) {
+    if (snapshot.taxMode === "tax_added") {
+      return {
+        title: "Total con IVA",
+        amountCents: snapshot.finalTotalCents,
+        detailLines: [
+          `Precio base ${formatCurrencyMx(snapshot.basePriceCents / 100)}`,
+          `IVA ${formatTaxRateLabel(snapshot.taxRate)} ${formatCurrencyMx((snapshot.taxTotalCents ?? 0) / 100)}`,
+        ],
+      };
+    }
+
+    if (snapshot.taxMode === "tax_included") {
+      return {
+        title: "Precio final",
+        amountCents: snapshot.finalTotalCents,
+        detailLines: [
+          `IVA ${formatTaxRateLabel(snapshot.taxRate)} incluido ${formatCurrencyMx((snapshot.taxTotalCents ?? 0) / 100)}`,
+        ],
+      };
+    }
+
+    if (snapshot.taxMode === "tax_exempt") {
+      return {
+        title: "Precio",
+        amountCents: snapshot.finalTotalCents,
+        detailLines: ["Sin IVA"],
+      };
+    }
+
+    return {
+      title: "Precio",
+      amountCents: snapshot.finalTotalCents,
+      detailLines: [],
+    };
+  }
+
+  return {
+    title: "Precio",
+    amountCents: profile.plan?.price ?? 0,
+    detailLines: [],
+  };
 }
 
 function cycleLabel(cycleMonths: number | null | undefined): string {
@@ -2339,6 +2446,8 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
   const todayAssignmentDate = getMxTodayIsoDate();
   const selectedAssignPlan = activePlans.find((plan) => plan.id === selectedAssignPlanId) ?? null;
   const assignPlanPreviewExpiresAt = calculatePlanExpirationPreview(selectedAssignPlan, assignmentStartDate);
+  const activePlanChargeSnapshot = profile?.plan ? getMembershipPlanChargeSnapshot(profile.plan) : null;
+  const activePlanPriceDisplay = profile ? getClientPlanPriceDisplay(profile) : null;
   const isHistoricalAssignment = assignmentStartDate < todayAssignmentDate;
   const age = profile ? calcAge(profile.user.birthDate) : null;
   const commercialHistory = commercialHistoryQuery.data;
@@ -2648,6 +2757,11 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                 <div className="mt-0.5 text-xs text-muted-foreground">
                   {cycleLabel(plan.cycleMonths)} · {usageSummaryLabel(plan.classLimit, plan.cycleMonths)}
                 </div>
+                {getMembershipPlanChargeLabel(plan) ? (
+                  <div className="mt-0.5 text-[11px] text-muted-foreground">
+                    {getMembershipPlanChargeLabel(plan)}
+                  </div>
+                ) : null}
                 <div className="mt-1 text-[11px] text-muted-foreground">
                   Inicia {formatDate(assignmentStartDate)} · {previewExpiresAt ? `Vence ${formatCalendarPreview(previewExpiresAt)}` : "Sin fecha de vencimiento"}
                 </div>
@@ -2661,6 +2775,9 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
         <div className="rounded-md border bg-background px-3 py-2 text-xs">
           <p className="font-medium">Plan seleccionado</p>
           <p className="mt-1 text-muted-foreground">{selectedAssignPlan.name}</p>
+          {getMembershipPlanChargeLabel(selectedAssignPlan) ? (
+            <p className="mt-1 text-muted-foreground">{getMembershipPlanChargeLabel(selectedAssignPlan)}</p>
+          ) : null}
           <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
             <div>
               <p className="text-muted-foreground">Fecha de inicio</p>
@@ -3069,8 +3186,15 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                       <div className="font-medium" data-testid="text-billing-cycle">{cycleLabel(profile.plan.cycleMonths)}</div>
                     </div>
                     <div className="bg-background rounded-md p-2">
-                      <div className="text-muted-foreground mb-0.5">Precio</div>
-                      <div className="font-medium" data-testid="text-plan-price">${(profile.plan.price / 100).toFixed(2)} MXN</div>
+                      <div className="text-muted-foreground mb-0.5">{activePlanPriceDisplay?.title || "Precio"}</div>
+                      <div className="font-medium" data-testid="text-plan-price">
+                        {formatCurrencyMx((activePlanPriceDisplay?.amountCents ?? 0) / 100)}
+                      </div>
+                      {activePlanPriceDisplay?.detailLines.map((line) => (
+                        <div key={line} className="text-[11px] text-muted-foreground">
+                          {line}
+                        </div>
+                      ))}
                     </div>
                     <div className="bg-background rounded-md p-2">
                       <div className="text-muted-foreground mb-0.5">Pagado el</div>
@@ -3115,6 +3239,28 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                           </SelectContent>
                         </Select>
                       </div>
+                      {activePlanChargeSnapshot && !activePlanChargeSnapshot.isLegacy ? (
+                        <div className="rounded-md border bg-background px-3 py-2 text-xs text-muted-foreground" data-testid="renew-tax-preview">
+                          <p className="font-medium text-foreground">Resumen del cobro</p>
+                          <div className="mt-2 grid grid-cols-1 gap-1 sm:grid-cols-2">
+                            {activePlanChargeSnapshot.taxMode === "tax_added" ? (
+                              <>
+                                <span>Precio base: <strong className="text-foreground">{formatCurrencyMx(activePlanChargeSnapshot.basePriceCents / 100)}</strong></span>
+                                <span>IVA {formatTaxRateLabel(activePlanChargeSnapshot.taxRate)}: <strong className="text-foreground">{formatCurrencyMx((activePlanChargeSnapshot.taxTotalCents ?? 0) / 100)}</strong></span>
+                                <span className="sm:col-span-2">Total a cobrar: <strong className="text-foreground">{formatCurrencyMx(activePlanChargeSnapshot.finalTotalCents / 100)}</strong></span>
+                              </>
+                            ) : activePlanChargeSnapshot.taxMode === "tax_included" ? (
+                              <>
+                                <span>Precio final: <strong className="text-foreground">{formatCurrencyMx(activePlanChargeSnapshot.finalTotalCents / 100)}</strong></span>
+                                <span>Subtotal: <strong className="text-foreground">{formatCurrencyMx((activePlanChargeSnapshot.subtotalBeforeTaxCents ?? 0) / 100)}</strong></span>
+                                <span className="sm:col-span-2">IVA incluido {formatTaxRateLabel(activePlanChargeSnapshot.taxRate)}: <strong className="text-foreground">{formatCurrencyMx((activePlanChargeSnapshot.taxTotalCents ?? 0) / 100)}</strong></span>
+                              </>
+                            ) : (
+                              <span className="sm:col-span-2">Sin IVA: <strong className="text-foreground">{formatCurrencyMx(activePlanChargeSnapshot.finalTotalCents / 100)}</strong></span>
+                            )}
+                          </div>
+                        </div>
+                      ) : null}
                       <Button
                         size="sm"
                         className="h-10 w-full sm:h-9"
