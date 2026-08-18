@@ -146,9 +146,11 @@ import {
   type InsertNotificationJob,
   branchFinanceEntries,
   branchChargeEvents,
+  branchLeaseContracts,
   type BranchFinanceEntry,
   type InsertBranchFinanceEntry,
   type BranchChargeEvent,
+  type BranchLeaseContract,
   branchRecurringExpenses,
   type BranchRecurringExpense,
   type InsertBranchRecurringExpense,
@@ -177,6 +179,11 @@ import {
 } from "./membership-plan-dates";
 import { normalizeSearchText } from "./search-utils";
 import { computeMembershipPlanChargeSnapshot } from "@shared/membership-plan-tax";
+import {
+  calculateLeaseContractEndDate,
+  calculateLeaseContractMetrics,
+  calculateLeaseOperationalMembershipWindow,
+} from "@shared/lease-contract";
 
 const BRANCH_CLIENT_PASSWORD_RESET_COOLDOWN_MS = 60_000;
 
@@ -212,6 +219,59 @@ export interface MembershipBillingOperationResult {
   chargeEventId: string;
   financeEntryId: string | null;
   cancelledBookings: number;
+}
+
+export interface LeaseMembershipOperationResult {
+  membership: Membership;
+  leaseContract: BranchLeaseContract;
+  idempotentReplay: boolean;
+  chargeEventId: string | null;
+  financeEntryId: string | null;
+  cancelledBookings: number;
+}
+
+export interface BranchLeaseContractSummary {
+  id: string;
+  branchId: string;
+  membershipId: string | null;
+  planId: string | null;
+  clientUserId: string | null;
+  clientName: string | null;
+  clientLastName: string | null;
+  clientDisplayName: string;
+  clientEmail: string | null;
+  clientPhone: string | null;
+  planName: string | null;
+  contractStartDate: string;
+  contractEndDate: string;
+  contractTermMonths: number;
+  preWebcoolPaidInstallments: number;
+  webcoolPaidInstallments: number;
+  totalPaidInstallments: number;
+  pendingInstallments: number;
+  elapsedCalendarMonths: number;
+  remainingCalendarMonths: number;
+  paymentProgressPercent: number;
+  derivedStatus: "ACTIVE" | "COMPLETED" | "EXPIRED" | "CANCELLED";
+  isOpenForLifecycleGuards: boolean;
+  leasedItemDescription: string;
+  notes: string | null;
+  capturedPriceCents: number;
+  taxModeSnapshot: string | null;
+  taxRateSnapshot: number | null;
+  monthlySubtotalBeforeTaxCents: number | null;
+  monthlyTaxableSubtotalCents: number | null;
+  monthlyTaxTotalCents: number | null;
+  monthlyFinalTotalCents: number;
+  currencyCode: string;
+  operationalCoverageStartDate: string | null;
+  operationalCoverageEndDate: string | null;
+  hasOperationalCoverage: boolean;
+  operationalCoverageCurrent: boolean;
+  completedAt: Date | null;
+  cancelledAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 const BRANCH_TIMEZONE = "America/Mexico_City";
@@ -2141,8 +2201,12 @@ export interface IStorage {
   createPlan(data: InsertMembershipPlan): Promise<MembershipPlan>;
   updatePlan(id: string, data: Partial<InsertMembershipPlan>): Promise<MembershipPlan | undefined>;
   deactivatePlan(id: string): Promise<MembershipPlan | undefined>;
-  detachPlanFromMemberships(planId: string, planName: string): Promise<number>;
+  detachPlanFromMemberships(planId: string, planNameSnapshot: string | null): Promise<number>;
   getPlan(id: string): Promise<MembershipPlan | undefined>;
+  hasOpenLeaseContractsForPlan(branchId: string, planId: string): Promise<boolean>;
+  getOpenLeaseContractForMembership(branchId: string, membershipId: string): Promise<BranchLeaseContract | undefined>;
+  getBranchLeaseContracts(branchId: string): Promise<BranchLeaseContractSummary[]>;
+  getBranchLeaseContract(branchId: string, leaseContractId: string): Promise<BranchLeaseContractSummary | undefined>;
   assignPlanToMembership(
     membershipId: string,
     planId: string,
@@ -2152,6 +2216,22 @@ export interface IStorage {
     startDate: Date,
   ): Promise<Membership | undefined>;
   removePlanFromMembership(membershipId: string, branchId: string): Promise<Membership | undefined>;
+  commitLeaseMembershipAssignmentOperation(data: {
+    branchId: string;
+    membershipId: string;
+    planId: string;
+    paymentMethod?: string | null;
+    idempotencyKey?: string | null;
+    actorUserId: string;
+    leaseContract: {
+      mode: "new_contract_charge_now" | "existing_contract_no_charge" | "existing_contract_charge_now";
+      contractStartDate: string;
+      contractTermMonths: number;
+      preWebcoolPaidInstallments: number;
+      leasedItemDescription: string;
+      notes?: string | null;
+    };
+  }): Promise<LeaseMembershipOperationResult>;
   createMembershipFinanceEntry(data: {
     branchId: string;
     membershipId: string;
@@ -5971,6 +6051,14 @@ export class DatabaseStorage implements IStorage {
       }
     }
 
+    const leaseContracts = await this.getLeaseContractsForClientTx(db, branchId, userId, {
+      name: user.name ?? null,
+      lastName: user.lastName ?? null,
+      email: user.email ?? null,
+      phone: user.phone ?? null,
+    });
+    const openLeaseContracts = leaseContracts.filter((contract) => contract.isOpenForLifecycleGuards);
+
     const notes = await this.getClientNotes(userId, branchId);
     const recentAttendances = await this.getClientAttendances(userId, branchId, 10);
     const [crmEntry] = await db
@@ -6115,6 +6203,9 @@ export class DatabaseStorage implements IStorage {
       planNameSnapshot: membership.planNameSnapshot,
       plan,
       planChargeSnapshot: currentChargeSnapshot,
+      leaseContracts,
+      openLeaseContracts,
+      activeLeaseContractsCount: openLeaseContracts.length,
       notes,
       purchaseHistory: purchaseHistoryRows.map((row) => ({
         id: row.id,
@@ -6615,10 +6706,10 @@ export class DatabaseStorage implements IStorage {
     return plan;
   }
 
-  async detachPlanFromMemberships(planId: string, planName: string): Promise<number> {
+  async detachPlanFromMemberships(planId: string, planNameSnapshot: string | null): Promise<number> {
     const affected = await db
       .update(memberships)
-      .set({ planId: null, planNameSnapshot: planName })
+      .set({ planId: null, planNameSnapshot })
       .where(and(eq(memberships.planId, planId), eq(memberships.status, "active")))
       .returning({ id: memberships.id });
     return affected.length;
@@ -6627,6 +6718,326 @@ export class DatabaseStorage implements IStorage {
   async getPlan(id: string): Promise<MembershipPlan | undefined> {
     const [plan] = await db.select().from(membershipPlans).where(eq(membershipPlans.id, id));
     return plan;
+  }
+
+  async hasOpenLeaseContractsForPlan(branchId: string, planId: string): Promise<boolean> {
+    const [row] = await db
+      .select({ id: branchLeaseContracts.id })
+      .from(branchLeaseContracts)
+      .where(and(
+        eq(branchLeaseContracts.branchId, branchId),
+        eq(branchLeaseContracts.planId, planId),
+        isNull(branchLeaseContracts.cancelledAt),
+        isNull(branchLeaseContracts.completedAt),
+      ))
+      .limit(1);
+    return !!row;
+  }
+
+  private async getOpenLeaseContractForMembershipTx(
+    executor: any,
+    branchId: string,
+    membershipId: string,
+  ): Promise<BranchLeaseContract | undefined> {
+    const [row] = await executor
+      .select()
+      .from(branchLeaseContracts)
+      .where(and(
+        eq(branchLeaseContracts.branchId, branchId),
+        eq(branchLeaseContracts.membershipId, membershipId),
+        isNull(branchLeaseContracts.cancelledAt),
+        isNull(branchLeaseContracts.completedAt),
+      ))
+      .orderBy(desc(branchLeaseContracts.createdAt))
+      .limit(1);
+    return row;
+  }
+
+  async getOpenLeaseContractForMembership(branchId: string, membershipId: string): Promise<BranchLeaseContract | undefined> {
+    return this.getOpenLeaseContractForMembershipTx(db, branchId, membershipId);
+  }
+
+  private async getLatestLeaseContractForMembershipTx(
+    executor: any,
+    branchId: string,
+    membershipId: string,
+  ): Promise<BranchLeaseContract | undefined> {
+    const [row] = await executor
+      .select()
+      .from(branchLeaseContracts)
+      .where(and(
+        eq(branchLeaseContracts.branchId, branchId),
+        eq(branchLeaseContracts.membershipId, membershipId),
+      ))
+      .orderBy(desc(branchLeaseContracts.createdAt))
+      .limit(1);
+    return row;
+  }
+
+  private async getLeaseContractsForClientTx(
+    executor: any,
+    branchId: string,
+    clientUserId: string,
+    client: {
+      name: string | null;
+      lastName: string | null;
+      email: string | null;
+      phone: string | null;
+    },
+  ): Promise<BranchLeaseContractSummary[]> {
+    const contractRows = await executor
+      .select({
+        contract: branchLeaseContracts,
+        planName: membershipPlans.name,
+      })
+      .from(branchLeaseContracts)
+      .leftJoin(membershipPlans, eq(branchLeaseContracts.planId, membershipPlans.id))
+      .where(and(
+        eq(branchLeaseContracts.branchId, branchId),
+        eq(branchLeaseContracts.clientUserId, clientUserId),
+      ))
+      .orderBy(desc(branchLeaseContracts.createdAt));
+
+    if (contractRows.length === 0) {
+      return [];
+    }
+
+    const contractIds = contractRows.map((row: { contract: BranchLeaseContract }) => row.contract.id);
+    const paidInstallmentRows = await executor
+      .select({
+        leaseContractId: branchChargeEvents.leaseContractId,
+        count: sql<number>`COUNT(*)`.as("count"),
+      })
+      .from(branchChargeEvents)
+      .where(and(
+        eq(branchChargeEvents.branchId, branchId),
+        inArray(branchChargeEvents.eventType, ["assign", "renew"]),
+        inArray(branchChargeEvents.leaseContractId, contractIds),
+      ))
+      .groupBy(branchChargeEvents.leaseContractId);
+
+    const paidInstallmentCountByContractId = new Map<string, number>();
+    for (const row of paidInstallmentRows as Array<{ leaseContractId: string | null; count: number }>) {
+      if (row.leaseContractId) {
+        paidInstallmentCountByContractId.set(row.leaseContractId, Number(row.count) || 0);
+      }
+    }
+
+    return contractRows.map((row: { contract: BranchLeaseContract; planName: string | null }) =>
+      this.buildLeaseContractSummary(
+        row.contract,
+        paidInstallmentCountByContractId.get(row.contract.id) ?? 0,
+        client,
+        row.planName ?? null,
+      ),
+    );
+  }
+
+  private async countLeaseContractWebcoolPaidInstallmentsTx(
+    executor: any,
+    branchId: string,
+    leaseContractId: string,
+  ): Promise<number> {
+    const [row] = await executor
+      .select({
+        count: sql<number>`COUNT(*)`.as("count"),
+      })
+      .from(branchChargeEvents)
+      .where(and(
+        eq(branchChargeEvents.branchId, branchId),
+        eq(branchChargeEvents.leaseContractId, leaseContractId),
+        inArray(branchChargeEvents.eventType, ["assign", "renew"]),
+      ));
+    return Number(row?.count) || 0;
+  }
+
+  private buildLeaseContractSummary(
+    contract: BranchLeaseContract,
+    webcoolPaidInstallments: number,
+    client?: {
+      name: string | null;
+      lastName: string | null;
+      email: string | null;
+      phone: string | null;
+    } | null,
+    planName?: string | null,
+  ): BranchLeaseContractSummary {
+    const metrics = calculateLeaseContractMetrics({
+      contractStartDate: contract.contractStartDate,
+      contractEndDate: contract.contractEndDate,
+      contractTermMonths: contract.contractTermMonths,
+      preWebcoolPaidInstallments: contract.preWebcoolPaidInstallments,
+      webcoolPaidInstallments,
+      today: getMxLocalDate(),
+      cancelledAt: contract.cancelledAt ? new Date(contract.cancelledAt).toISOString() : null,
+      completedAt: contract.completedAt ? new Date(contract.completedAt).toISOString() : null,
+    });
+    const operationalWindow = calculateLeaseOperationalMembershipWindow({
+      contractStartDate: contract.contractStartDate,
+      paidInstallments: metrics.totalPaidInstallments,
+      today: getMxLocalDate(),
+    });
+    const clientDisplayName = [client?.name, client?.lastName]
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      .join(" ")
+      .trim();
+
+    return {
+      id: contract.id,
+      branchId: contract.branchId,
+      membershipId: contract.membershipId ?? null,
+      planId: contract.planId ?? null,
+      clientUserId: contract.clientUserId ?? null,
+      clientName: client?.name ?? null,
+      clientLastName: client?.lastName ?? null,
+      clientDisplayName: clientDisplayName || client?.email || "Cliente sin nombre",
+      clientEmail: client?.email ?? null,
+      clientPhone: client?.phone ?? null,
+      planName: planName ?? null,
+      contractStartDate: contract.contractStartDate,
+      contractEndDate: contract.contractEndDate,
+      contractTermMonths: contract.contractTermMonths,
+      preWebcoolPaidInstallments: contract.preWebcoolPaidInstallments,
+      webcoolPaidInstallments,
+      totalPaidInstallments: metrics.totalPaidInstallments,
+      pendingInstallments: metrics.pendingInstallments,
+      elapsedCalendarMonths: metrics.elapsedCalendarMonths,
+      remainingCalendarMonths: metrics.remainingCalendarMonths,
+      paymentProgressPercent: metrics.paymentProgressPercent,
+      derivedStatus: metrics.derivedStatus,
+      isOpenForLifecycleGuards: metrics.isOpenForLifecycleGuards,
+      leasedItemDescription: contract.leasedItemDescription,
+      notes: contract.notes ?? null,
+      capturedPriceCents: contract.capturedPriceCents,
+      taxModeSnapshot: contract.taxModeSnapshot ?? null,
+      taxRateSnapshot: contract.taxRateSnapshot == null ? null : Number(contract.taxRateSnapshot),
+      monthlySubtotalBeforeTaxCents: contract.monthlySubtotalBeforeTaxCents,
+      monthlyTaxableSubtotalCents: contract.monthlyTaxableSubtotalCents,
+      monthlyTaxTotalCents: contract.monthlyTaxTotalCents,
+      monthlyFinalTotalCents: contract.monthlyFinalTotalCents,
+      currencyCode: contract.currencyCode,
+      operationalCoverageStartDate: operationalWindow.membershipStartDate,
+      operationalCoverageEndDate: operationalWindow.membershipEndDate,
+      hasOperationalCoverage: operationalWindow.hasCoveredInstallments,
+      operationalCoverageCurrent: operationalWindow.isCurrentlyCovered,
+      completedAt: contract.completedAt ?? null,
+      cancelledAt: contract.cancelledAt ?? null,
+      createdAt: contract.createdAt,
+      updatedAt: contract.updatedAt,
+    };
+  }
+
+  async getBranchLeaseContracts(branchId: string): Promise<BranchLeaseContractSummary[]> {
+    const contractRows = await db
+      .select({
+        contract: branchLeaseContracts,
+        clientName: users.name,
+        clientLastName: users.lastName,
+        clientEmail: users.email,
+        clientPhone: users.phone,
+        planName: membershipPlans.name,
+      })
+      .from(branchLeaseContracts)
+      .leftJoin(users, eq(branchLeaseContracts.clientUserId, users.id))
+      .leftJoin(membershipPlans, eq(branchLeaseContracts.planId, membershipPlans.id))
+      .where(eq(branchLeaseContracts.branchId, branchId))
+      .orderBy(desc(branchLeaseContracts.createdAt));
+
+    const paidInstallmentRows = await db
+      .select({
+        leaseContractId: branchChargeEvents.leaseContractId,
+        count: sql<number>`COUNT(*)`.as("count"),
+      })
+      .from(branchChargeEvents)
+      .where(and(
+        eq(branchChargeEvents.branchId, branchId),
+        inArray(branchChargeEvents.eventType, ["assign", "renew"]),
+        sql`${branchChargeEvents.leaseContractId} IS NOT NULL`,
+      ))
+      .groupBy(branchChargeEvents.leaseContractId);
+
+    const paidInstallmentCountByContractId = new Map<string, number>();
+    for (const row of paidInstallmentRows) {
+      if (row.leaseContractId) {
+        paidInstallmentCountByContractId.set(row.leaseContractId, Number(row.count) || 0);
+      }
+    }
+
+    return contractRows.map((row) =>
+      this.buildLeaseContractSummary(
+        row.contract,
+        paidInstallmentCountByContractId.get(row.contract.id) ?? 0,
+        {
+          name: row.clientName ?? null,
+          lastName: row.clientLastName ?? null,
+          email: row.clientEmail ?? null,
+          phone: row.clientPhone ?? null,
+        },
+        row.planName ?? null,
+      ),
+    );
+  }
+
+  async getBranchLeaseContract(branchId: string, leaseContractId: string): Promise<BranchLeaseContractSummary | undefined> {
+    const [row] = await db
+      .select({
+        contract: branchLeaseContracts,
+        clientName: users.name,
+        clientLastName: users.lastName,
+        clientEmail: users.email,
+        clientPhone: users.phone,
+        planName: membershipPlans.name,
+      })
+      .from(branchLeaseContracts)
+      .leftJoin(users, eq(branchLeaseContracts.clientUserId, users.id))
+      .leftJoin(membershipPlans, eq(branchLeaseContracts.planId, membershipPlans.id))
+      .where(and(
+        eq(branchLeaseContracts.branchId, branchId),
+        eq(branchLeaseContracts.id, leaseContractId),
+      ))
+      .limit(1);
+
+    if (!row) {
+      return undefined;
+    }
+
+    const webcoolPaidInstallments = await this.countLeaseContractWebcoolPaidInstallmentsTx(
+      db,
+      branchId,
+      row.contract.id,
+    );
+
+    return this.buildLeaseContractSummary(
+      row.contract,
+      webcoolPaidInstallments,
+      {
+        name: row.clientName ?? null,
+        lastName: row.clientLastName ?? null,
+        email: row.clientEmail ?? null,
+        phone: row.clientPhone ?? null,
+      },
+      row.planName ?? null,
+    );
+  }
+
+  private async getLeaseAssignmentReplayAuditTx(
+    executor: any,
+    branchId: string,
+    membershipId: string,
+    operationKey: string,
+  ): Promise<AuditLog | undefined> {
+    const [row] = await executor
+      .select()
+      .from(auditLogs)
+      .where(and(
+        eq(auditLogs.branchId, branchId),
+        eq(auditLogs.action, "ASSIGN_LEASE_CONTRACT"),
+        sql`${auditLogs.metadata}->>'membershipId' = ${membershipId}`,
+        sql`${auditLogs.metadata}->>'operationKey' = ${operationKey}`,
+      ))
+      .orderBy(desc(auditLogs.createdAt))
+      .limit(1);
+    return row;
   }
 
   private resolveMembershipChargeOperationKey(idempotencyKey?: string | null): {
@@ -6695,6 +7106,7 @@ export class DatabaseStorage implements IStorage {
     operationKey: string;
     membershipId: string;
     planId: string;
+    leaseContractId?: string | null;
     clientUserId: string;
     planNameSnapshot: string;
     basePriceCents: number;
@@ -6717,6 +7129,7 @@ export class DatabaseStorage implements IStorage {
         operationKey: data.operationKey,
         membershipId: data.membershipId,
         planId: data.planId,
+        leaseContractId: data.leaseContractId ?? null,
         clientUserId: data.clientUserId,
         planNameSnapshot: data.planNameSnapshot,
         basePriceCents: data.basePriceCents,
@@ -6782,6 +7195,94 @@ export class DatabaseStorage implements IStorage {
     return membership;
   }
 
+  private async setMembershipPlanOperationalStateTx(
+    executor: any,
+    data: {
+      membershipId: string;
+      planId: string;
+      classesRemaining: number | null;
+      classesTotal: number | null;
+      membershipStartDate: Date | null;
+      membershipEndDate: Date | null;
+      expiresAt: Date | null;
+      paidAt: Date | null;
+    },
+  ): Promise<Membership | undefined> {
+    const [membership] = await executor
+      .update(memberships)
+      .set({
+        ...buildMembershipActivePatch(),
+        planId: data.planId,
+        planNameSnapshot: null,
+        classesRemaining: data.classesRemaining,
+        classesTotal: data.classesTotal,
+        membershipStartDate: data.membershipStartDate,
+        membershipEndDate: data.membershipEndDate,
+        expiresAt: data.expiresAt,
+        paidAt: data.paidAt,
+      })
+      .where(eq(memberships.id, data.membershipId))
+      .returning();
+    return membership;
+  }
+
+  private async createLeaseContractTx(
+    executor: any,
+    data: {
+      branchId: string;
+      membershipId: string;
+      clientUserId: string;
+      planId: string;
+      contractStartDate: string;
+      contractEndDate: string;
+      contractTermMonths: number;
+      preWebcoolPaidInstallments: number;
+      leasedItemDescription: string;
+      notes?: string | null;
+      capturedPriceCents: number;
+      taxModeSnapshot: string | null;
+      taxRateSnapshot: number | null;
+      monthlySubtotalBeforeTaxCents: number | null;
+      monthlyTaxableSubtotalCents: number | null;
+      monthlyTaxTotalCents: number | null;
+      monthlyFinalTotalCents: number;
+      createdBy: string;
+      completedAt?: Date | null;
+    },
+  ): Promise<BranchLeaseContract> {
+    const [leaseContract] = await executor
+      .insert(branchLeaseContracts)
+      .values({
+        branchId: data.branchId,
+        membershipId: data.membershipId,
+        clientUserId: data.clientUserId,
+        planId: data.planId,
+        contractStartDate: data.contractStartDate,
+        contractEndDate: data.contractEndDate,
+        contractTermMonths: data.contractTermMonths,
+        preWebcoolPaidInstallments: data.preWebcoolPaidInstallments,
+        leasedItemDescription: data.leasedItemDescription,
+        notes: data.notes ?? null,
+        capturedPriceCents: data.capturedPriceCents,
+        taxModeSnapshot: data.taxModeSnapshot,
+        taxRateSnapshot: data.taxRateSnapshot == null ? null : data.taxRateSnapshot.toFixed(4),
+        monthlySubtotalBeforeTaxCents: data.monthlySubtotalBeforeTaxCents,
+        monthlyTaxableSubtotalCents: data.monthlyTaxableSubtotalCents,
+        monthlyTaxTotalCents: data.monthlyTaxTotalCents,
+        monthlyFinalTotalCents: data.monthlyFinalTotalCents,
+        currencyCode: "MXN",
+        createdBy: data.createdBy,
+        completedAt: data.completedAt ?? null,
+      } as any)
+      .returning();
+
+    if (!leaseContract) {
+      throw new Error("LEASE_CONTRACT_CREATE_FAILED");
+    }
+
+    return leaseContract;
+  }
+
   async assignPlanToMembership(
     membershipId: string,
     planId: string,
@@ -6802,12 +7303,19 @@ export class DatabaseStorage implements IStorage {
   }
 
   async removePlanFromMembership(membershipId: string, branchId: string): Promise<Membership | undefined> {
-    const [m] = await db
-      .update(memberships)
-      .set({ planId: null, classesRemaining: null, classesTotal: null, expiresAt: null, membershipStartDate: null, membershipEndDate: null, paidAt: null, renewedFromId: null })
-      .where(and(eq(memberships.id, membershipId), eq(memberships.branchId, branchId)))
-      .returning();
-    return m;
+    return db.transaction(async (tx) => {
+      const membership = await this.lockMembershipTx(tx, membershipId);
+      if (!membership || membership.branchId !== branchId) {
+        return undefined;
+      }
+
+      const [updated] = await tx
+        .update(memberships)
+        .set({ planId: null, classesRemaining: null, classesTotal: null, expiresAt: null, membershipStartDate: null, membershipEndDate: null, paidAt: null, renewedFromId: null })
+        .where(and(eq(memberships.id, membershipId), eq(memberships.branchId, branchId)))
+        .returning();
+      return updated;
+    });
   }
 
   async getMembershipByUserAndBranch(userId: string, branchId: string): Promise<Membership | undefined> {
@@ -6840,6 +7348,9 @@ export class DatabaseStorage implements IStorage {
       }
       if (!plan.isActive) {
         throw new Error("PLAN_INACTIVE");
+      }
+      if (plan.leaseEnabled) {
+        throw new Error("LEASE_ASSIGNMENT_REQUIRES_CONTRACT");
       }
 
       const taxSnapshot = computeMembershipPlanChargeSnapshot({
@@ -6980,6 +7491,337 @@ export class DatabaseStorage implements IStorage {
         membership: updatedMembership,
         idempotentReplay: false,
         chargeEventId: chargeClaim.chargeEvent.id,
+        financeEntryId,
+        cancelledBookings,
+      };
+    });
+  }
+
+  async commitLeaseMembershipAssignmentOperation(data: {
+    branchId: string;
+    membershipId: string;
+    planId: string;
+    paymentMethod?: string | null;
+    idempotencyKey?: string | null;
+    actorUserId: string;
+    leaseContract: {
+      mode: "new_contract_charge_now" | "existing_contract_no_charge" | "existing_contract_charge_now";
+      contractStartDate: string;
+      contractTermMonths: number;
+      preWebcoolPaidInstallments: number;
+      leasedItemDescription: string;
+      notes?: string | null;
+    };
+  }): Promise<LeaseMembershipOperationResult> {
+    const { operationKey, isLegacyRequest } = this.resolveMembershipChargeOperationKey(data.idempotencyKey);
+    const normalizedPaymentMethod = normalizeOptionalTextValue(data.paymentMethod) ?? null;
+    const normalizedMode = data.leaseContract.mode;
+    const normalizedContractStartDate = normalizeOptionalTextValue(data.leaseContract.contractStartDate);
+    const normalizedLeasedItemDescription = normalizeOptionalTextValue(data.leaseContract.leasedItemDescription);
+    const normalizedNotes = normalizeOptionalTextValue(data.leaseContract.notes) ?? null;
+
+    return db.transaction(async (tx) => {
+      const membership = await this.lockMembershipTx(tx, data.membershipId);
+      if (!membership || membership.branchId !== data.branchId) {
+        throw new Error("MEMBERSHIP_NOT_FOUND");
+      }
+
+      const plan = await this.getPlanTx(tx, data.planId);
+      if (!plan || plan.branchId !== data.branchId) {
+        throw new Error("PLAN_NOT_FOUND");
+      }
+      if (!plan.isActive) {
+        throw new Error("PLAN_INACTIVE");
+      }
+      if (!plan.leaseEnabled) {
+        throw new Error("LEASE_ASSIGNMENT_REQUIRES_CONTRACT");
+      }
+      if ((plan.cycleMonths ?? 1) !== 1) {
+        throw new Error("LEASE_PLAN_REQUIRES_MONTHLY_CYCLE");
+      }
+
+      if (!normalizedContractStartDate) {
+        throw new Error("LEASE_CONTRACT_START_REQUIRED");
+      }
+      if (normalizedContractStartDate > getMxLocalDate()) {
+        throw new Error("START_DATE_IN_FUTURE");
+      }
+      if (!normalizedLeasedItemDescription) {
+        throw new Error("LEASE_ITEM_DESCRIPTION_REQUIRED");
+      }
+
+      const contractTermMonths = data.leaseContract.contractTermMonths;
+      if (!Number.isInteger(contractTermMonths) || contractTermMonths <= 0 || contractTermMonths > 120) {
+        throw new Error("LEASE_CONTRACT_TERM_INVALID");
+      }
+
+      const preWebcoolPaidInstallments = normalizedMode === "new_contract_charge_now"
+        ? 0
+        : data.leaseContract.preWebcoolPaidInstallments;
+      if (
+        !Number.isInteger(preWebcoolPaidInstallments)
+        || preWebcoolPaidInstallments < 0
+        || preWebcoolPaidInstallments > contractTermMonths
+      ) {
+        throw new Error("LEASE_PREWEBCOOL_INSTALLMENTS_INVALID");
+      }
+
+      const chargeNow = normalizedMode !== "existing_contract_no_charge";
+      if (chargeNow) {
+        const existingChargeEvent = await this.getBranchChargeEventByOperationKeyTx(tx, data.branchId, operationKey);
+        if (existingChargeEvent) {
+          if (
+            existingChargeEvent.chargeDomain !== "membership_plan"
+            || existingChargeEvent.eventType !== "assign"
+            || existingChargeEvent.membershipId !== membership.id
+            || existingChargeEvent.planId !== plan.id
+            || !existingChargeEvent.leaseContractId
+          ) {
+            throw new Error("MEMBERSHIP_OPERATION_KEY_CONFLICT");
+          }
+
+          const replayMembership = await this.lockMembershipTx(tx, data.membershipId);
+          const [replayLeaseContract] = await tx
+            .select()
+            .from(branchLeaseContracts)
+            .where(eq(branchLeaseContracts.id, existingChargeEvent.leaseContractId))
+            .limit(1);
+
+          if (!replayMembership || !replayLeaseContract) {
+            throw new Error("LEASE_CONTRACT_REPLAY_NOT_FOUND");
+          }
+
+          return {
+            membership: replayMembership,
+            leaseContract: replayLeaseContract,
+            idempotentReplay: true,
+            chargeEventId: existingChargeEvent.id,
+            financeEntryId: existingChargeEvent.financeEntryId ?? null,
+            cancelledBookings: 0,
+          };
+        }
+      }
+
+      const existingOpenLease = await this.getOpenLeaseContractForMembershipTx(tx, data.branchId, membership.id);
+      if (existingOpenLease) {
+        if (!chargeNow) {
+          const replayAudit = await this.getLeaseAssignmentReplayAuditTx(tx, data.branchId, membership.id, operationKey);
+          if (replayAudit) {
+            const replayMembership = await this.lockMembershipTx(tx, data.membershipId);
+            if (!replayMembership) {
+              throw new Error("MEMBERSHIP_NOT_FOUND");
+            }
+
+            return {
+              membership: replayMembership,
+              leaseContract: existingOpenLease,
+              idempotentReplay: true,
+              chargeEventId: null,
+              financeEntryId: null,
+              cancelledBookings: 0,
+            };
+          }
+        }
+
+        throw new Error("LEASE_CONTRACT_OPEN_ASSIGN_BLOCKED");
+      }
+
+      const contractEndDate = calculateLeaseContractEndDate(normalizedContractStartDate, contractTermMonths);
+      if (!contractEndDate) {
+        throw new Error("LEASE_CONTRACT_DATE_INVALID");
+      }
+
+      const webcoolPaidInstallmentsDelta = chargeNow ? 1 : 0;
+      const totalPaidInstallments = preWebcoolPaidInstallments + webcoolPaidInstallmentsDelta;
+      const operationalWindow = calculateLeaseOperationalMembershipWindow({
+        contractStartDate: normalizedContractStartDate,
+        paidInstallments: totalPaidInstallments,
+        today: getMxLocalDate(),
+      });
+
+      const operationalStartDate = operationalWindow.membershipStartDate
+        ? parseMxIsoDateInput(operationalWindow.membershipStartDate)
+        : null;
+      const operationalEndDate = operationalWindow.membershipEndDate
+        ? parseMxIsoDateInput(operationalWindow.membershipEndDate)
+        : null;
+      const operationalExpiresAt = parseMxIsoDateInput(operationalWindow.expiresAt);
+      if (
+        (operationalWindow.membershipStartDate && !operationalStartDate)
+        || (operationalWindow.membershipEndDate && !operationalEndDate)
+        || !operationalExpiresAt
+      ) {
+        throw new Error("LEASE_OPERATIONAL_COVERAGE_INVALID");
+      }
+
+      const taxSnapshot = computeMembershipPlanChargeSnapshot({
+        priceCents: plan.price,
+        taxMode: plan.taxMode,
+        taxRate: plan.taxRate,
+      });
+
+      const chargeTimestamp = chargeNow ? new Date() : null;
+      const completedAt = totalPaidInstallments >= contractTermMonths ? new Date() : null;
+      const leaseContract = await this.createLeaseContractTx(tx, {
+        branchId: data.branchId,
+        membershipId: membership.id,
+        clientUserId: membership.userId,
+        planId: plan.id,
+        contractStartDate: normalizedContractStartDate,
+        contractEndDate,
+        contractTermMonths,
+        preWebcoolPaidInstallments,
+        leasedItemDescription: normalizedLeasedItemDescription,
+        notes: normalizedNotes,
+        capturedPriceCents: taxSnapshot.basePriceCents,
+        taxModeSnapshot: taxSnapshot.taxMode,
+        taxRateSnapshot: taxSnapshot.taxRate,
+        monthlySubtotalBeforeTaxCents: taxSnapshot.subtotalBeforeTaxCents,
+        monthlyTaxableSubtotalCents: taxSnapshot.taxableSubtotalCents,
+        monthlyTaxTotalCents: taxSnapshot.taxTotalCents,
+        monthlyFinalTotalCents: taxSnapshot.finalTotalCents,
+        createdBy: data.actorUserId,
+        completedAt,
+      });
+
+      let chargeEventId: string | null = null;
+      let financeEntryId: string | null = null;
+
+      if (chargeNow) {
+        const chargeClaim = await this.claimMembershipChargeEventTx(tx, {
+          branchId: data.branchId,
+          eventType: "assign",
+          operationKey,
+          membershipId: membership.id,
+          planId: plan.id,
+          leaseContractId: leaseContract.id,
+          clientUserId: membership.userId,
+          planNameSnapshot: plan.name,
+          basePriceCents: taxSnapshot.basePriceCents,
+          taxMode: taxSnapshot.taxMode,
+          taxRate: taxSnapshot.taxRate,
+          subtotalBeforeTaxCents: taxSnapshot.subtotalBeforeTaxCents,
+          taxableSubtotalCents: taxSnapshot.taxableSubtotalCents,
+          taxTotalCents: taxSnapshot.taxTotalCents,
+          finalTotalCents: taxSnapshot.finalTotalCents,
+          chargedAt: chargeTimestamp!,
+          contextJson: {
+            legacyRequest: isLegacyRequest,
+            paymentMethod: normalizedPaymentMethod,
+            leaseMode: normalizedMode,
+            contractStartDate: normalizedContractStartDate,
+            contractEndDate,
+            contractTermMonths,
+            preWebcoolPaidInstallments,
+            taxConfigured: !taxSnapshot.isLegacy,
+          },
+          createdBy: data.actorUserId,
+        });
+
+        if (!chargeClaim.created) {
+          if (
+            chargeClaim.chargeEvent.chargeDomain !== "membership_plan"
+            || chargeClaim.chargeEvent.eventType !== "assign"
+            || chargeClaim.chargeEvent.membershipId !== membership.id
+            || chargeClaim.chargeEvent.planId !== plan.id
+            || chargeClaim.chargeEvent.leaseContractId !== leaseContract.id
+          ) {
+            throw new Error("MEMBERSHIP_OPERATION_KEY_CONFLICT");
+          }
+        }
+
+        chargeEventId = chargeClaim.chargeEvent.id;
+      }
+
+      const classesRemaining = plan.classLimit ?? null;
+      const classesTotal = plan.classLimit ?? null;
+      const updatedMembership = await this.setMembershipPlanOperationalStateTx(tx, {
+        membershipId: membership.id,
+        planId: plan.id,
+        classesRemaining,
+        classesTotal,
+        membershipStartDate: operationalStartDate,
+        membershipEndDate: operationalEndDate,
+        expiresAt: operationalExpiresAt,
+        paidAt: chargeTimestamp,
+      });
+
+      if (!updatedMembership) {
+        throw new Error("MEMBERSHIP_NOT_FOUND");
+      }
+
+      const cancelledBookings = await this.cancelFutureBookingsForUserTx(tx, updatedMembership.userId, data.branchId);
+
+      if (chargeEventId && taxSnapshot.finalTotalCents > 0) {
+        const financeOutcome = await this.createMembershipFinanceEntryTx(tx, {
+          branchId: data.branchId,
+          membershipId: updatedMembership.id,
+          userId: updatedMembership.userId,
+          planId: plan.id,
+          planName: plan.name,
+          amountCents: taxSnapshot.finalTotalCents,
+          paidAt: chargeTimestamp,
+          expiresAt: updatedMembership.expiresAt,
+          paymentMethod: normalizedPaymentMethod,
+          createdBy: data.actorUserId,
+          financeSourceId: chargeEventId,
+          chargeEventId,
+          eventType: "assign",
+        });
+
+        financeEntryId = financeOutcome.entry.id;
+        if (!financeEntryId) {
+          throw new Error("FINANCE_ENTRY_LINK_REQUIRED");
+        }
+
+        await tx
+          .update(branchChargeEvents)
+          .set({ financeEntryId })
+          .where(eq(branchChargeEvents.id, chargeEventId));
+      }
+
+      await this.createAuditLogTx(tx, {
+        actorUserId: data.actorUserId,
+        action: "ASSIGN_LEASE_CONTRACT",
+        branchId: data.branchId,
+        metadata: {
+          operationKey,
+          legacyRequest: isLegacyRequest,
+          membershipId: updatedMembership.id,
+          planId: plan.id,
+          planName: plan.name,
+          leaseContractId: leaseContract.id,
+          leaseMode: normalizedMode,
+          contractStartDate: normalizedContractStartDate,
+          contractEndDate,
+          contractTermMonths,
+          preWebcoolPaidInstallments,
+          webcoolPaidInstallmentsDelta,
+          totalPaidInstallments,
+          operationalMembershipStartDate: operationalWindow.membershipStartDate,
+          operationalMembershipEndDate: operationalWindow.membershipEndDate,
+          operationalMembershipExpiresAt: operationalWindow.expiresAt,
+          operationalCoverageCurrent: operationalWindow.isCurrentlyCovered,
+          hasOperationalCoverage: operationalWindow.hasCoveredInstallments,
+          paidAt: chargeTimestamp ? chargeTimestamp.toISOString() : null,
+          chargeEventId,
+          financeEntryId,
+          cancelledBookings,
+          taxMode: taxSnapshot.taxMode,
+          taxRate: taxSnapshot.taxRate,
+          subtotalBeforeTaxCents: taxSnapshot.subtotalBeforeTaxCents,
+          taxableSubtotalCents: taxSnapshot.taxableSubtotalCents,
+          taxTotalCents: taxSnapshot.taxTotalCents,
+          finalTotalCents: taxSnapshot.finalTotalCents,
+          completedAt: completedAt ? completedAt.toISOString() : null,
+        },
+      });
+
+      return {
+        membership: updatedMembership,
+        leaseContract,
+        idempotentReplay: false,
+        chargeEventId,
         financeEntryId,
         cancelledBookings,
       };
@@ -13205,6 +14047,10 @@ export class DatabaseStorage implements IStorage {
       const plan = await this.getPlanTx(tx, membership.planId);
       if (!plan || plan.branchId !== data.branchId) {
         throw new Error("PLAN_NOT_FOUND");
+      }
+      const latestLease = await this.getLatestLeaseContractForMembershipTx(tx, data.branchId, membership.id);
+      if (plan.leaseEnabled || latestLease?.planId === membership.planId) {
+        throw new Error("LEASE_RENEWAL_MANAGED_BY_CONTRACT");
       }
 
       const taxSnapshot = computeMembershipPlanChargeSnapshot({

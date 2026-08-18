@@ -175,9 +175,23 @@ const membershipFinancePayloadSchema = z.object({
   paymentMethod: z.enum(branchFinancePaymentMethodValues).nullable().optional(),
   idempotencyKey: membershipBillingIdempotencyKeySchema,
 });
+const leaseAssignmentModeValues = [
+  "new_contract_charge_now",
+  "existing_contract_no_charge",
+  "existing_contract_charge_now",
+] as const;
+const leaseAssignmentSchema = z.object({
+  mode: z.enum(leaseAssignmentModeValues),
+  contractStartDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "La fecha real de inicio no es válida"),
+  contractTermMonths: z.number().int().min(1, "El plazo debe ser mayor a 0").max(120, "El plazo no puede ser mayor a 120 meses"),
+  preWebcoolPaidInstallments: z.number().int().min(0, "Las mensualidades previas no pueden ser negativas").max(120, "Demasiadas mensualidades previas"),
+  leasedItemDescription: z.string().trim().min(1, "El equipo o concepto es obligatorio").max(200, "El equipo o concepto no puede exceder 200 caracteres"),
+  notes: z.string().trim().max(500, "Las notas no pueden exceder 500 caracteres").nullable().optional().or(z.literal("")),
+});
 const assignPlanWithFinanceSchema = assignPlanSchema.extend({
   paymentMethod: z.enum(branchFinancePaymentMethodValues).nullable().optional(),
   idempotencyKey: membershipBillingIdempotencyKeySchema,
+  leaseContract: leaseAssignmentSchema.optional(),
 });
 const AUTOMATED_FINANCE_SOURCES = new Set(["commercial_sale", "sales_commission_payment"]);
 const updateBranchClientGlobalSchema = z.object({
@@ -1053,6 +1067,48 @@ function handleMembershipBillingRouteError(
   if (code === "MEMBERSHIP_OPERATION_KEY_CONFLICT") {
     return res.status(409).json({ message: "Esta operación ya fue usada para otra acción de membresía" });
   }
+  if (code === "LEASE_ASSIGNMENT_REQUIRES_CONTRACT") {
+    return res.status(400).json({ message: "Este plan de arrendamiento necesita su configuración contractual completa" });
+  }
+  if (code === "LEASE_PLAN_REQUIRES_MONTHLY_CYCLE") {
+    return res.status(400).json({ message: "Un arrendamiento solo puede usar un plan mensual" });
+  }
+  if (code === "LEASE_CONTRACT_START_REQUIRED" || code === "LEASE_CONTRACT_DATE_INVALID") {
+    return res.status(400).json({ message: "La fecha real del contrato no es válida" });
+  }
+  if (code === "LEASE_CONTRACT_TERM_INVALID") {
+    return res.status(400).json({ message: "El plazo contractual no es válido" });
+  }
+  if (code === "LEASE_PREWEBCOOL_INSTALLMENTS_INVALID") {
+    return res.status(400).json({ message: "Las mensualidades pagadas antes de WebCool no son válidas" });
+  }
+  if (code === "LEASE_ITEM_DESCRIPTION_REQUIRED") {
+    return res.status(400).json({ message: "El equipo o concepto del arrendamiento es obligatorio" });
+  }
+  if (code === "LEASE_OPERATIONAL_COVERAGE_REQUIRED") {
+    return res.status(400).json({ message: "Para registrar el contrato sin cobro necesitas al menos una mensualidad cubierta" });
+  }
+  if (code === "LEASE_OPERATIONAL_COVERAGE_INVALID" || code === "LEASE_CONTRACT_REPLAY_NOT_FOUND") {
+    return res.status(400).json({ message: "No se pudo calcular la vigencia operativa del arrendamiento" });
+  }
+  if (code === "LEASE_OPERATIONAL_COVERAGE_NOT_CURRENT") {
+    return res.status(409).json({ message: "Con esas mensualidades el arrendamiento seguiría vencido hoy. Ajusta el historial o cobra la mensualidad actual." });
+  }
+  if (code === "LEASE_CONTRACT_OPEN_ASSIGN_BLOCKED") {
+    return res.status(409).json({ message: "Este cliente ya tiene un arrendamiento abierto. Debes cerrarlo antes de cambiar su servicio o plan." });
+  }
+  if (code === "LEASE_CONTRACT_OPEN_REMOVE_BLOCKED") {
+    return res.status(409).json({ message: "Este servicio está protegido por un arrendamiento abierto. No se puede quitar desde aquí." });
+  }
+  if (code === "LEASE_RENEWAL_MANAGED_BY_CONTRACT") {
+    return res.status(409).json({ message: "Este arrendamiento utiliza condiciones contractuales. La renovación se gestiona desde el contrato." });
+  }
+  if (code === "LEASE_PLAN_DEACTIVATION_BLOCKED") {
+    return res.status(409).json({ message: "Este plan tiene arrendamientos activos. Ciérralos o cancélalos antes de desactivarlo." });
+  }
+  if (code === "LEASE_CONTRACT_CREATE_FAILED") {
+    return res.status(500).json({ message: "No se pudo crear el contrato de arrendamiento" });
+  }
 
   if (
     code === "INVALID_TAX_MODE"
@@ -1068,6 +1124,41 @@ function handleMembershipBillingRouteError(
 
   console.error(logMessage, err?.stack || err);
   return res.status(500).json({ message: userMessage });
+}
+
+function normalizeLeaseTemplateInput(params: {
+  cycleMonths: number;
+  leaseEnabled: boolean | undefined;
+  defaultLeaseTermMonths: number | null | undefined;
+  defaultLeasedItemDescription: string | null | undefined;
+}) {
+  const leaseEnabled = params.leaseEnabled === true;
+  if (!leaseEnabled) {
+    return {
+      leaseEnabled: false,
+      defaultLeaseTermMonths: null,
+      defaultLeasedItemDescription: null,
+    };
+  }
+
+  if (params.cycleMonths !== 1) {
+    throw new Error("LEASE_PLAN_REQUIRES_MONTHLY_CYCLE");
+  }
+
+  if (
+    params.defaultLeaseTermMonths == null
+    || !Number.isInteger(params.defaultLeaseTermMonths)
+    || params.defaultLeaseTermMonths <= 0
+    || params.defaultLeaseTermMonths > 120
+  ) {
+    throw new Error("LEASE_CONTRACT_TERM_INVALID");
+  }
+
+  return {
+    leaseEnabled: true,
+    defaultLeaseTermMonths: params.defaultLeaseTermMonths,
+    defaultLeasedItemDescription: normalizeOptionalText(params.defaultLeasedItemDescription) ?? null,
+  };
 }
 
 function normalizeSearchKeywords(value: unknown): string | null | undefined {
@@ -6223,6 +6314,33 @@ if (!user) {
     }
   });
 
+  app.get("/api/branch/lease-contracts", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const contracts = await storage.getBranchLeaseContracts(actor.branchId);
+      res.json(contracts);
+    } catch (err: any) {
+      console.error("[LEASE_CONTRACTS] Error listing:", err.stack || err);
+      res.status(500).json({ message: "Error al obtener arrendamientos" });
+    }
+  });
+
+  app.get("/api/branch/lease-contracts/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const leaseContractId = req.params.id as string;
+    try {
+      const contract = await storage.getBranchLeaseContract(actor.branchId, leaseContractId);
+      if (!contract) {
+        return res.status(404).json({ message: "Arrendamiento no encontrado" });
+      }
+
+      return res.json(contract);
+    } catch (err: any) {
+      console.error("[LEASE_CONTRACTS] Error detail:", err.stack || err);
+      return res.status(500).json({ message: "Error al obtener el detalle del arrendamiento" });
+    }
+  });
+
   // --- Membership Plans ---
   app.get("/api/branch/plans", requireBranchAdmin, async (req, res) => {
     const user = req.user as any;
@@ -6244,6 +6362,12 @@ if (!user) {
         taxRate: data.taxRate,
       });
       const cm = data.cycleMonths ?? 1;
+      const leaseTemplate = normalizeLeaseTemplateInput({
+        cycleMonths: cm,
+        leaseEnabled: data.leaseEnabled,
+        defaultLeaseTermMonths: data.defaultLeaseTermMonths,
+        defaultLeasedItemDescription: data.defaultLeasedItemDescription ?? null,
+      });
       const plan = await storage.createPlan({
         branchId: actor.branchId,
         name: data.name,
@@ -6254,6 +6378,9 @@ if (!user) {
         durationDays: cm === 0 ? 1 : cm * 30,
         classLimit: data.classLimit ?? null,
         cycleMonths: cm,
+        leaseEnabled: leaseTemplate.leaseEnabled,
+        defaultLeaseTermMonths: leaseTemplate.defaultLeaseTermMonths,
+        defaultLeasedItemDescription: leaseTemplate.defaultLeasedItemDescription,
       });
 
       await storage.createAuditLog({
@@ -6265,6 +6392,8 @@ if (!user) {
           name: plan.name,
           taxMode: resolvedTaxConfig.taxMode,
           taxRate: resolvedTaxConfig.taxRate,
+          leaseEnabled: leaseTemplate.leaseEnabled,
+          defaultLeaseTermMonths: leaseTemplate.defaultLeaseTermMonths,
         },
       });
 
@@ -6284,9 +6413,17 @@ if (!user) {
           "TAX_RATE_REQUIRED",
           "TAX_RATE_MUST_BE_POSITIVE",
           "TAX_RATE_NOT_ALLOWED_FOR_TAX_EXEMPT",
+          "LEASE_PLAN_REQUIRES_MONTHLY_CYCLE",
+          "LEASE_CONTRACT_TERM_INVALID",
         ].includes(err.message)
       ) {
-        return res.status(400).json({ message: "La configuracion fiscal del plan no es valida" });
+        return res.status(400).json({
+          message: err.message.startsWith("LEASE_")
+            ? err.message === "LEASE_PLAN_REQUIRES_MONTHLY_CYCLE"
+              ? "Un arrendamiento solo puede usarse en un plan mensual"
+              : "La configuración del arrendamiento no es válida"
+            : "La configuracion fiscal del plan no es valida",
+        });
       }
       console.error(`[PLAN] Error creating:`, err.stack || err);
       res.status(500).json({ message: "Error al crear plan" });
@@ -6308,6 +6445,13 @@ if (!user) {
         taxMode: data.taxMode !== undefined ? data.taxMode : existing.taxMode,
         taxRate: data.taxRate !== undefined ? data.taxRate : existing.taxRate,
       });
+      const resolvedCycleMonths = data.cycleMonths ?? existing.cycleMonths ?? 1;
+      const leaseTemplate = normalizeLeaseTemplateInput({
+        cycleMonths: resolvedCycleMonths,
+        leaseEnabled: data.leaseEnabled !== undefined ? data.leaseEnabled : existing.leaseEnabled,
+        defaultLeaseTermMonths: data.defaultLeaseTermMonths !== undefined ? data.defaultLeaseTermMonths : existing.defaultLeaseTermMonths,
+        defaultLeasedItemDescription: data.defaultLeasedItemDescription !== undefined ? data.defaultLeasedItemDescription : existing.defaultLeasedItemDescription,
+      });
       const updated = await storage.updatePlan(planId, {
         ...(data.name !== undefined && { name: data.name }),
         ...(data.description !== undefined && { description: data.description || null }),
@@ -6317,6 +6461,9 @@ if (!user) {
         ...(data.cycleMonths !== undefined && { cycleMonths: data.cycleMonths, durationDays: data.cycleMonths === 0 ? 1 : (data.cycleMonths ?? 1) * 30 }),
         ...(data.classLimit !== undefined && { classLimit: data.classLimit ?? null }),
         ...(data.isActive !== undefined && { isActive: data.isActive }),
+        leaseEnabled: leaseTemplate.leaseEnabled,
+        defaultLeaseTermMonths: leaseTemplate.defaultLeaseTermMonths,
+        defaultLeasedItemDescription: leaseTemplate.defaultLeasedItemDescription,
       });
 
       await storage.createAuditLog({
@@ -6328,6 +6475,8 @@ if (!user) {
           changes: data,
           taxMode: resolvedTaxConfig.taxMode,
           taxRate: resolvedTaxConfig.taxRate,
+          leaseEnabled: leaseTemplate.leaseEnabled,
+          defaultLeaseTermMonths: leaseTemplate.defaultLeaseTermMonths,
         },
       });
 
@@ -6347,9 +6496,17 @@ if (!user) {
           "TAX_RATE_REQUIRED",
           "TAX_RATE_MUST_BE_POSITIVE",
           "TAX_RATE_NOT_ALLOWED_FOR_TAX_EXEMPT",
+          "LEASE_PLAN_REQUIRES_MONTHLY_CYCLE",
+          "LEASE_CONTRACT_TERM_INVALID",
         ].includes(err.message)
       ) {
-        return res.status(400).json({ message: "La configuracion fiscal del plan no es valida" });
+        return res.status(400).json({
+          message: err.message.startsWith("LEASE_")
+            ? err.message === "LEASE_PLAN_REQUIRES_MONTHLY_CYCLE"
+              ? "Un arrendamiento solo puede usarse en un plan mensual"
+              : "La configuración del arrendamiento no es válida"
+            : "La configuracion fiscal del plan no es valida",
+        });
       }
       console.error(`[PLAN] Error updating:`, err.stack || err);
       res.status(500).json({ message: "Error al actualizar plan" });
@@ -6366,7 +6523,10 @@ if (!user) {
       }
 
       const plan = await storage.deactivatePlan(planId);
-      const detached = await storage.detachPlanFromMemberships(planId, existing.name);
+      const detached = await storage.detachPlanFromMemberships(
+        planId,
+        existing.leaseEnabled ? null : existing.name,
+      );
 
       await storage.createAuditLog({
         actorUserId: actor.id,
@@ -6591,17 +6751,35 @@ if (!user) {
     const actor = req.user as any;
     const membershipId = req.params.id as string;
     try {
-      const { planId, paymentMethod, startDate, idempotencyKey } = assignPlanWithFinanceSchema.parse(req.body);
+      const { planId, paymentMethod, startDate, idempotencyKey, leaseContract } = assignPlanWithFinanceSchema.parse(req.body);
       try {
-        const result = await storage.commitAssignMembershipBillingOperation({
-          branchId: actor.branchId,
-          membershipId,
-          planId,
-          paymentMethod: normalizeOptionalText(paymentMethod) ?? null,
-          startDate: startDate ?? getMxIsoDate(),
-          idempotencyKey: idempotencyKey ?? null,
-          actorUserId: actor.id,
-        });
+        const plan = await storage.getPlan(planId);
+        if (!plan || plan.branchId !== actor.branchId) {
+          return res.status(404).json({ message: "Plan no encontrado" });
+        }
+        if (plan.leaseEnabled && !leaseContract) {
+          throw new Error("LEASE_ASSIGNMENT_REQUIRES_CONTRACT");
+        }
+
+        const result = plan.leaseEnabled
+          ? await storage.commitLeaseMembershipAssignmentOperation({
+              branchId: actor.branchId,
+              membershipId,
+              planId,
+              paymentMethod: normalizeOptionalText(paymentMethod) ?? null,
+              idempotencyKey: idempotencyKey ?? null,
+              actorUserId: actor.id,
+              leaseContract: leaseContract!,
+            })
+          : await storage.commitAssignMembershipBillingOperation({
+              branchId: actor.branchId,
+              membershipId,
+              planId,
+              paymentMethod: normalizeOptionalText(paymentMethod) ?? null,
+              startDate: startDate ?? getMxIsoDate(),
+              idempotencyKey: idempotencyKey ?? null,
+              actorUserId: actor.id,
+            });
 
         if (result.cancelledBookings > 0) {
           console.log(`[PLAN] Cancelled ${result.cancelledBookings} future bookings for user ${result.membership.userId} on plan assignment`);

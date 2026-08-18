@@ -20,6 +20,7 @@ import {
   XCircle,
   Download,
   FileText,
+  Eye,
   Pencil,
   Trash2,
   ChevronDown,
@@ -144,6 +145,9 @@ interface MembershipPlan {
   durationDays: number | null;
   classLimit: number | null;
   cycleMonths: number;
+  leaseEnabled: boolean;
+  defaultLeaseTermMonths: number | null;
+  defaultLeasedItemDescription: string | null;
   isActive: boolean;
 }
 
@@ -193,6 +197,9 @@ interface ClientProfile {
     durationDays: number | null;
     classLimit: number | null;
     cycleMonths: number;
+    leaseEnabled: boolean;
+    defaultLeaseTermMonths: number | null;
+    defaultLeasedItemDescription: string | null;
   } | null;
   planChargeSnapshot: {
     chargeEventId: string;
@@ -207,6 +214,71 @@ interface ClientProfile {
     taxTotalCents: number | null;
     finalTotalCents: number;
   } | null;
+  leaseContracts: {
+    id: string;
+    planId: string | null;
+    contractStartDate: string;
+    contractEndDate: string;
+    contractTermMonths: number;
+    preWebcoolPaidInstallments: number;
+    webcoolPaidInstallments: number;
+    totalPaidInstallments: number;
+    pendingInstallments: number;
+    elapsedCalendarMonths: number;
+    remainingCalendarMonths: number;
+    paymentProgressPercent: number;
+    derivedStatus: "ACTIVE" | "COMPLETED" | "EXPIRED" | "CANCELLED";
+    isOpenForLifecycleGuards: boolean;
+    leasedItemDescription: string;
+    notes: string | null;
+    capturedPriceCents: number;
+    taxModeSnapshot: MembershipPlanTaxMode | null;
+    taxRateSnapshot: number | null;
+    monthlySubtotalBeforeTaxCents: number | null;
+    monthlyTaxableSubtotalCents: number | null;
+    monthlyTaxTotalCents: number | null;
+    monthlyFinalTotalCents: number;
+    currencyCode: string;
+    operationalCoverageStartDate: string | null;
+    operationalCoverageEndDate: string | null;
+    hasOperationalCoverage: boolean;
+    operationalCoverageCurrent: boolean;
+    completedAt: string | null;
+    cancelledAt: string | null;
+  }[];
+  openLeaseContracts: {
+    id: string;
+    planId: string | null;
+    contractStartDate: string;
+    contractEndDate: string;
+    contractTermMonths: number;
+    preWebcoolPaidInstallments: number;
+    webcoolPaidInstallments: number;
+    totalPaidInstallments: number;
+    pendingInstallments: number;
+    elapsedCalendarMonths: number;
+    remainingCalendarMonths: number;
+    paymentProgressPercent: number;
+    derivedStatus: "ACTIVE" | "COMPLETED" | "EXPIRED" | "CANCELLED";
+    isOpenForLifecycleGuards: boolean;
+    leasedItemDescription: string;
+    notes: string | null;
+    capturedPriceCents: number;
+    taxModeSnapshot: MembershipPlanTaxMode | null;
+    taxRateSnapshot: number | null;
+    monthlySubtotalBeforeTaxCents: number | null;
+    monthlyTaxableSubtotalCents: number | null;
+    monthlyTaxTotalCents: number | null;
+    monthlyFinalTotalCents: number;
+    currencyCode: string;
+    operationalCoverageStartDate: string | null;
+    operationalCoverageEndDate: string | null;
+    hasOperationalCoverage: boolean;
+    operationalCoverageCurrent: boolean;
+    completedAt: string | null;
+    cancelledAt: string | null;
+  }[];
+  activeLeaseContractsCount: number;
   notes: { id: string; content: string; createdAt: string; createdByName: string }[];
   recentAttendances: { id: string; checkedInAt: string }[];
   purchaseHistory: {
@@ -393,6 +465,11 @@ type ClientFocusRequest = {
   nonce: number;
 };
 
+type LeaseContractNavigationTarget = {
+  leaseContractId: string;
+  clientUserId?: string | null;
+};
+
 function formatDate(dateStr: string | null) {
   if (!dateStr) return "—";
   const stableDate =
@@ -529,6 +606,45 @@ function getMembershipPlanChargeLabel(plan: Pick<MembershipPlan, "price" | "taxM
   return "Sin IVA";
 }
 
+type ClientLeaseContractSummary = ClientProfile["leaseContracts"][number];
+
+function getLeaseContractPriceDisplay(leaseContract: ClientLeaseContractSummary) {
+  if (leaseContract.taxModeSnapshot === "tax_added") {
+    return {
+      title: "Total mensual",
+      amountCents: leaseContract.monthlyFinalTotalCents,
+      detailLines: [
+        `Precio base ${formatCurrencyMx(leaseContract.capturedPriceCents / 100)}`,
+        `IVA ${formatTaxRateLabel(leaseContract.taxRateSnapshot)} ${formatCurrencyMx((leaseContract.monthlyTaxTotalCents ?? 0) / 100)}`,
+      ],
+    };
+  }
+
+  if (leaseContract.taxModeSnapshot === "tax_included") {
+    return {
+      title: "Precio final",
+      amountCents: leaseContract.monthlyFinalTotalCents,
+      detailLines: [
+        `IVA ${formatTaxRateLabel(leaseContract.taxRateSnapshot)} incluido ${formatCurrencyMx((leaseContract.monthlyTaxTotalCents ?? 0) / 100)}`,
+      ],
+    };
+  }
+
+  if (leaseContract.taxModeSnapshot === "tax_exempt") {
+    return {
+      title: "Precio",
+      amountCents: leaseContract.monthlyFinalTotalCents,
+      detailLines: ["Sin IVA"],
+    };
+  }
+
+  return {
+    title: "Precio",
+    amountCents: leaseContract.monthlyFinalTotalCents,
+    detailLines: [],
+  };
+}
+
 function getClientPlanPriceDisplay(profile: Pick<ClientProfile, "plan" | "planChargeSnapshot">) {
   const snapshot = profile.planChargeSnapshot;
 
@@ -583,6 +699,19 @@ function cycleLabel(cycleMonths: number | null | undefined): string {
   if (cycleMonths === 6) return "Plan semestral";
   if (cycleMonths === 12) return "Anualidad";
   return `${cycleMonths} meses`;
+}
+
+function leaseDerivedStatusLabel(status: ClientLeaseContractSummary["derivedStatus"]) {
+  if (status === "COMPLETED") return "COMPLETADO";
+  if (status === "EXPIRED") return "VENCIDO";
+  if (status === "CANCELLED") return "CANCELADO";
+  return "ACTIVO";
+}
+
+function leaseDerivedStatusBadgeVariant(status: ClientLeaseContractSummary["derivedStatus"]) {
+  if (status === "EXPIRED" || status === "CANCELLED") return "destructive" as const;
+  if (status === "COMPLETED") return "secondary" as const;
+  return "default" as const;
 }
 
 function usageSummaryLabel(classLimit: number | null, cycleMonths: number | null | undefined): string {
@@ -2147,13 +2276,14 @@ function ClientStatusSelector({ clientId, currentStatus }: { clientId: string; c
   );
 }
 
-function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, onWhatsApp }: {
+function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, onWhatsApp, onOpenLeaseContract }: {
   clientId: string | null;
   open: boolean;
   onOpenChange: (v: boolean) => void;
   onEdit: (id: string) => void;
   onDelete: (id: string, name: string) => void;
   onWhatsApp: (target: WaModalTarget) => void;
+  onOpenLeaseContract?: (target: LeaseContractNavigationTarget) => void;
 }) {
   const { toast } = useToast();
   const [noteContent, setNoteContent] = useState("");
@@ -2322,7 +2452,17 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
   });
 
   const assignPlanMutation = useMutation({
-    mutationFn: async ({ planId, paymentMethod, startDate, idempotencyKey }: { planId: string; paymentMethod: string; startDate: string; idempotencyKey: string }) => {
+    mutationFn: async ({
+      planId,
+      paymentMethod,
+      startDate,
+      idempotencyKey,
+    }: {
+      planId: string;
+      paymentMethod: string;
+      startDate: string;
+      idempotencyKey: string;
+    }) => {
       const resp = await apiRequest("POST", `/api/branch/memberships/${profile!.membership.id}/assign-plan`, {
         planId,
         paymentMethod,
@@ -2443,11 +2583,19 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
   });
 
   const activePlans = (plans || []).filter(p => p.isActive);
+  const assignablePlans = activePlans.filter((plan) => !plan.leaseEnabled);
   const todayAssignmentDate = getMxTodayIsoDate();
-  const selectedAssignPlan = activePlans.find((plan) => plan.id === selectedAssignPlanId) ?? null;
+  const selectedAssignPlan = assignablePlans.find((plan) => plan.id === selectedAssignPlanId) ?? null;
   const assignPlanPreviewExpiresAt = calculatePlanExpirationPreview(selectedAssignPlan, assignmentStartDate);
   const activePlanChargeSnapshot = profile?.plan ? getMembershipPlanChargeSnapshot(profile.plan) : null;
   const activePlanPriceDisplay = profile ? getClientPlanPriceDisplay(profile) : null;
+  const openLeaseContracts = profile?.openLeaseContracts ?? [];
+  const activeLeaseContractsCount = profile?.activeLeaseContractsCount ?? openLeaseContracts.length;
+  const activePlanExpirationLabel = profile?.membership.expiresAt
+    ? formatDate(profile.membership.expiresAt)
+    : "—";
+  const isLeaseManagedRenewBlocked = !!profile?.plan?.leaseEnabled;
+  const leaseRenewGuardMessage = "Este arrendamiento utiliza condiciones contractuales. La renovación se gestiona desde el contrato.";
   const isHistoricalAssignment = assignmentStartDate < todayAssignmentDate;
   const age = profile ? calcAge(profile.user.birthDate) : null;
   const commercialHistory = commercialHistoryQuery.data;
@@ -2700,6 +2848,64 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
 
   const renderAssignPlanPicker = () => (
     <div className="space-y-3">
+      {assignablePlans.length === 0 ? (
+        <p className="text-xs text-muted-foreground">No hay servicios o planes activos. Crea uno en la pestaña Servicios y planes.</p>
+      ) : (
+        <div className="space-y-2">
+          {assignablePlans.map((plan) => {
+            const previewExpiresAt = calculatePlanExpirationPreview(plan, assignmentStartDate);
+            const isSelected = selectedAssignPlanId === plan.id;
+            return (
+              <button
+                key={plan.id}
+                type="button"
+                onClick={() => setSelectedAssignPlanId(plan.id)}
+                className={`w-full rounded-md border bg-background p-2 text-left text-sm transition-colors ${
+                  isSelected ? "border-primary ring-1 ring-primary/30" : "hover:bg-muted/50"
+                }`}
+                data-testid={`button-select-plan-${plan.id}`}
+              >
+                <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                  <span className="break-words font-medium">{plan.name}</span>
+                  <span className="text-xs text-muted-foreground">${(plan.price / 100).toFixed(2)} MXN</span>
+                </div>
+                <div className="mt-0.5 text-xs text-muted-foreground">
+                  {cycleLabel(plan.cycleMonths)} · {usageSummaryLabel(plan.classLimit, plan.cycleMonths)}
+                </div>
+                {getMembershipPlanChargeLabel(plan) ? (
+                  <div className="mt-0.5 text-[11px] text-muted-foreground">
+                    {getMembershipPlanChargeLabel(plan)}
+                  </div>
+                ) : null}
+                <div className="mt-1 text-[11px] text-muted-foreground">
+                  {`Inicia ${formatDate(assignmentStartDate)} · ${previewExpiresAt ? `Vence ${formatCalendarPreview(previewExpiresAt)}` : "Sin fecha de vencimiento"}`}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {selectedAssignPlan ? (
+        <div className="rounded-md border bg-background px-3 py-2 text-xs">
+          <p className="font-medium">Plan seleccionado</p>
+          <p className="mt-1 text-muted-foreground">{selectedAssignPlan.name}</p>
+          {getMembershipPlanChargeLabel(selectedAssignPlan) ? (
+            <p className="mt-1 text-muted-foreground">{getMembershipPlanChargeLabel(selectedAssignPlan)}</p>
+          ) : null}
+          <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <div>
+              <p className="text-muted-foreground">Fecha de inicio</p>
+              <p className="font-medium">{formatDate(assignmentStartDate)}</p>
+            </div>
+            <div>
+              <p className="text-muted-foreground">Fecha de vencimiento</p>
+              <p className="font-medium">{assignPlanPreviewExpiresAt ? formatCalendarPreview(assignPlanPreviewExpiresAt) : "Sin fecha de vencimiento"}</p>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <div className="space-y-1">
         <Label className="text-xs">Fecha de inicio</Label>
         <Input
@@ -2733,70 +2939,16 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
         </Select>
       </div>
 
-      {activePlans.length === 0 ? (
-        <p className="text-xs text-muted-foreground">No hay servicios o planes activos. Crea uno en la pestaña Servicios y planes.</p>
-      ) : (
-        <div className="space-y-2">
-          {activePlans.map((plan) => {
-            const previewExpiresAt = calculatePlanExpirationPreview(plan, assignmentStartDate);
-            const isSelected = selectedAssignPlanId === plan.id;
-            return (
-              <button
-                key={plan.id}
-                type="button"
-                onClick={() => setSelectedAssignPlanId(plan.id)}
-                className={`w-full rounded-md border bg-background p-2 text-left text-sm transition-colors ${
-                  isSelected ? "border-primary ring-1 ring-primary/30" : "hover:bg-muted/50"
-                }`}
-                data-testid={`button-select-plan-${plan.id}`}
-              >
-                <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                  <span className="break-words font-medium">{plan.name}</span>
-                  <span className="text-xs text-muted-foreground">${(plan.price / 100).toFixed(2)} MXN</span>
-                </div>
-                <div className="mt-0.5 text-xs text-muted-foreground">
-                  {cycleLabel(plan.cycleMonths)} · {usageSummaryLabel(plan.classLimit, plan.cycleMonths)}
-                </div>
-                {getMembershipPlanChargeLabel(plan) ? (
-                  <div className="mt-0.5 text-[11px] text-muted-foreground">
-                    {getMembershipPlanChargeLabel(plan)}
-                  </div>
-                ) : null}
-                <div className="mt-1 text-[11px] text-muted-foreground">
-                  Inicia {formatDate(assignmentStartDate)} · {previewExpiresAt ? `Vence ${formatCalendarPreview(previewExpiresAt)}` : "Sin fecha de vencimiento"}
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      )}
-
-      {selectedAssignPlan ? (
-        <div className="rounded-md border bg-background px-3 py-2 text-xs">
-          <p className="font-medium">Plan seleccionado</p>
-          <p className="mt-1 text-muted-foreground">{selectedAssignPlan.name}</p>
-          {getMembershipPlanChargeLabel(selectedAssignPlan) ? (
-            <p className="mt-1 text-muted-foreground">{getMembershipPlanChargeLabel(selectedAssignPlan)}</p>
-          ) : null}
-          <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
-            <div>
-              <p className="text-muted-foreground">Fecha de inicio</p>
-              <p className="font-medium">{formatDate(assignmentStartDate)}</p>
-            </div>
-            <div>
-              <p className="text-muted-foreground">Fecha de vencimiento</p>
-              <p className="font-medium">{assignPlanPreviewExpiresAt ? formatCalendarPreview(assignPlanPreviewExpiresAt) : "Sin fecha de vencimiento"}</p>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
       <div className="flex flex-col gap-2 sm:flex-row">
         <Button
           variant="default"
           size="sm"
           className="h-10 sm:h-9"
-          disabled={!selectedAssignPlan || assignPlanMutation.isPending || !assignmentStartDate}
+          disabled={
+            !selectedAssignPlan
+            || assignPlanMutation.isPending
+            || !assignmentStartDate
+          }
           onClick={() => {
             void handleAssignPlanSubmit();
           }}
@@ -3205,7 +3357,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                     <div className="bg-background rounded-md p-2">
                       <div className="text-muted-foreground mb-0.5">Vence el</div>
                       <div className={`font-medium ${profile.planStatus === "expired" ? "text-red-500" : ""}`} data-testid="text-plan-expires">
-                        {profile.membership.expiresAt ? formatDate(profile.membership.expiresAt) : "—"}
+                        {activePlanExpirationLabel}
                       </div>
                     </div>
                   </div>
@@ -3227,53 +3379,59 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                   </div>
 
                   {profile.planStatus === "expired" && (
-                    <div className="space-y-2 pt-1">
-                      <div className="space-y-1">
-                        <Label className="text-xs">Método de pago</Label>
-                        <Select value={membershipPaymentMethod} onValueChange={(value) => setMembershipPaymentMethod(value as (typeof FINANCE_PAYMENT_METHOD_OPTIONS)[number]["value"])}>
-                        <SelectTrigger className="h-9 text-xs sm:h-8"><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            {FINANCE_PAYMENT_METHOD_OPTIONS.map((option) => (
-                              <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                    isLeaseManagedRenewBlocked ? (
+                      <div className="rounded-md border border-orange-300 bg-orange-50 px-3 py-2 text-xs text-orange-700">
+                        {leaseRenewGuardMessage}
                       </div>
-                      {activePlanChargeSnapshot && !activePlanChargeSnapshot.isLegacy ? (
-                        <div className="rounded-md border bg-background px-3 py-2 text-xs text-muted-foreground" data-testid="renew-tax-preview">
-                          <p className="font-medium text-foreground">Resumen del cobro</p>
-                          <div className="mt-2 grid grid-cols-1 gap-1 sm:grid-cols-2">
-                            {activePlanChargeSnapshot.taxMode === "tax_added" ? (
-                              <>
-                                <span>Precio base: <strong className="text-foreground">{formatCurrencyMx(activePlanChargeSnapshot.basePriceCents / 100)}</strong></span>
-                                <span>IVA {formatTaxRateLabel(activePlanChargeSnapshot.taxRate)}: <strong className="text-foreground">{formatCurrencyMx((activePlanChargeSnapshot.taxTotalCents ?? 0) / 100)}</strong></span>
-                                <span className="sm:col-span-2">Total a cobrar: <strong className="text-foreground">{formatCurrencyMx(activePlanChargeSnapshot.finalTotalCents / 100)}</strong></span>
-                              </>
-                            ) : activePlanChargeSnapshot.taxMode === "tax_included" ? (
-                              <>
-                                <span>Precio final: <strong className="text-foreground">{formatCurrencyMx(activePlanChargeSnapshot.finalTotalCents / 100)}</strong></span>
-                                <span>Subtotal: <strong className="text-foreground">{formatCurrencyMx((activePlanChargeSnapshot.subtotalBeforeTaxCents ?? 0) / 100)}</strong></span>
-                                <span className="sm:col-span-2">IVA incluido {formatTaxRateLabel(activePlanChargeSnapshot.taxRate)}: <strong className="text-foreground">{formatCurrencyMx((activePlanChargeSnapshot.taxTotalCents ?? 0) / 100)}</strong></span>
-                              </>
-                            ) : (
-                              <span className="sm:col-span-2">Sin IVA: <strong className="text-foreground">{formatCurrencyMx(activePlanChargeSnapshot.finalTotalCents / 100)}</strong></span>
-                            )}
-                          </div>
+                    ) : (
+                      <div className="space-y-2 pt-1">
+                        <div className="space-y-1">
+                          <Label className="text-xs">Método de pago</Label>
+                          <Select value={membershipPaymentMethod} onValueChange={(value) => setMembershipPaymentMethod(value as (typeof FINANCE_PAYMENT_METHOD_OPTIONS)[number]["value"])}>
+                          <SelectTrigger className="h-9 text-xs sm:h-8"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {FINANCE_PAYMENT_METHOD_OPTIONS.map((option) => (
+                                <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
                         </div>
-                      ) : null}
-                      <Button
-                        size="sm"
-                        className="h-10 w-full sm:h-9"
-                        onClick={() => {
-                          void handleRenewPlanSubmit();
-                        }}
-                        disabled={renewMutation.isPending}
-                        data-testid="button-renew-plan"
-                      >
-                        {renewMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Calendar className="h-4 w-4 mr-1" />}
-                        Renovar vigencia
-                      </Button>
-                    </div>
+                        {activePlanChargeSnapshot && !activePlanChargeSnapshot.isLegacy ? (
+                          <div className="rounded-md border bg-background px-3 py-2 text-xs text-muted-foreground" data-testid="renew-tax-preview">
+                            <p className="font-medium text-foreground">Resumen del cobro</p>
+                            <div className="mt-2 grid grid-cols-1 gap-1 sm:grid-cols-2">
+                              {activePlanChargeSnapshot.taxMode === "tax_added" ? (
+                                <>
+                                  <span>Precio base: <strong className="text-foreground">{formatCurrencyMx(activePlanChargeSnapshot.basePriceCents / 100)}</strong></span>
+                                  <span>IVA {formatTaxRateLabel(activePlanChargeSnapshot.taxRate)}: <strong className="text-foreground">{formatCurrencyMx((activePlanChargeSnapshot.taxTotalCents ?? 0) / 100)}</strong></span>
+                                  <span className="sm:col-span-2">Total a cobrar: <strong className="text-foreground">{formatCurrencyMx(activePlanChargeSnapshot.finalTotalCents / 100)}</strong></span>
+                                </>
+                              ) : activePlanChargeSnapshot.taxMode === "tax_included" ? (
+                                <>
+                                  <span>Precio final: <strong className="text-foreground">{formatCurrencyMx(activePlanChargeSnapshot.finalTotalCents / 100)}</strong></span>
+                                  <span>Subtotal: <strong className="text-foreground">{formatCurrencyMx((activePlanChargeSnapshot.subtotalBeforeTaxCents ?? 0) / 100)}</strong></span>
+                                  <span className="sm:col-span-2">IVA incluido {formatTaxRateLabel(activePlanChargeSnapshot.taxRate)}: <strong className="text-foreground">{formatCurrencyMx((activePlanChargeSnapshot.taxTotalCents ?? 0) / 100)}</strong></span>
+                                </>
+                              ) : (
+                                <span className="sm:col-span-2">Sin IVA: <strong className="text-foreground">{formatCurrencyMx(activePlanChargeSnapshot.finalTotalCents / 100)}</strong></span>
+                              )}
+                            </div>
+                          </div>
+                        ) : null}
+                        <Button
+                          size="sm"
+                          className="h-10 w-full sm:h-9"
+                          onClick={() => {
+                            void handleRenewPlanSubmit();
+                          }}
+                          disabled={renewMutation.isPending}
+                          data-testid="button-renew-plan"
+                        >
+                          {renewMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Calendar className="h-4 w-4 mr-1" />}
+                          Renovar vigencia
+                        </Button>
+                      </div>
+                    )
                   )}
                 </div>
               ) : profile.planStatus === "deleted" ? (
@@ -3345,6 +3503,94 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                 </div>
               )}
             </div>
+
+            {openLeaseContracts.length > 0 ? (
+              <div className="max-w-full rounded-md bg-muted/50 p-2.5 space-y-3 sm:p-3" data-testid="client-lease-contract">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                      Arrendamientos activos: {activeLeaseContractsCount}
+                    </p>
+                    <h4 className="mt-1 text-sm font-medium flex items-center gap-1.5">
+                      <Package className="h-3.5 w-3.5" />
+                      Arrendamientos
+                    </h4>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  {openLeaseContracts.map((leaseContract) => {
+                    const leasePriceDisplay = getLeaseContractPriceDisplay(leaseContract);
+                    return (
+                      <div
+                        key={leaseContract.id}
+                        className="rounded-md border border-border/70 bg-background p-3"
+                        data-testid={`client-lease-contract-${leaseContract.id}`}
+                      >
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                          <div className="min-w-0">
+                            <p className="break-words text-sm font-medium">{leaseContract.leasedItemDescription}</p>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              {leaseContract.totalPaidInstallments}/{leaseContract.contractTermMonths} mensualidades pagadas
+                            </p>
+                            {leaseContract.notes ? (
+                              <p className="mt-1 break-words text-[11px] text-muted-foreground">{leaseContract.notes}</p>
+                            ) : null}
+                          </div>
+                          <Badge
+                            variant={leaseDerivedStatusBadgeVariant(leaseContract.derivedStatus)}
+                            className="self-start text-[10px]"
+                            data-testid={`badge-lease-status-${leaseContract.id}`}
+                          >
+                            {leaseDerivedStatusLabel(leaseContract.derivedStatus)}
+                          </Badge>
+                        </div>
+
+                        <div className="mt-3 grid grid-cols-1 gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
+                          <div className="rounded-md bg-muted/40 p-2">
+                            <div className="text-muted-foreground mb-0.5">Inicio real</div>
+                            <div className="font-medium">{formatDate(leaseContract.contractStartDate)}</div>
+                          </div>
+                          <div className="rounded-md bg-muted/40 p-2">
+                            <div className="text-muted-foreground mb-0.5">Final contractual</div>
+                            <div className="font-medium">{formatDate(leaseContract.contractEndDate)}</div>
+                          </div>
+                          <div className="rounded-md bg-muted/40 p-2">
+                            <div className="text-muted-foreground mb-0.5">Precio mensual</div>
+                            <div className="font-medium">{formatCurrencyMx(leasePriceDisplay.amountCents / 100)}</div>
+                          </div>
+                          <div className="rounded-md bg-muted/40 p-2">
+                            <div className="text-muted-foreground mb-0.5">Estado</div>
+                            <div className="font-medium">{leaseDerivedStatusLabel(leaseContract.derivedStatus)}</div>
+                          </div>
+                        </div>
+
+                        {onOpenLeaseContract ? (
+                          <div className="mt-3 flex justify-end">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-9"
+                              onClick={() => {
+                                onOpenChange(false);
+                                onOpenLeaseContract({
+                                  leaseContractId: leaseContract.id,
+                                  clientUserId: profile.user.id,
+                                });
+                              }}
+                              data-testid={`button-open-lease-contract-${leaseContract.id}`}
+                            >
+                              <Eye className="mr-2 h-4 w-4" />
+                              Ver arrendamiento
+                            </Button>
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
 
             <div className="max-w-full rounded-md bg-muted/50 p-2.5 space-y-2 sm:p-3">
               <h4 className="text-sm font-medium flex items-center gap-1.5">
@@ -4156,7 +4402,13 @@ function ClientAlertsHub({
   );
 }
 
-export default function ClientesTab({ focusRequest }: { focusRequest?: ClientFocusRequest | null } = {}) {
+export default function ClientesTab({
+  focusRequest,
+  onOpenLeaseContract,
+}: {
+  focusRequest?: ClientFocusRequest | null;
+  onOpenLeaseContract?: (target: LeaseContractNavigationTarget) => void;
+} = {}) {
   const { toast } = useToast();
   const { user } = useAuth();
   const branchName = ((user?.branch as any)?.name ?? "");
@@ -4675,6 +4927,7 @@ export default function ClientesTab({ focusRequest }: { focusRequest?: ClientFoc
         onEdit={openEdit}
         onDelete={openDelete}
         onWhatsApp={setWaTarget}
+        onOpenLeaseContract={onOpenLeaseContract}
       />
       <WhatsAppModal target={waTarget} branchName={branchName} onClose={() => setWaTarget(null)} />
 

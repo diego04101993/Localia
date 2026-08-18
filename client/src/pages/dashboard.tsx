@@ -88,6 +88,7 @@ import { useLocation } from "wouter";
 import { Area, AreaChart, CartesianGrid, Line, XAxis, YAxis } from "recharts";
 import ClientesTab from "@/components/clientes-tab";
 import MembresiasTab from "@/components/membresias-tab";
+import ArrendamientosTab, { type LeaseContractFocusRequest } from "@/components/arrendamientos-tab";
 import ProductosTab from "@/components/productos-tab";
 import ProveedoresComprasTab from "@/components/proveedores-compras-tab";
 import VendedoresTab from "@/components/vendedores-tab";
@@ -109,6 +110,7 @@ const DASHBOARD_TABS = [
   { value: "clientes", label: "Clientes", icon: Users },
   { value: "productos", label: "Productos", icon: Package2 },
   { value: "membresias", label: "Membresías", icon: CreditCard },
+  { value: "arrendamientos", label: "Arrendamientos", icon: FileText },
   { value: "reservas", label: "Reservas", icon: Calendar },
   { value: "compras", label: "Proveedores y compras", icon: Truck },
   { value: "vendedores", label: "Vendedores", icon: UserCircle },
@@ -3911,6 +3913,7 @@ export default function DashboardPage() {
   const [purchaseFocus, setPurchaseFocus] = useState<PurchaseNotificationTarget | null>(null);
   const [salespersonFocus, setSalespersonFocus] = useState<SalespersonNotificationTarget | null>(null);
   const [cajaFocus, setCajaFocus] = useState<CajaNotificationTarget | null>(null);
+  const [leaseFocus, setLeaseFocus] = useState<LeaseContractFocusRequest | null>(null);
 
   const branchName = user?.branch?.name || "Tu Sucursal";
   const branchSlug = user?.branch?.slug || "";
@@ -4001,6 +4004,19 @@ export default function DashboardPage() {
       nonce: Date.now(),
     });
     setActiveTab("clientes");
+  }
+
+  function handleOpenLeaseContract(leaseContractId: string, clientUserId?: string | null) {
+    if (!leaseContractId) {
+      return;
+    }
+
+    setLeaseFocus({
+      leaseContractId,
+      clientUserId: clientUserId ?? null,
+      nonce: Date.now(),
+    });
+    setActiveTab("arrendamientos");
   }
 
   function handleOpenNotificationClient(notification: NotificationItem) {
@@ -4304,13 +4320,24 @@ export default function DashboardPage() {
 
               <TabsContent value="clientes" className="mt-0">
                 <DashboardTabPanel tab="clientes" moduleLabel="Clientes" onGoHome={goToSummary}>
-                  <ClientesTab focusRequest={clientFocus} />
+                  <ClientesTab
+                    focusRequest={clientFocus}
+                    onOpenLeaseContract={(target) => {
+                      handleOpenLeaseContract(target.leaseContractId, target.clientUserId ?? null);
+                    }}
+                  />
                 </DashboardTabPanel>
               </TabsContent>
 
               <TabsContent value="membresias" className="mt-0">
                 <DashboardTabPanel tab="membresias" moduleLabel="Servicios y planes" onGoHome={goToSummary}>
                   <MembresiasTab />
+                </DashboardTabPanel>
+              </TabsContent>
+
+              <TabsContent value="arrendamientos" className="mt-0">
+                <DashboardTabPanel tab="arrendamientos" moduleLabel="Arrendamientos" onGoHome={goToSummary}>
+                  <ArrendamientosTab focusRequest={leaseFocus} />
                 </DashboardTabPanel>
               </TabsContent>
 

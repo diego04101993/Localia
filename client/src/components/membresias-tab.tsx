@@ -11,7 +11,6 @@ import {
   DollarSign,
   Package,
   Infinity,
-  Clock,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -56,6 +55,9 @@ interface MembershipPlan {
   durationDays: number | null;
   classLimit: number | null;
   cycleMonths: number;
+  leaseEnabled: boolean;
+  defaultLeaseTermMonths: number | null;
+  defaultLeasedItemDescription: string | null;
   isActive: boolean;
   createdAt: string;
 }
@@ -156,7 +158,6 @@ function PlanFormDialog({
   const editCycleMonths = editPlan?.cycleMonths ?? 1;
   const isPresetCycle = [0, 1, 3, 6, 12].includes(editCycleMonths);
   const initialCycleSelect = isPresetCycle ? String(editCycleMonths) : "custom";
-
   const [name, setName] = useState(editPlan?.name || "");
   const [description, setDescription] = useState(editPlan?.description || "");
   const [priceStr, setPriceStr] = useState(editPlan ? (editPlan.price / 100).toString() : "");
@@ -218,7 +219,13 @@ function PlanFormDialog({
       })
     : null;
 
-  const canSubmit = isValidName && isValidPrice && isValidClasses && isValidDesc && isValidCycle && !taxConfigError;
+  const canSubmit =
+    isValidName
+    && isValidPrice
+    && isValidClasses
+    && isValidDesc
+    && isValidCycle
+    && !taxConfigError;
 
   const mutation = useMutation({
     mutationFn: async (data: any) => {
@@ -257,13 +264,16 @@ function PlanFormDialog({
       durationDays,
       classLimit,
       cycleMonths,
+      leaseEnabled: isEdit ? editPlan?.leaseEnabled ?? false : false,
+      defaultLeaseTermMonths: isEdit ? editPlan?.defaultLeaseTermMonths ?? null : null,
+      defaultLeasedItemDescription: isEdit ? editPlan?.defaultLeasedItemDescription ?? null : null,
     });
   }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg max-md:overflow-y-auto max-md:px-4 max-md:pb-[calc(env(safe-area-inset-bottom)+1rem)] max-md:pt-[calc(env(safe-area-inset-top)+1rem)]">
-        <DialogHeader className="pr-10">
+      <DialogContent className="flex max-h-[calc(100dvh-1.5rem)] flex-col overflow-hidden p-0 sm:max-w-lg sm:max-h-[calc(100dvh-2rem)]">
+        <DialogHeader className="shrink-0 pr-10 px-4 pt-[calc(env(safe-area-inset-top)+1rem)] sm:px-6 sm:pt-6">
           <DialogTitle>{isEdit ? "Editar servicio o plan" : "Crear servicio o plan"}</DialogTitle>
           <DialogDescription className="hidden">
             {isEdit ? "Modifica los detalles del plan" : "Define un nuevo plan de membresía para tus clientes"}
@@ -274,8 +284,9 @@ function PlanFormDialog({
               : "Crea una clase suelta, paquete o plan con el nombre que entiende tu cliente."}
           </p>
         </DialogHeader>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="space-y-2">
+        <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 pb-4 sm:px-6 sm:pb-6">
+            <div className="space-y-2">
             <Label htmlFor="plan-name">Nombre comercial *</Label>
             <Input
               id="plan-name"
@@ -455,53 +466,57 @@ function PlanFormDialog({
                 </p>
               </div>
             )}
+
+            </div>
           </div>
 
-          {canSubmit && (
-            <div className="rounded-md bg-muted/50 p-3 text-sm" data-testid="plan-summary">
-              <p className="font-medium mb-1">Resumen de venta</p>
-              <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                <span>Precio: <strong className="text-foreground">${priceValue.toFixed(2)} MXN</strong></span>
-                <span>Tipo: <strong className="text-foreground">{isDropIn ? "Pago por clase (1 día)" : getCycleLabel(cycleMonths)}</strong></span>
-                {!isDropIn && (
-                  <span>Usos incluidos: <strong className="text-foreground">{unlimitedClasses ? "Ilimitado" : `${classesValue}`}</strong></span>
-                )}
-                {!isDropIn && cycleMonths > 1 && (
-                  <span>Equivalente mensual: <strong className="text-foreground">${(priceValue / cycleMonths).toFixed(2)} MXN</strong></span>
-                )}
-              </div>
-              {taxPreview && !taxPreview.isLegacy ? (
-                <div className="mt-3 grid grid-cols-1 gap-1 text-xs text-muted-foreground sm:grid-cols-2">
-                  {taxPreview.taxMode === "tax_included" ? (
-                    <>
-                      <span>Precio final: <strong className="text-foreground">{formatPrice(taxPreview.finalTotalCents)}</strong></span>
-                      <span>Subtotal: <strong className="text-foreground">{formatPrice(taxPreview.subtotalBeforeTaxCents ?? 0)}</strong></span>
-                      <span>IVA incluido {formatTaxRateLabel(taxPreview.taxRate)}: <strong className="text-foreground">{formatPrice(taxPreview.taxTotalCents ?? 0)}</strong></span>
-                      <span>Total al cobrar: <strong className="text-foreground">{formatPrice(taxPreview.finalTotalCents)}</strong></span>
-                    </>
-                  ) : taxPreview.taxMode === "tax_added" ? (
-                    <>
-                      <span>Precio base: <strong className="text-foreground">{formatPrice(taxPreview.basePriceCents)}</strong></span>
-                      <span>IVA {formatTaxRateLabel(taxPreview.taxRate)}: <strong className="text-foreground">{formatPrice(taxPreview.taxTotalCents ?? 0)}</strong></span>
-                      <span>Total al cobrar: <strong className="text-foreground">{formatPrice(taxPreview.finalTotalCents)}</strong></span>
-                    </>
-                  ) : (
-                    <span>Sin IVA: <strong className="text-foreground">{formatPrice(taxPreview.finalTotalCents)}</strong></span>
+          <div className="shrink-0 border-t bg-background/95 px-4 py-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] backdrop-blur sm:px-6 sm:py-4">
+            {canSubmit && (
+              <div className="mb-4 rounded-md bg-muted/50 p-3 text-sm" data-testid="plan-summary">
+                <p className="font-medium mb-1">Resumen de venta</p>
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                  <span>Precio: <strong className="text-foreground">${priceValue.toFixed(2)} MXN</strong></span>
+                  <span>Tipo: <strong className="text-foreground">{isDropIn ? "Pago por clase (1 día)" : getCycleLabel(cycleMonths)}</strong></span>
+                  {!isDropIn && (
+                    <span>Usos incluidos: <strong className="text-foreground">{unlimitedClasses ? "Ilimitado" : `${classesValue}`}</strong></span>
+                  )}
+                  {!isDropIn && cycleMonths > 1 && (
+                    <span>Equivalente mensual: <strong className="text-foreground">${(priceValue / cycleMonths).toFixed(2)} MXN</strong></span>
                   )}
                 </div>
-              ) : null}
-            </div>
-          )}
+                {taxPreview && !taxPreview.isLegacy ? (
+                  <div className="mt-3 grid grid-cols-1 gap-1 text-xs text-muted-foreground sm:grid-cols-2">
+                    {taxPreview.taxMode === "tax_included" ? (
+                      <>
+                        <span>Precio final: <strong className="text-foreground">{formatPrice(taxPreview.finalTotalCents)}</strong></span>
+                        <span>Subtotal: <strong className="text-foreground">{formatPrice(taxPreview.subtotalBeforeTaxCents ?? 0)}</strong></span>
+                        <span>IVA incluido {formatTaxRateLabel(taxPreview.taxRate)}: <strong className="text-foreground">{formatPrice(taxPreview.taxTotalCents ?? 0)}</strong></span>
+                        <span>Total al cobrar: <strong className="text-foreground">{formatPrice(taxPreview.finalTotalCents)}</strong></span>
+                      </>
+                    ) : taxPreview.taxMode === "tax_added" ? (
+                      <>
+                        <span>Precio base: <strong className="text-foreground">{formatPrice(taxPreview.basePriceCents)}</strong></span>
+                        <span>IVA {formatTaxRateLabel(taxPreview.taxRate)}: <strong className="text-foreground">{formatPrice(taxPreview.taxTotalCents ?? 0)}</strong></span>
+                        <span>Total al cobrar: <strong className="text-foreground">{formatPrice(taxPreview.finalTotalCents)}</strong></span>
+                      </>
+                    ) : (
+                      <span>Sin IVA: <strong className="text-foreground">{formatPrice(taxPreview.finalTotalCents)}</strong></span>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            )}
 
-          <DialogFooter className="gap-2 border-t pt-4 max-md:sticky max-md:bottom-0 max-md:z-10 max-md:-mx-4 max-md:bg-background/95 max-md:px-4 max-md:pb-[calc(env(safe-area-inset-bottom)+0.5rem)] max-md:backdrop-blur">
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} data-testid="button-cancel-plan">
-              Cancelar
-            </Button>
-            <Button type="submit" disabled={mutation.isPending || !canSubmit} data-testid="button-submit-plan">
-              {mutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-              {isEdit ? "Guardar" : "Crear"}
-            </Button>
-          </DialogFooter>
+            <DialogFooter className="gap-2 sm:gap-2">
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)} data-testid="button-cancel-plan">
+                Cancelar
+              </Button>
+              <Button type="submit" disabled={mutation.isPending || !canSubmit} data-testid="button-submit-plan">
+                {mutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                {isEdit ? "Guardar" : "Crear"}
+              </Button>
+            </DialogFooter>
+          </div>
         </form>
       </DialogContent>
     </Dialog>
