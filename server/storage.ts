@@ -186,6 +186,7 @@ import {
   calculateLeaseContractEndDate,
   calculateLeaseContractMetrics,
   calculateLeaseOperationalMembershipWindow,
+  getLeaseInstallmentPaymentOperationKey,
 } from "@shared/lease-contract";
 import { type LeaseQuotePreview } from "@shared/lease-quote";
 
@@ -294,6 +295,7 @@ export interface BranchLeaseContractSummary {
   operationalCoverageCurrent: boolean;
   nextDueDate: string | null;
   pendingContractBalanceCents: number;
+  totalPaidInstallmentAmountCents: number | null;
   hasInstallmentSchedule: boolean;
   completedAt: Date | null;
   cancelledAt: Date | null;
@@ -315,6 +317,7 @@ export interface BranchLeaseInstallmentSummary {
   currencyCode: string;
   paymentSource: "webcool" | "external" | null;
   paidAt: Date | null;
+  paymentMethod: string | null;
   financeEntryId: string | null;
   chargeEventId: string | null;
   recordedByUserId: string | null;
@@ -325,6 +328,15 @@ export interface BranchLeaseInstallmentSummary {
 
 export interface CreateBranchLeaseContractResult {
   leaseContractId: string;
+}
+
+export interface BranchLeaseInstallmentPaymentResult {
+  leaseContractId: string;
+  installmentId: string;
+  chargeEventId: string;
+  financeEntryId: string;
+  idempotentReplay: boolean;
+  completedAt: Date | null;
 }
 
 const BRANCH_TIMEZONE = "America/Mexico_City";
@@ -645,7 +657,11 @@ function buildBranchFinanceFiscalSnapshotFromCommercialSale(
 }
 
 function getBranchFinanceEntryFiscalSnapshot(entry: BranchFinanceFiscalRowLike): BranchFinanceFiscalSnapshotRow | null {
-  if (entry.source === "membership_assign" || entry.source === "membership_renew") {
+  if (
+    entry.source === "membership_assign"
+    || entry.source === "membership_renew"
+    || entry.source === "lease_installment_payment"
+  ) {
     return buildBranchFinanceFiscalSnapshotFromChargeEvent(entry);
   }
 
@@ -2268,6 +2284,15 @@ export interface IStorage {
     notes?: string | null;
     quote: LeaseQuotePreview;
   }): Promise<CreateBranchLeaseContractResult>;
+  recordBranchLeaseInstallmentPayment(data: {
+    branchId: string;
+    actorUserId: string;
+    leaseContractId: string;
+    installmentId: string;
+    paymentMethod: string;
+    paidAt: string;
+    notes?: string | null;
+  }): Promise<BranchLeaseInstallmentPaymentResult>;
   assignPlanToMembership(
     membershipId: string,
     planId: string,
@@ -6922,6 +6947,7 @@ export class DatabaseStorage implements IStorage {
     externalPaidCount: number;
     nextDueDate: string | null;
     pendingBalanceCents: number;
+    totalPaidAmountCents: number;
   }>> {
     if (leaseContractIds.length === 0) {
       return new Map();
@@ -6935,6 +6961,7 @@ export class DatabaseStorage implements IStorage {
         externalPaidCount: sql<number>`COUNT(*) FILTER (WHERE ${branchLeaseInstallments.paymentSource} = 'external')`.as("external_paid_count"),
         nextDueDate: sql<string | null>`MIN(${branchLeaseInstallments.dueDate}) FILTER (WHERE ${branchLeaseInstallments.paymentSource} IS NULL)`.as("next_due_date"),
         pendingBalanceCents: sql<number>`COALESCE(SUM(${branchLeaseInstallments.finalTotalCents}) FILTER (WHERE ${branchLeaseInstallments.paymentSource} IS NULL), 0)`.as("pending_balance_cents"),
+        totalPaidAmountCents: sql<number>`COALESCE(SUM(${branchLeaseInstallments.finalTotalCents}) FILTER (WHERE ${branchLeaseInstallments.paymentSource} IS NOT NULL), 0)`.as("total_paid_amount_cents"),
       })
       .from(branchLeaseInstallments)
       .where(and(
@@ -6949,6 +6976,7 @@ export class DatabaseStorage implements IStorage {
       externalPaidCount: number;
       nextDueDate: string | null;
       pendingBalanceCents: number;
+      totalPaidAmountCents: number;
     }>();
 
     for (const row of rows as Array<{
@@ -6958,6 +6986,7 @@ export class DatabaseStorage implements IStorage {
       externalPaidCount: number;
       nextDueDate: string | null;
       pendingBalanceCents: number;
+      totalPaidAmountCents: number;
     }>) {
       result.set(row.leaseContractId, {
         totalCount: Number(row.totalCount) || 0,
@@ -6965,6 +6994,7 @@ export class DatabaseStorage implements IStorage {
         externalPaidCount: Number(row.externalPaidCount) || 0,
         nextDueDate: row.nextDueDate ?? null,
         pendingBalanceCents: Number(row.pendingBalanceCents) || 0,
+        totalPaidAmountCents: Number(row.totalPaidAmountCents) || 0,
       });
     }
 
@@ -6977,33 +7007,41 @@ export class DatabaseStorage implements IStorage {
     leaseContractId: string,
   ): Promise<BranchLeaseInstallmentSummary[]> {
     const rows = await executor
-      .select()
+      .select({
+        installment: branchLeaseInstallments,
+        paymentMethod: branchFinanceEntries.paymentMethod,
+      })
       .from(branchLeaseInstallments)
+      .leftJoin(branchFinanceEntries, and(
+        eq(branchLeaseInstallments.financeEntryId, branchFinanceEntries.id),
+        eq(branchLeaseInstallments.branchId, branchFinanceEntries.branchId),
+      ))
       .where(and(
         eq(branchLeaseInstallments.branchId, branchId),
         eq(branchLeaseInstallments.leaseContractId, leaseContractId),
       ))
       .orderBy(asc(branchLeaseInstallments.installmentNumber), asc(branchLeaseInstallments.dueDate));
 
-    return rows.map((row: BranchLeaseInstallment) => ({
-      id: row.id,
-      branchId: row.branchId,
-      leaseContractId: row.leaseContractId,
-      installmentNumber: row.installmentNumber,
-      dueDate: row.dueDate,
-      subtotalBeforeTaxCents: row.subtotalBeforeTaxCents,
-      taxableSubtotalCents: row.taxableSubtotalCents,
-      taxTotalCents: row.taxTotalCents,
-      finalTotalCents: row.finalTotalCents,
-      currencyCode: row.currencyCode,
-      paymentSource: row.paymentSource ?? null,
-      paidAt: row.paidAt ?? null,
-      financeEntryId: row.financeEntryId ?? null,
-      chargeEventId: row.chargeEventId ?? null,
-      recordedByUserId: row.recordedByUserId ?? null,
-      notes: row.notes ?? null,
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
+    return rows.map((row: { installment: BranchLeaseInstallment; paymentMethod: string | null }) => ({
+      id: row.installment.id,
+      branchId: row.installment.branchId,
+      leaseContractId: row.installment.leaseContractId,
+      installmentNumber: row.installment.installmentNumber,
+      dueDate: row.installment.dueDate,
+      subtotalBeforeTaxCents: row.installment.subtotalBeforeTaxCents,
+      taxableSubtotalCents: row.installment.taxableSubtotalCents,
+      taxTotalCents: row.installment.taxTotalCents,
+      finalTotalCents: row.installment.finalTotalCents,
+      currencyCode: row.installment.currencyCode,
+      paymentSource: row.installment.paymentSource ?? null,
+      paidAt: row.installment.paidAt ?? null,
+      paymentMethod: row.paymentMethod ?? null,
+      financeEntryId: row.installment.financeEntryId ?? null,
+      chargeEventId: row.installment.chargeEventId ?? null,
+      recordedByUserId: row.installment.recordedByUserId ?? null,
+      notes: row.installment.notes ?? null,
+      createdAt: row.installment.createdAt,
+      updatedAt: row.installment.updatedAt,
     }));
   }
 
@@ -7023,6 +7061,7 @@ export class DatabaseStorage implements IStorage {
       externalPaidCount: number;
       nextDueDate: string | null;
       pendingBalanceCents: number;
+      totalPaidAmountCents: number;
     },
   ): BranchLeaseContractSummary {
     const hasInstallmentSchedule = (installmentAggregate?.totalCount ?? 0) > 0;
@@ -7057,6 +7096,9 @@ export class DatabaseStorage implements IStorage {
         : null);
     const pendingContractBalanceCents = installmentAggregate?.pendingBalanceCents
       ?? Math.max(metrics.pendingInstallments, 0) * (contract.monthlyFinalTotalCents || 0);
+    const totalPaidInstallmentAmountCents = hasInstallmentSchedule
+      ? installmentAggregate?.totalPaidAmountCents ?? 0
+      : null;
 
     return {
       id: contract.id,
@@ -7118,6 +7160,7 @@ export class DatabaseStorage implements IStorage {
       operationalCoverageCurrent: operationalWindow.isCurrentlyCovered,
       nextDueDate,
       pendingContractBalanceCents,
+      totalPaidInstallmentAmountCents,
       hasInstallmentSchedule,
       completedAt: contract.completedAt ?? null,
       cancelledAt: contract.cancelledAt ?? null,
@@ -7655,6 +7698,361 @@ export class DatabaseStorage implements IStorage {
 
       return {
         leaseContractId: leaseContract.id,
+      };
+    });
+  }
+
+  private async lockBranchLeaseContractTx(
+    tx: any,
+    branchId: string,
+    leaseContractId: string,
+  ): Promise<BranchLeaseContract | undefined> {
+    await tx.execute(sql`
+      SELECT id
+      FROM branch_lease_contracts
+      WHERE id = ${leaseContractId}
+        AND branch_id = ${branchId}
+      FOR UPDATE
+    `);
+
+    const [leaseContract] = await tx
+      .select()
+      .from(branchLeaseContracts)
+      .where(and(
+        eq(branchLeaseContracts.id, leaseContractId),
+        eq(branchLeaseContracts.branchId, branchId),
+      ))
+      .limit(1);
+
+    return leaseContract;
+  }
+
+  private async lockBranchLeaseInstallmentTx(
+    tx: any,
+    branchId: string,
+    leaseContractId: string,
+    installmentId: string,
+  ): Promise<BranchLeaseInstallment | undefined> {
+    await tx.execute(sql`
+      SELECT id
+      FROM branch_lease_installments
+      WHERE id = ${installmentId}
+        AND branch_id = ${branchId}
+        AND lease_contract_id = ${leaseContractId}
+      FOR UPDATE
+    `);
+
+    const [installment] = await tx
+      .select()
+      .from(branchLeaseInstallments)
+      .where(and(
+        eq(branchLeaseInstallments.id, installmentId),
+        eq(branchLeaseInstallments.branchId, branchId),
+        eq(branchLeaseInstallments.leaseContractId, leaseContractId),
+      ))
+      .limit(1);
+
+    return installment;
+  }
+
+  private async claimLeaseInstallmentChargeEventTx(tx: any, data: {
+    branchId: string;
+    leaseContractId: string;
+    installmentId: string;
+    clientUserId: string;
+    operationKey: string;
+    planNameSnapshot: string;
+    basePriceCents: number;
+    taxMode: string;
+    taxRate: number;
+    subtotalBeforeTaxCents: number;
+    taxableSubtotalCents: number;
+    taxTotalCents: number;
+    finalTotalCents: number;
+    chargedAt: Date;
+    financeEntryId: string;
+    contextJson: Record<string, unknown>;
+    createdBy: string;
+  }): Promise<{ created: boolean; chargeEvent: BranchChargeEvent }> {
+    const [created] = await tx
+      .insert(branchChargeEvents)
+      .values({
+        branchId: data.branchId,
+        chargeDomain: "lease_installment",
+        eventType: "payment",
+        operationKey: data.operationKey,
+        membershipId: null,
+        planId: null,
+        clientUserId: data.clientUserId,
+        leaseContractId: data.leaseContractId,
+        leaseInstallmentId: data.installmentId,
+        financeEntryId: data.financeEntryId,
+        planNameSnapshot: data.planNameSnapshot,
+        basePriceCents: data.basePriceCents,
+        taxMode: data.taxMode,
+        taxRate: data.taxRate.toFixed(4),
+        subtotalBeforeTaxCents: data.subtotalBeforeTaxCents,
+        taxableSubtotalCents: data.taxableSubtotalCents,
+        taxTotalCents: data.taxTotalCents,
+        finalTotalCents: data.finalTotalCents,
+        currencyCode: "MXN",
+        chargedAt: data.chargedAt,
+        snapshotVersion: 1,
+        contextJson: data.contextJson,
+        createdBy: data.createdBy,
+      } as any)
+      .onConflictDoNothing({
+        target: [branchChargeEvents.branchId, branchChargeEvents.operationKey],
+      })
+      .returning();
+
+    if (created) {
+      return { created: true, chargeEvent: created };
+    }
+
+    const existing = await this.getBranchChargeEventByOperationKeyTx(tx, data.branchId, data.operationKey);
+    if (!existing || existing.leaseInstallmentId !== data.installmentId) {
+      throw new Error("LEASE_INSTALLMENT_OPERATION_KEY_CONFLICT");
+    }
+
+    return { created: false, chargeEvent: existing };
+  }
+
+  private async getLeaseInstallmentPaymentReplayTx(tx: any, data: {
+    branchId: string;
+    leaseContractId: string;
+    installment: BranchLeaseInstallment;
+    completedAt: Date | null;
+  }): Promise<BranchLeaseInstallmentPaymentResult> {
+    if (!data.installment.chargeEventId || !data.installment.financeEntryId) {
+      throw new Error("LEASE_INSTALLMENT_PAYMENT_INTEGRITY_ERROR");
+    }
+
+    const [chargeEvent] = await tx
+      .select({ id: branchChargeEvents.id })
+      .from(branchChargeEvents)
+      .where(and(
+        eq(branchChargeEvents.id, data.installment.chargeEventId),
+        eq(branchChargeEvents.branchId, data.branchId),
+        eq(branchChargeEvents.leaseContractId, data.leaseContractId),
+        eq(branchChargeEvents.leaseInstallmentId, data.installment.id),
+      ))
+      .limit(1);
+    const [financeEntry] = await tx
+      .select({ id: branchFinanceEntries.id })
+      .from(branchFinanceEntries)
+      .where(and(
+        eq(branchFinanceEntries.id, data.installment.financeEntryId),
+        eq(branchFinanceEntries.branchId, data.branchId),
+        isNull(branchFinanceEntries.deletedAt),
+      ))
+      .limit(1);
+
+    if (!chargeEvent || !financeEntry) {
+      throw new Error("LEASE_INSTALLMENT_PAYMENT_INTEGRITY_ERROR");
+    }
+
+    return {
+      leaseContractId: data.leaseContractId,
+      installmentId: data.installment.id,
+      chargeEventId: chargeEvent.id,
+      financeEntryId: financeEntry.id,
+      idempotentReplay: true,
+      completedAt: data.completedAt,
+    };
+  }
+
+  async recordBranchLeaseInstallmentPayment(data: {
+    branchId: string;
+    actorUserId: string;
+    leaseContractId: string;
+    installmentId: string;
+    paymentMethod: string;
+    paidAt: string;
+    notes?: string | null;
+  }): Promise<BranchLeaseInstallmentPaymentResult> {
+    const paidAt = parseMxIsoDateInput(data.paidAt);
+    if (!paidAt) {
+      throw new Error("LEASE_INSTALLMENT_PAYMENT_DATE_INVALID");
+    }
+
+    return db.transaction(async (tx) => {
+      const leaseContract = await this.lockBranchLeaseContractTx(tx, data.branchId, data.leaseContractId);
+      if (!leaseContract) {
+        throw new Error("LEASE_CONTRACT_NOT_FOUND");
+      }
+      if (leaseContract.cancelledAt) {
+        throw new Error("LEASE_CONTRACT_CANCELLED");
+      }
+
+      const installment = await this.lockBranchLeaseInstallmentTx(
+        tx,
+        data.branchId,
+        leaseContract.id,
+        data.installmentId,
+      );
+      if (!installment) {
+        throw new Error("LEASE_INSTALLMENT_NOT_FOUND");
+      }
+      if (installment.paymentSource === "webcool") {
+        return this.getLeaseInstallmentPaymentReplayTx(tx, {
+          branchId: data.branchId,
+          leaseContractId: leaseContract.id,
+          installment,
+          completedAt: leaseContract.completedAt ?? null,
+        });
+      }
+      if (installment.paymentSource === "external") {
+        throw new Error("LEASE_INSTALLMENT_ALREADY_RECORDED_EXTERNALLY");
+      }
+      if (leaseContract.completedAt) {
+        throw new Error("LEASE_CONTRACT_COMPLETED");
+      }
+      if (!leaseContract.clientUserId) {
+        throw new Error("LEASE_CONTRACT_CLIENT_REQUIRED");
+      }
+
+      const taxMode = leaseContract.taxModeSnapshot;
+      const taxRate = leaseContract.taxRateSnapshot == null ? null : Number(leaseContract.taxRateSnapshot);
+      if (!taxMode || taxRate == null || !Number.isFinite(taxRate)) {
+        throw new Error("LEASE_INSTALLMENT_TAX_SNAPSHOT_MISSING");
+      }
+
+      const operationKey = getLeaseInstallmentPaymentOperationKey(installment.id);
+      const existingChargeEvent = await this.getBranchChargeEventByOperationKeyTx(tx, data.branchId, operationKey);
+      if (existingChargeEvent) {
+        throw new Error("LEASE_INSTALLMENT_PAYMENT_INTEGRITY_ERROR");
+      }
+
+      const clientDisplayName = `${leaseContract.leasedItemDescription} · Mensualidad ${installment.installmentNumber}/${leaseContract.contractTermMonths}`;
+      const normalizedNotes = typeof data.notes === "string" && data.notes.trim().length > 0
+        ? data.notes.trim()
+        : null;
+      const financeEntryResult = await this.createBranchFinanceEntryTx(tx, {
+        branchId: data.branchId,
+        type: "income",
+        category: "arrendamiento",
+        concept: clientDisplayName,
+        amount: formatMoneyCentsAsNumericString(installment.finalTotalCents),
+        paymentMethod: data.paymentMethod,
+        clientUserId: leaseContract.clientUserId,
+        clientName: null,
+        notes: normalizedNotes,
+        entryDate: data.paidAt,
+        source: "lease_installment_payment",
+        sourceId: installment.id,
+        metadata: {
+          leaseContractId: leaseContract.id,
+          leaseInstallmentId: installment.id,
+          installmentNumber: installment.installmentNumber,
+          termMonths: leaseContract.contractTermMonths,
+          dueDate: installment.dueDate,
+          leasedItemDescription: leaseContract.leasedItemDescription,
+          paymentMethod: data.paymentMethod,
+        },
+        createdBy: data.actorUserId,
+      } as any);
+      if (!financeEntryResult.created) {
+        throw new Error("LEASE_INSTALLMENT_PAYMENT_INTEGRITY_ERROR");
+      }
+
+      const chargeEventResult = await this.claimLeaseInstallmentChargeEventTx(tx, {
+        branchId: data.branchId,
+        leaseContractId: leaseContract.id,
+        installmentId: installment.id,
+        clientUserId: leaseContract.clientUserId,
+        operationKey,
+        planNameSnapshot: `Arrendamiento · ${leaseContract.leasedItemDescription} · Mensualidad ${installment.installmentNumber}/${leaseContract.contractTermMonths}`,
+        basePriceCents: installment.subtotalBeforeTaxCents,
+        taxMode,
+        taxRate,
+        subtotalBeforeTaxCents: installment.subtotalBeforeTaxCents,
+        taxableSubtotalCents: installment.taxableSubtotalCents,
+        taxTotalCents: installment.taxTotalCents,
+        finalTotalCents: installment.finalTotalCents,
+        chargedAt: paidAt,
+        financeEntryId: financeEntryResult.entry.id,
+        contextJson: {
+          installmentNumber: installment.installmentNumber,
+          termMonths: leaseContract.contractTermMonths,
+          dueDate: installment.dueDate,
+          leasedItemDescription: leaseContract.leasedItemDescription,
+          paymentMethod: data.paymentMethod,
+        },
+        createdBy: data.actorUserId,
+      });
+      if (!chargeEventResult.created) {
+        throw new Error("LEASE_INSTALLMENT_PAYMENT_INTEGRITY_ERROR");
+      }
+
+      const [updatedInstallment] = await tx
+        .update(branchLeaseInstallments)
+        .set({
+          paymentSource: "webcool",
+          paidAt,
+          financeEntryId: financeEntryResult.entry.id,
+          chargeEventId: chargeEventResult.chargeEvent.id,
+          recordedByUserId: data.actorUserId,
+          notes: normalizedNotes,
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(branchLeaseInstallments.id, installment.id),
+          eq(branchLeaseInstallments.branchId, data.branchId),
+          eq(branchLeaseInstallments.leaseContractId, leaseContract.id),
+          isNull(branchLeaseInstallments.paymentSource),
+        ))
+        .returning({ id: branchLeaseInstallments.id });
+      if (!updatedInstallment) {
+        throw new Error("LEASE_INSTALLMENT_PAYMENT_CLAIM_FAILED");
+      }
+
+      const [remaining] = await tx
+        .select({ count: sql<number>`COUNT(*)` })
+        .from(branchLeaseInstallments)
+        .where(and(
+          eq(branchLeaseInstallments.branchId, data.branchId),
+          eq(branchLeaseInstallments.leaseContractId, leaseContract.id),
+          isNull(branchLeaseInstallments.paymentSource),
+        ));
+      const allInstallmentsPaid = Number(remaining?.count ?? 0) === 0;
+      let completedAt: Date | null = leaseContract.completedAt ?? null;
+      if (allInstallmentsPaid && !completedAt) {
+        const [completedContract] = await tx
+          .update(branchLeaseContracts)
+          .set({ completedAt: new Date(), updatedAt: new Date() })
+          .where(and(
+            eq(branchLeaseContracts.id, leaseContract.id),
+            eq(branchLeaseContracts.branchId, data.branchId),
+            isNull(branchLeaseContracts.cancelledAt),
+          ))
+          .returning({ completedAt: branchLeaseContracts.completedAt });
+        completedAt = completedContract?.completedAt ?? null;
+      }
+
+      await this.createAuditLogTx(tx, {
+        actorUserId: data.actorUserId,
+        action: "PAY_LEASE_INSTALLMENT",
+        branchId: data.branchId,
+        metadata: {
+          leaseContractId: leaseContract.id,
+          installmentId: installment.id,
+          installmentNumber: installment.installmentNumber,
+          amountCents: installment.finalTotalCents,
+          financeEntryId: financeEntryResult.entry.id,
+          chargeEventId: chargeEventResult.chargeEvent.id,
+          paymentMethod: data.paymentMethod,
+          paidAt: data.paidAt,
+        },
+      });
+
+      return {
+        leaseContractId: leaseContract.id,
+        installmentId: installment.id,
+        chargeEventId: chargeEventResult.chargeEvent.id,
+        financeEntryId: financeEntryResult.entry.id,
+        idempotentReplay: false,
+        completedAt,
       };
     });
   }

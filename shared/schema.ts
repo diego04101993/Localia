@@ -1721,8 +1721,8 @@ export const branchFinanceEntries = pgTable("branch_finance_entries", {
   index("branch_finance_entries_client_user_idx").on(table.clientUserId),
 ]);
 
-export const branchChargeEventDomainValues = ["membership_plan"] as const;
-export const branchChargeEventTypeValues = ["assign", "renew"] as const;
+export const branchChargeEventDomainValues = ["membership_plan", "lease_installment"] as const;
+export const branchChargeEventTypeValues = ["assign", "renew", "payment"] as const;
 export const branchLeaseInstallmentPaymentSourceValues = ["webcool", "external"] as const;
 export type BranchLeaseInstallmentPaymentSource = (typeof branchLeaseInstallmentPaymentSourceValues)[number];
 
@@ -2282,6 +2282,12 @@ export const updateBranchFinanceEntrySchema = createBranchFinanceEntrySchema.par
   (data) => Object.keys(data).length > 0,
   { message: "Debes enviar al menos un campo para actualizar" },
 );
+
+export const registerLeaseInstallmentPaymentSchema = z.object({
+  paymentMethod: z.enum(branchFinancePaymentMethodValues),
+  paidAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Formato YYYY-MM-DD"),
+  notes: z.string().max(500, "Maximo 500 caracteres").nullable().optional(),
+});
 
 export const createBranchRecurringExpenseSchema = z.object({
   name: z.string().min(1, "El nombre es obligatorio").max(160, "Maximo 160 caracteres"),

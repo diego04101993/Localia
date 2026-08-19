@@ -51,6 +51,7 @@ import {
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { downloadAuthenticatedFileRequest } from "@/lib/download-file";
+import { invalidateBranchFinanceQueries } from "@/lib/branch-dashboard-cache";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
@@ -132,6 +133,7 @@ type LeaseContractSummary = {
   operationalCoverageCurrent: boolean;
   nextDueDate: string | null;
   pendingContractBalanceCents: number;
+  totalPaidInstallmentAmountCents: number | null;
   hasInstallmentSchedule: boolean;
   completedAt: string | null;
   cancelledAt: string | null;
@@ -165,6 +167,7 @@ type BranchLeaseInstallmentSummary = {
   currencyCode: string;
   paymentSource: "webcool" | "external" | null;
   paidAt: string | null;
+  paymentMethod: string | null;
   financeEntryId: string | null;
   chargeEventId: string | null;
   recordedByUserId: string | null;
@@ -190,6 +193,21 @@ type CreateLeaseContractResponse = {
   leaseContract: LeaseContractSummary | null;
 };
 
+type LeaseInstallmentPaymentResponse = {
+  leaseContractId: string;
+  installmentId: string;
+  chargeEventId: string;
+  financeEntryId: string;
+  idempotentReplay: boolean;
+  completedAt: string | null;
+  leaseContract: LeaseContractSummary;
+};
+
+type LeasePaymentTarget = {
+  contract: LeaseContractSummary;
+  installment: BranchLeaseInstallmentSummary;
+};
+
 type LeaseQuoteFormState = {
   clientUserId: string;
   leasedItemDescription: string;
@@ -209,6 +227,13 @@ type LeaseQuoteFormState = {
 
 const LEASE_CONTRACTS_QUERY_KEY = ["/api/branch/lease-contracts"];
 const LEASE_CLIENTS_QUERY_KEY = ["/api/branch/clients"];
+const LEASE_PAYMENT_METHODS = [
+  ["efectivo", "Efectivo"],
+  ["tarjeta", "Tarjeta"],
+  ["transferencia", "Transferencia"],
+  ["mercado_pago", "Mercado Pago"],
+  ["otro", "Otro"],
+] as const;
 
 function formatCurrencyMxFromCents(amountCents: number | null | undefined) {
   return new Intl.NumberFormat("es-MX", {
@@ -245,6 +270,18 @@ function formatDateTime(value: string | null | undefined) {
     year: "numeric",
     hour: "2-digit",
     minute: "2-digit",
+  });
+}
+
+function formatStoredPaymentDate(value: string | null | undefined) {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleDateString("es-MX", {
+    timeZone: "America/Mexico_City",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
   });
 }
 
@@ -452,6 +489,10 @@ function getInstallmentStatusLabel(installment: BranchLeaseInstallmentSummary) {
   return installment.dueDate < getTodayMxIsoDate() ? "Vencida" : "Pendiente";
 }
 
+function getPaymentMethodLabel(paymentMethod: string | null | undefined) {
+  return LEASE_PAYMENT_METHODS.find(([value]) => value === paymentMethod)?.[1] ?? "Método no disponible";
+}
+
 function ContractSummaryCard({
   title,
   value,
@@ -476,10 +517,12 @@ function LeaseDetailDialog({
   leaseContractId,
   open,
   onOpenChange,
+  onRegisterPayment,
 }: {
   leaseContractId: string | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onRegisterPayment: (target: LeasePaymentTarget) => void;
 }) {
   const detailQueryKey = leaseContractId ? [`/api/branch/lease-contracts/${leaseContractId}`] : [];
   const { data, isLoading, error } = useQuery<LeaseContractSummary>({
@@ -490,6 +533,9 @@ function LeaseDetailDialog({
   const breakdown = data ? getMonthlyBreakdown(data) : null;
   const assetValueForDisplay = data?.assetValueCents ?? data?.capturedPriceCents ?? 0;
   const contractFinalForDisplay = data?.contractFinalTotalCents ?? null;
+  const nextPendingInstallment = data?.derivedStatus !== "CANCELLED"
+    ? data?.installments?.find((installment) => installment.paymentSource === null) ?? null
+    : null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -497,9 +543,20 @@ function LeaseDetailDialog({
         <DialogHeader>
           <DialogTitle>Detalle del arrendamiento</DialogTitle>
           <DialogDescription>
-            Consulta el contrato, el avance de mensualidades y el snapshot fiscal sin modificar caja ni pagos.
+            Consulta el contrato, el avance de mensualidades y el snapshot fiscal de cada pago.
           </DialogDescription>
         </DialogHeader>
+
+        {data?.hasInstallmentSchedule && nextPendingInstallment ? (
+          <div className="flex justify-end">
+            <Button
+              onClick={() => onRegisterPayment({ contract: data, installment: nextPendingInstallment })}
+              data-testid={`button-register-next-lease-payment-${nextPendingInstallment.id}`}
+            >
+              Registrar próximo pago
+            </Button>
+          </div>
+        ) : null}
 
         {isLoading ? (
           <div className="space-y-3">
@@ -554,6 +611,7 @@ function LeaseDetailDialog({
                 <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">IVA</p><p className="mt-1 font-medium">{breakdown?.taxValue ?? "—"}</p></CardContent></Card>
                 <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Total mensual</p><p className="mt-1 font-medium">{breakdown?.totalValue ?? formatCurrencyMxFromCents(data.monthlyFinalTotalCents)}</p></CardContent></Card>
                 <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Total contractual</p><p className="mt-1 font-medium">{contractFinalForDisplay != null ? formatCurrencyMxFromCents(contractFinalForDisplay) : "—"}</p></CardContent></Card>
+                <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Total pagado</p><p className="mt-1 font-medium">{data.totalPaidInstallmentAmountCents == null ? "—" : formatCurrencyMxFromCents(data.totalPaidInstallmentAmountCents)}</p><p className="text-xs text-muted-foreground">Solo mensualidades</p></CardContent></Card>
                 <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Saldo pendiente</p><p className="mt-1 font-medium">{formatCurrencyMxFromCents(data.pendingContractBalanceCents)}</p></CardContent></Card>
                 <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Próximo vencimiento</p><p className="mt-1 font-medium">{formatDate(data.nextDueDate)}</p></CardContent></Card>
                 <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Pagadas antes de WebCool</p><p className="mt-1 font-medium">{data.preWebcoolPaidInstallments}</p></CardContent></Card>
@@ -595,6 +653,7 @@ function LeaseDetailDialog({
                           <TableHead className="text-right">Subtotal</TableHead>
                           <TableHead className="text-right">IVA</TableHead>
                           <TableHead className="text-right">Total</TableHead>
+                          <TableHead className="text-right">Acción</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -602,10 +661,29 @@ function LeaseDetailDialog({
                           <TableRow key={installment.id}>
                             <TableCell>{installment.installmentNumber}/{data.contractTermMonths}</TableCell>
                             <TableCell>{formatDate(installment.dueDate)}</TableCell>
-                            <TableCell>{getInstallmentStatusLabel(installment)}</TableCell>
+                            <TableCell>
+                              <p>{getInstallmentStatusLabel(installment)}</p>
+                              {installment.paymentSource === "webcool" && installment.paidAt ? (
+                                <p className="mt-1 text-xs text-muted-foreground">
+                                  {formatStoredPaymentDate(installment.paidAt)} · {getPaymentMethodLabel(installment.paymentMethod)}
+                                </p>
+                              ) : null}
+                            </TableCell>
                             <TableCell className="text-right">{formatCurrencyMxFromCents(installment.subtotalBeforeTaxCents)}</TableCell>
                             <TableCell className="text-right">{formatCurrencyMxFromCents(installment.taxTotalCents)}</TableCell>
                             <TableCell className="text-right font-medium">{formatCurrencyMxFromCents(installment.finalTotalCents)}</TableCell>
+                            <TableCell className="text-right">
+                              {installment.paymentSource === null && data.derivedStatus !== "CANCELLED" ? (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => onRegisterPayment({ contract: data, installment })}
+                                  data-testid={`button-register-lease-payment-${installment.id}`}
+                                >
+                                  Registrar pago
+                                </Button>
+                              ) : <span className="text-xs text-muted-foreground">—</span>}
+                            </TableCell>
                           </TableRow>
                         ))}
                       </TableBody>
@@ -613,13 +691,163 @@ function LeaseDetailDialog({
                   </div>
                 </CardContent>
               </Card>
-            ) : null}
+            ) : (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">Historial legacy</CardTitle>
+                </CardHeader>
+                <CardContent className="text-sm text-muted-foreground">
+                  Este contrato usa historial legacy. Su corrida debe adoptarse antes de registrar nuevos pagos.
+                </CardContent>
+              </Card>
+            )}
           </div>
         ) : (
           <div className="rounded-xl border bg-muted/30 p-4 text-sm text-muted-foreground">
             No encontramos este arrendamiento en la sucursal actual.
           </div>
         )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function LeasePaymentDialog({
+  target,
+  onOpenChange,
+}: {
+  target: LeasePaymentTarget | null;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [paymentMethod, setPaymentMethod] = useState<(typeof LEASE_PAYMENT_METHODS)[number][0]>("efectivo");
+  const [paidAt, setPaidAt] = useState(getTodayMxIsoDate());
+  const [notes, setNotes] = useState("");
+
+  useEffect(() => {
+    if (!target) return;
+    setPaymentMethod("efectivo");
+    setPaidAt(getTodayMxIsoDate());
+    setNotes("");
+  }, [target?.installment.id]);
+
+  const paymentMutation = useMutation({
+    mutationFn: async (request: {
+      leaseContractId: string;
+      installmentId: string;
+      paymentMethod: string;
+      paidAt: string;
+      notes: string | null;
+    }) => {
+      const response = await apiRequest(
+        "POST",
+        `/api/branch/lease-contracts/${request.leaseContractId}/installments/${request.installmentId}/pay`,
+        {
+          paymentMethod: request.paymentMethod,
+          paidAt: request.paidAt,
+          notes: request.notes,
+        },
+      );
+      return response.json() as Promise<LeaseInstallmentPaymentResponse>;
+    },
+  });
+
+  async function handleRegisterPayment() {
+    if (!target || !paidAt) return;
+
+    try {
+      const result = await paymentMutation.mutateAsync({
+        leaseContractId: target.contract.id,
+        installmentId: target.installment.id,
+        paymentMethod,
+        paidAt,
+        notes: notes.trim() || null,
+      });
+      queryClient.setQueryData(
+        [`/api/branch/lease-contracts/${target.contract.id}`],
+        result.leaseContract,
+      );
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: LEASE_CONTRACTS_QUERY_KEY }),
+        queryClient.invalidateQueries({ queryKey: [`/api/branch/lease-contracts/${target.contract.id}`] }),
+        invalidateBranchFinanceQueries(),
+      ]);
+
+      toast({
+        title: result.idempotentReplay ? "Pago ya registrado" : "Pago registrado",
+        description: result.idempotentReplay
+          ? "Esta mensualidad ya contaba con un pago en WebCool; no se generó un cobro duplicado."
+          : "La mensualidad, Caja y el avance contractual se actualizaron correctamente.",
+      });
+      onOpenChange(false);
+    } catch (error: any) {
+      toast({
+        title: "No pudimos registrar el pago",
+        description: error?.message || "Intenta nuevamente. No se registró ningún cobro.",
+        variant: "destructive",
+      });
+    }
+  }
+
+  if (!target) return null;
+
+  const { contract, installment } = target;
+  return (
+    <Dialog open={!!target} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Registrar pago de mensualidad</DialogTitle>
+          <DialogDescription>
+            El monto está congelado por el contrato y no puede editarse manualmente.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <div className="rounded-xl border bg-muted/30 p-4 text-sm">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div><p className="text-xs text-muted-foreground">Cliente</p><p className="mt-1 font-medium">{contract.clientDisplayName}</p></div>
+              <div><p className="text-xs text-muted-foreground">Bien</p><p className="mt-1 font-medium">{contract.leasedItemDescription}</p></div>
+              <div><p className="text-xs text-muted-foreground">Mensualidad</p><p className="mt-1 font-medium">{installment.installmentNumber} de {contract.contractTermMonths}</p></div>
+              <div><p className="text-xs text-muted-foreground">Vencimiento</p><p className="mt-1 font-medium">{formatDate(installment.dueDate)}</p></div>
+            </div>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="rounded-xl border p-3"><p className="text-xs text-muted-foreground">Subtotal</p><p className="mt-1 font-medium">{formatCurrencyMxFromCents(installment.subtotalBeforeTaxCents)}</p></div>
+            <div className="rounded-xl border p-3"><p className="text-xs text-muted-foreground">IVA</p><p className="mt-1 font-medium">{formatCurrencyMxFromCents(installment.taxTotalCents)}</p></div>
+            <div className="rounded-xl border bg-primary/5 p-3"><p className="text-xs text-muted-foreground">Total</p><p className="mt-1 font-semibold">{formatCurrencyMxFromCents(installment.finalTotalCents)}</p></div>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="lease-payment-method">Método de pago</Label>
+              <Select value={paymentMethod} onValueChange={(value) => setPaymentMethod(value as typeof paymentMethod)} disabled={paymentMutation.isPending}>
+                <SelectTrigger id="lease-payment-method"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {LEASE_PAYMENT_METHODS.map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="lease-payment-date">Fecha de pago</Label>
+              <Input id="lease-payment-date" type="date" value={paidAt} onChange={(event) => setPaidAt(event.target.value)} disabled={paymentMutation.isPending} />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="lease-payment-notes">Notas opcionales</Label>
+            <Textarea id="lease-payment-notes" value={notes} onChange={(event) => setNotes(event.target.value)} maxLength={500} disabled={paymentMutation.isPending} />
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={paymentMutation.isPending}>Cancelar</Button>
+          <Button onClick={handleRegisterPayment} disabled={paymentMutation.isPending || !paidAt} data-testid={`button-confirm-lease-payment-${installment.id}`}>
+            {paymentMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            Registrar pago
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );
@@ -1281,6 +1509,7 @@ export default function ArrendamientosTab({ focusRequest }: { focusRequest?: Lea
   const [detailLeaseId, setDetailLeaseId] = useState<string | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [quoteDialogOpen, setQuoteDialogOpen] = useState(false);
+  const [paymentTarget, setPaymentTarget] = useState<LeasePaymentTarget | null>(null);
 
   const { data: contracts = [], isLoading, error } = useQuery<LeaseContractSummary[]>({
     queryKey: LEASE_CONTRACTS_QUERY_KEY,
@@ -1565,6 +1794,16 @@ export default function ArrendamientosTab({ focusRequest }: { focusRequest?: Lea
           setDetailOpen(open);
           if (!open) {
             setDetailLeaseId(null);
+          }
+        }}
+        onRegisterPayment={setPaymentTarget}
+      />
+
+      <LeasePaymentDialog
+        target={paymentTarget}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPaymentTarget(null);
           }
         }}
       />

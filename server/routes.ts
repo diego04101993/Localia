@@ -119,6 +119,7 @@ import {
   updateReviewVisibilitySchema,
   createBranchFinanceEntrySchema,
   updateBranchFinanceEntrySchema,
+  registerLeaseInstallmentPaymentSchema,
   createBranchRecurringExpenseSchema,
   updateBranchRecurringExpenseSchema,
   registerBranchRecurringExpenseChargeSchema,
@@ -199,7 +200,12 @@ const assignPlanWithFinanceSchema = assignPlanSchema.extend({
   idempotencyKey: membershipBillingIdempotencyKeySchema,
   leaseContract: leaseAssignmentSchema.optional(),
 });
-const AUTOMATED_FINANCE_SOURCES = new Set(["commercial_sale", "sales_commission_payment"]);
+const AUTOMATED_FINANCE_SOURCES = new Set([
+  "commercial_sale",
+  "sales_commission_payment",
+  "lease_installment_payment",
+]);
+const RESERVED_MANUAL_FINANCE_SOURCES = new Set(["lease_installment_payment"]);
 const updateBranchClientGlobalSchema = z.object({
   name: z.string().min(1, "El nombre es obligatorio").max(120, "Maximo 120 caracteres").optional(),
   email: z.string().email("Correo invalido").nullable().optional().or(z.literal("")),
@@ -1560,6 +1566,39 @@ function getLeaseQuoteValidationMessage(err: unknown): string | null {
   if (code === "INVALID_DOWN_PAYMENT_AMOUNT_CENTS") return "El monto del enganche no es válido.";
   if (code === "DOWN_PAYMENT_MUST_LEAVE_FINANCED_BALANCE") return "El enganche debe dejar un capital financiado mayor a cero.";
   if (code === "LEASE_INSTALLMENTS_REQUIRED") return "No se pudo generar la tabla de mensualidades.";
+  return null;
+}
+
+function getLeaseInstallmentPaymentMessage(err: unknown): { status: number; message: string } | null {
+  const code = err instanceof Error ? err.message : "";
+  if (code === "LEASE_CONTRACT_NOT_FOUND" || code === "LEASE_INSTALLMENT_NOT_FOUND") {
+    return { status: 404, message: "No encontramos la mensualidad en el arrendamiento actual." };
+  }
+  if (code === "LEASE_CONTRACT_CANCELLED") {
+    return { status: 409, message: "No puedes registrar pagos en un contrato cancelado." };
+  }
+  if (code === "LEASE_CONTRACT_COMPLETED") {
+    return { status: 409, message: "Este contrato ya está completado." };
+  }
+  if (code === "LEASE_INSTALLMENT_ALREADY_RECORDED_EXTERNALLY") {
+    return { status: 409, message: "Esta mensualidad ya fue registrada como pago externo." };
+  }
+  if (code === "LEASE_INSTALLMENT_PAYMENT_DATE_INVALID") {
+    return { status: 400, message: "La fecha de pago no es válida." };
+  }
+  if (code === "LEASE_INSTALLMENT_TAX_SNAPSHOT_MISSING") {
+    return { status: 409, message: "La mensualidad no tiene un snapshot fiscal completo para registrar el pago de forma segura." };
+  }
+  if (code === "LEASE_CONTRACT_CLIENT_REQUIRED") {
+    return { status: 409, message: "El contrato no tiene un cliente válido para registrar este pago." };
+  }
+  if (
+    code === "LEASE_INSTALLMENT_PAYMENT_INTEGRITY_ERROR"
+    || code === "LEASE_INSTALLMENT_OPERATION_KEY_CONFLICT"
+    || code === "LEASE_INSTALLMENT_PAYMENT_CLAIM_FAILED"
+  ) {
+    return { status: 409, message: "No pudimos verificar la integridad de esta mensualidad. No se registró ningún cobro." };
+  }
   return null;
 }
 
@@ -4591,6 +4630,10 @@ if (!user) {
 
     try {
       const data = parsed.data;
+      const source = normalizeOptionalText(data.source) ?? null;
+      if (source && RESERVED_MANUAL_FINANCE_SOURCES.has(source)) {
+        return res.status(409).json({ message: "Este origen se administra automáticamente y no puede crearse manualmente desde Caja" });
+      }
       let clientUserId = normalizeOptionalText(data.clientUserId) ?? null;
       let clientName = normalizeOptionalText(data.clientName) ?? null;
 
@@ -4613,7 +4656,7 @@ if (!user) {
         clientName,
         notes: normalizeOptionalText(data.notes) ?? null,
         entryDate: data.entryDate,
-        source: normalizeOptionalText(data.source) ?? null,
+        source,
         sourceId: normalizeOptionalText(data.sourceId) ?? null,
         metadata: data.metadata ?? null,
         createdBy: user.id,
@@ -4652,6 +4695,10 @@ if (!user) {
       }
 
       const data = parsed.data;
+      const source = data.source === undefined ? undefined : (normalizeOptionalText(data.source) ?? null);
+      if (source && RESERVED_MANUAL_FINANCE_SOURCES.has(source)) {
+        return res.status(409).json({ message: "Este origen se administra automáticamente y no puede asignarse manualmente desde Caja" });
+      }
       let clientUserId = data.clientUserId === undefined ? undefined : (normalizeOptionalText(data.clientUserId) ?? null);
       let clientName = data.clientName === undefined ? undefined : (normalizeOptionalText(data.clientName) ?? null);
 
@@ -4673,7 +4720,7 @@ if (!user) {
         ...(data.clientName !== undefined ? { clientName } : {}),
         ...(data.notes !== undefined ? { notes: normalizeOptionalText(data.notes) ?? null } : {}),
         ...(data.entryDate !== undefined ? { entryDate: data.entryDate } : {}),
-        ...(data.source !== undefined ? { source: normalizeOptionalText(data.source) ?? null } : {}),
+        ...(source !== undefined ? { source } : {}),
         ...(data.sourceId !== undefined ? { sourceId: normalizeOptionalText(data.sourceId) ?? null } : {}),
         ...(data.metadata !== undefined ? { metadata: data.metadata ?? null } : {}),
       } as any);
@@ -6533,6 +6580,46 @@ if (!user) {
     } catch (err: any) {
       console.error("[LEASE_CONTRACTS] Error detail:", err.stack || err);
       return res.status(500).json({ message: "Error al obtener el detalle del arrendamiento" });
+    }
+  });
+
+  app.post("/api/branch/lease-contracts/:id/installments/:installmentId/pay", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const leaseContractId = getStringParam(req.params.id);
+    const installmentId = getStringParam(req.params.installmentId);
+    const parsed = registerLeaseInstallmentPaymentSchema.safeParse(req.body);
+
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos de pago inválidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const payment = await storage.recordBranchLeaseInstallmentPayment({
+        branchId: actor.branchId,
+        actorUserId: actor.id,
+        leaseContractId,
+        installmentId,
+        paymentMethod: parsed.data.paymentMethod,
+        paidAt: parsed.data.paidAt,
+        notes: normalizeOptionalText(parsed.data.notes) ?? null,
+      });
+      const leaseContract = await storage.getBranchLeaseContract(actor.branchId, leaseContractId);
+      if (!leaseContract) {
+        throw new Error("LEASE_CONTRACT_NOT_FOUND");
+      }
+
+      res.setHeader("Cache-Control", "no-store");
+      return res.status(payment.idempotentReplay ? 200 : 201).json({
+        ...payment,
+        leaseContract,
+      });
+    } catch (err: any) {
+      const paymentMessage = getLeaseInstallmentPaymentMessage(err);
+      if (paymentMessage) {
+        return res.status(paymentMessage.status).json({ message: paymentMessage.message });
+      }
+      console.error("[LEASE_INSTALLMENT_PAYMENT]", err?.stack || err);
+      return res.status(500).json({ message: "No pudimos registrar el pago de la mensualidad." });
     }
   });
 

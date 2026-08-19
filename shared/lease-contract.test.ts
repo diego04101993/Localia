@@ -7,6 +7,7 @@ import {
   calculateLeaseContractEndDate,
   calculateLeaseContractMetrics,
   calculateLeaseOperationalMembershipWindow,
+  getLeaseInstallmentPaymentOperationKey,
 } from "./lease-contract";
 import { calculateLeaseQuote } from "./lease-quote";
 
@@ -42,6 +43,22 @@ test("calculateLeaseContractEndDate handles leap years and multi-year terms", ()
   assert.equal(calculateLeaseContractEndDate("2024-02-29", 12), "2025-02-27");
   assert.equal(calculateLeaseContractEndDate("2024-02-29", 24), "2026-02-27");
   assert.equal(calculateLeaseContractEndDate("2025-08-31", 36), "2028-08-30");
+});
+
+test("getLeaseInstallmentPaymentOperationKey is deterministic per installment", () => {
+  assert.equal(
+    getLeaseInstallmentPaymentOperationKey("installment-1"),
+    "lease-installment-payment:installment-1",
+  );
+  assert.equal(
+    getLeaseInstallmentPaymentOperationKey("installment-1"),
+    getLeaseInstallmentPaymentOperationKey("installment-1"),
+  );
+  assert.notEqual(
+    getLeaseInstallmentPaymentOperationKey("installment-1"),
+    getLeaseInstallmentPaymentOperationKey("installment-2"),
+  );
+  assert.throws(() => getLeaseInstallmentPaymentOperationKey("   "), /LEASE_INSTALLMENT_ID_REQUIRED/);
 });
 
 test("calculateLeaseCoveredInstallmentWindow derives the last covered monthly period", () => {

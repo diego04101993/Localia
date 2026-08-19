@@ -122,6 +122,14 @@ export function calculateLeaseContractEndDate(startDate: string, termMonths: num
   return formatLeaseContractIsoDate(contractEnd);
 }
 
+export function getLeaseInstallmentPaymentOperationKey(installmentId: string): string {
+  const normalizedInstallmentId = installmentId.trim();
+  if (!normalizedInstallmentId) {
+    throw new Error("LEASE_INSTALLMENT_ID_REQUIRED");
+  }
+  return `lease-installment-payment:${normalizedInstallmentId}`;
+}
+
 export function calculateLeaseCoveredInstallmentWindow(params: {
   contractStartDate: string;
   paidInstallments: number;
