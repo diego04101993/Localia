@@ -147,10 +147,12 @@ import {
   branchFinanceEntries,
   branchChargeEvents,
   branchLeaseContracts,
+  branchLeaseInstallments,
   type BranchFinanceEntry,
   type InsertBranchFinanceEntry,
   type BranchChargeEvent,
   type BranchLeaseContract,
+  type BranchLeaseInstallment,
   branchRecurringExpenses,
   type BranchRecurringExpense,
   type InsertBranchRecurringExpense,
@@ -180,10 +182,12 @@ import {
 import { normalizeSearchText } from "./search-utils";
 import { computeMembershipPlanChargeSnapshot } from "@shared/membership-plan-tax";
 import {
+  calculateLeaseContractAnniversaryDate,
   calculateLeaseContractEndDate,
   calculateLeaseContractMetrics,
   calculateLeaseOperationalMembershipWindow,
 } from "@shared/lease-contract";
+import { type LeaseQuotePreview } from "@shared/lease-quote";
 
 const BRANCH_CLIENT_PASSWORD_RESET_COOLDOWN_MS = 60_000;
 
@@ -257,6 +261,26 @@ export interface BranchLeaseContractSummary {
   leasedItemDescription: string;
   notes: string | null;
   capturedPriceCents: number;
+  assetValueCents: number | null;
+  assetSubtotalBeforeTaxCents: number | null;
+  assetTaxableSubtotalCents: number | null;
+  assetTaxTotalCents: number | null;
+  assetFinalTotalCents: number | null;
+  downPaymentType: "amount" | "percentage" | null;
+  downPaymentRate: number | null;
+  downPaymentInputCents: number | null;
+  downPaymentSubtotalBeforeTaxCents: number | null;
+  downPaymentTaxableSubtotalCents: number | null;
+  downPaymentTaxTotalCents: number | null;
+  downPaymentFinalTotalCents: number | null;
+  financedPrincipalBeforeTaxCents: number | null;
+  financialSurchargeRate: number | null;
+  financialSurchargeTotalCents: number | null;
+  financedSubtotalBeforeTaxCents: number | null;
+  financedTaxableSubtotalCents: number | null;
+  financedTaxTotalCents: number | null;
+  financedFinalTotalCents: number | null;
+  contractFinalTotalCents: number | null;
   taxModeSnapshot: string | null;
   taxRateSnapshot: number | null;
   monthlySubtotalBeforeTaxCents: number | null;
@@ -268,10 +292,39 @@ export interface BranchLeaseContractSummary {
   operationalCoverageEndDate: string | null;
   hasOperationalCoverage: boolean;
   operationalCoverageCurrent: boolean;
+  nextDueDate: string | null;
+  pendingContractBalanceCents: number;
+  hasInstallmentSchedule: boolean;
   completedAt: Date | null;
   cancelledAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+  installments?: BranchLeaseInstallmentSummary[];
+}
+
+export interface BranchLeaseInstallmentSummary {
+  id: string;
+  branchId: string;
+  leaseContractId: string;
+  installmentNumber: number;
+  dueDate: string;
+  subtotalBeforeTaxCents: number;
+  taxableSubtotalCents: number;
+  taxTotalCents: number;
+  finalTotalCents: number;
+  currencyCode: string;
+  paymentSource: "webcool" | "external" | null;
+  paidAt: Date | null;
+  financeEntryId: string | null;
+  chargeEventId: string | null;
+  recordedByUserId: string | null;
+  notes: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface CreateBranchLeaseContractResult {
+  leaseContractId: string;
 }
 
 const BRANCH_TIMEZONE = "America/Mexico_City";
@@ -2207,6 +2260,14 @@ export interface IStorage {
   getOpenLeaseContractForMembership(branchId: string, membershipId: string): Promise<BranchLeaseContract | undefined>;
   getBranchLeaseContracts(branchId: string): Promise<BranchLeaseContractSummary[]>;
   getBranchLeaseContract(branchId: string, leaseContractId: string): Promise<BranchLeaseContractSummary | undefined>;
+  createBranchLeaseContract(data: {
+    branchId: string;
+    actorUserId: string;
+    clientUserId: string;
+    leasedItemDescription: string;
+    notes?: string | null;
+    quote: LeaseQuotePreview;
+  }): Promise<CreateBranchLeaseContractResult>;
   assignPlanToMembership(
     membershipId: string,
     planId: string,
@@ -6803,57 +6864,152 @@ export class DatabaseStorage implements IStorage {
     }
 
     const contractIds = contractRows.map((row: { contract: BranchLeaseContract }) => row.contract.id);
-    const paidInstallmentRows = await executor
-      .select({
-        leaseContractId: branchChargeEvents.leaseContractId,
-        count: sql<number>`COUNT(*)`.as("count"),
-      })
-      .from(branchChargeEvents)
-      .where(and(
-        eq(branchChargeEvents.branchId, branchId),
-        inArray(branchChargeEvents.eventType, ["assign", "renew"]),
-        inArray(branchChargeEvents.leaseContractId, contractIds),
-      ))
-      .groupBy(branchChargeEvents.leaseContractId);
-
-    const paidInstallmentCountByContractId = new Map<string, number>();
-    for (const row of paidInstallmentRows as Array<{ leaseContractId: string | null; count: number }>) {
-      if (row.leaseContractId) {
-        paidInstallmentCountByContractId.set(row.leaseContractId, Number(row.count) || 0);
-      }
-    }
+    const [legacyPaidCountByContractId, installmentAggregateByContractId] = await Promise.all([
+      this.getLegacyLeaseChargeCountsByContractIdsTx(executor, branchId, contractIds),
+      this.getLeaseInstallmentAggregatesByContractIdsTx(executor, branchId, contractIds),
+    ]);
 
     return contractRows.map((row: { contract: BranchLeaseContract; planName: string | null }) =>
       this.buildLeaseContractSummary(
         row.contract,
-        paidInstallmentCountByContractId.get(row.contract.id) ?? 0,
+        legacyPaidCountByContractId.get(row.contract.id) ?? 0,
         client,
         row.planName ?? null,
+        installmentAggregateByContractId.get(row.contract.id),
       ),
     );
   }
 
-  private async countLeaseContractWebcoolPaidInstallmentsTx(
+  private async getLegacyLeaseChargeCountsByContractIdsTx(
     executor: any,
     branchId: string,
-    leaseContractId: string,
-  ): Promise<number> {
-    const [row] = await executor
+    leaseContractIds: string[],
+  ): Promise<Map<string, number>> {
+    if (leaseContractIds.length === 0) {
+      return new Map<string, number>();
+    }
+
+    const rows = await executor
       .select({
         count: sql<number>`COUNT(*)`.as("count"),
+        leaseContractId: branchChargeEvents.leaseContractId,
       })
       .from(branchChargeEvents)
       .where(and(
         eq(branchChargeEvents.branchId, branchId),
-        eq(branchChargeEvents.leaseContractId, leaseContractId),
         inArray(branchChargeEvents.eventType, ["assign", "renew"]),
-      ));
-    return Number(row?.count) || 0;
+        inArray(branchChargeEvents.leaseContractId, leaseContractIds),
+      ))
+      .groupBy(branchChargeEvents.leaseContractId);
+
+    const result = new Map<string, number>();
+    for (const row of rows as Array<{ leaseContractId: string | null; count: number }>) {
+      if (row.leaseContractId) {
+        result.set(row.leaseContractId, Number(row.count) || 0);
+      }
+    }
+
+    return result;
+  }
+
+  private async getLeaseInstallmentAggregatesByContractIdsTx(
+    executor: any,
+    branchId: string,
+    leaseContractIds: string[],
+  ): Promise<Map<string, {
+    totalCount: number;
+    webcoolPaidCount: number;
+    externalPaidCount: number;
+    nextDueDate: string | null;
+    pendingBalanceCents: number;
+  }>> {
+    if (leaseContractIds.length === 0) {
+      return new Map();
+    }
+
+    const rows = await executor
+      .select({
+        leaseContractId: branchLeaseInstallments.leaseContractId,
+        totalCount: sql<number>`COUNT(*)`.as("total_count"),
+        webcoolPaidCount: sql<number>`COUNT(*) FILTER (WHERE ${branchLeaseInstallments.paymentSource} = 'webcool')`.as("webcool_paid_count"),
+        externalPaidCount: sql<number>`COUNT(*) FILTER (WHERE ${branchLeaseInstallments.paymentSource} = 'external')`.as("external_paid_count"),
+        nextDueDate: sql<string | null>`MIN(${branchLeaseInstallments.dueDate}) FILTER (WHERE ${branchLeaseInstallments.paymentSource} IS NULL)`.as("next_due_date"),
+        pendingBalanceCents: sql<number>`COALESCE(SUM(${branchLeaseInstallments.finalTotalCents}) FILTER (WHERE ${branchLeaseInstallments.paymentSource} IS NULL), 0)`.as("pending_balance_cents"),
+      })
+      .from(branchLeaseInstallments)
+      .where(and(
+        eq(branchLeaseInstallments.branchId, branchId),
+        inArray(branchLeaseInstallments.leaseContractId, leaseContractIds),
+      ))
+      .groupBy(branchLeaseInstallments.leaseContractId);
+
+    const result = new Map<string, {
+      totalCount: number;
+      webcoolPaidCount: number;
+      externalPaidCount: number;
+      nextDueDate: string | null;
+      pendingBalanceCents: number;
+    }>();
+
+    for (const row of rows as Array<{
+      leaseContractId: string;
+      totalCount: number;
+      webcoolPaidCount: number;
+      externalPaidCount: number;
+      nextDueDate: string | null;
+      pendingBalanceCents: number;
+    }>) {
+      result.set(row.leaseContractId, {
+        totalCount: Number(row.totalCount) || 0,
+        webcoolPaidCount: Number(row.webcoolPaidCount) || 0,
+        externalPaidCount: Number(row.externalPaidCount) || 0,
+        nextDueDate: row.nextDueDate ?? null,
+        pendingBalanceCents: Number(row.pendingBalanceCents) || 0,
+      });
+    }
+
+    return result;
+  }
+
+  private async getLeaseInstallmentsForContractTx(
+    executor: any,
+    branchId: string,
+    leaseContractId: string,
+  ): Promise<BranchLeaseInstallmentSummary[]> {
+    const rows = await executor
+      .select()
+      .from(branchLeaseInstallments)
+      .where(and(
+        eq(branchLeaseInstallments.branchId, branchId),
+        eq(branchLeaseInstallments.leaseContractId, leaseContractId),
+      ))
+      .orderBy(asc(branchLeaseInstallments.installmentNumber), asc(branchLeaseInstallments.dueDate));
+
+    return rows.map((row: BranchLeaseInstallment) => ({
+      id: row.id,
+      branchId: row.branchId,
+      leaseContractId: row.leaseContractId,
+      installmentNumber: row.installmentNumber,
+      dueDate: row.dueDate,
+      subtotalBeforeTaxCents: row.subtotalBeforeTaxCents,
+      taxableSubtotalCents: row.taxableSubtotalCents,
+      taxTotalCents: row.taxTotalCents,
+      finalTotalCents: row.finalTotalCents,
+      currencyCode: row.currencyCode,
+      paymentSource: row.paymentSource ?? null,
+      paidAt: row.paidAt ?? null,
+      financeEntryId: row.financeEntryId ?? null,
+      chargeEventId: row.chargeEventId ?? null,
+      recordedByUserId: row.recordedByUserId ?? null,
+      notes: row.notes ?? null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }));
   }
 
   private buildLeaseContractSummary(
     contract: BranchLeaseContract,
-    webcoolPaidInstallments: number,
+    legacyWebcoolPaidInstallments: number,
     client?: {
       name: string | null;
       lastName: string | null;
@@ -6861,12 +7017,26 @@ export class DatabaseStorage implements IStorage {
       phone: string | null;
     } | null,
     planName?: string | null,
+    installmentAggregate?: {
+      totalCount: number;
+      webcoolPaidCount: number;
+      externalPaidCount: number;
+      nextDueDate: string | null;
+      pendingBalanceCents: number;
+    },
   ): BranchLeaseContractSummary {
+    const hasInstallmentSchedule = (installmentAggregate?.totalCount ?? 0) > 0;
+    const preWebcoolPaidInstallments = hasInstallmentSchedule
+      ? installmentAggregate?.externalPaidCount ?? 0
+      : contract.preWebcoolPaidInstallments;
+    const webcoolPaidInstallments = hasInstallmentSchedule
+      ? installmentAggregate?.webcoolPaidCount ?? 0
+      : legacyWebcoolPaidInstallments;
     const metrics = calculateLeaseContractMetrics({
       contractStartDate: contract.contractStartDate,
       contractEndDate: contract.contractEndDate,
       contractTermMonths: contract.contractTermMonths,
-      preWebcoolPaidInstallments: contract.preWebcoolPaidInstallments,
+      preWebcoolPaidInstallments,
       webcoolPaidInstallments,
       today: getMxLocalDate(),
       cancelledAt: contract.cancelledAt ? new Date(contract.cancelledAt).toISOString() : null,
@@ -6881,6 +7051,12 @@ export class DatabaseStorage implements IStorage {
       .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
       .join(" ")
       .trim();
+    const nextDueDate = installmentAggregate?.nextDueDate
+      ?? (metrics.pendingInstallments > 0
+        ? calculateLeaseContractAnniversaryDate(contract.contractStartDate, metrics.totalPaidInstallments)
+        : null);
+    const pendingContractBalanceCents = installmentAggregate?.pendingBalanceCents
+      ?? Math.max(metrics.pendingInstallments, 0) * (contract.monthlyFinalTotalCents || 0);
 
     return {
       id: contract.id,
@@ -6897,7 +7073,7 @@ export class DatabaseStorage implements IStorage {
       contractStartDate: contract.contractStartDate,
       contractEndDate: contract.contractEndDate,
       contractTermMonths: contract.contractTermMonths,
-      preWebcoolPaidInstallments: contract.preWebcoolPaidInstallments,
+      preWebcoolPaidInstallments,
       webcoolPaidInstallments,
       totalPaidInstallments: metrics.totalPaidInstallments,
       pendingInstallments: metrics.pendingInstallments,
@@ -6909,6 +7085,26 @@ export class DatabaseStorage implements IStorage {
       leasedItemDescription: contract.leasedItemDescription,
       notes: contract.notes ?? null,
       capturedPriceCents: contract.capturedPriceCents,
+      assetValueCents: contract.assetValueCents ?? null,
+      assetSubtotalBeforeTaxCents: contract.assetSubtotalBeforeTaxCents ?? null,
+      assetTaxableSubtotalCents: contract.assetTaxableSubtotalCents ?? null,
+      assetTaxTotalCents: contract.assetTaxTotalCents ?? null,
+      assetFinalTotalCents: contract.assetFinalTotalCents ?? null,
+      downPaymentType: (contract.downPaymentType as "amount" | "percentage" | null) ?? null,
+      downPaymentRate: contract.downPaymentRate == null ? null : Number(contract.downPaymentRate),
+      downPaymentInputCents: contract.downPaymentInputCents ?? null,
+      downPaymentSubtotalBeforeTaxCents: contract.downPaymentSubtotalBeforeTaxCents ?? null,
+      downPaymentTaxableSubtotalCents: contract.downPaymentTaxableSubtotalCents ?? null,
+      downPaymentTaxTotalCents: contract.downPaymentTaxTotalCents ?? null,
+      downPaymentFinalTotalCents: contract.downPaymentFinalTotalCents ?? null,
+      financedPrincipalBeforeTaxCents: contract.financedPrincipalBeforeTaxCents ?? null,
+      financialSurchargeRate: contract.financialSurchargeRate == null ? null : Number(contract.financialSurchargeRate),
+      financialSurchargeTotalCents: contract.financialSurchargeTotalCents ?? null,
+      financedSubtotalBeforeTaxCents: contract.financedSubtotalBeforeTaxCents ?? null,
+      financedTaxableSubtotalCents: contract.financedTaxableSubtotalCents ?? null,
+      financedTaxTotalCents: contract.financedTaxTotalCents ?? null,
+      financedFinalTotalCents: contract.financedFinalTotalCents ?? null,
+      contractFinalTotalCents: contract.contractFinalTotalCents ?? null,
       taxModeSnapshot: contract.taxModeSnapshot ?? null,
       taxRateSnapshot: contract.taxRateSnapshot == null ? null : Number(contract.taxRateSnapshot),
       monthlySubtotalBeforeTaxCents: contract.monthlySubtotalBeforeTaxCents,
@@ -6920,6 +7116,9 @@ export class DatabaseStorage implements IStorage {
       operationalCoverageEndDate: operationalWindow.membershipEndDate,
       hasOperationalCoverage: operationalWindow.hasCoveredInstallments,
       operationalCoverageCurrent: operationalWindow.isCurrentlyCovered,
+      nextDueDate,
+      pendingContractBalanceCents,
+      hasInstallmentSchedule,
       completedAt: contract.completedAt ?? null,
       cancelledAt: contract.cancelledAt ?? null,
       createdAt: contract.createdAt,
@@ -6943,30 +7142,16 @@ export class DatabaseStorage implements IStorage {
       .where(eq(branchLeaseContracts.branchId, branchId))
       .orderBy(desc(branchLeaseContracts.createdAt));
 
-    const paidInstallmentRows = await db
-      .select({
-        leaseContractId: branchChargeEvents.leaseContractId,
-        count: sql<number>`COUNT(*)`.as("count"),
-      })
-      .from(branchChargeEvents)
-      .where(and(
-        eq(branchChargeEvents.branchId, branchId),
-        inArray(branchChargeEvents.eventType, ["assign", "renew"]),
-        sql`${branchChargeEvents.leaseContractId} IS NOT NULL`,
-      ))
-      .groupBy(branchChargeEvents.leaseContractId);
-
-    const paidInstallmentCountByContractId = new Map<string, number>();
-    for (const row of paidInstallmentRows) {
-      if (row.leaseContractId) {
-        paidInstallmentCountByContractId.set(row.leaseContractId, Number(row.count) || 0);
-      }
-    }
+    const contractIds = contractRows.map((row) => row.contract.id);
+    const [legacyPaidCountByContractId, installmentAggregateByContractId] = await Promise.all([
+      this.getLegacyLeaseChargeCountsByContractIdsTx(db, branchId, contractIds),
+      this.getLeaseInstallmentAggregatesByContractIdsTx(db, branchId, contractIds),
+    ]);
 
     return contractRows.map((row) =>
       this.buildLeaseContractSummary(
         row.contract,
-        paidInstallmentCountByContractId.get(row.contract.id) ?? 0,
+        legacyPaidCountByContractId.get(row.contract.id) ?? 0,
         {
           name: row.clientName ?? null,
           lastName: row.clientLastName ?? null,
@@ -6974,6 +7159,7 @@ export class DatabaseStorage implements IStorage {
           phone: row.clientPhone ?? null,
         },
         row.planName ?? null,
+        installmentAggregateByContractId.get(row.contract.id),
       ),
     );
   }
@@ -7001,15 +7187,15 @@ export class DatabaseStorage implements IStorage {
       return undefined;
     }
 
-    const webcoolPaidInstallments = await this.countLeaseContractWebcoolPaidInstallmentsTx(
-      db,
-      branchId,
-      row.contract.id,
-    );
+    const [legacyPaidCountByContractId, installmentAggregateByContractId, installments] = await Promise.all([
+      this.getLegacyLeaseChargeCountsByContractIdsTx(db, branchId, [row.contract.id]),
+      this.getLeaseInstallmentAggregatesByContractIdsTx(db, branchId, [row.contract.id]),
+      this.getLeaseInstallmentsForContractTx(db, branchId, row.contract.id),
+    ]);
 
-    return this.buildLeaseContractSummary(
+    const summary = this.buildLeaseContractSummary(
       row.contract,
-      webcoolPaidInstallments,
+      legacyPaidCountByContractId.get(row.contract.id) ?? 0,
       {
         name: row.clientName ?? null,
         lastName: row.clientLastName ?? null,
@@ -7017,7 +7203,13 @@ export class DatabaseStorage implements IStorage {
         phone: row.clientPhone ?? null,
       },
       row.planName ?? null,
+      installmentAggregateByContractId.get(row.contract.id),
     );
+
+    return {
+      ...summary,
+      installments,
+    };
   }
 
   private async getLeaseAssignmentReplayAuditTx(
@@ -7230,9 +7422,9 @@ export class DatabaseStorage implements IStorage {
     executor: any,
     data: {
       branchId: string;
-      membershipId: string;
+      membershipId: string | null;
       clientUserId: string;
-      planId: string;
+      planId: string | null;
       contractStartDate: string;
       contractEndDate: string;
       contractTermMonths: number;
@@ -7240,6 +7432,26 @@ export class DatabaseStorage implements IStorage {
       leasedItemDescription: string;
       notes?: string | null;
       capturedPriceCents: number;
+      assetValueCents?: number | null;
+      assetSubtotalBeforeTaxCents?: number | null;
+      assetTaxableSubtotalCents?: number | null;
+      assetTaxTotalCents?: number | null;
+      assetFinalTotalCents?: number | null;
+      downPaymentType?: "amount" | "percentage" | null;
+      downPaymentRate?: number | null;
+      downPaymentInputCents?: number | null;
+      downPaymentSubtotalBeforeTaxCents?: number | null;
+      downPaymentTaxableSubtotalCents?: number | null;
+      downPaymentTaxTotalCents?: number | null;
+      downPaymentFinalTotalCents?: number | null;
+      financedPrincipalBeforeTaxCents?: number | null;
+      financialSurchargeRate?: number | null;
+      financialSurchargeTotalCents?: number | null;
+      financedSubtotalBeforeTaxCents?: number | null;
+      financedTaxableSubtotalCents?: number | null;
+      financedTaxTotalCents?: number | null;
+      financedFinalTotalCents?: number | null;
+      contractFinalTotalCents?: number | null;
       taxModeSnapshot: string | null;
       taxRateSnapshot: number | null;
       monthlySubtotalBeforeTaxCents: number | null;
@@ -7264,6 +7476,26 @@ export class DatabaseStorage implements IStorage {
         leasedItemDescription: data.leasedItemDescription,
         notes: data.notes ?? null,
         capturedPriceCents: data.capturedPriceCents,
+        assetValueCents: data.assetValueCents ?? null,
+        assetSubtotalBeforeTaxCents: data.assetSubtotalBeforeTaxCents ?? null,
+        assetTaxableSubtotalCents: data.assetTaxableSubtotalCents ?? null,
+        assetTaxTotalCents: data.assetTaxTotalCents ?? null,
+        assetFinalTotalCents: data.assetFinalTotalCents ?? null,
+        downPaymentType: data.downPaymentType ?? null,
+        downPaymentRate: data.downPaymentRate == null ? null : data.downPaymentRate.toFixed(4),
+        downPaymentInputCents: data.downPaymentInputCents ?? null,
+        downPaymentSubtotalBeforeTaxCents: data.downPaymentSubtotalBeforeTaxCents ?? null,
+        downPaymentTaxableSubtotalCents: data.downPaymentTaxableSubtotalCents ?? null,
+        downPaymentTaxTotalCents: data.downPaymentTaxTotalCents ?? null,
+        downPaymentFinalTotalCents: data.downPaymentFinalTotalCents ?? null,
+        financedPrincipalBeforeTaxCents: data.financedPrincipalBeforeTaxCents ?? null,
+        financialSurchargeRate: data.financialSurchargeRate == null ? null : data.financialSurchargeRate.toFixed(4),
+        financialSurchargeTotalCents: data.financialSurchargeTotalCents ?? null,
+        financedSubtotalBeforeTaxCents: data.financedSubtotalBeforeTaxCents ?? null,
+        financedTaxableSubtotalCents: data.financedTaxableSubtotalCents ?? null,
+        financedTaxTotalCents: data.financedTaxTotalCents ?? null,
+        financedFinalTotalCents: data.financedFinalTotalCents ?? null,
+        contractFinalTotalCents: data.contractFinalTotalCents ?? null,
         taxModeSnapshot: data.taxModeSnapshot,
         taxRateSnapshot: data.taxRateSnapshot == null ? null : data.taxRateSnapshot.toFixed(4),
         monthlySubtotalBeforeTaxCents: data.monthlySubtotalBeforeTaxCents,
@@ -7281,6 +7513,150 @@ export class DatabaseStorage implements IStorage {
     }
 
     return leaseContract;
+  }
+
+  private async createLeaseInstallmentsTx(
+    executor: any,
+    data: {
+      branchId: string;
+      leaseContractId: string;
+      rows: LeaseQuotePreview["installmentRows"];
+    },
+  ): Promise<BranchLeaseInstallment[]> {
+    if (!data.rows.length) {
+      return [];
+    }
+
+    return executor
+      .insert(branchLeaseInstallments)
+      .values(data.rows.map((row) => ({
+        branchId: data.branchId,
+        leaseContractId: data.leaseContractId,
+        installmentNumber: row.installmentNumber,
+        dueDate: row.dueDate,
+        subtotalBeforeTaxCents: row.subtotalBeforeTaxCents,
+        taxableSubtotalCents: row.taxableSubtotalCents,
+        taxTotalCents: row.taxTotalCents,
+        finalTotalCents: row.finalTotalCents,
+        currencyCode: "MXN",
+        paymentSource: null,
+        paidAt: null,
+        financeEntryId: null,
+        chargeEventId: null,
+        recordedByUserId: null,
+        notes: null,
+      })))
+      .returning();
+  }
+
+  async createBranchLeaseContract(data: {
+    branchId: string;
+    actorUserId: string;
+    clientUserId: string;
+    leasedItemDescription: string;
+    notes?: string | null;
+    quote: LeaseQuotePreview;
+  }): Promise<CreateBranchLeaseContractResult> {
+    return db.transaction(async (tx) => {
+      const [branchMembership] = await tx
+        .select({ id: memberships.id })
+        .from(memberships)
+        .where(and(
+          eq(memberships.branchId, data.branchId),
+          eq(memberships.userId, data.clientUserId),
+        ))
+        .limit(1);
+
+      if (!branchMembership) {
+        throw new Error("CLIENT_NOT_FOUND_IN_BRANCH");
+      }
+
+      const firstInstallment = data.quote.installmentRows[0];
+      if (!firstInstallment) {
+        throw new Error("LEASE_INSTALLMENTS_REQUIRED");
+      }
+
+      const leaseContract = await this.createLeaseContractTx(tx, {
+        branchId: data.branchId,
+        membershipId: null,
+        clientUserId: data.clientUserId,
+        planId: null,
+        contractStartDate: data.quote.startDate,
+        contractEndDate: data.quote.contractEndDate,
+        contractTermMonths: data.quote.termMonths,
+        preWebcoolPaidInstallments: 0,
+        leasedItemDescription: data.leasedItemDescription,
+        notes: data.notes ?? null,
+        capturedPriceCents: data.quote.capturedAssetValueCents,
+        assetValueCents: data.quote.capturedAssetValueCents,
+        assetSubtotalBeforeTaxCents: data.quote.assetSubtotalBeforeTaxCents,
+        assetTaxableSubtotalCents: data.quote.assetTaxableSubtotalCents,
+        assetTaxTotalCents: data.quote.assetTaxCents,
+        assetFinalTotalCents: data.quote.assetFinalTotalCents,
+        downPaymentType: data.quote.downPaymentType,
+        downPaymentRate: data.quote.downPaymentRate,
+        downPaymentInputCents: data.quote.downPaymentInputCents,
+        downPaymentSubtotalBeforeTaxCents: data.quote.downPaymentSubtotalBeforeTaxCents,
+        downPaymentTaxableSubtotalCents: data.quote.downPaymentTaxableSubtotalCents,
+        downPaymentTaxTotalCents: data.quote.downPaymentTaxCents,
+        downPaymentFinalTotalCents: data.quote.downPaymentFinalTotalCents,
+        financedPrincipalBeforeTaxCents: data.quote.financedPrincipalBeforeTaxCents,
+        financialSurchargeRate: data.quote.surchargeRate,
+        financialSurchargeTotalCents: data.quote.surchargeTotalCents,
+        financedSubtotalBeforeTaxCents: data.quote.financedSubtotalBeforeTaxCents,
+        financedTaxableSubtotalCents: data.quote.financedTaxableSubtotalCents,
+        financedTaxTotalCents: data.quote.contractTaxTotalCents,
+        financedFinalTotalCents: data.quote.financedFinalTotalCents,
+        contractFinalTotalCents: data.quote.contractFinalTotalCents,
+        taxModeSnapshot: data.quote.taxMode,
+        taxRateSnapshot: data.quote.taxRate,
+        monthlySubtotalBeforeTaxCents: firstInstallment.subtotalBeforeTaxCents,
+        monthlyTaxableSubtotalCents: firstInstallment.taxableSubtotalCents,
+        monthlyTaxTotalCents: firstInstallment.taxTotalCents,
+        monthlyFinalTotalCents: firstInstallment.finalTotalCents,
+        createdBy: data.actorUserId,
+        completedAt: null,
+      });
+
+      await this.createLeaseInstallmentsTx(tx, {
+        branchId: data.branchId,
+        leaseContractId: leaseContract.id,
+        rows: data.quote.installmentRows,
+      });
+
+      await this.createAuditLogTx(tx, {
+        actorUserId: data.actorUserId,
+        action: "CREATE_LEASE_CONTRACT",
+        branchId: data.branchId,
+        metadata: {
+          leaseContractId: leaseContract.id,
+          clientUserId: data.clientUserId,
+          leasedItemDescription: data.leasedItemDescription,
+          contractStartDate: data.quote.startDate,
+          contractEndDate: data.quote.contractEndDate,
+          contractTermMonths: data.quote.termMonths,
+          assetValueCents: data.quote.capturedAssetValueCents,
+          assetFinalTotalCents: data.quote.assetFinalTotalCents,
+          downPaymentType: data.quote.downPaymentType,
+          downPaymentRate: data.quote.downPaymentRate,
+          downPaymentInputCents: data.quote.downPaymentInputCents,
+          downPaymentFinalTotalCents: data.quote.downPaymentFinalTotalCents,
+          financedPrincipalBeforeTaxCents: data.quote.financedPrincipalBeforeTaxCents,
+          financialSurchargeRate: data.quote.surchargeRate,
+          financialSurchargeTotalCents: data.quote.surchargeTotalCents,
+          financedFinalTotalCents: data.quote.financedFinalTotalCents,
+          contractFinalTotalCents: data.quote.contractFinalTotalCents,
+          taxMode: data.quote.taxMode,
+          taxRate: data.quote.taxRate,
+          installmentCount: data.quote.installmentRows.length,
+          notes: data.notes ?? null,
+        },
+      });
+
+      return {
+        leaseContractId: leaseContract.id,
+      };
+    });
   }
 
   async assignPlanToMembership(

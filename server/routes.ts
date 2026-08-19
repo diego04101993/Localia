@@ -69,11 +69,17 @@ import {
 import {
   buildBranchClientsPdfReport,
   buildBranchFinancePdfReport,
+  buildBranchLeaseQuotePdfReport,
 } from "./pdf-reports";
 import {
   computeMembershipPlanChargeSnapshot,
   resolveMembershipPlanTaxConfig,
 } from "@shared/membership-plan-tax";
+import {
+  calculateLeaseQuote,
+  leaseQuoteRequestSchema,
+  type LeaseQuotePreview,
+} from "@shared/lease-quote";
 import {
   FirebaseAdminConfigurationError,
   FirebaseAdminTokenError,
@@ -1367,6 +1373,18 @@ type ClientExportRow = {
   fullName: string;
 };
 
+type LeaseQuotePreviewPayload = {
+  client: {
+    userId: string;
+    displayName: string;
+    email: string | null;
+    phone: string | null;
+  };
+  quote: LeaseQuotePreview;
+  leasedItemDescription: string;
+  notes: string | null;
+};
+
 const reportDateFormatter = new Intl.DateTimeFormat("es-MX", {
   day: "2-digit",
   month: "short",
@@ -1519,6 +1537,62 @@ async function loadClientsExportData(branchId: string) {
       activeClients: rows.filter((row) => row.membershipStatus === "active").length,
       withPlanCount: rows.filter((row) => typeof row.planName === "string" && row.planName.trim().length > 0).length,
     },
+  };
+}
+
+function getLeaseTaxModeLabel(taxMode: LeaseQuotePreview["taxMode"], taxRate: number) {
+  if (taxMode === "tax_exempt") {
+    return "Sin IVA";
+  }
+
+  const rateLabel = `${taxRate.toFixed(2).replace(/\.00$/, "")}%`;
+  return taxMode === "tax_included" ? `IVA incluido ${rateLabel}` : `+ IVA ${rateLabel}`;
+}
+
+function getLeaseQuoteValidationMessage(err: unknown): string | null {
+  const code = err instanceof Error ? err.message : "";
+  if (code === "INVALID_START_DATE") return "La fecha de inicio no es válida.";
+  if (code === "INVALID_TERM_MONTHS") return "El plazo no es válido.";
+  if (code === "INVALID_CAPTURED_ASSET_VALUE_CENTS") return "El valor del bien no es válido.";
+  if (code === "INVALID_SURCHARGE_RATE") return "El interés / recargo total no es válido.";
+  if (code === "DOWN_PAYMENT_TYPE_REQUIRED") return "Selecciona cómo se calculará el enganche.";
+  if (code === "INVALID_DOWN_PAYMENT_RATE") return "El porcentaje del enganche no es válido.";
+  if (code === "INVALID_DOWN_PAYMENT_AMOUNT_CENTS") return "El monto del enganche no es válido.";
+  if (code === "DOWN_PAYMENT_MUST_LEAVE_FINANCED_BALANCE") return "El enganche debe dejar un capital financiado mayor a cero.";
+  if (code === "LEASE_INSTALLMENTS_REQUIRED") return "No se pudo generar la tabla de mensualidades.";
+  return null;
+}
+
+async function buildLeaseQuotePreviewPayload(branchId: string, payload: unknown): Promise<LeaseQuotePreviewPayload> {
+  const parsed = leaseQuoteRequestSchema.safeParse(payload);
+  if (!parsed.success) {
+    const firstIssue = parsed.error.issues[0];
+    const error = new Error(firstIssue?.message || "Datos inválidos");
+    error.name = "ZodError";
+    throw error;
+  }
+
+  const request = parsed.data;
+  const profile = await storage.getClientProfile(request.clientUserId, branchId);
+  if (!profile) {
+    throw new Error("CLIENT_NOT_FOUND_IN_BRANCH");
+  }
+
+  const clientDisplayName = [profile.user.name, profile.user.lastName]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join(" ")
+    .trim() || profile.user.email || profile.user.phone || "Cliente";
+
+  return {
+    client: {
+      userId: profile.user.id,
+      displayName: clientDisplayName,
+      email: profile.user.email ?? null,
+      phone: profile.user.phone ?? null,
+    },
+    quote: calculateLeaseQuote(request),
+    leasedItemDescription: request.leasedItemDescription,
+    notes: normalizeOptionalText(request.notes) ?? null,
   };
 }
 
@@ -6311,6 +6385,127 @@ if (!user) {
     } catch (err: any) {
       console.error(`[INVITE_LINK] Error:`, err.stack || err);
       res.status(500).json({ message: "Error al generar link de invitación" });
+    }
+  });
+
+  app.post("/api/branch/lease-quotes/preview", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const preview = await buildLeaseQuotePreviewPayload(actor.branchId, req.body);
+      res.setHeader("Cache-Control", "no-store");
+      res.json(preview);
+    } catch (err: any) {
+      if (err?.name === "ZodError") {
+        return res.status(400).json({ message: err.message || "Datos inválidos" });
+      }
+      if (err instanceof Error && err.message === "CLIENT_NOT_FOUND_IN_BRANCH") {
+        return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+      }
+      const validationMessage = getLeaseQuoteValidationMessage(err);
+      if (validationMessage) {
+        return res.status(400).json({ message: validationMessage });
+      }
+      console.error("[LEASE_QUOTE_PREVIEW]", err?.stack || err);
+      res.status(500).json({ message: "Error al calcular la corrida" });
+    }
+  });
+
+  app.post("/api/branch/lease-quotes/preview.pdf", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const preview = await buildLeaseQuotePreviewPayload(actor.branchId, req.body);
+      const branding = await getBranchReportBranding(actor.branchId);
+      const pdfBuffer = await buildBranchLeaseQuotePdfReport({
+        branding: {
+          branchName: branding.branchName,
+          logoUrl: branding.logoUrl,
+        },
+        generatedAt: new Date(),
+        clientDisplayName: preview.client.displayName,
+        clientEmail: preview.client.email,
+        clientPhone: preview.client.phone,
+        leasedItemDescription: preview.leasedItemDescription,
+        startDate: preview.quote.startDate,
+        contractEndDate: preview.quote.contractEndDate,
+        termMonths: preview.quote.termMonths,
+        capturedAssetValueAmount: preview.quote.capturedAssetValueCents / 100,
+        assetSubtotalBeforeTaxAmount: preview.quote.assetSubtotalBeforeTaxCents / 100,
+        assetTaxAmount: preview.quote.assetTaxCents / 100,
+        downPaymentAmount: preview.quote.downPaymentFinalTotalCents / 100,
+        financedPrincipalAmount: preview.quote.financedPrincipalBeforeTaxCents / 100,
+        surchargeRate: preview.quote.surchargeRate,
+        surchargeAmount: preview.quote.surchargeTotalCents / 100,
+        financedSubtotalBeforeTaxAmount: preview.quote.financedSubtotalBeforeTaxCents / 100,
+        contractTaxAmount: preview.quote.contractTaxTotalCents / 100,
+        financedFinalAmount: preview.quote.financedFinalTotalCents / 100,
+        contractFinalAmount: preview.quote.contractFinalTotalCents / 100,
+        approximateInstallmentAmount: preview.quote.approximateInstallmentFinalTotalCents / 100,
+        hasAdjustedFinalInstallment: preview.quote.hasAdjustedFinalInstallment,
+        finalInstallmentAmount: preview.quote.finalInstallmentFinalTotalCents / 100,
+        notes: preview.notes,
+        taxModeLabel: getLeaseTaxModeLabel(preview.quote.taxMode, preview.quote.taxRate),
+        rows: preview.quote.installmentRows.map((row) => ({
+          installmentLabel: `${row.installmentNumber}/${preview.quote.termMonths}`,
+          dueDate: row.dueDate,
+          subtotalAmount: row.subtotalBeforeTaxCents / 100,
+          taxAmount: row.taxTotalCents / 100,
+          totalAmount: row.finalTotalCents / 100,
+        })),
+      });
+
+      const clientToken = sanitizeReportFilenameSegment(preview.client.displayName, "cliente");
+      const filename = `corrida-arrendamiento-${branding.branchSlug}-${clientToken}-${preview.quote.startDate}.pdf`;
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename=\"${filename}\"`);
+      res.setHeader("Cache-Control", "no-store");
+      res.send(pdfBuffer);
+    } catch (err: any) {
+      if (err?.name === "ZodError") {
+        return res.status(400).json({ message: err.message || "Datos inválidos" });
+      }
+      if (err instanceof Error && err.message === "CLIENT_NOT_FOUND_IN_BRANCH") {
+        return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+      }
+      const validationMessage = getLeaseQuoteValidationMessage(err);
+      if (validationMessage) {
+        return res.status(400).json({ message: validationMessage });
+      }
+      console.error("[LEASE_QUOTE_PREVIEW_PDF]", err?.stack || err);
+      res.status(500).json({ message: "Error al generar el PDF de la corrida" });
+    }
+  });
+
+  app.post("/api/branch/lease-contracts", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    try {
+      const preview = await buildLeaseQuotePreviewPayload(actor.branchId, req.body);
+      const creation = await storage.createBranchLeaseContract({
+        branchId: actor.branchId,
+        actorUserId: actor.id,
+        clientUserId: preview.client.userId,
+        leasedItemDescription: preview.leasedItemDescription,
+        notes: preview.notes,
+        quote: preview.quote,
+      });
+
+      const leaseContract = await storage.getBranchLeaseContract(actor.branchId, creation.leaseContractId);
+      res.status(201).json({
+        leaseContractId: creation.leaseContractId,
+        leaseContract: leaseContract ?? null,
+      });
+    } catch (err: any) {
+      if (err?.name === "ZodError") {
+        return res.status(400).json({ message: err.message || "Datos inválidos" });
+      }
+      if (err instanceof Error && err.message === "CLIENT_NOT_FOUND_IN_BRANCH") {
+        return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+      }
+      const validationMessage = getLeaseQuoteValidationMessage(err);
+      if (validationMessage) {
+        return res.status(400).json({ message: validationMessage });
+      }
+      console.error("[LEASE_CONTRACT_CREATE]", err?.stack || err);
+      res.status(500).json({ message: "Error al crear el arrendamiento" });
     }
   });
 

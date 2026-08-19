@@ -1723,6 +1723,8 @@ export const branchFinanceEntries = pgTable("branch_finance_entries", {
 
 export const branchChargeEventDomainValues = ["membership_plan"] as const;
 export const branchChargeEventTypeValues = ["assign", "renew"] as const;
+export const branchLeaseInstallmentPaymentSourceValues = ["webcool", "external"] as const;
+export type BranchLeaseInstallmentPaymentSource = (typeof branchLeaseInstallmentPaymentSourceValues)[number];
 
 export const branchLeaseContracts = pgTable("branch_lease_contracts", {
   id: varchar("id", { length: 36 })
@@ -1741,6 +1743,26 @@ export const branchLeaseContracts = pgTable("branch_lease_contracts", {
   leasedItemDescription: text("leased_item_description").notNull(),
   notes: text("notes"),
   capturedPriceCents: integer("captured_price_cents").notNull().default(0),
+  assetValueCents: integer("asset_value_cents"),
+  assetSubtotalBeforeTaxCents: integer("asset_subtotal_before_tax_cents"),
+  assetTaxableSubtotalCents: integer("asset_taxable_subtotal_cents"),
+  assetTaxTotalCents: integer("asset_tax_total_cents"),
+  assetFinalTotalCents: integer("asset_final_total_cents"),
+  downPaymentType: text("down_payment_type"),
+  downPaymentRate: numeric("down_payment_rate", { precision: 8, scale: 4 }),
+  downPaymentInputCents: integer("down_payment_input_cents"),
+  downPaymentSubtotalBeforeTaxCents: integer("down_payment_subtotal_before_tax_cents"),
+  downPaymentTaxableSubtotalCents: integer("down_payment_taxable_subtotal_cents"),
+  downPaymentTaxTotalCents: integer("down_payment_tax_total_cents"),
+  downPaymentFinalTotalCents: integer("down_payment_final_total_cents"),
+  financedPrincipalBeforeTaxCents: integer("financed_principal_before_tax_cents"),
+  financialSurchargeRate: numeric("financial_surcharge_rate", { precision: 8, scale: 4 }),
+  financialSurchargeTotalCents: integer("financial_surcharge_total_cents"),
+  financedSubtotalBeforeTaxCents: integer("financed_subtotal_before_tax_cents"),
+  financedTaxableSubtotalCents: integer("financed_taxable_subtotal_cents"),
+  financedTaxTotalCents: integer("financed_tax_total_cents"),
+  financedFinalTotalCents: integer("financed_final_total_cents"),
+  contractFinalTotalCents: integer("contract_final_total_cents"),
   taxModeSnapshot: text("tax_mode_snapshot"),
   taxRateSnapshot: numeric("tax_rate_snapshot", { precision: 8, scale: 4 }),
   monthlySubtotalBeforeTaxCents: integer("monthly_subtotal_before_tax_cents"),
@@ -1774,6 +1796,7 @@ export const branchChargeEvents = pgTable("branch_charge_events", {
   planId: varchar("plan_id", { length: 36 }).references(() => membershipPlans.id, { onDelete: "set null" }),
   clientUserId: varchar("client_user_id", { length: 36 }).references(() => users.id, { onDelete: "set null" }),
   leaseContractId: varchar("lease_contract_id", { length: 36 }),
+  leaseInstallmentId: varchar("lease_installment_id", { length: 36 }),
   financeEntryId: varchar("finance_entry_id", { length: 36 }).references(() => branchFinanceEntries.id, { onDelete: "set null" }),
   planNameSnapshot: text("plan_name_snapshot").notNull(),
   basePriceCents: integer("base_price_cents").notNull().default(0),
@@ -1800,6 +1823,43 @@ export const branchChargeEvents = pgTable("branch_charge_events", {
   index("branch_charge_events_branch_client_charged_idx").on(table.branchId, table.clientUserId, table.chargedAt),
   index("branch_charge_events_branch_domain_event_charged_idx").on(table.branchId, table.chargeDomain, table.eventType, table.chargedAt),
   index("branch_charge_events_branch_lease_contract_charged_idx").on(table.branchId, table.leaseContractId, table.chargedAt),
+]);
+
+export const branchLeaseInstallments = pgTable("branch_lease_installments", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  leaseContractId: varchar("lease_contract_id", { length: 36 })
+    .notNull()
+    .references(() => branchLeaseContracts.id),
+  installmentNumber: integer("installment_number").notNull(),
+  dueDate: date("due_date").notNull(),
+  subtotalBeforeTaxCents: integer("subtotal_before_tax_cents").notNull().default(0),
+  taxableSubtotalCents: integer("taxable_subtotal_cents").notNull().default(0),
+  taxTotalCents: integer("tax_total_cents").notNull().default(0),
+  finalTotalCents: integer("final_total_cents").notNull().default(0),
+  currencyCode: varchar("currency_code", { length: 3 }).notNull().default("MXN"),
+  paymentSource: text("payment_source").$type<BranchLeaseInstallmentPaymentSource | null>(),
+  paidAt: timestamp("paid_at", { withTimezone: true }),
+  financeEntryId: varchar("finance_entry_id", { length: 36 }).references(() => branchFinanceEntries.id),
+  chargeEventId: varchar("charge_event_id", { length: 36 }).references(() => branchChargeEvents.id),
+  recordedByUserId: varchar("recorded_by_user_id", { length: 36 }).references(() => users.id, { onDelete: "set null" }),
+  notes: text("notes"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("branch_lease_installments_branch_contract_number_unique").on(table.branchId, table.leaseContractId, table.installmentNumber),
+  uniqueIndex("branch_lease_installments_finance_entry_unique")
+    .on(table.financeEntryId)
+    .where(sql`${table.financeEntryId} IS NOT NULL`),
+  uniqueIndex("branch_lease_installments_charge_event_unique")
+    .on(table.chargeEventId)
+    .where(sql`${table.chargeEventId} IS NOT NULL`),
+  index("branch_lease_installments_branch_contract_due_idx").on(table.branchId, table.leaseContractId, table.dueDate),
+  index("branch_lease_installments_branch_payment_source_due_idx").on(table.branchId, table.paymentSource, table.dueDate),
 ]);
 
 export const branchRecurringExpenses = pgTable("branch_recurring_expenses", {
@@ -1980,6 +2040,7 @@ export type BranchChargeEvent = typeof branchChargeEvents.$inferSelect;
 export type InsertBranchChargeEvent = z.infer<typeof insertBranchChargeEventSchema>;
 export type BranchLeaseContract = typeof branchLeaseContracts.$inferSelect;
 export type InsertBranchLeaseContract = z.infer<typeof insertBranchLeaseContractSchema>;
+export type BranchLeaseInstallment = typeof branchLeaseInstallments.$inferSelect;
 export type BranchRecurringExpense = typeof branchRecurringExpenses.$inferSelect;
 export type InsertBranchRecurringExpense = z.infer<typeof insertBranchRecurringExpenseSchema>;
 export type BranchStaffMember = typeof branchStaffMembers.$inferSelect;

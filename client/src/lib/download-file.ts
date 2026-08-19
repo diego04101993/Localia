@@ -16,8 +16,7 @@ function getFilenameFromDisposition(disposition: string | null): string | null {
   return basicMatch?.[1]?.trim() || null;
 }
 
-export async function downloadAuthenticatedFile(url: string, fallbackFileName: string): Promise<void> {
-  const response = await apiRequest("GET", url);
+async function triggerDownload(response: Response, fallbackFileName: string): Promise<void> {
   const blob = await response.blob();
   const objectUrl = window.URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -34,4 +33,19 @@ export async function downloadAuthenticatedFile(url: string, fallbackFileName: s
       window.URL.revokeObjectURL(objectUrl);
     }, 0);
   }
+}
+
+export async function downloadAuthenticatedFile(url: string, fallbackFileName: string): Promise<void> {
+  const response = await apiRequest("GET", url);
+  await triggerDownload(response, fallbackFileName);
+}
+
+export async function downloadAuthenticatedFileRequest(
+  method: "GET" | "POST",
+  url: string,
+  fallbackFileName: string,
+  data?: unknown,
+): Promise<void> {
+  const response = await apiRequest(method, url, data);
+  await triggerDownload(response, fallbackFileName);
 }

@@ -32,7 +32,7 @@ export type MembershipPlanChargeSnapshot = {
 const RATE_SCALE = 10_000;
 const RATE_DENOMINATOR = 100 * RATE_SCALE;
 
-function roundDiv(numerator: number, denominator: number) {
+export function roundMoneyDiv(numerator: number, denominator: number) {
   if (denominator <= 0) {
     throw new Error("INVALID_TAX_DENOMINATOR");
   }
@@ -63,6 +63,15 @@ function normalizeRateNumber(value: unknown) {
 function toScaledRate(rate: number) {
   return Math.round(rate * RATE_SCALE);
 }
+
+export type PretaxTaxBreakdown = {
+  taxMode: MembershipPlanTaxMode;
+  taxRate: number;
+  subtotalBeforeTaxCents: number;
+  taxableSubtotalCents: number;
+  taxTotalCents: number;
+  finalTotalCents: number;
+};
 
 export function isMembershipPlanTaxMode(value: unknown): value is MembershipPlanTaxMode {
   return typeof value === "string" && membershipPlanTaxModeValues.includes(value as MembershipPlanTaxMode);
@@ -158,7 +167,7 @@ export function computeMembershipPlanChargeSnapshot(params: {
   const scaledRate = toScaledRate(config.taxRate);
 
   if (config.taxMode === "tax_included") {
-    const subtotalBeforeTaxCents = roundDiv(
+    const subtotalBeforeTaxCents = roundMoneyDiv(
       basePriceCents * RATE_DENOMINATOR,
       RATE_DENOMINATOR + scaledRate,
     );
@@ -176,7 +185,7 @@ export function computeMembershipPlanChargeSnapshot(params: {
     };
   }
 
-  const taxTotalCents = roundDiv(basePriceCents * scaledRate, RATE_DENOMINATOR);
+  const taxTotalCents = roundMoneyDiv(basePriceCents * scaledRate, RATE_DENOMINATOR);
   return {
     isLegacy: false,
     taxMode: "tax_added",
@@ -186,5 +195,44 @@ export function computeMembershipPlanChargeSnapshot(params: {
     taxableSubtotalCents: basePriceCents,
     taxTotalCents,
     finalTotalCents: basePriceCents + taxTotalCents,
+  };
+}
+
+export function computeTaxBreakdownFromPretaxSubtotal(params: {
+  subtotalBeforeTaxCents: unknown;
+  taxMode?: unknown;
+  taxRate?: unknown;
+}): PretaxTaxBreakdown {
+  const subtotalBeforeTaxCents = normalizeNonNegativeInteger(params.subtotalBeforeTaxCents);
+  const config = resolveMembershipPlanTaxConfig({
+    taxMode: params.taxMode,
+    taxRate: params.taxRate,
+  });
+
+  if (config.isLegacy) {
+    throw new Error("TAX_MODE_REQUIRED");
+  }
+
+  if (config.taxMode === "tax_exempt" || config.taxRate <= 0) {
+    return {
+      taxMode: "tax_exempt",
+      taxRate: 0,
+      subtotalBeforeTaxCents,
+      taxableSubtotalCents: subtotalBeforeTaxCents,
+      taxTotalCents: 0,
+      finalTotalCents: subtotalBeforeTaxCents,
+    };
+  }
+
+  const scaledRate = toScaledRate(config.taxRate);
+  const taxTotalCents = roundMoneyDiv(subtotalBeforeTaxCents * scaledRate, RATE_DENOMINATOR);
+
+  return {
+    taxMode: config.taxMode,
+    taxRate: config.taxRate,
+    subtotalBeforeTaxCents,
+    taxableSubtotalCents: subtotalBeforeTaxCents,
+    taxTotalCents,
+    finalTotalCents: subtotalBeforeTaxCents + taxTotalCents,
   };
 }

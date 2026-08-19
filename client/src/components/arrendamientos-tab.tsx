@@ -1,22 +1,37 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Check,
+  ChevronsUpDown,
+  Download,
   Eye,
   FileText,
+  Loader2,
+  Plus,
   Search,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Select,
   SelectContent,
@@ -25,6 +40,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import {
   Table,
   TableBody,
@@ -33,6 +49,18 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
+import { downloadAuthenticatedFileRequest } from "@/lib/download-file";
+import { apiRequest } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
+import { cn } from "@/lib/utils";
+import {
+  leaseQuoteDownPaymentTypeValues,
+  leaseQuoteTermPresets,
+  type LeaseQuotePreview,
+  type LeaseQuoteDownPaymentType,
+  type LeaseQuoteRequest,
+} from "@shared/lease-quote";
 
 export type LeaseContractFocusRequest = {
   leaseContractId: string;
@@ -42,6 +70,7 @@ export type LeaseContractFocusRequest = {
 
 type LeaseContractStatus = "ACTIVE" | "COMPLETED" | "EXPIRED" | "CANCELLED";
 type LeaseFilter = "all" | LeaseContractStatus;
+type LeaseQuoteTaxMode = "tax_exempt" | "tax_included" | "tax_added";
 
 type LeaseContractSummary = {
   id: string;
@@ -70,7 +99,27 @@ type LeaseContractSummary = {
   leasedItemDescription: string;
   notes: string | null;
   capturedPriceCents: number;
-  taxModeSnapshot: "tax_exempt" | "tax_included" | "tax_added" | null;
+  assetValueCents: number | null;
+  assetSubtotalBeforeTaxCents: number | null;
+  assetTaxableSubtotalCents: number | null;
+  assetTaxTotalCents: number | null;
+  assetFinalTotalCents: number | null;
+  downPaymentType: LeaseQuoteDownPaymentType | null;
+  downPaymentRate: number | null;
+  downPaymentInputCents: number | null;
+  downPaymentSubtotalBeforeTaxCents: number | null;
+  downPaymentTaxableSubtotalCents: number | null;
+  downPaymentTaxTotalCents: number | null;
+  downPaymentFinalTotalCents: number | null;
+  financedPrincipalBeforeTaxCents: number | null;
+  financialSurchargeRate: number | null;
+  financialSurchargeTotalCents: number | null;
+  financedSubtotalBeforeTaxCents: number | null;
+  financedTaxableSubtotalCents: number | null;
+  financedTaxTotalCents: number | null;
+  financedFinalTotalCents: number | null;
+  contractFinalTotalCents: number | null;
+  taxModeSnapshot: LeaseQuoteTaxMode | null;
   taxRateSnapshot: number | null;
   monthlySubtotalBeforeTaxCents: number | null;
   monthlyTaxableSubtotalCents: number | null;
@@ -81,13 +130,85 @@ type LeaseContractSummary = {
   operationalCoverageEndDate: string | null;
   hasOperationalCoverage: boolean;
   operationalCoverageCurrent: boolean;
+  nextDueDate: string | null;
+  pendingContractBalanceCents: number;
+  hasInstallmentSchedule: boolean;
   completedAt: string | null;
   cancelledAt: string | null;
   createdAt: string;
   updatedAt: string;
+  installments?: BranchLeaseInstallmentSummary[];
+};
+
+type BranchClientOption = {
+  userId: string;
+  name: string;
+  lastName: string | null;
+  email: string | null;
+  phone: string | null;
+  membershipId: string;
+  membershipStatus: string;
+  clientStatus: string;
+  source: string;
+};
+
+type BranchLeaseInstallmentSummary = {
+  id: string;
+  branchId: string;
+  leaseContractId: string;
+  installmentNumber: number;
+  dueDate: string;
+  subtotalBeforeTaxCents: number;
+  taxableSubtotalCents: number;
+  taxTotalCents: number;
+  finalTotalCents: number;
+  currencyCode: string;
+  paymentSource: "webcool" | "external" | null;
+  paidAt: string | null;
+  financeEntryId: string | null;
+  chargeEventId: string | null;
+  recordedByUserId: string | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type LeaseQuotePreviewResponse = {
+  client: {
+    userId: string;
+    displayName: string;
+    email: string | null;
+    phone: string | null;
+  };
+  quote: LeaseQuotePreview;
+  leasedItemDescription: string;
+  notes: string | null;
+};
+
+type CreateLeaseContractResponse = {
+  leaseContractId: string;
+  leaseContract: LeaseContractSummary | null;
+};
+
+type LeaseQuoteFormState = {
+  clientUserId: string;
+  leasedItemDescription: string;
+  startDate: string;
+  termPreset: string;
+  customTermMonths: string;
+  capturedAssetValue: string;
+  downPaymentEnabled: boolean;
+  downPaymentType: LeaseQuoteDownPaymentType;
+  downPaymentAmount: string;
+  downPaymentRate: string;
+  surchargeRate: string;
+  taxMode: LeaseQuoteTaxMode;
+  taxRate: string;
+  notes: string;
 };
 
 const LEASE_CONTRACTS_QUERY_KEY = ["/api/branch/lease-contracts"];
+const LEASE_CLIENTS_QUERY_KEY = ["/api/branch/clients"];
 
 function formatCurrencyMxFromCents(amountCents: number | null | undefined) {
   return new Intl.NumberFormat("es-MX", {
@@ -145,6 +266,15 @@ function getLeaseStatusBadgeVariant(status: LeaseContractStatus) {
   return "default" as const;
 }
 
+function getLeaseQuoteTaxModeLabel(taxMode: LeaseQuoteTaxMode, taxRate: number) {
+  if (taxMode === "tax_exempt") {
+    return "Sin IVA";
+  }
+
+  const rateLabel = formatTaxRateLabel(taxRate);
+  return taxMode === "tax_included" ? `IVA incluido ${rateLabel}` : `+ IVA ${rateLabel}`;
+}
+
 function getMonthlyBreakdown(contract: LeaseContractSummary) {
   const subtotal = contract.monthlySubtotalBeforeTaxCents;
   const tax = contract.monthlyTaxTotalCents;
@@ -192,6 +322,136 @@ function getMonthlyBreakdown(contract: LeaseContractSummary) {
   };
 }
 
+function getTodayMxIsoDate() {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Mexico_City",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  return formatter.format(new Date());
+}
+
+function formatClientDisplayName(client: BranchClientOption) {
+  const fullName = [client.name, client.lastName].filter(Boolean).join(" ").trim();
+  return fullName || client.email || client.phone || "Cliente";
+}
+
+function formatCurrencyInputLabel(value: string) {
+  const cents = parseMoneyInputToCents(value);
+  return cents == null ? null : formatCurrencyMxFromCents(cents);
+}
+
+function parseMoneyInputToCents(value: string): number | null {
+  const normalized = value.trim().replace(/,/g, "");
+  if (!normalized) return null;
+  if (!/^\d+(\.\d{0,2})?$/.test(normalized)) {
+    return null;
+  }
+
+  const [wholePart, decimalPart = ""] = normalized.split(".");
+  const whole = Number.parseInt(wholePart, 10);
+  if (!Number.isFinite(whole)) return null;
+  const decimals = Number.parseInt(decimalPart.padEnd(2, "0").slice(0, 2), 10);
+  if (!Number.isFinite(decimals)) return null;
+  return whole * 100 + decimals;
+}
+
+function parsePositiveInteger(value: string): number | null {
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) return null;
+  return parsed;
+}
+
+function parseRateNumber(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = Number.parseFloat(trimmed);
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
+  return parsed;
+}
+
+function createInitialQuoteFormState(): LeaseQuoteFormState {
+  return {
+    clientUserId: "",
+    leasedItemDescription: "",
+    startDate: getTodayMxIsoDate(),
+    termPreset: String(leaseQuoteTermPresets[1]),
+    customTermMonths: "",
+    capturedAssetValue: "",
+    downPaymentEnabled: false,
+    downPaymentType: leaseQuoteDownPaymentTypeValues[0],
+    downPaymentAmount: "",
+    downPaymentRate: "",
+    surchargeRate: "",
+    taxMode: "tax_exempt",
+    taxRate: "16",
+    notes: "",
+  };
+}
+
+function resolveTermMonths(form: LeaseQuoteFormState): number | null {
+  if (form.termPreset !== "custom") {
+    return parsePositiveInteger(form.termPreset);
+  }
+  return parsePositiveInteger(form.customTermMonths);
+}
+
+function buildQuotePayload(form: LeaseQuoteFormState): LeaseQuoteRequest | null {
+  const termMonths = resolveTermMonths(form);
+  const capturedAssetValueCents = parseMoneyInputToCents(form.capturedAssetValue);
+  const surchargeRate = parseRateNumber(form.surchargeRate);
+  const taxRate = form.taxMode === "tax_exempt" ? 0 : parseRateNumber(form.taxRate);
+  const downPaymentAmountCents = form.downPaymentEnabled && form.downPaymentType === "amount"
+    ? parseMoneyInputToCents(form.downPaymentAmount)
+    : null;
+  const downPaymentRate = form.downPaymentEnabled && form.downPaymentType === "percentage"
+    ? parseRateNumber(form.downPaymentRate)
+    : null;
+
+  if (
+    !form.clientUserId
+    || !form.leasedItemDescription.trim()
+    || !form.startDate
+    || termMonths == null
+    || capturedAssetValueCents == null
+    || surchargeRate == null
+    || taxRate == null
+    || (form.downPaymentEnabled && form.downPaymentType === "amount" && downPaymentAmountCents == null)
+    || (form.downPaymentEnabled && form.downPaymentType === "percentage" && downPaymentRate == null)
+  ) {
+    return null;
+  }
+
+  return {
+    clientUserId: form.clientUserId,
+    leasedItemDescription: form.leasedItemDescription.trim(),
+    startDate: form.startDate,
+    termMonths,
+    capturedAssetValueCents,
+    surchargeRate,
+    downPaymentEnabled: form.downPaymentEnabled,
+    downPaymentType: form.downPaymentEnabled ? form.downPaymentType : null,
+    downPaymentAmountCents: form.downPaymentEnabled && form.downPaymentType === "amount" ? downPaymentAmountCents : null,
+    downPaymentRate: form.downPaymentEnabled && form.downPaymentType === "percentage" ? downPaymentRate : null,
+    taxMode: form.taxMode,
+    taxRate,
+    notes: form.notes.trim() ? form.notes.trim() : null,
+  };
+}
+
+function getInstallmentStatusLabel(installment: BranchLeaseInstallmentSummary) {
+  if (installment.paymentSource === "webcool") {
+    return "Pagada en WebCool";
+  }
+  if (installment.paymentSource === "external") {
+    return "Pagada externa";
+  }
+  return installment.dueDate < getTodayMxIsoDate() ? "Vencida" : "Pendiente";
+}
+
 function ContractSummaryCard({
   title,
   value,
@@ -228,6 +488,8 @@ function LeaseDetailDialog({
   });
 
   const breakdown = data ? getMonthlyBreakdown(data) : null;
+  const assetValueForDisplay = data?.assetValueCents ?? data?.capturedPriceCents ?? 0;
+  const contractFinalForDisplay = data?.contractFinalTotalCents ?? null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -278,19 +540,25 @@ function LeaseDetailDialog({
               </div>
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Cliente</p><p className="mt-1 font-medium break-words">{data.clientDisplayName}</p></CardContent></Card>
-              <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Bien</p><p className="mt-1 font-medium break-words">{data.leasedItemDescription}</p></CardContent></Card>
-              <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Inicio</p><p className="mt-1 font-medium">{formatDate(data.contractStartDate)}</p></CardContent></Card>
-              <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Fin</p><p className="mt-1 font-medium">{formatDate(data.contractEndDate)}</p></CardContent></Card>
-              <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Plazo</p><p className="mt-1 font-medium">{data.contractTermMonths} meses</p></CardContent></Card>
-              <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">{breakdown?.monthlyLabel ?? "Mensualidad pactada"}</p><p className="mt-1 font-medium">{formatCurrencyMxFromCents(data.capturedPriceCents)}</p></CardContent></Card>
-              <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">{breakdown?.subtotalLabel ?? "Subtotal"}</p><p className="mt-1 font-medium">{breakdown?.subtotalValue ?? "—"}</p></CardContent></Card>
-              <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">IVA</p><p className="mt-1 font-medium">{breakdown?.taxValue ?? "—"}</p></CardContent></Card>
-              <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Total mensual</p><p className="mt-1 font-medium">{breakdown?.totalValue ?? formatCurrencyMxFromCents(data.monthlyFinalTotalCents)}</p></CardContent></Card>
-              <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Pagadas antes de WebCool</p><p className="mt-1 font-medium">{data.preWebcoolPaidInstallments}</p></CardContent></Card>
-              <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Pagadas en WebCool</p><p className="mt-1 font-medium">{data.webcoolPaidInstallments}</p></CardContent></Card>
-              <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Total pagadas</p><p className="mt-1 font-medium">{data.totalPaidInstallments}</p></CardContent></Card>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Cliente</p><p className="mt-1 font-medium break-words">{data.clientDisplayName}</p></CardContent></Card>
+                <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Bien</p><p className="mt-1 font-medium break-words">{data.leasedItemDescription}</p></CardContent></Card>
+                <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Inicio</p><p className="mt-1 font-medium">{formatDate(data.contractStartDate)}</p></CardContent></Card>
+                <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Fin</p><p className="mt-1 font-medium">{formatDate(data.contractEndDate)}</p></CardContent></Card>
+                <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Plazo</p><p className="mt-1 font-medium">{data.contractTermMonths} meses</p></CardContent></Card>
+                <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Valor del bien</p><p className="mt-1 font-medium">{formatCurrencyMxFromCents(assetValueForDisplay)}</p></CardContent></Card>
+                <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Enganche</p><p className="mt-1 font-medium">{data.downPaymentFinalTotalCents ? formatCurrencyMxFromCents(data.downPaymentFinalTotalCents) : "Sin enganche"}</p></CardContent></Card>
+                <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Capital financiado</p><p className="mt-1 font-medium">{data.financedPrincipalBeforeTaxCents != null ? formatCurrencyMxFromCents(data.financedPrincipalBeforeTaxCents) : "—"}</p></CardContent></Card>
+                <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Interés / recargo total</p><p className="mt-1 font-medium">{data.financialSurchargeRate != null ? formatTaxRateLabel(data.financialSurchargeRate) : "—"}</p><p className="text-xs text-muted-foreground">{data.financialSurchargeTotalCents != null ? formatCurrencyMxFromCents(data.financialSurchargeTotalCents) : ""}</p></CardContent></Card>
+                <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">{breakdown?.subtotalLabel ?? "Subtotal"}</p><p className="mt-1 font-medium">{breakdown?.subtotalValue ?? "—"}</p></CardContent></Card>
+                <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">IVA</p><p className="mt-1 font-medium">{breakdown?.taxValue ?? "—"}</p></CardContent></Card>
+                <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Total mensual</p><p className="mt-1 font-medium">{breakdown?.totalValue ?? formatCurrencyMxFromCents(data.monthlyFinalTotalCents)}</p></CardContent></Card>
+                <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Total contractual</p><p className="mt-1 font-medium">{contractFinalForDisplay != null ? formatCurrencyMxFromCents(contractFinalForDisplay) : "—"}</p></CardContent></Card>
+                <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Saldo pendiente</p><p className="mt-1 font-medium">{formatCurrencyMxFromCents(data.pendingContractBalanceCents)}</p></CardContent></Card>
+                <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Próximo vencimiento</p><p className="mt-1 font-medium">{formatDate(data.nextDueDate)}</p></CardContent></Card>
+                <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Pagadas antes de WebCool</p><p className="mt-1 font-medium">{data.preWebcoolPaidInstallments}</p></CardContent></Card>
+                <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Pagadas en WebCool</p><p className="mt-1 font-medium">{data.webcoolPaidInstallments}</p></CardContent></Card>
+                <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Total pagadas</p><p className="mt-1 font-medium">{data.totalPaidInstallments}</p></CardContent></Card>
               <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Pendientes</p><p className="mt-1 font-medium">{data.pendingInstallments}</p></CardContent></Card>
               <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Meses transcurridos</p><p className="mt-1 font-medium">{data.elapsedCalendarMonths}</p></CardContent></Card>
               <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Meses restantes</p><p className="mt-1 font-medium">{data.remainingCalendarMonths}</p></CardContent></Card>
@@ -310,6 +578,42 @@ function LeaseDetailDialog({
                 {breakdown?.hint ? <p>{breakdown.hint}</p> : null}
               </CardContent>
             </Card>
+
+            {data.installments?.length ? (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">Mensualidades del contrato</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3 p-4">
+                  <div className="max-h-[420px] overflow-auto rounded-xl border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>#</TableHead>
+                          <TableHead>Vencimiento</TableHead>
+                          <TableHead>Estado</TableHead>
+                          <TableHead className="text-right">Subtotal</TableHead>
+                          <TableHead className="text-right">IVA</TableHead>
+                          <TableHead className="text-right">Total</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {data.installments.map((installment) => (
+                          <TableRow key={installment.id}>
+                            <TableCell>{installment.installmentNumber}/{data.contractTermMonths}</TableCell>
+                            <TableCell>{formatDate(installment.dueDate)}</TableCell>
+                            <TableCell>{getInstallmentStatusLabel(installment)}</TableCell>
+                            <TableCell className="text-right">{formatCurrencyMxFromCents(installment.subtotalBeforeTaxCents)}</TableCell>
+                            <TableCell className="text-right">{formatCurrencyMxFromCents(installment.taxTotalCents)}</TableCell>
+                            <TableCell className="text-right font-medium">{formatCurrencyMxFromCents(installment.finalTotalCents)}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </CardContent>
+              </Card>
+            ) : null}
           </div>
         ) : (
           <div className="rounded-xl border bg-muted/30 p-4 text-sm text-muted-foreground">
@@ -321,11 +625,662 @@ function LeaseDetailDialog({
   );
 }
 
+function LeaseQuoteDialog({
+  open,
+  onOpenChange,
+  onLeaseCreated,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onLeaseCreated?: (leaseContractId: string) => void;
+}) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [form, setForm] = useState<LeaseQuoteFormState>(createInitialQuoteFormState);
+  const [clientPickerOpen, setClientPickerOpen] = useState(false);
+  const [preview, setPreview] = useState<LeaseQuotePreviewResponse | null>(null);
+  const [previewFingerprint, setPreviewFingerprint] = useState<string | null>(null);
+  const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
+
+  const { data: clients = [], isLoading: isClientsLoading } = useQuery<BranchClientOption[]>({
+    queryKey: LEASE_CLIENTS_QUERY_KEY,
+    enabled: open,
+  });
+
+  useEffect(() => {
+    if (!open) {
+      setForm(createInitialQuoteFormState());
+      setPreview(null);
+      setPreviewFingerprint(null);
+      setClientPickerOpen(false);
+      setIsDownloadingPdf(false);
+    }
+  }, [open]);
+
+  const selectedClient = useMemo(
+    () => clients.find((client) => client.userId === form.clientUserId) ?? null,
+    [clients, form.clientUserId],
+  );
+
+  const payload = useMemo(() => buildQuotePayload(form), [form]);
+  const payloadFingerprint = useMemo(
+    () => (payload ? JSON.stringify(payload) : null),
+    [payload],
+  );
+  const previewIsStale = !!preview && !!payloadFingerprint && previewFingerprint !== payloadFingerprint;
+
+  const previewMutation = useMutation({
+    mutationFn: async (request: LeaseQuoteRequest) => {
+      const response = await apiRequest("POST", "/api/branch/lease-quotes/preview", request);
+      return response.json() as Promise<LeaseQuotePreviewResponse>;
+    },
+    onSuccess: (data, variables) => {
+      setPreview(data);
+      setPreviewFingerprint(JSON.stringify(variables));
+    },
+    onError: (error: any) => {
+      toast({
+        title: "No pudimos calcular la corrida",
+        description: error?.message || "Revisa los datos e intenta nuevamente.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const createLeaseMutation = useMutation({
+    mutationFn: async (request: LeaseQuoteRequest) => {
+      const response = await apiRequest("POST", "/api/branch/lease-contracts", request);
+      return response.json() as Promise<CreateLeaseContractResponse>;
+    },
+  });
+
+  async function handleGeneratePreview() {
+    if (!payload) {
+      toast({
+        title: "Completa los datos",
+        description: "Selecciona un cliente e ingresa bien, fecha, plazo, valor, recargo e IVA.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    await previewMutation.mutateAsync(payload);
+  }
+
+  async function handleDownloadPdf() {
+    if (!payload) {
+      toast({
+        title: "Completa los datos",
+        description: "Primero genera una vista previa válida.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      setIsDownloadingPdf(true);
+      await downloadAuthenticatedFileRequest(
+        "POST",
+        "/api/branch/lease-quotes/preview.pdf",
+        "corrida-arrendamiento.pdf",
+        payload,
+      );
+    } catch (error: any) {
+      toast({
+        title: "No pudimos descargar el PDF",
+        description: error?.message || "Intenta nuevamente.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsDownloadingPdf(false);
+    }
+  }
+
+  async function handleCreateLeaseContract() {
+    if (!payload || !preview || previewIsStale) {
+      toast({
+        title: "Actualiza la corrida",
+        description: "Genera una vista previa vigente antes de crear el arrendamiento.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      const created = await createLeaseMutation.mutateAsync(payload);
+      if (created.leaseContract) {
+        queryClient.setQueryData(
+          [`/api/branch/lease-contracts/${created.leaseContractId}`],
+          created.leaseContract,
+        );
+      }
+      await queryClient.invalidateQueries({ queryKey: LEASE_CONTRACTS_QUERY_KEY });
+
+      toast({
+        title: "Arrendamiento creado",
+        description: preview.quote.downPaymentFinalTotalCents > 0
+          ? "El contrato y sus mensualidades quedaron registrados. El enganche solo quedó pactado; todavía no entra a Caja."
+          : "El contrato y sus mensualidades quedaron registrados correctamente.",
+      });
+
+      onOpenChange(false);
+      onLeaseCreated?.(created.leaseContractId);
+    } catch (error: any) {
+      toast({
+        title: "No pudimos crear el arrendamiento",
+        description: error?.message || "Intenta nuevamente.",
+        variant: "destructive",
+      });
+    }
+  }
+
+  const taxModeExplanation =
+    form.taxMode === "tax_included"
+      ? "El valor capturado ya incluye IVA. El recargo se calcula sobre la base antes de IVA."
+      : form.taxMode === "tax_added"
+        ? "El valor capturado es antes de IVA. El IVA se agrega al subtotal financiado."
+        : "El valor capturado no genera IVA.";
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[100dvh] overflow-y-auto sm:max-w-5xl">
+        <DialogHeader>
+          <DialogTitle>Nueva corrida y arrendamiento</DialogTitle>
+          <DialogDescription>
+            Calcula la corrida, revisa el PDF y, si te convence, crea el contrato independiente con sus mensualidades reales. En esta fase el enganche queda pactado, pero no se registra como cobrado en Caja.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="grid gap-6 xl:grid-cols-[minmax(0,360px)_minmax(0,1fr)]">
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Cliente</Label>
+              <Popover open={clientPickerOpen} onOpenChange={setClientPickerOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    role="combobox"
+                    aria-expanded={clientPickerOpen}
+                    className="w-full justify-between"
+                    data-testid="button-lease-quote-client"
+                  >
+                    <span className="truncate text-left">
+                      {selectedClient ? formatClientDisplayName(selectedClient) : "Buscar cliente..."}
+                    </span>
+                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+                  <Command>
+                    <CommandInput placeholder="Buscar por nombre, email o teléfono..." />
+                    <CommandList>
+                      <CommandEmpty>
+                        {isClientsLoading ? "Cargando clientes..." : "No encontramos clientes con ese criterio."}
+                      </CommandEmpty>
+                      <CommandGroup>
+                        {clients.map((client) => {
+                          const itemValue = [
+                            formatClientDisplayName(client),
+                            client.email,
+                            client.phone,
+                          ]
+                            .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+                            .join(" ");
+
+                          return (
+                            <CommandItem
+                              key={client.userId}
+                              value={itemValue}
+                              onSelect={() => {
+                                setForm((current) => ({ ...current, clientUserId: client.userId }));
+                                setClientPickerOpen(false);
+                              }}
+                            >
+                              <Check
+                                className={cn(
+                                  "mr-2 h-4 w-4",
+                                  form.clientUserId === client.userId ? "opacity-100" : "opacity-0",
+                                )}
+                              />
+                              <div className="min-w-0">
+                                <p className="truncate font-medium">{formatClientDisplayName(client)}</p>
+                                <p className="truncate text-xs text-muted-foreground">
+                                  {[client.email, client.phone].filter(Boolean).join(" · ") || "Sin contacto"}
+                                </p>
+                              </div>
+                            </CommandItem>
+                          );
+                        })}
+                      </CommandGroup>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="lease-item-description">Bien / equipo</Label>
+              <Input
+                id="lease-item-description"
+                value={form.leasedItemDescription}
+                onChange={(event) => setForm((current) => ({ ...current, leasedItemDescription: event.target.value }))}
+                placeholder="Ej. Mazda 3 Hatchback"
+                data-testid="input-lease-quote-item"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="lease-start-date">Fecha de inicio</Label>
+              <Input
+                id="lease-start-date"
+                type="date"
+                value={form.startDate}
+                onChange={(event) => setForm((current) => ({ ...current, startDate: event.target.value }))}
+                data-testid="input-lease-quote-start-date"
+              />
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Plazo</Label>
+                <Select
+                  value={form.termPreset}
+                  onValueChange={(value) => setForm((current) => ({ ...current, termPreset: value }))}
+                >
+                  <SelectTrigger data-testid="select-lease-quote-term">
+                    <SelectValue placeholder="Selecciona el plazo" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {leaseQuoteTermPresets.map((preset) => (
+                      <SelectItem key={preset} value={String(preset)}>
+                        {preset} meses
+                      </SelectItem>
+                    ))}
+                    <SelectItem value="custom">Personalizado</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {form.termPreset === "custom" ? (
+                <div className="space-y-2">
+                  <Label htmlFor="lease-custom-term">Meses personalizados</Label>
+                  <Input
+                    id="lease-custom-term"
+                    type="number"
+                    min={1}
+                    value={form.customTermMonths}
+                    onChange={(event) => setForm((current) => ({ ...current, customTermMonths: event.target.value }))}
+                    placeholder="Ej. 60"
+                    data-testid="input-lease-quote-custom-term"
+                  />
+                </div>
+              ) : null}
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="lease-asset-value">Valor del bien</Label>
+              <Input
+                id="lease-asset-value"
+                type="number"
+                min={0}
+                step="0.01"
+                inputMode="decimal"
+                value={form.capturedAssetValue}
+                onChange={(event) => setForm((current) => ({ ...current, capturedAssetValue: event.target.value }))}
+                placeholder="100000.00"
+                data-testid="input-lease-quote-asset-value"
+              />
+              {formatCurrencyInputLabel(form.capturedAssetValue) ? (
+                <p className="text-xs text-muted-foreground">
+                  {formatCurrencyInputLabel(form.capturedAssetValue)}
+                </p>
+              ) : null}
+            </div>
+
+            <div className="rounded-2xl border bg-muted/20 p-4">
+              <div className="flex items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <Label htmlFor="lease-down-payment-enabled" className="text-sm font-medium">
+                    ¿El cliente dará enganche?
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    El enganche reduce primero el capital financiado. En esta fase se guarda como pactado, pero no se registra como pagado.
+                  </p>
+                </div>
+                <Switch
+                  id="lease-down-payment-enabled"
+                  checked={form.downPaymentEnabled}
+                  onCheckedChange={(checked) => setForm((current) => ({
+                    ...current,
+                    downPaymentEnabled: checked,
+                    downPaymentAmount: checked ? current.downPaymentAmount : "",
+                    downPaymentRate: checked ? current.downPaymentRate : "",
+                  }))}
+                  data-testid="switch-lease-quote-down-payment-enabled"
+                />
+              </div>
+
+              {form.downPaymentEnabled ? (
+                <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Tipo de enganche</Label>
+                    <Select
+                      value={form.downPaymentType}
+                      onValueChange={(value) => setForm((current) => ({
+                        ...current,
+                        downPaymentType: value as LeaseQuoteDownPaymentType,
+                        downPaymentAmount: value === "amount" ? current.downPaymentAmount : "",
+                        downPaymentRate: value === "percentage" ? current.downPaymentRate : "",
+                      }))}
+                    >
+                      <SelectTrigger data-testid="select-lease-quote-down-payment-type">
+                        <SelectValue placeholder="Selecciona el tipo" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="amount">Monto</SelectItem>
+                        <SelectItem value="percentage">Porcentaje</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {form.downPaymentType === "amount" ? (
+                    <div className="space-y-2">
+                      <Label htmlFor="lease-down-payment-amount">Monto del enganche</Label>
+                      <Input
+                        id="lease-down-payment-amount"
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        inputMode="decimal"
+                        value={form.downPaymentAmount}
+                        onChange={(event) => setForm((current) => ({ ...current, downPaymentAmount: event.target.value }))}
+                        placeholder="100000.00"
+                        data-testid="input-lease-quote-down-payment-amount"
+                      />
+                      {formatCurrencyInputLabel(form.downPaymentAmount) ? (
+                        <p className="text-xs text-muted-foreground">
+                          {formatCurrencyInputLabel(form.downPaymentAmount)}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <Label htmlFor="lease-down-payment-rate">Porcentaje del enganche</Label>
+                      <Input
+                        id="lease-down-payment-rate"
+                        type="number"
+                        min={0}
+                        max={100}
+                        step="0.01"
+                        inputMode="decimal"
+                        value={form.downPaymentRate}
+                        onChange={(event) => setForm((current) => ({ ...current, downPaymentRate: event.target.value }))}
+                        placeholder="20"
+                        data-testid="input-lease-quote-down-payment-rate"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Ejemplo: 20% significa que el capital financiado se calcula sobre el 80% restante.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="lease-surcharge-rate">Interés / recargo total</Label>
+              <Input
+                id="lease-surcharge-rate"
+                type="number"
+                min={0}
+                step="0.01"
+                inputMode="decimal"
+                value={form.surchargeRate}
+                onChange={(event) => setForm((current) => ({ ...current, surchargeRate: event.target.value }))}
+                placeholder="20"
+                data-testid="input-lease-quote-surcharge-rate"
+              />
+              <p className="text-xs text-muted-foreground">
+                Porcentaje total aplicado al monto que será financiado. No representa una tasa anual.
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Ejemplo: valor del bien {formatCurrencyMxFromCents(10_000_000)} · recargo total 20% = {formatCurrencyMxFromCents(2_000_000)}.
+              </p>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Tratamiento IVA</Label>
+                <Select
+                  value={form.taxMode}
+                  onValueChange={(value) => setForm((current) => ({ ...current, taxMode: value as LeaseQuoteTaxMode }))}
+                >
+                  <SelectTrigger data-testid="select-lease-quote-tax-mode">
+                    <SelectValue placeholder="Selecciona IVA" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="tax_exempt">Sin IVA</SelectItem>
+                    <SelectItem value="tax_included">IVA incluido</SelectItem>
+                    <SelectItem value="tax_added">+ IVA</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="lease-tax-rate">Tasa IVA</Label>
+                <Input
+                  id="lease-tax-rate"
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  inputMode="decimal"
+                  value={form.taxMode === "tax_exempt" ? "0" : form.taxRate}
+                  onChange={(event) => setForm((current) => ({ ...current, taxRate: event.target.value }))}
+                  disabled={form.taxMode === "tax_exempt"}
+                  placeholder="16"
+                  data-testid="input-lease-quote-tax-rate"
+                />
+              </div>
+            </div>
+
+            <p className="rounded-xl border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+              {taxModeExplanation}
+            </p>
+
+            <div className="space-y-2">
+              <Label htmlFor="lease-quote-notes">Notas</Label>
+              <Textarea
+                id="lease-quote-notes"
+                value={form.notes}
+                onChange={(event) => setForm((current) => ({ ...current, notes: event.target.value }))}
+                placeholder="Observaciones internas para esta propuesta"
+                rows={3}
+                data-testid="textarea-lease-quote-notes"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            {preview ? (
+              <>
+                <div className="rounded-2xl border bg-card/70 p-4 shadow-sm">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.22em] text-muted-foreground">Cliente</p>
+                      <h3 className="mt-1 text-xl font-semibold">{preview.client.displayName}</h3>
+                      <p className="mt-1 text-sm text-muted-foreground">{preview.leasedItemDescription}</p>
+                    </div>
+                    <Badge variant="secondary">Vista previa contractual</Badge>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  <ContractSummaryCard title="Valor del bien" value={formatCurrencyMxFromCents(preview.quote.capturedAssetValueCents)} description={preview.quote.taxMode === "tax_included" ? "Monto capturado con IVA incluido" : "Monto capturado para la corrida"} />
+                  <ContractSummaryCard title="Enganche" value={preview.quote.downPaymentFinalTotalCents > 0 ? formatCurrencyMxFromCents(preview.quote.downPaymentFinalTotalCents) : "Sin enganche"} description={preview.quote.downPaymentType === "percentage" && preview.quote.downPaymentRate != null ? `${formatTaxRateLabel(preview.quote.downPaymentRate)} sobre el valor del bien` : preview.quote.downPaymentType === "amount" ? "Monto pactado al inicio" : "No reduce el saldo financiado"} />
+                  <ContractSummaryCard title="Capital financiado" value={formatCurrencyMxFromCents(preview.quote.financedPrincipalBeforeTaxCents)} description="Base antes del interés / recargo" />
+                  <ContractSummaryCard title="Interés / recargo total" value={formatTaxRateLabel(preview.quote.surchargeRate)} description={`Monto del recargo: ${formatCurrencyMxFromCents(preview.quote.surchargeTotalCents)}`} />
+                  <ContractSummaryCard title="Subtotal financiado" value={formatCurrencyMxFromCents(preview.quote.financedSubtotalBeforeTaxCents)} />
+                  <ContractSummaryCard title="IVA financiado" value={formatCurrencyMxFromCents(preview.quote.contractTaxTotalCents)} description={getLeaseQuoteTaxModeLabel(preview.quote.taxMode, preview.quote.taxRate)} />
+                  <ContractSummaryCard title="Total financiado" value={formatCurrencyMxFromCents(preview.quote.financedFinalTotalCents)} description={`${preview.quote.termMonths} mensualidades`} />
+                  <ContractSummaryCard title="Total contractual" value={formatCurrencyMxFromCents(preview.quote.contractFinalTotalCents)} description="Total financiado + enganche pactado" />
+                  <ContractSummaryCard title="Mensualidad aproximada" value={formatCurrencyMxFromCents(preview.quote.approximateInstallmentFinalTotalCents)} description={preview.quote.hasAdjustedFinalInstallment ? `Última mensualidad: ${formatCurrencyMxFromCents(preview.quote.finalInstallmentFinalTotalCents)}` : "Todas las mensualidades cuadran igual"} />
+                </div>
+
+                <Card className="border-border/70 shadow-sm">
+                  <CardContent className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Base antes de IVA</p>
+                      <p className="mt-1 font-semibold">{formatCurrencyMxFromCents(preview.quote.assetSubtotalBeforeTaxCents)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">IVA del valor capturado</p>
+                      <p className="mt-1 font-semibold">{formatCurrencyMxFromCents(preview.quote.assetTaxCents)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Enganche</p>
+                      <p className="mt-1 font-semibold">{preview.quote.downPaymentFinalTotalCents > 0 ? formatCurrencyMxFromCents(preview.quote.downPaymentFinalTotalCents) : "Sin enganche"}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Capital financiado</p>
+                      <p className="mt-1 font-semibold">{formatCurrencyMxFromCents(preview.quote.financedPrincipalBeforeTaxCents)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Plazo</p>
+                      <p className="mt-1 font-semibold">{preview.quote.termMonths} meses</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Inicio</p>
+                      <p className="mt-1 font-semibold">{formatDate(preview.quote.startDate)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Fin contractual</p>
+                      <p className="mt-1 font-semibold">{formatDate(preview.quote.contractEndDate)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Tratamiento IVA</p>
+                      <p className="mt-1 font-semibold">{getLeaseQuoteTaxModeLabel(preview.quote.taxMode, preview.quote.taxRate)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Total financiado</p>
+                      <p className="mt-1 font-semibold">{formatCurrencyMxFromCents(preview.quote.financedFinalTotalCents)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Total contractual</p>
+                      <p className="mt-1 font-semibold">{formatCurrencyMxFromCents(preview.quote.contractFinalTotalCents)}</p>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900 dark:border-blue-900/50 dark:bg-blue-950/30 dark:text-blue-100">
+                  El contrato se creará con sus mensualidades reales. El enganche, si existe, queda guardado como pactado y todavía no genera un ingreso en Caja ni cuenta como mensualidad pagada.
+                </div>
+
+                {preview.quote.hasAdjustedFinalInstallment ? (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-100">
+                    Las mensualidades son de {formatCurrencyMxFromCents(preview.quote.approximateInstallmentFinalTotalCents)}; la última puede ajustarse por centavos para cuadrar el total exacto.
+                  </div>
+                ) : null}
+
+                {previewIsStale ? (
+                  <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900 dark:border-blue-900/50 dark:bg-blue-950/30 dark:text-blue-100">
+                    Cambiaste datos después de la última vista previa. Vuelve a generarla antes de descargar el PDF.
+                  </div>
+                ) : null}
+
+                <Card className="border-border/70 shadow-sm">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-base">Tabla de corrida</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3 p-4">
+                    <div className="max-h-[420px] overflow-auto rounded-xl border">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>#</TableHead>
+                            <TableHead>Vencimiento</TableHead>
+                            <TableHead className="text-right">Subtotal</TableHead>
+                            <TableHead className="text-right">IVA</TableHead>
+                            <TableHead className="text-right">Total</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {preview.quote.installmentRows.map((row) => (
+                            <TableRow key={`${row.installmentNumber}-${row.dueDate}`}>
+                              <TableCell>{row.installmentNumber}/{preview.quote.termMonths}</TableCell>
+                              <TableCell>{formatDate(row.dueDate)}</TableCell>
+                              <TableCell className="text-right">{formatCurrencyMxFromCents(row.subtotalBeforeTaxCents)}</TableCell>
+                              <TableCell className="text-right">{formatCurrencyMxFromCents(row.taxTotalCents)}</TableCell>
+                              <TableCell className="text-right font-medium">{formatCurrencyMxFromCents(row.finalTotalCents)}</TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </CardContent>
+                </Card>
+              </>
+            ) : (
+            <div className="rounded-2xl border border-dashed bg-muted/20 p-8 text-center">
+                <FileText className="mx-auto h-10 w-10 text-muted-foreground/40" />
+                <h4 className="mt-3 text-base font-semibold">Genera la vista previa</h4>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Selecciona el cliente y completa los datos para revisar el resumen, la tabla mensual, descargar el PDF y crear el arrendamiento independiente.
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <DialogFooter className="gap-2 sm:justify-between">
+          <div className="text-xs text-muted-foreground">
+            Al crear el arrendamiento se guardan el contrato y sus mensualidades reales. El enganche sigue sin registrarse como cobrado en Caja en esta fase.
+          </div>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} data-testid="button-close-lease-quote">
+              Cerrar
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleDownloadPdf}
+              disabled={!preview || previewIsStale || isDownloadingPdf}
+              data-testid="button-download-lease-quote-pdf"
+            >
+              {isDownloadingPdf ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
+              Descargar PDF
+            </Button>
+            <Button
+              type="button"
+              onClick={handleGeneratePreview}
+              disabled={!payload || previewMutation.isPending}
+              data-testid="button-generate-lease-quote-preview"
+            >
+              {previewMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileText className="mr-2 h-4 w-4" />}
+              {preview && previewIsStale ? "Actualizar vista previa" : "Generar vista previa"}
+            </Button>
+            <Button
+              type="button"
+              onClick={handleCreateLeaseContract}
+              disabled={!preview || previewIsStale || createLeaseMutation.isPending || previewMutation.isPending}
+              data-testid="button-create-lease-contract"
+            >
+              {createLeaseMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
+              Crear arrendamiento
+            </Button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export default function ArrendamientosTab({ focusRequest }: { focusRequest?: LeaseContractFocusRequest | null } = {}) {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<LeaseFilter>("all");
   const [detailLeaseId, setDetailLeaseId] = useState<string | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
+  const [quoteDialogOpen, setQuoteDialogOpen] = useState(false);
 
   const { data: contracts = [], isLoading, error } = useQuery<LeaseContractSummary[]>({
     queryKey: LEASE_CONTRACTS_QUERY_KEY,
@@ -392,16 +1347,22 @@ export default function ArrendamientosTab({ focusRequest }: { focusRequest?: Lea
       <div className="rounded-2xl border bg-card/70 p-4 shadow-sm md:rounded-3xl md:p-5">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="space-y-3">
-            <Badge variant="secondary" className="w-fit">Solo lectura</Badge>
+            <Badge variant="secondary" className="w-fit">Contratos independientes</Badge>
             <div className="space-y-1">
               <h3 className="text-xl font-semibold">Arrendamientos</h3>
               <p className="max-w-3xl text-sm text-muted-foreground">
-                Consulta contratos existentes, avance de mensualidades y snapshot fiscal contractual sin crear pagos ni modificar Caja.
+                Consulta contratos existentes, prepara corridas nuevas y crea arrendamientos independientes sin generar ingresos futuros en Caja.
               </p>
             </div>
           </div>
-          <div className="rounded-2xl border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
-            Se muestran únicamente contratos de la sucursal actual.
+          <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center">
+            <div className="rounded-2xl border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+              Se muestran únicamente contratos de la sucursal actual.
+            </div>
+            <Button onClick={() => setQuoteDialogOpen(true)} data-testid="button-open-new-lease-quote">
+              <Plus className="mr-2 h-4 w-4" />
+              Nueva corrida
+            </Button>
           </div>
         </div>
       </div>
@@ -587,6 +1548,15 @@ export default function ArrendamientosTab({ focusRequest }: { focusRequest?: Lea
           )}
         </CardContent>
       </Card>
+
+      <LeaseQuoteDialog
+        open={quoteDialogOpen}
+        onOpenChange={setQuoteDialogOpen}
+        onLeaseCreated={(leaseContractId) => {
+          setDetailLeaseId(leaseContractId);
+          setDetailOpen(true);
+        }}
+      />
 
       <LeaseDetailDialog
         leaseContractId={detailLeaseId}

@@ -111,6 +111,43 @@ export interface ClientsPdfReportData {
   rows: ClientPdfRow[];
 }
 
+export interface LeaseQuotePdfInstallmentRow {
+  installmentLabel: string;
+  dueDate: string;
+  subtotalAmount: number;
+  taxAmount: number;
+  totalAmount: number;
+}
+
+export interface LeaseQuotePdfReportData {
+  branding: PdfReportBranding;
+  generatedAt: Date;
+  clientDisplayName: string;
+  clientEmail: string | null;
+  clientPhone: string | null;
+  leasedItemDescription: string;
+  startDate: string;
+  contractEndDate: string;
+  termMonths: number;
+  capturedAssetValueAmount: number;
+  assetSubtotalBeforeTaxAmount: number;
+  assetTaxAmount: number;
+  downPaymentAmount: number;
+  financedPrincipalAmount: number;
+  surchargeRate: number;
+  surchargeAmount: number;
+  financedSubtotalBeforeTaxAmount: number;
+  contractTaxAmount: number;
+  financedFinalAmount: number;
+  contractFinalAmount: number;
+  approximateInstallmentAmount: number;
+  hasAdjustedFinalInstallment: boolean;
+  finalInstallmentAmount: number;
+  notes: string | null;
+  taxModeLabel: string;
+  rows: LeaseQuotePdfInstallmentRow[];
+}
+
 const currencyFormatter = new Intl.NumberFormat("es-MX", {
   style: "currency",
   currency: "MXN",
@@ -133,6 +170,12 @@ const dateTimeFormatter = new Intl.DateTimeFormat("es-MX", {
 
 function formatCurrency(amount: number): string {
   return currencyFormatter.format(Number.isFinite(amount) ? amount : 0);
+}
+
+function formatPercent(value: number): string {
+  if (!Number.isFinite(value)) return "0%";
+  const normalized = value.toFixed(4).replace(/\.?0+$/, "");
+  return `${normalized}%`;
 }
 
 function formatDateOnly(value: string | null | undefined): string {
@@ -589,6 +632,204 @@ export async function buildBranchClientsPdfReport(data: ClientsPdfReportData): P
         table: {
           headerRows: 1,
           widths: [118, 150, 82, 60, 58, 62, "*", 44],
+          body,
+          dontBreakRows: true,
+          keepWithHeaderRows: 1,
+        },
+      },
+    ],
+    ...getCommonStyles(),
+  };
+
+  return renderPdfBuffer(docDefinition);
+}
+
+export async function buildBranchLeaseQuotePdfReport(data: LeaseQuotePdfReportData): Promise<Buffer> {
+  const logoDataUrl = await loadLogoDataUrl(data.branding.logoUrl);
+  const body = [
+    [
+      { text: "#", style: "tableHeader", fillColor: TABLE_HEADER_FILL, alignment: "center" },
+      { text: "Vencimiento", style: "tableHeader", fillColor: TABLE_HEADER_FILL },
+      { text: "Subtotal", style: "tableHeader", fillColor: TABLE_HEADER_FILL, alignment: "right" },
+      { text: "IVA", style: "tableHeader", fillColor: TABLE_HEADER_FILL, alignment: "right" },
+      { text: "Total", style: "tableHeader", fillColor: TABLE_HEADER_FILL, alignment: "right" },
+    ],
+    ...data.rows.map((row) => [
+      { text: row.installmentLabel, style: "tableCell", alignment: "center" },
+      { text: formatDateOnly(row.dueDate), style: "tableCell" },
+      { text: formatCurrency(row.subtotalAmount), style: "tableCell", alignment: "right" },
+      { text: formatCurrency(row.taxAmount), style: "tableCell", alignment: "right" },
+      { text: formatCurrency(row.totalAmount), style: "amountIncome" },
+    ]),
+  ];
+
+  const adjustmentNote = data.hasAdjustedFinalInstallment
+    ? `Las mensualidades se muestran con importe uniforme y la última puede ajustarse por centavos para cuadrar el total exacto. Última mensualidad: ${formatCurrency(data.finalInstallmentAmount)}.`
+    : null;
+
+  const docDefinition: Record<string, unknown> = {
+    pageSize: "A4",
+    pageOrientation: "portrait",
+    pageMargins: PDF_PAGE_MARGINS,
+    header: buildHeader(
+      data.branding,
+      logoDataUrl,
+      "Corrida de Arrendamiento",
+      "Vista previa sin crear contrato ni registrar cobros",
+      data.generatedAt,
+    ),
+    footer: buildFooter,
+    info: {
+      title: `Corrida de Arrendamiento - ${data.branding.branchName}`,
+      author: BRAND_TEXT,
+      subject: "Corrida de Arrendamiento",
+    },
+    content: [
+      buildSummaryCards([
+        { label: "Valor del bien", value: formatCurrency(data.capturedAssetValueAmount), accent: "#2563eb" },
+        { label: "Enganche", value: formatCurrency(data.downPaymentAmount), accent: "#0f766e" },
+        { label: "Capital financiado", value: formatCurrency(data.financedPrincipalAmount), accent: "#1d4ed8" },
+      ]),
+      buildSummaryCards([
+        { label: "Interés / recargo total", value: formatPercent(data.surchargeRate), accent: "#ea580c" },
+        { label: "Monto del recargo", value: formatCurrency(data.surchargeAmount), accent: "#b45309" },
+        { label: "Subtotal financiado", value: formatCurrency(data.financedSubtotalBeforeTaxAmount), accent: "#0f766e" },
+      ]),
+      buildSummaryCards([
+        { label: "IVA financiado", value: formatCurrency(data.contractTaxAmount), accent: "#7c3aed" },
+        { label: "Total financiado", value: formatCurrency(data.financedFinalAmount), accent: "#6d28d9" },
+        { label: "Total contractual", value: formatCurrency(data.contractFinalAmount), accent: "#0f172a" },
+      ]),
+      buildSummaryCards([
+        { label: "Plazo", value: `${data.termMonths} meses`, accent: "#2563eb" },
+        { label: "Mensualidad aproximada", value: formatCurrency(data.approximateInstallmentAmount), accent: "#1f2937" },
+        { label: "Tratamiento IVA", value: data.taxModeLabel, accent: "#64748b" },
+      ]),
+      { text: "Datos de la corrida", style: "sectionTitle" },
+      {
+        layout: {
+          hLineColor: () => BORDER_COLOR,
+          vLineColor: () => BORDER_COLOR,
+          paddingLeft: () => 8,
+          paddingRight: () => 8,
+          paddingTop: () => 6,
+          paddingBottom: () => 6,
+        },
+        table: {
+          widths: ["*", "*"],
+          body: [
+            [
+              {
+                stack: [
+                  { text: "Cliente", style: "tableHeader" },
+                  { text: safeText(data.clientDisplayName), style: "tableCell" },
+                  { text: safeText(data.clientEmail), style: "subtleCell" },
+                  { text: safeText(data.clientPhone), style: "subtleCell" },
+                ],
+              },
+              {
+                stack: [
+                  { text: "Bien / equipo", style: "tableHeader" },
+                  { text: safeText(data.leasedItemDescription), style: "tableCell" },
+                  { text: safeText(data.notes, "Sin notas"), style: "subtleCell" },
+                ],
+              },
+            ],
+            [
+              {
+                stack: [
+                  { text: "Inicio", style: "tableHeader" },
+                  { text: formatDateOnly(data.startDate), style: "tableCell" },
+                ],
+              },
+              {
+                stack: [
+                  { text: "Fin contractual", style: "tableHeader" },
+                  { text: formatDateOnly(data.contractEndDate), style: "tableCell" },
+                ],
+              },
+            ],
+            [
+              {
+                stack: [
+                  { text: "Plazo", style: "tableHeader" },
+                  { text: `${data.termMonths} meses`, style: "tableCell" },
+                ],
+              },
+              {
+                stack: [
+                  { text: "Tratamiento IVA", style: "tableHeader" },
+                  { text: data.taxModeLabel, style: "tableCell" },
+                ],
+              },
+            ],
+            [
+              {
+                stack: [
+                  { text: "Base antes de IVA", style: "tableHeader" },
+                  { text: formatCurrency(data.assetSubtotalBeforeTaxAmount), style: "tableCell" },
+                ],
+              },
+              {
+                stack: [
+                  { text: "IVA del valor capturado", style: "tableHeader" },
+                  { text: formatCurrency(data.assetTaxAmount), style: "tableCell" },
+                ],
+              },
+            ],
+            [
+              {
+                stack: [
+                  { text: "Enganche", style: "tableHeader" },
+                  { text: formatCurrency(data.downPaymentAmount), style: "tableCell" },
+                ],
+              },
+              {
+                stack: [
+                  { text: "Capital financiado", style: "tableHeader" },
+                  { text: formatCurrency(data.financedPrincipalAmount), style: "tableCell" },
+                ],
+              },
+            ],
+            [
+              {
+                stack: [
+                  { text: "Total financiado", style: "tableHeader" },
+                  { text: formatCurrency(data.financedFinalAmount), style: "tableCell" },
+                ],
+              },
+              {
+                stack: [
+                  { text: "Total contractual", style: "tableHeader" },
+                  { text: formatCurrency(data.contractFinalAmount), style: "tableCell" },
+                ],
+              },
+            ],
+          ],
+        },
+      },
+      adjustmentNote
+        ? {
+            margin: [0, 10, 0, 10],
+            text: adjustmentNote,
+            color: MUTED_TEXT_COLOR,
+            fontSize: 8.5,
+          }
+        : { text: "" },
+      { text: "Corrida completa", style: "sectionTitle" },
+      {
+        layout: {
+          fillColor: (rowIndex: number) => (rowIndex === 0 ? TABLE_HEADER_FILL : rowIndex % 2 === 0 ? "#f8fafc" : null),
+          hLineColor: () => BORDER_COLOR,
+          vLineColor: () => BORDER_COLOR,
+          paddingLeft: () => 6,
+          paddingRight: () => 6,
+          paddingTop: () => 5,
+          paddingBottom: () => 5,
+        },
+        table: {
+          headerRows: 1,
+          widths: [42, 88, 92, 72, 92],
           body,
           dontBreakRows: true,
           keepWithHeaderRows: 1,
