@@ -4094,6 +4094,14 @@ export default function DashboardPage() {
       return;
     }
 
+    if (data.notificationAction === "open_lease" && typeof data.leaseContractId === "string" && data.leaseContractId) {
+      handleOpenLeaseContract(
+        data.leaseContractId,
+        typeof data.clientUserId === "string" ? data.clientUserId : null,
+      );
+      return;
+    }
+
     if (clientUserId || data.notificationAction === "open_client") {
       if (clientUserId) {
         handleViewClient(clientUserId);

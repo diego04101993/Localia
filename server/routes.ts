@@ -40,6 +40,7 @@ import {
   notifyBranchCustomerJoinedFromApp,
   syncBirthdayTodayNotifications,
   syncCommercialNotifications,
+  syncLeaseInstallmentNotifications,
 } from "./notifications";
 import { dispatchPushFromSystemEvent } from "./push";
 import {
@@ -206,6 +207,25 @@ const AUTOMATED_FINANCE_SOURCES = new Set([
   "lease_installment_payment",
 ]);
 const RESERVED_MANUAL_FINANCE_SOURCES = new Set(["lease_installment_payment"]);
+const leaseContractAdministrativeUpdateSchema = z.object({
+  leasedItemDescription: z.string().trim().min(1, "El bien o equipo es obligatorio").max(200, "Máximo 200 caracteres").optional(),
+  notes: z.string().trim().max(500, "Las notas no pueden exceder 500 caracteres").nullable().optional(),
+}).strict().refine((data) => Object.keys(data).length > 0, {
+  message: "Debes enviar al menos un dato administrativo",
+});
+const leaseContractFinancialRequestFields = new Set([
+  "clientUserId",
+  "startDate",
+  "termMonths",
+  "capturedAssetValueCents",
+  "surchargeRate",
+  "downPaymentEnabled",
+  "downPaymentType",
+  "downPaymentAmountCents",
+  "downPaymentRate",
+  "taxMode",
+  "taxRate",
+]);
 const updateBranchClientGlobalSchema = z.object({
   name: z.string().min(1, "El nombre es obligatorio").max(120, "Maximo 120 caracteres").optional(),
   email: z.string().email("Correo invalido").nullable().optional().or(z.literal("")),
@@ -1602,6 +1622,38 @@ function getLeaseInstallmentPaymentMessage(err: unknown): { status: number; mess
   return null;
 }
 
+function getLeaseContractMutationMessage(err: unknown): { status: number; message: string } | null {
+  const code = err instanceof Error ? err.message : "";
+  if (code === "LEASE_CONTRACT_NOT_FOUND") {
+    return { status: 404, message: "No encontramos este arrendamiento en la sucursal actual." };
+  }
+  if (code === "CLIENT_NOT_FOUND_IN_BRANCH") {
+    return { status: 404, message: "El cliente seleccionado no pertenece a esta sucursal." };
+  }
+  if (code === "LEASE_CONTRACT_CANCELLED") {
+    return { status: 409, message: "No puedes cambiar los términos financieros de un contrato cancelado." };
+  }
+  if (code === "LEASE_CONTRACT_LEGACY_NOT_EDITABLE") {
+    return { status: 409, message: "Este contrato histórico no tiene corrida editable. Solo puedes actualizar sus notas o descripción administrativa." };
+  }
+  if (code === "LEASE_CONTRACT_LEGACY_NOT_DELETABLE") {
+    return { status: 409, message: "Los contratos históricos se conservan para proteger su trazabilidad." };
+  }
+  if (code === "LEASE_CONTRACT_FINANCIAL_HISTORY_LOCKED") {
+    return { status: 409, message: "Este contrato ya tiene historial financiero y solo permite cambios administrativos." };
+  }
+  if (code === "LEASE_CONTRACT_NOT_DELETABLE") {
+    return { status: 409, message: "Este arrendamiento conserva pagos o movimientos financieros y no puede eliminarse." };
+  }
+  if (code === "LEASE_CONTRACT_DELETE_FAILED") {
+    return { status: 409, message: "No pudimos eliminar el arrendamiento de forma segura." };
+  }
+  if (code === "LEASE_CONTRACT_UPDATE_PAYLOAD_INVALID") {
+    return { status: 400, message: "Los datos para actualizar el arrendamiento no son válidos." };
+  }
+  return null;
+}
+
 async function buildLeaseQuotePreviewPayload(branchId: string, payload: unknown): Promise<LeaseQuotePreviewPayload> {
   const parsed = leaseQuoteRequestSchema.safeParse(payload);
   if (!parsed.success) {
@@ -2769,6 +2821,11 @@ if (!user) {
           branchId: actor.branchId,
           actorUserId: actor.id,
         });
+        if (shouldRunBackgroundJobs()) {
+          await syncLeaseInstallmentNotifications({
+            branchId: actor.branchId,
+          });
+        }
       }
 
       const summary = await getNotificationSummary({
@@ -6580,6 +6637,82 @@ if (!user) {
     } catch (err: any) {
       console.error("[LEASE_CONTRACTS] Error detail:", err.stack || err);
       return res.status(500).json({ message: "Error al obtener el detalle del arrendamiento" });
+    }
+  });
+
+  app.patch("/api/branch/lease-contracts/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const leaseContractId = getStringParam(req.params.id);
+    const hasFinancialTermChange = Object.keys(req.body ?? {}).some((field) => leaseContractFinancialRequestFields.has(field));
+
+    try {
+      if (hasFinancialTermChange) {
+        const preview = await buildLeaseQuotePreviewPayload(actor.branchId, req.body);
+        await storage.updateBranchLeaseContract({
+          branchId: actor.branchId,
+          actorUserId: actor.id,
+          leaseContractId,
+          clientUserId: preview.client.userId,
+          leasedItemDescription: preview.leasedItemDescription,
+          notes: preview.notes,
+          quote: preview.quote,
+        });
+      } else {
+        const parsed = leaseContractAdministrativeUpdateSchema.safeParse(req.body);
+        if (!parsed.success) {
+          return res.status(400).json({ message: parsed.error.issues[0]?.message || "Datos inválidos" });
+        }
+
+        await storage.updateBranchLeaseContract({
+          branchId: actor.branchId,
+          actorUserId: actor.id,
+          leaseContractId,
+          leasedItemDescription: parsed.data.leasedItemDescription,
+          notes: parsed.data.notes,
+        });
+      }
+
+      const leaseContract = await storage.getBranchLeaseContract(actor.branchId, leaseContractId);
+      if (!leaseContract) {
+        throw new Error("LEASE_CONTRACT_NOT_FOUND");
+      }
+      res.setHeader("Cache-Control", "no-store");
+      return res.json({ leaseContract });
+    } catch (err: any) {
+      if (err?.name === "ZodError") {
+        return res.status(400).json({ message: err.message || "Datos inválidos" });
+      }
+      const validationMessage = getLeaseQuoteValidationMessage(err);
+      if (validationMessage) {
+        return res.status(400).json({ message: validationMessage });
+      }
+      const mutationMessage = getLeaseContractMutationMessage(err);
+      if (mutationMessage) {
+        return res.status(mutationMessage.status).json({ message: mutationMessage.message });
+      }
+      console.error("[LEASE_CONTRACT_UPDATE]", err?.stack || err);
+      return res.status(500).json({ message: "No pudimos actualizar el arrendamiento." });
+    }
+  });
+
+  app.delete("/api/branch/lease-contracts/:id", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const leaseContractId = getStringParam(req.params.id);
+
+    try {
+      await storage.deleteBranchLeaseContract({
+        branchId: actor.branchId,
+        actorUserId: actor.id,
+        leaseContractId,
+      });
+      return res.json({ success: true });
+    } catch (err: any) {
+      const mutationMessage = getLeaseContractMutationMessage(err);
+      if (mutationMessage) {
+        return res.status(mutationMessage.status).json({ message: mutationMessage.message });
+      }
+      console.error("[LEASE_CONTRACT_DELETE]", err?.stack || err);
+      return res.status(500).json({ message: "No pudimos eliminar el arrendamiento." });
     }
   });
 
@@ -11582,6 +11715,21 @@ if (!user) {
         console.error("[RECONCILE] Background job error:", err.message);
       }
     }, 60_000);
+
+    const syncLeaseInstallmentAlerts = async () => {
+      try {
+        const branchIds = await storage.getAllActiveBranchIds();
+        for (const branchId of branchIds) {
+          await syncLeaseInstallmentNotifications({ branchId });
+        }
+      } catch (err: any) {
+        console.error("[LEASE_ALERTS] Background job error:", err?.stack || err);
+      }
+    };
+    void syncLeaseInstallmentAlerts();
+    setInterval(() => {
+      void syncLeaseInstallmentAlerts();
+    }, 6 * 60 * 60 * 1000);
   } else {
     console.log("[RECONCILE] Background reconcile disabled outside production");
   }

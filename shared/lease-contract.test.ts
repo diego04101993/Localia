@@ -7,6 +7,7 @@ import {
   calculateLeaseContractEndDate,
   calculateLeaseContractMetrics,
   calculateLeaseOperationalMembershipWindow,
+  getLeaseInstallmentAlertKind,
   getLeaseInstallmentPaymentOperationKey,
 } from "./lease-contract";
 import { calculateLeaseQuote } from "./lease-quote";
@@ -59,6 +60,13 @@ test("getLeaseInstallmentPaymentOperationKey is deterministic per installment", 
     getLeaseInstallmentPaymentOperationKey("installment-2"),
   );
   assert.throws(() => getLeaseInstallmentPaymentOperationKey("   "), /LEASE_INSTALLMENT_ID_REQUIRED/);
+});
+
+test("getLeaseInstallmentAlertKind emits each due-date state deterministically", () => {
+  assert.equal(getLeaseInstallmentAlertKind("2026-09-18", "2026-09-15"), "due_soon");
+  assert.equal(getLeaseInstallmentAlertKind("2026-09-18", "2026-09-18"), "due_today");
+  assert.equal(getLeaseInstallmentAlertKind("2026-09-18", "2026-09-19"), "overdue");
+  assert.equal(getLeaseInstallmentAlertKind("2026-09-20", "2026-09-15"), null);
 });
 
 test("calculateLeaseCoveredInstallmentWindow derives the last covered monthly period", () => {

@@ -7,6 +7,9 @@ export const leaseContractDerivedStatusValues = [
 
 export type LeaseContractDerivedStatus = (typeof leaseContractDerivedStatusValues)[number];
 
+export const leaseInstallmentAlertKindValues = ["due_soon", "due_today", "overdue"] as const;
+export type LeaseInstallmentAlertKind = (typeof leaseInstallmentAlertKindValues)[number];
+
 export type LeaseContractMetricsInput = {
   contractStartDate: string;
   contractEndDate: string;
@@ -128,6 +131,33 @@ export function getLeaseInstallmentPaymentOperationKey(installmentId: string): s
     throw new Error("LEASE_INSTALLMENT_ID_REQUIRED");
   }
   return `lease-installment-payment:${normalizedInstallmentId}`;
+}
+
+export function getLeaseInstallmentAlertKind(
+  dueDate: string,
+  today: string,
+): LeaseInstallmentAlertKind | null {
+  const due = parseLeaseContractIsoDate(dueDate);
+  const current = parseLeaseContractIsoDate(today);
+  if (!due || !current) {
+    throw new Error("INVALID_INSTALLMENT_DUE_DATE");
+  }
+
+  const daysUntilDue = Math.round((due.getTime() - current.getTime()) / (24 * 60 * 60 * 1000));
+  if (daysUntilDue === 3) return "due_soon";
+  if (daysUntilDue === 0) return "due_today";
+  if (daysUntilDue < 0) return "overdue";
+  return null;
+}
+
+export function addLeaseContractDays(date: string, days: number): string {
+  const parsed = parseLeaseContractIsoDate(date);
+  if (!parsed || !Number.isInteger(days)) {
+    throw new Error("INVALID_CONTRACT_DATE");
+  }
+
+  parsed.setUTCDate(parsed.getUTCDate() + days);
+  return formatLeaseContractIsoDate(parsed);
 }
 
 export function calculateLeaseCoveredInstallmentWindow(params: {

@@ -84,12 +84,25 @@ function getMxMonthKey() {
   return `${year}-${String(month).padStart(2, "0")}`;
 }
 
+function getMxIsoDate() {
+  const { year, month, day } = getMxDateParts();
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
 function formatCurrencyAmount(amount: number | null | undefined) {
   return new Intl.NumberFormat("es-MX", {
     style: "currency",
     currency: "MXN",
     maximumFractionDigits: 0,
   }).format(Number(amount ?? 0));
+}
+
+function formatCurrencyCents(amountCents: number) {
+  return new Intl.NumberFormat("es-MX", {
+    style: "currency",
+    currency: "MXN",
+    minimumFractionDigits: 2,
+  }).format(amountCents / 100);
 }
 
 function isBirthdayToday(birthDate: string | null | undefined) {
@@ -616,6 +629,76 @@ export async function syncCommercialNotifications(params: {
     return createdCount;
   } catch (err: any) {
     console.error("[NOTIFICATIONS] Error sincronizando alertas comerciales:", err?.stack || err);
+    return 0;
+  }
+}
+
+export async function syncLeaseInstallmentNotifications(params: {
+  branchId: string;
+  today?: string;
+  leaseInstallmentId?: string;
+  testRunId?: string;
+  throwOnError?: boolean;
+}) {
+  try {
+    const today = params.today ?? getMxIsoDate();
+    const candidates = await storage.getLeaseInstallmentAlertCandidates(
+      params.branchId,
+      today,
+      params.leaseInstallmentId,
+    );
+    let createdCount = 0;
+
+    for (const candidate of candidates) {
+      const urgency = candidate.alertKind === "due_soon"
+        ? "Vence en 3 días"
+        : candidate.alertKind === "due_today"
+        ? "Vence hoy"
+        : "Pago vencido";
+      const title = `${candidate.clientDisplayName} · ${candidate.leasedItemDescription} · Mensualidad ${candidate.installmentNumber}/${candidate.contractTermMonths}`;
+      const message = [
+        urgency,
+        formatNotificationDay(candidate.dueDate),
+        formatCurrencyCents(candidate.finalTotalCents),
+      ].filter(Boolean).join(" · ");
+      const referenceId = `lease_installment_alert:${candidate.leaseInstallmentId}:${candidate.alertKind}:${candidate.dueDate}`;
+      const created = await storage.emitLeaseInstallmentAlert({
+        branchId: candidate.branchId,
+        leaseContractId: candidate.leaseContractId,
+        leaseInstallmentId: candidate.leaseInstallmentId,
+        alertKind: candidate.alertKind,
+        dueDate: candidate.dueDate,
+        today,
+        title,
+        message,
+        notificationData: {
+          referenceId,
+          branchId: candidate.branchId,
+          leaseContractId: candidate.leaseContractId,
+          leaseInstallmentId: candidate.leaseInstallmentId,
+          clientUserId: candidate.clientUserId,
+          clientName: candidate.clientDisplayName,
+          leasedItemDescription: candidate.leasedItemDescription,
+          installmentNumber: candidate.installmentNumber,
+          termMonths: candidate.contractTermMonths,
+          dueDate: candidate.dueDate,
+          alertKind: candidate.alertKind,
+          finalTotalCents: candidate.finalTotalCents,
+          notificationAction: "open_lease",
+          ...(params.testRunId ? { leaseAlertTestRunId: params.testRunId } : {}),
+        },
+      });
+      if (created) {
+        createdCount += 1;
+      }
+    }
+
+    return createdCount;
+  } catch (err: any) {
+    console.error("[NOTIFICATIONS] Error sincronizando alertas de arrendamiento:", err?.stack || err);
+    if (params.throwOnError) {
+      throw err;
+    }
     return 0;
   }
 }

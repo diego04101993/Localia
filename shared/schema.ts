@@ -1862,6 +1862,33 @@ export const branchLeaseInstallments = pgTable("branch_lease_installments", {
   index("branch_lease_installments_branch_payment_source_due_idx").on(table.branchId, table.paymentSource, table.dueDate),
 ]);
 
+export const branchLeaseInstallmentAlertKindValues = ["due_soon", "due_today", "overdue"] as const;
+export type BranchLeaseInstallmentAlertKind = (typeof branchLeaseInstallmentAlertKindValues)[number];
+
+export const branchLeaseInstallmentAlerts = pgTable("branch_lease_installment_alerts", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 })
+    .notNull()
+    .references(() => branches.id),
+  leaseContractId: varchar("lease_contract_id", { length: 36 })
+    .notNull()
+    .references(() => branchLeaseContracts.id),
+  leaseInstallmentId: varchar("lease_installment_id", { length: 36 })
+    .notNull()
+    .references(() => branchLeaseInstallments.id),
+  alertKind: text("alert_kind").$type<BranchLeaseInstallmentAlertKind>().notNull(),
+  dueDate: date("due_date").notNull(),
+  notificationId: varchar("notification_id", { length: 36 }).references(() => notifications.id, { onDelete: "set null" }),
+  emittedAt: timestamp("emitted_at", { withTimezone: true }).defaultNow().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("branch_lease_installment_alerts_dedupe_unique")
+    .on(table.branchId, table.leaseInstallmentId, table.alertKind, table.dueDate),
+  index("branch_lease_installment_alerts_branch_due_idx").on(table.branchId, table.alertKind, table.dueDate),
+]);
+
 export const branchRecurringExpenses = pgTable("branch_recurring_expenses", {
   id: varchar("id", { length: 36 })
     .primaryKey()
@@ -2041,6 +2068,7 @@ export type InsertBranchChargeEvent = z.infer<typeof insertBranchChargeEventSche
 export type BranchLeaseContract = typeof branchLeaseContracts.$inferSelect;
 export type InsertBranchLeaseContract = z.infer<typeof insertBranchLeaseContractSchema>;
 export type BranchLeaseInstallment = typeof branchLeaseInstallments.$inferSelect;
+export type BranchLeaseInstallmentAlert = typeof branchLeaseInstallmentAlerts.$inferSelect;
 export type BranchRecurringExpense = typeof branchRecurringExpenses.$inferSelect;
 export type InsertBranchRecurringExpense = z.infer<typeof insertBranchRecurringExpenseSchema>;
 export type BranchStaffMember = typeof branchStaffMembers.$inferSelect;

@@ -3,13 +3,26 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Check,
   ChevronsUpDown,
+  CreditCard,
   Download,
   Eye,
   FileText,
   Loader2,
+  Pencil,
   Plus,
   Search,
+  Trash2,
 } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -132,9 +145,21 @@ type LeaseContractSummary = {
   hasOperationalCoverage: boolean;
   operationalCoverageCurrent: boolean;
   nextDueDate: string | null;
+  nextPendingInstallment: {
+    id: string;
+    installmentNumber: number;
+    dueDate: string;
+    subtotalBeforeTaxCents: number;
+    taxTotalCents: number;
+    finalTotalCents: number;
+  } | null;
   pendingContractBalanceCents: number;
   totalPaidInstallmentAmountCents: number | null;
   hasInstallmentSchedule: boolean;
+  hasFinancialHistory: boolean;
+  canEditFinancialTerms: boolean;
+  canEditAdministrativeDetails: boolean;
+  canDelete: boolean;
   completedAt: string | null;
   cancelledAt: string | null;
   createdAt: string;
@@ -193,6 +218,10 @@ type CreateLeaseContractResponse = {
   leaseContract: LeaseContractSummary | null;
 };
 
+type UpdateLeaseContractResponse = {
+  leaseContract: LeaseContractSummary;
+};
+
 type LeaseInstallmentPaymentResponse = {
   leaseContractId: string;
   installmentId: string;
@@ -205,7 +234,10 @@ type LeaseInstallmentPaymentResponse = {
 
 type LeasePaymentTarget = {
   contract: LeaseContractSummary;
-  installment: BranchLeaseInstallmentSummary;
+  installment: Pick<
+    BranchLeaseInstallmentSummary,
+    "id" | "installmentNumber" | "dueDate" | "subtotalBeforeTaxCents" | "taxTotalCents" | "finalTotalCents"
+  >;
 };
 
 type LeaseQuoteFormState = {
@@ -301,6 +333,19 @@ function getLeaseStatusBadgeVariant(status: LeaseContractStatus) {
   if (status === "COMPLETED") return "secondary" as const;
   if (status === "EXPIRED" || status === "CANCELLED") return "destructive" as const;
   return "default" as const;
+}
+
+function getLeaseDeletionProtectionMessage(contract: LeaseContractSummary) {
+  if (!contract.hasInstallmentSchedule) {
+    return "Contrato con historial legacy protegido.";
+  }
+  if (contract.hasFinancialHistory) {
+    return "Este arrendamiento tiene pagos registrados y no puede eliminarse. Debe cancelarse conservando su historial.";
+  }
+  if (contract.derivedStatus === "CANCELLED") {
+    return "Este arrendamiento está cancelado y conserva su historial.";
+  }
+  return null;
 }
 
 function getLeaseQuoteTaxModeLabel(taxMode: LeaseQuoteTaxMode, taxRate: number) {
@@ -429,6 +474,67 @@ function createInitialQuoteFormState(): LeaseQuoteFormState {
   };
 }
 
+function formatCentsForInput(amountCents: number | null | undefined) {
+  return amountCents == null ? "" : (amountCents / 100).toFixed(2);
+}
+
+function createQuoteFormStateFromContract(contract: LeaseContractSummary): LeaseQuoteFormState {
+  const termPreset = leaseQuoteTermPresets.includes(contract.contractTermMonths as (typeof leaseQuoteTermPresets)[number])
+    ? String(contract.contractTermMonths)
+    : "custom";
+  const taxMode = contract.taxModeSnapshot ?? "tax_exempt";
+
+  return {
+    clientUserId: contract.clientUserId ?? "",
+    leasedItemDescription: contract.leasedItemDescription,
+    startDate: contract.contractStartDate,
+    termPreset,
+    customTermMonths: termPreset === "custom" ? String(contract.contractTermMonths) : "",
+    capturedAssetValue: formatCentsForInput(contract.assetValueCents ?? contract.capturedPriceCents),
+    downPaymentEnabled: contract.downPaymentType !== null,
+    downPaymentType: contract.downPaymentType ?? leaseQuoteDownPaymentTypeValues[0],
+    downPaymentAmount: contract.downPaymentType === "amount"
+      ? formatCentsForInput(contract.downPaymentInputCents)
+      : "",
+    downPaymentRate: contract.downPaymentType === "percentage" && contract.downPaymentRate != null
+      ? String(contract.downPaymentRate)
+      : "",
+    surchargeRate: contract.financialSurchargeRate == null ? "0" : String(contract.financialSurchargeRate),
+    taxMode,
+    taxRate: taxMode === "tax_exempt" ? "0" : String(contract.taxRateSnapshot ?? 0),
+    notes: contract.notes ?? "",
+  };
+}
+
+function getLeaseCollectionBadge(contract: LeaseContractSummary) {
+  if (!contract.hasInstallmentSchedule || !contract.nextPendingInstallment) {
+    return null;
+  }
+
+  const today = getTodayMxIsoDate();
+  const dueDate = contract.nextPendingInstallment.dueDate;
+  const todayMs = Date.parse(`${today}T00:00:00Z`);
+  const dueDateMs = Date.parse(`${dueDate}T00:00:00Z`);
+  if (!Number.isFinite(todayMs) || !Number.isFinite(dueDateMs)) {
+    return null;
+  }
+
+  const daysUntilDue = Math.round((dueDateMs - todayMs) / 86_400_000);
+  if (daysUntilDue < 0) {
+    return { label: "Vencida", variant: "destructive" as const };
+  }
+  if (daysUntilDue === 0) {
+    return { label: "Vence hoy", variant: "destructive" as const };
+  }
+  if (daysUntilDue === 3) {
+    return { label: "Vence en 3 días", variant: "secondary" as const };
+  }
+  if (daysUntilDue > 0 && daysUntilDue < 3) {
+    return { label: "Vence pronto", variant: "secondary" as const };
+  }
+  return null;
+}
+
 function resolveTermMonths(form: LeaseQuoteFormState): number | null {
   if (form.termPreset !== "custom") {
     return parsePositiveInteger(form.termPreset);
@@ -518,11 +624,15 @@ function LeaseDetailDialog({
   open,
   onOpenChange,
   onRegisterPayment,
+  onEdit,
+  onDelete,
 }: {
   leaseContractId: string | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onRegisterPayment: (target: LeasePaymentTarget) => void;
+  onEdit: (contract: LeaseContractSummary) => void;
+  onDelete: (contract: LeaseContractSummary) => void;
 }) {
   const detailQueryKey = leaseContractId ? [`/api/branch/lease-contracts/${leaseContractId}`] : [];
   const { data, isLoading, error } = useQuery<LeaseContractSummary>({
@@ -534,25 +644,58 @@ function LeaseDetailDialog({
   const assetValueForDisplay = data?.assetValueCents ?? data?.capturedPriceCents ?? 0;
   const contractFinalForDisplay = data?.contractFinalTotalCents ?? null;
   const nextPendingInstallment = data?.derivedStatus !== "CANCELLED"
-    ? data?.installments?.find((installment) => installment.paymentSource === null) ?? null
+    ? data?.installments
+      ?.filter((installment) => installment.paymentSource === null)
+      .sort((left, right) => (
+        left.dueDate.localeCompare(right.dueDate)
+        || left.installmentNumber - right.installmentNumber
+      ))[0] ?? null
     : null;
+  const deletionProtectionMessage = data ? getLeaseDeletionProtectionMessage(data) : null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[100dvh] overflow-y-auto sm:max-w-3xl">
-        <DialogHeader>
-          <DialogTitle>Detalle del arrendamiento</DialogTitle>
-          <DialogDescription>
-            Consulta el contrato, el avance de mensualidades y el snapshot fiscal de cada pago.
-          </DialogDescription>
-        </DialogHeader>
+      <DialogContent className="max-h-[calc(100dvh-1rem)] overflow-y-auto sm:w-[calc(100vw-3rem)] sm:max-w-[min(96vw,1440px)]">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <DialogHeader>
+            <DialogTitle>Detalle del arrendamiento</DialogTitle>
+            <DialogDescription>
+              Consulta el contrato, el avance de mensualidades y el snapshot fiscal de cada pago.
+            </DialogDescription>
+          </DialogHeader>
+
+          {data ? (
+            <div className="flex flex-wrap gap-2">
+              {data.canEditAdministrativeDetails ? (
+                <Button variant="outline" size="sm" onClick={() => onEdit(data)}>
+                  <Pencil className="mr-2 h-4 w-4" />
+                  Editar
+                </Button>
+              ) : null}
+              {data.canDelete ? (
+                <Button variant="outline" size="sm" onClick={() => onDelete(data)}>
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Eliminar
+                </Button>
+              ) : deletionProtectionMessage ? (
+                <span title={deletionProtectionMessage} className="inline-flex cursor-not-allowed">
+                  <Button variant="outline" size="sm" disabled>
+                    <Trash2 className="mr-2 h-4 w-4" />
+                    Eliminar
+                  </Button>
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
 
         {data?.hasInstallmentSchedule && nextPendingInstallment ? (
-          <div className="flex justify-end">
+          <div className="flex flex-wrap justify-end gap-2">
             <Button
               onClick={() => onRegisterPayment({ contract: data, installment: nextPendingInstallment })}
               data-testid={`button-register-next-lease-payment-${nextPendingInstallment.id}`}
             >
+              <CreditCard className="mr-2 h-4 w-4" />
               Registrar próximo pago
             </Button>
           </div>
@@ -597,7 +740,7 @@ function LeaseDetailDialog({
               </div>
             </div>
 
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                 <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Cliente</p><p className="mt-1 font-medium break-words">{data.clientDisplayName}</p></CardContent></Card>
                 <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Bien</p><p className="mt-1 font-medium break-words">{data.leasedItemDescription}</p></CardContent></Card>
                 <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Inicio</p><p className="mt-1 font-medium">{formatDate(data.contractStartDate)}</p></CardContent></Card>
@@ -612,7 +755,7 @@ function LeaseDetailDialog({
                 <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Total mensual</p><p className="mt-1 font-medium">{breakdown?.totalValue ?? formatCurrencyMxFromCents(data.monthlyFinalTotalCents)}</p></CardContent></Card>
                 <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Total contractual</p><p className="mt-1 font-medium">{contractFinalForDisplay != null ? formatCurrencyMxFromCents(contractFinalForDisplay) : "—"}</p></CardContent></Card>
                 <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Total pagado</p><p className="mt-1 font-medium">{data.totalPaidInstallmentAmountCents == null ? "—" : formatCurrencyMxFromCents(data.totalPaidInstallmentAmountCents)}</p><p className="text-xs text-muted-foreground">Solo mensualidades</p></CardContent></Card>
-                <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Saldo pendiente</p><p className="mt-1 font-medium">{formatCurrencyMxFromCents(data.pendingContractBalanceCents)}</p></CardContent></Card>
+                <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Saldo pendiente</p><p className="mt-1 font-medium">{data.hasInstallmentSchedule ? formatCurrencyMxFromCents(data.pendingContractBalanceCents) : "—"}</p><p className="text-xs text-muted-foreground">Solo mensualidades</p></CardContent></Card>
                 <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Próximo vencimiento</p><p className="mt-1 font-medium">{formatDate(data.nextDueDate)}</p></CardContent></Card>
                 <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Pagadas antes de WebCool</p><p className="mt-1 font-medium">{data.preWebcoolPaidInstallments}</p></CardContent></Card>
                 <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Pagadas en WebCool</p><p className="mt-1 font-medium">{data.webcoolPaidInstallments}</p></CardContent></Card>
@@ -643,8 +786,8 @@ function LeaseDetailDialog({
                   <CardTitle className="text-base">Mensualidades del contrato</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3 p-4">
-                  <div className="max-h-[420px] overflow-auto rounded-xl border">
-                    <Table>
+                  <div className="max-h-[min(56dvh,680px)] overflow-x-auto overflow-y-auto rounded-xl border">
+                    <Table className="min-w-[860px] lg:min-w-0">
                       <TableHeader>
                         <TableRow>
                           <TableHead>#</TableHead>
@@ -653,6 +796,7 @@ function LeaseDetailDialog({
                           <TableHead className="text-right">Subtotal</TableHead>
                           <TableHead className="text-right">IVA</TableHead>
                           <TableHead className="text-right">Total</TableHead>
+                          <TableHead>Pago</TableHead>
                           <TableHead className="text-right">Acción</TableHead>
                         </TableRow>
                       </TableHeader>
@@ -661,17 +805,22 @@ function LeaseDetailDialog({
                           <TableRow key={installment.id}>
                             <TableCell>{installment.installmentNumber}/{data.contractTermMonths}</TableCell>
                             <TableCell>{formatDate(installment.dueDate)}</TableCell>
-                            <TableCell>
-                              <p>{getInstallmentStatusLabel(installment)}</p>
-                              {installment.paymentSource === "webcool" && installment.paidAt ? (
-                                <p className="mt-1 text-xs text-muted-foreground">
-                                  {formatStoredPaymentDate(installment.paidAt)} · {getPaymentMethodLabel(installment.paymentMethod)}
-                                </p>
-                              ) : null}
-                            </TableCell>
+                            <TableCell>{getInstallmentStatusLabel(installment)}</TableCell>
                             <TableCell className="text-right">{formatCurrencyMxFromCents(installment.subtotalBeforeTaxCents)}</TableCell>
                             <TableCell className="text-right">{formatCurrencyMxFromCents(installment.taxTotalCents)}</TableCell>
                             <TableCell className="text-right font-medium">{formatCurrencyMxFromCents(installment.finalTotalCents)}</TableCell>
+                            <TableCell>
+                              {installment.paymentSource ? (
+                                <div className="min-w-[130px] text-sm">
+                                  <p>{formatStoredPaymentDate(installment.paidAt)}</p>
+                                  <p className="text-xs text-muted-foreground">
+                                    {installment.paymentSource === "webcool"
+                                      ? getPaymentMethodLabel(installment.paymentMethod)
+                                      : "Registro externo"}
+                                  </p>
+                                </div>
+                              ) : <span className="text-xs text-muted-foreground">—</span>}
+                            </TableCell>
                             <TableCell className="text-right">
                               {installment.paymentSource === null && data.derivedStatus !== "CANCELLED" ? (
                                 <Button
@@ -856,11 +1005,13 @@ function LeasePaymentDialog({
 function LeaseQuoteDialog({
   open,
   onOpenChange,
-  onLeaseCreated,
+  editContract = null,
+  onLeaseSaved,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onLeaseCreated?: (leaseContractId: string) => void;
+  editContract?: LeaseContractSummary | null;
+  onLeaseSaved?: (leaseContractId: string) => void;
 }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -869,6 +1020,8 @@ function LeaseQuoteDialog({
   const [preview, setPreview] = useState<LeaseQuotePreviewResponse | null>(null);
   const [previewFingerprint, setPreviewFingerprint] = useState<string | null>(null);
   const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
+  const isEditMode = editContract !== null;
+  const isAdministrativeOnly = editContract !== null && !editContract.canEditFinancialTerms;
 
   const { data: clients = [], isLoading: isClientsLoading } = useQuery<BranchClientOption[]>({
     queryKey: LEASE_CLIENTS_QUERY_KEY,
@@ -876,6 +1029,15 @@ function LeaseQuoteDialog({
   });
 
   useEffect(() => {
+    if (open && editContract) {
+      setForm(createQuoteFormStateFromContract(editContract));
+      setPreview(null);
+      setPreviewFingerprint(null);
+      setClientPickerOpen(false);
+      setIsDownloadingPdf(false);
+      return;
+    }
+
     if (!open) {
       setForm(createInitialQuoteFormState());
       setPreview(null);
@@ -883,7 +1045,7 @@ function LeaseQuoteDialog({
       setClientPickerOpen(false);
       setIsDownloadingPdf(false);
     }
-  }, [open]);
+  }, [open, editContract?.id]);
 
   const selectedClient = useMemo(
     () => clients.find((client) => client.userId === form.clientUserId) ?? null,
@@ -919,6 +1081,16 @@ function LeaseQuoteDialog({
     mutationFn: async (request: LeaseQuoteRequest) => {
       const response = await apiRequest("POST", "/api/branch/lease-contracts", request);
       return response.json() as Promise<CreateLeaseContractResponse>;
+    },
+  });
+
+  const updateLeaseMutation = useMutation({
+    mutationFn: async (request: LeaseQuoteRequest | { leasedItemDescription: string; notes: string | null }) => {
+      if (!editContract) {
+        throw new Error("LEASE_CONTRACT_NOT_FOUND");
+      }
+      const response = await apiRequest("PATCH", `/api/branch/lease-contracts/${editContract.id}`, request);
+      return response.json() as Promise<UpdateLeaseContractResponse>;
     },
   });
 
@@ -992,11 +1164,55 @@ function LeaseQuoteDialog({
       });
 
       onOpenChange(false);
-      onLeaseCreated?.(created.leaseContractId);
+      onLeaseSaved?.(created.leaseContractId);
     } catch (error: any) {
       toast({
         title: "No pudimos crear el arrendamiento",
         description: error?.message || "Intenta nuevamente.",
+        variant: "destructive",
+      });
+    }
+  }
+
+  async function handleUpdateLeaseContract() {
+    if (!editContract) {
+      return;
+    }
+
+    const request = isAdministrativeOnly
+      ? {
+        leasedItemDescription: form.leasedItemDescription.trim(),
+        notes: form.notes.trim() || null,
+      }
+      : payload;
+    if (!request || (!isAdministrativeOnly && (!preview || previewIsStale))) {
+      toast({
+        title: "Actualiza la corrida",
+        description: "Genera una vista previa vigente antes de guardar los cambios financieros.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      const updated = await updateLeaseMutation.mutateAsync(request);
+      queryClient.setQueryData(
+        [`/api/branch/lease-contracts/${editContract.id}`],
+        updated.leaseContract,
+      );
+      await queryClient.invalidateQueries({ queryKey: LEASE_CONTRACTS_QUERY_KEY });
+      toast({
+        title: "Arrendamiento actualizado",
+        description: isAdministrativeOnly
+          ? "Se actualizaron únicamente los datos administrativos; el historial financiero permanece intacto."
+          : "La corrida sin pagos se regeneró correctamente.",
+      });
+      onOpenChange(false);
+      onLeaseSaved?.(editContract.id);
+    } catch (error: any) {
+      toast({
+        title: "No pudimos actualizar el arrendamiento",
+        description: error?.message || "Intenta nuevamente. No se modificó el contrato.",
         variant: "destructive",
       });
     }
@@ -1013,14 +1229,23 @@ function LeaseQuoteDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[100dvh] overflow-y-auto sm:max-w-5xl">
         <DialogHeader>
-          <DialogTitle>Nueva corrida y arrendamiento</DialogTitle>
+          <DialogTitle>{isEditMode ? "Editar arrendamiento" : "Nueva corrida y arrendamiento"}</DialogTitle>
           <DialogDescription>
-            Calcula la corrida, revisa el PDF y, si te convence, crea el contrato independiente con sus mensualidades reales. En esta fase el enganche queda pactado, pero no se registra como cobrado en Caja.
+            {isAdministrativeOnly
+              ? "Este contrato ya tiene historial financiero. Solo pueden cambiarse la descripción administrativa y las notas."
+              : isEditMode
+                ? "Puedes ajustar la corrida porque todavía no tiene pagos registrados. Al guardar, se regeneran únicamente sus mensualidades pendientes."
+                : "Calcula la corrida, revisa el PDF y, si te convence, crea el contrato independiente con sus mensualidades reales. En esta fase el enganche queda pactado, pero no se registra como cobrado en Caja."}
           </DialogDescription>
         </DialogHeader>
 
         <div className="grid gap-6 xl:grid-cols-[minmax(0,360px)_minmax(0,1fr)]">
           <div className="space-y-4">
+            {isAdministrativeOnly ? (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-100">
+                Cliente, fechas, plazo, valor, IVA, recargo y enganche están congelados para preservar los pagos registrados.
+              </div>
+            ) : null}
             <div className="space-y-2">
               <Label>Cliente</Label>
               <Popover open={clientPickerOpen} onOpenChange={setClientPickerOpen}>
@@ -1031,6 +1256,7 @@ function LeaseQuoteDialog({
                     role="combobox"
                     aria-expanded={clientPickerOpen}
                     className="w-full justify-between"
+                    disabled={isAdministrativeOnly}
                     data-testid="button-lease-quote-client"
                   >
                     <span className="truncate text-left">
@@ -1105,6 +1331,7 @@ function LeaseQuoteDialog({
                 type="date"
                 value={form.startDate}
                 onChange={(event) => setForm((current) => ({ ...current, startDate: event.target.value }))}
+                disabled={isAdministrativeOnly}
                 data-testid="input-lease-quote-start-date"
               />
             </div>
@@ -1115,6 +1342,7 @@ function LeaseQuoteDialog({
                 <Select
                   value={form.termPreset}
                   onValueChange={(value) => setForm((current) => ({ ...current, termPreset: value }))}
+                  disabled={isAdministrativeOnly}
                 >
                   <SelectTrigger data-testid="select-lease-quote-term">
                     <SelectValue placeholder="Selecciona el plazo" />
@@ -1139,6 +1367,7 @@ function LeaseQuoteDialog({
                     min={1}
                     value={form.customTermMonths}
                     onChange={(event) => setForm((current) => ({ ...current, customTermMonths: event.target.value }))}
+                    disabled={isAdministrativeOnly}
                     placeholder="Ej. 60"
                     data-testid="input-lease-quote-custom-term"
                   />
@@ -1156,6 +1385,7 @@ function LeaseQuoteDialog({
                 inputMode="decimal"
                 value={form.capturedAssetValue}
                 onChange={(event) => setForm((current) => ({ ...current, capturedAssetValue: event.target.value }))}
+                disabled={isAdministrativeOnly}
                 placeholder="100000.00"
                 data-testid="input-lease-quote-asset-value"
               />
@@ -1185,6 +1415,7 @@ function LeaseQuoteDialog({
                     downPaymentAmount: checked ? current.downPaymentAmount : "",
                     downPaymentRate: checked ? current.downPaymentRate : "",
                   }))}
+                  disabled={isAdministrativeOnly}
                   data-testid="switch-lease-quote-down-payment-enabled"
                 />
               </div>
@@ -1201,6 +1432,7 @@ function LeaseQuoteDialog({
                         downPaymentAmount: value === "amount" ? current.downPaymentAmount : "",
                         downPaymentRate: value === "percentage" ? current.downPaymentRate : "",
                       }))}
+                      disabled={isAdministrativeOnly}
                     >
                       <SelectTrigger data-testid="select-lease-quote-down-payment-type">
                         <SelectValue placeholder="Selecciona el tipo" />
@@ -1223,6 +1455,7 @@ function LeaseQuoteDialog({
                         inputMode="decimal"
                         value={form.downPaymentAmount}
                         onChange={(event) => setForm((current) => ({ ...current, downPaymentAmount: event.target.value }))}
+                        disabled={isAdministrativeOnly}
                         placeholder="100000.00"
                         data-testid="input-lease-quote-down-payment-amount"
                       />
@@ -1244,6 +1477,7 @@ function LeaseQuoteDialog({
                         inputMode="decimal"
                         value={form.downPaymentRate}
                         onChange={(event) => setForm((current) => ({ ...current, downPaymentRate: event.target.value }))}
+                        disabled={isAdministrativeOnly}
                         placeholder="20"
                         data-testid="input-lease-quote-down-payment-rate"
                       />
@@ -1266,6 +1500,7 @@ function LeaseQuoteDialog({
                 inputMode="decimal"
                 value={form.surchargeRate}
                 onChange={(event) => setForm((current) => ({ ...current, surchargeRate: event.target.value }))}
+                disabled={isAdministrativeOnly}
                 placeholder="20"
                 data-testid="input-lease-quote-surcharge-rate"
               />
@@ -1283,6 +1518,7 @@ function LeaseQuoteDialog({
                 <Select
                   value={form.taxMode}
                   onValueChange={(value) => setForm((current) => ({ ...current, taxMode: value as LeaseQuoteTaxMode }))}
+                  disabled={isAdministrativeOnly}
                 >
                   <SelectTrigger data-testid="select-lease-quote-tax-mode">
                     <SelectValue placeholder="Selecciona IVA" />
@@ -1305,7 +1541,7 @@ function LeaseQuoteDialog({
                   inputMode="decimal"
                   value={form.taxMode === "tax_exempt" ? "0" : form.taxRate}
                   onChange={(event) => setForm((current) => ({ ...current, taxRate: event.target.value }))}
-                  disabled={form.taxMode === "tax_exempt"}
+                  disabled={isAdministrativeOnly || form.taxMode === "tax_exempt"}
                   placeholder="16"
                   data-testid="input-lease-quote-tax-rate"
                 />
@@ -1330,7 +1566,15 @@ function LeaseQuoteDialog({
           </div>
 
           <div className="space-y-4">
-            {preview ? (
+            {isAdministrativeOnly ? (
+              <div className="rounded-2xl border border-dashed bg-muted/20 p-8 text-center">
+                <FileText className="mx-auto h-10 w-10 text-muted-foreground/40" />
+                <h4 className="mt-3 text-base font-semibold">Historial financiero protegido</h4>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  La corrida, sus mensualidades y sus pagos permanecen congelados. Puedes actualizar solo la descripción administrativa del bien y las notas.
+                </p>
+              </div>
+            ) : preview ? (
               <>
                 <div className="rounded-2xl border bg-card/70 p-4 shadow-sm">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -1462,39 +1706,49 @@ function LeaseQuoteDialog({
 
         <DialogFooter className="gap-2 sm:justify-between">
           <div className="text-xs text-muted-foreground">
-            Al crear el arrendamiento se guardan el contrato y sus mensualidades reales. El enganche sigue sin registrarse como cobrado en Caja en esta fase.
+            {isAdministrativeOnly
+              ? "Los cambios administrativos no modifican pagos, Caja ni mensualidades existentes."
+              : isEditMode
+                ? "Guardar reemplaza solo la corrida sin pagos dentro de una única transacción."
+                : "Al crear el arrendamiento se guardan el contrato y sus mensualidades reales. El enganche sigue sin registrarse como cobrado en Caja en esta fase."}
           </div>
           <div className="flex flex-col gap-2 sm:flex-row">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} data-testid="button-close-lease-quote">
               Cerrar
             </Button>
+            {!isAdministrativeOnly ? (
+              <>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleDownloadPdf}
+                  disabled={!preview || previewIsStale || isDownloadingPdf}
+                  data-testid="button-download-lease-quote-pdf"
+                >
+                  {isDownloadingPdf ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
+                  Descargar PDF
+                </Button>
+                <Button
+                  type="button"
+                  onClick={handleGeneratePreview}
+                  disabled={!payload || previewMutation.isPending}
+                  data-testid="button-generate-lease-quote-preview"
+                >
+                  {previewMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileText className="mr-2 h-4 w-4" />}
+                  {preview && previewIsStale ? "Actualizar vista previa" : "Generar vista previa"}
+                </Button>
+              </>
+            ) : null}
             <Button
               type="button"
-              variant="outline"
-              onClick={handleDownloadPdf}
-              disabled={!preview || previewIsStale || isDownloadingPdf}
-              data-testid="button-download-lease-quote-pdf"
+              onClick={isEditMode ? handleUpdateLeaseContract : handleCreateLeaseContract}
+              disabled={isEditMode
+                ? updateLeaseMutation.isPending || (!isAdministrativeOnly && (!preview || previewIsStale || previewMutation.isPending))
+                : !preview || previewIsStale || createLeaseMutation.isPending || previewMutation.isPending}
+              data-testid={isEditMode ? "button-save-lease-contract" : "button-create-lease-contract"}
             >
-              {isDownloadingPdf ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
-              Descargar PDF
-            </Button>
-            <Button
-              type="button"
-              onClick={handleGeneratePreview}
-              disabled={!payload || previewMutation.isPending}
-              data-testid="button-generate-lease-quote-preview"
-            >
-              {previewMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileText className="mr-2 h-4 w-4" />}
-              {preview && previewIsStale ? "Actualizar vista previa" : "Generar vista previa"}
-            </Button>
-            <Button
-              type="button"
-              onClick={handleCreateLeaseContract}
-              disabled={!preview || previewIsStale || createLeaseMutation.isPending || previewMutation.isPending}
-              data-testid="button-create-lease-contract"
-            >
-              {createLeaseMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
-              Crear arrendamiento
+              {(isEditMode ? updateLeaseMutation.isPending : createLeaseMutation.isPending) ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : isEditMode ? <Pencil className="mr-2 h-4 w-4" /> : <Plus className="mr-2 h-4 w-4" />}
+              {isEditMode ? "Guardar cambios" : "Crear arrendamiento"}
             </Button>
           </div>
         </DialogFooter>
@@ -1504,15 +1758,25 @@ function LeaseQuoteDialog({
 }
 
 export default function ArrendamientosTab({ focusRequest }: { focusRequest?: LeaseContractFocusRequest | null } = {}) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<LeaseFilter>("all");
   const [detailLeaseId, setDetailLeaseId] = useState<string | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [quoteDialogOpen, setQuoteDialogOpen] = useState(false);
+  const [editContract, setEditContract] = useState<LeaseContractSummary | null>(null);
+  const [deleteContract, setDeleteContract] = useState<LeaseContractSummary | null>(null);
   const [paymentTarget, setPaymentTarget] = useState<LeasePaymentTarget | null>(null);
 
   const { data: contracts = [], isLoading, error } = useQuery<LeaseContractSummary[]>({
     queryKey: LEASE_CONTRACTS_QUERY_KEY,
+  });
+
+  const deleteLeaseMutation = useMutation({
+    mutationFn: async (leaseContractId: string) => {
+      await apiRequest("DELETE", `/api/branch/lease-contracts/${leaseContractId}`);
+    },
   });
 
   useEffect(() => {
@@ -1569,6 +1833,51 @@ export default function ArrendamientosTab({ focusRequest }: { focusRequest?: Lea
   function openDetail(leaseContractId: string) {
     setDetailLeaseId(leaseContractId);
     setDetailOpen(true);
+  }
+
+  function openNextPayment(contract: LeaseContractSummary) {
+    if (!contract.hasInstallmentSchedule || !contract.nextPendingInstallment || contract.derivedStatus === "CANCELLED") {
+      return;
+    }
+    setPaymentTarget({
+      contract,
+      installment: contract.nextPendingInstallment,
+    });
+  }
+
+  function openEdit(contract: LeaseContractSummary) {
+    setDetailOpen(false);
+    setDetailLeaseId(null);
+    setEditContract(contract);
+  }
+
+  function openDelete(contract: LeaseContractSummary) {
+    setDetailOpen(false);
+    setDetailLeaseId(null);
+    setDeleteContract(contract);
+  }
+
+  async function handleDeleteLeaseContract() {
+    if (!deleteContract) {
+      return;
+    }
+
+    try {
+      await deleteLeaseMutation.mutateAsync(deleteContract.id);
+      await queryClient.invalidateQueries({ queryKey: LEASE_CONTRACTS_QUERY_KEY });
+      queryClient.removeQueries({ queryKey: [`/api/branch/lease-contracts/${deleteContract.id}`] });
+      toast({
+        title: "Arrendamiento eliminado",
+        description: "No tenía pagos ni movimientos financieros registrados.",
+      });
+      setDeleteContract(null);
+    } catch (error: any) {
+      toast({
+        title: "No pudimos eliminar el arrendamiento",
+        description: error?.message || "El contrato conserva su historial y no se eliminó nada.",
+        variant: "destructive",
+      });
+    }
   }
 
   return (
@@ -1675,14 +1984,6 @@ export default function ArrendamientosTab({ focusRequest }: { focusRequest?: Lea
 
                       <div className="grid grid-cols-2 gap-2 text-xs">
                         <div className="rounded-xl bg-muted/40 p-2">
-                          <p className="text-muted-foreground">Inicio</p>
-                          <p className="mt-1 font-medium">{formatDate(contract.contractStartDate)}</p>
-                        </div>
-                        <div className="rounded-xl bg-muted/40 p-2">
-                          <p className="text-muted-foreground">Fin</p>
-                          <p className="mt-1 font-medium">{formatDate(contract.contractEndDate)}</p>
-                        </div>
-                        <div className="rounded-xl bg-muted/40 p-2">
                           <p className="text-muted-foreground">Mensualidad</p>
                           <p className="mt-1 font-medium">{formatCurrencyMxFromCents(contract.monthlyFinalTotalCents)}</p>
                         </div>
@@ -1691,36 +1992,88 @@ export default function ArrendamientosTab({ focusRequest }: { focusRequest?: Lea
                           <p className="mt-1 font-medium">{contract.totalPaidInstallments}/{contract.contractTermMonths}</p>
                         </div>
                         <div className="rounded-xl bg-muted/40 p-2">
-                          <p className="text-muted-foreground">Pendientes</p>
-                          <p className="mt-1 font-medium">{contract.pendingInstallments}</p>
+                          <p className="text-muted-foreground">Total pagado</p>
+                          <p className="mt-1 font-medium">{contract.hasInstallmentSchedule ? formatCurrencyMxFromCents(contract.totalPaidInstallmentAmountCents) : "—"}</p>
                         </div>
                         <div className="rounded-xl bg-muted/40 p-2">
-                          <p className="text-muted-foreground">Meses restantes</p>
-                          <p className="mt-1 font-medium">{contract.remainingCalendarMonths}</p>
+                          <p className="text-muted-foreground">Saldo pendiente</p>
+                          <p className="mt-1 font-medium">{contract.hasInstallmentSchedule ? formatCurrencyMxFromCents(contract.pendingContractBalanceCents) : "—"}</p>
+                        </div>
+                        <div className="rounded-xl bg-muted/40 p-2">
+                          <p className="text-muted-foreground">Próximo pago</p>
+                          <p className="mt-1 font-medium">{contract.nextPendingInstallment ? `${formatDate(contract.nextPendingInstallment.dueDate)} · ${formatCurrencyMxFromCents(contract.nextPendingInstallment.finalTotalCents)}` : "—"}</p>
                         </div>
                       </div>
 
-                      <Button variant="outline" className="w-full" onClick={() => openDetail(contract.id)} data-testid={`button-open-lease-${contract.id}`}>
-                        <Eye className="mr-2 h-4 w-4" />
-                        Ver arrendamiento
-                      </Button>
+                      {getLeaseCollectionBadge(contract) ? (
+                        <Badge variant={getLeaseCollectionBadge(contract)!.variant} className="w-fit">
+                          {getLeaseCollectionBadge(contract)!.label}
+                        </Badge>
+                      ) : null}
+
+                      {contract.hasInstallmentSchedule ? (
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          <Button variant="outline" className="w-full" onClick={() => openDetail(contract.id)} data-testid={`button-open-lease-${contract.id}`}>
+                            <Eye className="mr-2 h-4 w-4" />
+                            Ver
+                          </Button>
+                          {contract.nextPendingInstallment && contract.derivedStatus !== "CANCELLED" ? (
+                            <Button className="w-full" onClick={() => openNextPayment(contract)} data-testid={`button-register-next-lease-payment-${contract.id}`}>
+                              <CreditCard className="mr-2 h-4 w-4" />
+                              Registrar pago
+                            </Button>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <div className="rounded-xl border bg-muted/20 p-3 text-xs text-muted-foreground">
+                          <p>Contrato con historial legacy protegido. Aún no se pueden registrar pagos desde esta tabla.</p>
+                          <Button variant="outline" size="sm" className="mt-3" onClick={() => openDetail(contract.id)} data-testid={`button-open-lease-${contract.id}`}>
+                            <Eye className="mr-2 h-4 w-4" />
+                            Ver
+                          </Button>
+                        </div>
+                      )}
+
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        {contract.canEditAdministrativeDetails ? (
+                          <Button variant="outline" size="sm" onClick={() => openEdit(contract)} data-testid={`button-edit-lease-${contract.id}`}>
+                            <Pencil className="mr-2 h-4 w-4" />
+                            Editar
+                          </Button>
+                        ) : null}
+                        {contract.canDelete ? (
+                          <Button variant="outline" size="sm" onClick={() => openDelete(contract)} data-testid={`button-delete-lease-${contract.id}`}>
+                            <Trash2 className="mr-2 h-4 w-4" />
+                            Eliminar
+                          </Button>
+                        ) : getLeaseDeletionProtectionMessage(contract) ? (
+                          <span title={getLeaseDeletionProtectionMessage(contract) ?? undefined} className="inline-flex cursor-not-allowed">
+                            <Button variant="outline" size="sm" disabled>
+                              <Trash2 className="mr-2 h-4 w-4" />
+                              Eliminar
+                            </Button>
+                          </span>
+                        ) : null}
+                      </div>
+                      {getLeaseDeletionProtectionMessage(contract) ? (
+                        <p className="text-xs text-muted-foreground">{getLeaseDeletionProtectionMessage(contract)}</p>
+                      ) : null}
                     </CardContent>
                   </Card>
                 ))}
               </div>
 
-              <div className="hidden md:block">
-                <Table>
+              <div className="hidden overflow-x-auto md:block">
+                <Table className="min-w-[1320px]">
                   <TableHeader>
                     <TableRow>
                       <TableHead>Cliente</TableHead>
                       <TableHead>Bien / equipo</TableHead>
-                      <TableHead>Inicio</TableHead>
-                      <TableHead>Fin contractual</TableHead>
-                      <TableHead>Mensualidad pactada</TableHead>
+                      <TableHead>Mensualidad</TableHead>
                       <TableHead>Pagadas X/Y</TableHead>
-                      <TableHead>Pendientes</TableHead>
-                      <TableHead>Meses restantes</TableHead>
+                      <TableHead>Total pagado</TableHead>
+                      <TableHead>Saldo pendiente</TableHead>
+                      <TableHead>Próximo pago</TableHead>
                       <TableHead>Estado</TableHead>
                       <TableHead className="text-right">Acciones</TableHead>
                     </TableRow>
@@ -1740,8 +2093,6 @@ export default function ArrendamientosTab({ focusRequest }: { focusRequest?: Lea
                             {contract.planName ? <p className="text-xs text-muted-foreground">{contract.planName}</p> : null}
                           </div>
                         </TableCell>
-                        <TableCell>{formatDate(contract.contractStartDate)}</TableCell>
-                        <TableCell>{formatDate(contract.contractEndDate)}</TableCell>
                         <TableCell>
                           <div>
                             <p className="font-medium">{formatCurrencyMxFromCents(contract.monthlyFinalTotalCents)}</p>
@@ -1751,18 +2102,65 @@ export default function ArrendamientosTab({ focusRequest }: { focusRequest?: Lea
                           </div>
                         </TableCell>
                         <TableCell>{contract.totalPaidInstallments}/{contract.contractTermMonths}</TableCell>
-                        <TableCell>{contract.pendingInstallments}</TableCell>
-                        <TableCell>{contract.remainingCalendarMonths}</TableCell>
+                        <TableCell>{contract.hasInstallmentSchedule ? formatCurrencyMxFromCents(contract.totalPaidInstallmentAmountCents) : "—"}</TableCell>
+                        <TableCell>{contract.hasInstallmentSchedule ? formatCurrencyMxFromCents(contract.pendingContractBalanceCents) : "—"}</TableCell>
                         <TableCell>
-                          <Badge variant={getLeaseStatusBadgeVariant(contract.derivedStatus)}>
-                            {getLeaseStatusLabel(contract.derivedStatus)}
-                          </Badge>
+                          {contract.nextPendingInstallment ? (
+                            <div className="min-w-[150px]">
+                              <p>{formatDate(contract.nextPendingInstallment.dueDate)}</p>
+                              <p className="text-xs text-muted-foreground">
+                                {contract.nextPendingInstallment.installmentNumber}/{contract.contractTermMonths} · {formatCurrencyMxFromCents(contract.nextPendingInstallment.finalTotalCents)}
+                              </p>
+                            </div>
+                          ) : <span className="text-muted-foreground">—</span>}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex min-w-[110px] flex-col items-start gap-1">
+                            <Badge variant={getLeaseStatusBadgeVariant(contract.derivedStatus)}>
+                              {getLeaseStatusLabel(contract.derivedStatus)}
+                            </Badge>
+                            {getLeaseCollectionBadge(contract) ? (
+                              <Badge variant={getLeaseCollectionBadge(contract)!.variant} className="text-[10px]">
+                                {getLeaseCollectionBadge(contract)!.label}
+                              </Badge>
+                            ) : null}
+                          </div>
                         </TableCell>
                         <TableCell className="text-right">
-                          <Button variant="outline" size="sm" onClick={() => openDetail(contract.id)} data-testid={`button-open-lease-${contract.id}`}>
-                            <Eye className="mr-2 h-4 w-4" />
-                            Ver
-                          </Button>
+                          <div className="flex min-w-[410px] flex-wrap justify-end gap-2">
+                            <Button variant="outline" size="sm" onClick={() => openDetail(contract.id)} data-testid={`button-open-lease-${contract.id}`}>
+                              <Eye className="mr-2 h-4 w-4" />
+                              Ver
+                            </Button>
+                            {contract.nextPendingInstallment && contract.derivedStatus !== "CANCELLED" ? (
+                              <Button size="sm" onClick={() => openNextPayment(contract)} data-testid={`button-register-next-lease-payment-${contract.id}`}>
+                                <CreditCard className="mr-2 h-4 w-4" />
+                                Registrar pago
+                              </Button>
+                            ) : null}
+                            {contract.canEditAdministrativeDetails ? (
+                              <Button variant="outline" size="sm" onClick={() => openEdit(contract)} data-testid={`button-edit-lease-${contract.id}`}>
+                                <Pencil className="mr-2 h-4 w-4" />
+                                Editar
+                              </Button>
+                            ) : null}
+                            {contract.canDelete ? (
+                              <Button variant="outline" size="sm" onClick={() => openDelete(contract)} data-testid={`button-delete-lease-${contract.id}`}>
+                                <Trash2 className="mr-2 h-4 w-4" />
+                                Eliminar
+                              </Button>
+                            ) : getLeaseDeletionProtectionMessage(contract) ? (
+                              <span title={getLeaseDeletionProtectionMessage(contract) ?? undefined} className="inline-flex cursor-not-allowed">
+                                <Button variant="outline" size="sm" disabled>
+                                  <Trash2 className="mr-2 h-4 w-4" />
+                                  Eliminar
+                                </Button>
+                              </span>
+                            ) : null}
+                            {!contract.hasInstallmentSchedule ? (
+                              <span className="self-center text-xs text-muted-foreground">Contrato con historial legacy protegido.</span>
+                            ) : null}
+                          </div>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -1781,7 +2179,22 @@ export default function ArrendamientosTab({ focusRequest }: { focusRequest?: Lea
       <LeaseQuoteDialog
         open={quoteDialogOpen}
         onOpenChange={setQuoteDialogOpen}
-        onLeaseCreated={(leaseContractId) => {
+        onLeaseSaved={(leaseContractId) => {
+          setDetailLeaseId(leaseContractId);
+          setDetailOpen(true);
+        }}
+      />
+
+      <LeaseQuoteDialog
+        open={!!editContract}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEditContract(null);
+          }
+        }}
+        editContract={editContract}
+        onLeaseSaved={(leaseContractId) => {
+          setEditContract(null);
           setDetailLeaseId(leaseContractId);
           setDetailOpen(true);
         }}
@@ -1797,6 +2210,8 @@ export default function ArrendamientosTab({ focusRequest }: { focusRequest?: Lea
           }
         }}
         onRegisterPayment={setPaymentTarget}
+        onEdit={openEdit}
+        onDelete={openDelete}
       />
 
       <LeasePaymentDialog
@@ -1807,6 +2222,38 @@ export default function ArrendamientosTab({ focusRequest }: { focusRequest?: Lea
           }
         }}
       />
+
+      <AlertDialog open={!!deleteContract} onOpenChange={(open) => {
+        if (!open) {
+          setDeleteContract(null);
+        }
+      }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Eliminar arrendamiento?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Este arrendamiento no tiene pagos registrados. Se eliminará definitivamente. No se eliminará el cliente.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {deleteContract ? (
+            <div className="rounded-xl border bg-muted/30 p-3 text-sm">
+              <p className="font-medium">{deleteContract.leasedItemDescription}</p>
+              <p className="mt-1 text-muted-foreground">{deleteContract.clientDisplayName}</p>
+            </div>
+          ) : null}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteLeaseMutation.isPending}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteLeaseContract}
+              disabled={deleteLeaseMutation.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleteLeaseMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Trash2 className="mr-2 h-4 w-4" />}
+              Eliminar definitivamente
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

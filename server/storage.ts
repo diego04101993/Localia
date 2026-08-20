@@ -148,11 +148,13 @@ import {
   branchChargeEvents,
   branchLeaseContracts,
   branchLeaseInstallments,
+  branchLeaseInstallmentAlerts,
   type BranchFinanceEntry,
   type InsertBranchFinanceEntry,
   type BranchChargeEvent,
   type BranchLeaseContract,
   type BranchLeaseInstallment,
+  type BranchLeaseInstallmentAlertKind,
   branchRecurringExpenses,
   type BranchRecurringExpense,
   type InsertBranchRecurringExpense,
@@ -182,10 +184,12 @@ import {
 import { normalizeSearchText } from "./search-utils";
 import { computeMembershipPlanChargeSnapshot } from "@shared/membership-plan-tax";
 import {
+  addLeaseContractDays,
   calculateLeaseContractAnniversaryDate,
   calculateLeaseContractEndDate,
   calculateLeaseContractMetrics,
   calculateLeaseOperationalMembershipWindow,
+  getLeaseInstallmentAlertKind,
   getLeaseInstallmentPaymentOperationKey,
 } from "@shared/lease-contract";
 import { type LeaseQuotePreview } from "@shared/lease-quote";
@@ -294,14 +298,28 @@ export interface BranchLeaseContractSummary {
   hasOperationalCoverage: boolean;
   operationalCoverageCurrent: boolean;
   nextDueDate: string | null;
+  nextPendingInstallment: BranchLeaseNextPendingInstallment | null;
   pendingContractBalanceCents: number;
   totalPaidInstallmentAmountCents: number | null;
   hasInstallmentSchedule: boolean;
+  hasFinancialHistory: boolean;
+  canEditFinancialTerms: boolean;
+  canEditAdministrativeDetails: boolean;
+  canDelete: boolean;
   completedAt: Date | null;
   cancelledAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
   installments?: BranchLeaseInstallmentSummary[];
+}
+
+export interface BranchLeaseNextPendingInstallment {
+  id: string;
+  installmentNumber: number;
+  dueDate: string;
+  subtotalBeforeTaxCents: number;
+  taxTotalCents: number;
+  finalTotalCents: number;
 }
 
 export interface BranchLeaseInstallmentSummary {
@@ -337,6 +355,20 @@ export interface BranchLeaseInstallmentPaymentResult {
   financeEntryId: string;
   idempotentReplay: boolean;
   completedAt: Date | null;
+}
+
+export interface LeaseInstallmentAlertCandidate {
+  branchId: string;
+  leaseContractId: string;
+  leaseInstallmentId: string;
+  installmentNumber: number;
+  contractTermMonths: number;
+  dueDate: string;
+  finalTotalCents: number;
+  clientUserId: string | null;
+  clientDisplayName: string;
+  leasedItemDescription: string;
+  alertKind: BranchLeaseInstallmentAlertKind;
 }
 
 const BRANCH_TIMEZONE = "America/Mexico_City";
@@ -2284,6 +2316,20 @@ export interface IStorage {
     notes?: string | null;
     quote: LeaseQuotePreview;
   }): Promise<CreateBranchLeaseContractResult>;
+  updateBranchLeaseContract(data: {
+    branchId: string;
+    actorUserId: string;
+    leaseContractId: string;
+    leasedItemDescription?: string;
+    notes?: string | null;
+    quote?: LeaseQuotePreview;
+    clientUserId?: string;
+  }): Promise<void>;
+  deleteBranchLeaseContract(data: {
+    branchId: string;
+    actorUserId: string;
+    leaseContractId: string;
+  }): Promise<void>;
   recordBranchLeaseInstallmentPayment(data: {
     branchId: string;
     actorUserId: string;
@@ -2293,6 +2339,22 @@ export interface IStorage {
     paidAt: string;
     notes?: string | null;
   }): Promise<BranchLeaseInstallmentPaymentResult>;
+  getLeaseInstallmentAlertCandidates(
+    branchId: string,
+    today: string,
+    leaseInstallmentId?: string,
+  ): Promise<LeaseInstallmentAlertCandidate[]>;
+  emitLeaseInstallmentAlert(data: {
+    branchId: string;
+    leaseContractId: string;
+    leaseInstallmentId: string;
+    alertKind: BranchLeaseInstallmentAlertKind;
+    dueDate: string;
+    today: string;
+    title: string;
+    message: string;
+    notificationData: Record<string, unknown>;
+  }): Promise<boolean>;
   assignPlanToMembership(
     membershipId: string,
     planId: string,
@@ -7001,6 +7063,96 @@ export class DatabaseStorage implements IStorage {
     return result;
   }
 
+  private async getNextPendingLeaseInstallmentsByContractIdsTx(
+    executor: any,
+    branchId: string,
+    leaseContractIds: string[],
+  ): Promise<Map<string, BranchLeaseNextPendingInstallment>> {
+    if (leaseContractIds.length === 0) {
+      return new Map();
+    }
+
+    const rows = await executor
+      .select({
+        id: branchLeaseInstallments.id,
+        leaseContractId: branchLeaseInstallments.leaseContractId,
+        installmentNumber: branchLeaseInstallments.installmentNumber,
+        dueDate: branchLeaseInstallments.dueDate,
+        subtotalBeforeTaxCents: branchLeaseInstallments.subtotalBeforeTaxCents,
+        taxTotalCents: branchLeaseInstallments.taxTotalCents,
+        finalTotalCents: branchLeaseInstallments.finalTotalCents,
+      })
+      .from(branchLeaseInstallments)
+      .where(and(
+        eq(branchLeaseInstallments.branchId, branchId),
+        inArray(branchLeaseInstallments.leaseContractId, leaseContractIds),
+        isNull(branchLeaseInstallments.paymentSource),
+      ))
+      .orderBy(
+        asc(branchLeaseInstallments.leaseContractId),
+        asc(branchLeaseInstallments.dueDate),
+        asc(branchLeaseInstallments.installmentNumber),
+      );
+
+    const result = new Map<string, BranchLeaseNextPendingInstallment>();
+    for (const row of rows) {
+      if (!result.has(row.leaseContractId)) {
+        result.set(row.leaseContractId, {
+          id: row.id,
+          installmentNumber: row.installmentNumber,
+          dueDate: row.dueDate,
+          subtotalBeforeTaxCents: row.subtotalBeforeTaxCents,
+          taxTotalCents: row.taxTotalCents,
+          finalTotalCents: row.finalTotalCents,
+        });
+      }
+    }
+
+    return result;
+  }
+
+  private async getLeaseFinancialHistoryByContractIdsTx(
+    executor: any,
+    branchId: string,
+    leaseContractIds: string[],
+  ): Promise<Map<string, boolean>> {
+    if (leaseContractIds.length === 0) {
+      return new Map();
+    }
+
+    const leaseContractIdFromFinanceMetadata = sql<string | null>`${branchFinanceEntries.metadata}->>'leaseContractId'`;
+    const [chargeRows, financeRows] = await Promise.all([
+      executor
+        .select({ leaseContractId: branchChargeEvents.leaseContractId })
+        .from(branchChargeEvents)
+        .where(and(
+          eq(branchChargeEvents.branchId, branchId),
+          inArray(branchChargeEvents.leaseContractId, leaseContractIds),
+        )),
+      executor
+        .select({ leaseContractId: leaseContractIdFromFinanceMetadata })
+        .from(branchFinanceEntries)
+        .where(and(
+          eq(branchFinanceEntries.branchId, branchId),
+          inArray(leaseContractIdFromFinanceMetadata, leaseContractIds),
+        )),
+    ]);
+
+    const result = new Map<string, boolean>();
+    for (const row of chargeRows as Array<{ leaseContractId: string | null }>) {
+      if (row.leaseContractId) {
+        result.set(row.leaseContractId, true);
+      }
+    }
+    for (const row of financeRows as Array<{ leaseContractId: string | null }>) {
+      if (row.leaseContractId) {
+        result.set(row.leaseContractId, true);
+      }
+    }
+
+    return result;
+  }
+
   private async getLeaseInstallmentsForContractTx(
     executor: any,
     branchId: string,
@@ -7063,6 +7215,8 @@ export class DatabaseStorage implements IStorage {
       pendingBalanceCents: number;
       totalPaidAmountCents: number;
     },
+    nextPendingInstallment?: BranchLeaseNextPendingInstallment | null,
+    hasRelatedFinancialHistory = false,
   ): BranchLeaseContractSummary {
     const hasInstallmentSchedule = (installmentAggregate?.totalCount ?? 0) > 0;
     const preWebcoolPaidInstallments = hasInstallmentSchedule
@@ -7099,6 +7253,13 @@ export class DatabaseStorage implements IStorage {
     const totalPaidInstallmentAmountCents = hasInstallmentSchedule
       ? installmentAggregate?.totalPaidAmountCents ?? 0
       : null;
+    const hasInstallmentFinancialHistory =
+      (installmentAggregate?.webcoolPaidCount ?? 0) > 0
+      || (installmentAggregate?.externalPaidCount ?? 0) > 0;
+    const hasFinancialHistory = hasInstallmentFinancialHistory || hasRelatedFinancialHistory;
+    const canEditFinancialTerms = hasInstallmentSchedule && !hasFinancialHistory && !contract.cancelledAt;
+    const canEditAdministrativeDetails = true;
+    const canDelete = hasInstallmentSchedule && !hasFinancialHistory && !contract.cancelledAt;
 
     return {
       id: contract.id,
@@ -7159,9 +7320,14 @@ export class DatabaseStorage implements IStorage {
       hasOperationalCoverage: operationalWindow.hasCoveredInstallments,
       operationalCoverageCurrent: operationalWindow.isCurrentlyCovered,
       nextDueDate,
+      nextPendingInstallment: hasInstallmentSchedule ? nextPendingInstallment ?? null : null,
       pendingContractBalanceCents,
       totalPaidInstallmentAmountCents,
       hasInstallmentSchedule,
+      hasFinancialHistory,
+      canEditFinancialTerms,
+      canEditAdministrativeDetails,
+      canDelete,
       completedAt: contract.completedAt ?? null,
       cancelledAt: contract.cancelledAt ?? null,
       createdAt: contract.createdAt,
@@ -7186,9 +7352,11 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(branchLeaseContracts.createdAt));
 
     const contractIds = contractRows.map((row) => row.contract.id);
-    const [legacyPaidCountByContractId, installmentAggregateByContractId] = await Promise.all([
+    const [legacyPaidCountByContractId, installmentAggregateByContractId, nextPendingInstallmentByContractId, financialHistoryByContractId] = await Promise.all([
       this.getLegacyLeaseChargeCountsByContractIdsTx(db, branchId, contractIds),
       this.getLeaseInstallmentAggregatesByContractIdsTx(db, branchId, contractIds),
+      this.getNextPendingLeaseInstallmentsByContractIdsTx(db, branchId, contractIds),
+      this.getLeaseFinancialHistoryByContractIdsTx(db, branchId, contractIds),
     ]);
 
     return contractRows.map((row) =>
@@ -7203,6 +7371,8 @@ export class DatabaseStorage implements IStorage {
         },
         row.planName ?? null,
         installmentAggregateByContractId.get(row.contract.id),
+        nextPendingInstallmentByContractId.get(row.contract.id) ?? null,
+        financialHistoryByContractId.get(row.contract.id) ?? false,
       ),
     );
   }
@@ -7230,9 +7400,11 @@ export class DatabaseStorage implements IStorage {
       return undefined;
     }
 
-    const [legacyPaidCountByContractId, installmentAggregateByContractId, installments] = await Promise.all([
+    const [legacyPaidCountByContractId, installmentAggregateByContractId, nextPendingInstallmentByContractId, financialHistoryByContractId, installments] = await Promise.all([
       this.getLegacyLeaseChargeCountsByContractIdsTx(db, branchId, [row.contract.id]),
       this.getLeaseInstallmentAggregatesByContractIdsTx(db, branchId, [row.contract.id]),
+      this.getNextPendingLeaseInstallmentsByContractIdsTx(db, branchId, [row.contract.id]),
+      this.getLeaseFinancialHistoryByContractIdsTx(db, branchId, [row.contract.id]),
       this.getLeaseInstallmentsForContractTx(db, branchId, row.contract.id),
     ]);
 
@@ -7247,6 +7419,8 @@ export class DatabaseStorage implements IStorage {
       },
       row.planName ?? null,
       installmentAggregateByContractId.get(row.contract.id),
+      nextPendingInstallmentByContractId.get(row.contract.id) ?? null,
+      financialHistoryByContractId.get(row.contract.id) ?? false,
     );
 
     return {
@@ -7699,6 +7873,447 @@ export class DatabaseStorage implements IStorage {
       return {
         leaseContractId: leaseContract.id,
       };
+    });
+  }
+
+  private async lockBranchLeaseInstallmentsForContractTx(
+    tx: any,
+    branchId: string,
+    leaseContractId: string,
+  ): Promise<BranchLeaseInstallment[]> {
+    await tx.execute(sql`
+      SELECT id
+      FROM branch_lease_installments
+      WHERE branch_id = ${branchId}
+        AND lease_contract_id = ${leaseContractId}
+      FOR UPDATE
+    `);
+
+    return tx
+      .select()
+      .from(branchLeaseInstallments)
+      .where(and(
+        eq(branchLeaseInstallments.branchId, branchId),
+        eq(branchLeaseInstallments.leaseContractId, leaseContractId),
+      ));
+  }
+
+  private async hasLeaseContractFinancialHistoryTx(
+    tx: any,
+    branchId: string,
+    leaseContractId: string,
+    installments: BranchLeaseInstallment[],
+  ): Promise<boolean> {
+    if (installments.some((installment) => (
+      installment.paymentSource !== null
+      || installment.financeEntryId !== null
+      || installment.chargeEventId !== null
+    ))) {
+      return true;
+    }
+
+    const leaseContractIdFromFinanceMetadata = sql<string | null>`${branchFinanceEntries.metadata}->>'leaseContractId'`;
+    const [[chargeEvent], [financeEntry]] = await Promise.all([
+      tx
+        .select({ id: branchChargeEvents.id })
+        .from(branchChargeEvents)
+        .where(and(
+          eq(branchChargeEvents.branchId, branchId),
+          eq(branchChargeEvents.leaseContractId, leaseContractId),
+        ))
+        .limit(1),
+      tx
+        .select({ id: branchFinanceEntries.id })
+        .from(branchFinanceEntries)
+        .where(and(
+          eq(branchFinanceEntries.branchId, branchId),
+          eq(leaseContractIdFromFinanceMetadata, leaseContractId),
+        ))
+        .limit(1),
+    ]);
+
+    return Boolean(chargeEvent || financeEntry);
+  }
+
+  // A regenerated or deleted pre-payment schedule must not retain alerts for old due dates.
+  private async clearLeaseInstallmentAlertsTx(
+    tx: any,
+    branchId: string,
+    leaseContractId: string,
+  ): Promise<void> {
+    const alerts = await tx
+      .select({ notificationId: branchLeaseInstallmentAlerts.notificationId })
+      .from(branchLeaseInstallmentAlerts)
+      .where(and(
+        eq(branchLeaseInstallmentAlerts.branchId, branchId),
+        eq(branchLeaseInstallmentAlerts.leaseContractId, leaseContractId),
+      ));
+    const notificationIds = alerts
+      .map((alert: { notificationId: string | null }) => alert.notificationId)
+      .filter((notificationId: string | null): notificationId is string => typeof notificationId === "string");
+
+    if (notificationIds.length > 0) {
+      await tx
+        .delete(notifications)
+        .where(and(
+          eq(notifications.branchId, branchId),
+          inArray(notifications.id, notificationIds),
+        ));
+    }
+
+    await tx
+      .delete(branchLeaseInstallmentAlerts)
+      .where(and(
+        eq(branchLeaseInstallmentAlerts.branchId, branchId),
+        eq(branchLeaseInstallmentAlerts.leaseContractId, leaseContractId),
+      ));
+  }
+
+  async updateBranchLeaseContract(data: {
+    branchId: string;
+    actorUserId: string;
+    leaseContractId: string;
+    leasedItemDescription?: string;
+    notes?: string | null;
+    quote?: LeaseQuotePreview;
+    clientUserId?: string;
+  }): Promise<void> {
+    return db.transaction(async (tx) => {
+      const leaseContract = await this.lockBranchLeaseContractTx(tx, data.branchId, data.leaseContractId);
+      if (!leaseContract) {
+        throw new Error("LEASE_CONTRACT_NOT_FOUND");
+      }
+
+      const installments = await this.lockBranchLeaseInstallmentsForContractTx(tx, data.branchId, leaseContract.id);
+      const hasFinancialHistory = await this.hasLeaseContractFinancialHistoryTx(
+        tx,
+        data.branchId,
+        leaseContract.id,
+        installments,
+      );
+
+      if (!data.quote) {
+        const changes: Record<string, unknown> = { updatedAt: new Date() };
+        if (data.leasedItemDescription !== undefined) {
+          changes.leasedItemDescription = data.leasedItemDescription;
+        }
+        if (data.notes !== undefined) {
+          changes.notes = data.notes;
+        }
+
+        await tx
+          .update(branchLeaseContracts)
+          .set(changes)
+          .where(and(
+            eq(branchLeaseContracts.id, leaseContract.id),
+            eq(branchLeaseContracts.branchId, data.branchId),
+          ));
+
+        await this.createAuditLogTx(tx, {
+          actorUserId: data.actorUserId,
+          action: "UPDATE_LEASE_CONTRACT_ADMIN",
+          branchId: data.branchId,
+          metadata: {
+            leaseContractId: leaseContract.id,
+            hasFinancialHistory,
+            updatedFields: Object.keys(changes).filter((field) => field !== "updatedAt"),
+          },
+        });
+        return;
+      }
+
+      if (leaseContract.cancelledAt) {
+        throw new Error("LEASE_CONTRACT_CANCELLED");
+      }
+      if (installments.length === 0) {
+        throw new Error("LEASE_CONTRACT_LEGACY_NOT_EDITABLE");
+      }
+      if (hasFinancialHistory) {
+        throw new Error("LEASE_CONTRACT_FINANCIAL_HISTORY_LOCKED");
+      }
+      if (!data.clientUserId || !data.leasedItemDescription) {
+        throw new Error("LEASE_CONTRACT_UPDATE_PAYLOAD_INVALID");
+      }
+
+      const [branchMembership] = await tx
+        .select({ id: memberships.id })
+        .from(memberships)
+        .where(and(
+          eq(memberships.branchId, data.branchId),
+          eq(memberships.userId, data.clientUserId),
+        ))
+        .limit(1);
+      if (!branchMembership) {
+        throw new Error("CLIENT_NOT_FOUND_IN_BRANCH");
+      }
+
+      const firstInstallment = data.quote.installmentRows[0];
+      if (!firstInstallment) {
+        throw new Error("LEASE_INSTALLMENTS_REQUIRED");
+      }
+
+      await this.clearLeaseInstallmentAlertsTx(tx, data.branchId, leaseContract.id);
+
+      await tx
+        .delete(branchLeaseInstallments)
+        .where(and(
+          eq(branchLeaseInstallments.branchId, data.branchId),
+          eq(branchLeaseInstallments.leaseContractId, leaseContract.id),
+          isNull(branchLeaseInstallments.paymentSource),
+        ));
+
+      await tx
+        .update(branchLeaseContracts)
+        .set({
+          clientUserId: data.clientUserId,
+          contractStartDate: data.quote.startDate,
+          contractEndDate: data.quote.contractEndDate,
+          contractTermMonths: data.quote.termMonths,
+          leasedItemDescription: data.leasedItemDescription,
+          notes: data.notes ?? null,
+          capturedPriceCents: data.quote.capturedAssetValueCents,
+          assetValueCents: data.quote.capturedAssetValueCents,
+          assetSubtotalBeforeTaxCents: data.quote.assetSubtotalBeforeTaxCents,
+          assetTaxableSubtotalCents: data.quote.assetTaxableSubtotalCents,
+          assetTaxTotalCents: data.quote.assetTaxCents,
+          assetFinalTotalCents: data.quote.assetFinalTotalCents,
+          downPaymentType: data.quote.downPaymentType,
+          downPaymentRate: data.quote.downPaymentRate == null ? null : data.quote.downPaymentRate.toFixed(4),
+          downPaymentInputCents: data.quote.downPaymentInputCents,
+          downPaymentSubtotalBeforeTaxCents: data.quote.downPaymentSubtotalBeforeTaxCents,
+          downPaymentTaxableSubtotalCents: data.quote.downPaymentTaxableSubtotalCents,
+          downPaymentTaxTotalCents: data.quote.downPaymentTaxCents,
+          downPaymentFinalTotalCents: data.quote.downPaymentFinalTotalCents,
+          financedPrincipalBeforeTaxCents: data.quote.financedPrincipalBeforeTaxCents,
+          financialSurchargeRate: data.quote.surchargeRate.toFixed(4),
+          financialSurchargeTotalCents: data.quote.surchargeTotalCents,
+          financedSubtotalBeforeTaxCents: data.quote.financedSubtotalBeforeTaxCents,
+          financedTaxableSubtotalCents: data.quote.financedTaxableSubtotalCents,
+          financedTaxTotalCents: data.quote.contractTaxTotalCents,
+          financedFinalTotalCents: data.quote.financedFinalTotalCents,
+          contractFinalTotalCents: data.quote.contractFinalTotalCents,
+          taxModeSnapshot: data.quote.taxMode,
+          taxRateSnapshot: data.quote.taxRate.toFixed(4),
+          monthlySubtotalBeforeTaxCents: firstInstallment.subtotalBeforeTaxCents,
+          monthlyTaxableSubtotalCents: firstInstallment.taxableSubtotalCents,
+          monthlyTaxTotalCents: firstInstallment.taxTotalCents,
+          monthlyFinalTotalCents: firstInstallment.finalTotalCents,
+          completedAt: null,
+          updatedAt: new Date(),
+        } as any)
+        .where(and(
+          eq(branchLeaseContracts.id, leaseContract.id),
+          eq(branchLeaseContracts.branchId, data.branchId),
+        ));
+
+      await this.createLeaseInstallmentsTx(tx, {
+        branchId: data.branchId,
+        leaseContractId: leaseContract.id,
+        rows: data.quote.installmentRows,
+      });
+
+      await this.createAuditLogTx(tx, {
+        actorUserId: data.actorUserId,
+        action: "UPDATE_LEASE_CONTRACT",
+        branchId: data.branchId,
+        metadata: {
+          leaseContractId: leaseContract.id,
+          clientUserId: data.clientUserId,
+          contractStartDate: data.quote.startDate,
+          contractEndDate: data.quote.contractEndDate,
+          contractTermMonths: data.quote.termMonths,
+          installmentCount: data.quote.installmentRows.length,
+        },
+      });
+    });
+  }
+
+  async deleteBranchLeaseContract(data: {
+    branchId: string;
+    actorUserId: string;
+    leaseContractId: string;
+  }): Promise<void> {
+    return db.transaction(async (tx) => {
+      const leaseContract = await this.lockBranchLeaseContractTx(tx, data.branchId, data.leaseContractId);
+      if (!leaseContract) {
+        throw new Error("LEASE_CONTRACT_NOT_FOUND");
+      }
+      if (leaseContract.cancelledAt) {
+        throw new Error("LEASE_CONTRACT_NOT_DELETABLE");
+      }
+
+      const installments = await this.lockBranchLeaseInstallmentsForContractTx(tx, data.branchId, leaseContract.id);
+      if (installments.length === 0) {
+        throw new Error("LEASE_CONTRACT_LEGACY_NOT_DELETABLE");
+      }
+      if (await this.hasLeaseContractFinancialHistoryTx(tx, data.branchId, leaseContract.id, installments)) {
+        throw new Error("LEASE_CONTRACT_NOT_DELETABLE");
+      }
+
+      await this.createAuditLogTx(tx, {
+        actorUserId: data.actorUserId,
+        action: "DELETE_LEASE_CONTRACT",
+        branchId: data.branchId,
+        metadata: {
+          leaseContractId: leaseContract.id,
+          clientUserId: leaseContract.clientUserId ?? null,
+          installmentCount: installments.length,
+        },
+      });
+
+      await this.clearLeaseInstallmentAlertsTx(tx, data.branchId, leaseContract.id);
+      await tx
+        .delete(branchLeaseInstallments)
+        .where(and(
+          eq(branchLeaseInstallments.branchId, data.branchId),
+          eq(branchLeaseInstallments.leaseContractId, leaseContract.id),
+          isNull(branchLeaseInstallments.paymentSource),
+        ));
+      const [deleted] = await tx
+        .delete(branchLeaseContracts)
+        .where(and(
+          eq(branchLeaseContracts.id, leaseContract.id),
+          eq(branchLeaseContracts.branchId, data.branchId),
+        ))
+        .returning({ id: branchLeaseContracts.id });
+      if (!deleted) {
+        throw new Error("LEASE_CONTRACT_DELETE_FAILED");
+      }
+    });
+  }
+
+  async getLeaseInstallmentAlertCandidates(
+    branchId: string,
+    today: string,
+    leaseInstallmentId?: string,
+  ): Promise<LeaseInstallmentAlertCandidate[]> {
+    const dueHorizon = addLeaseContractDays(today, 3);
+    const rows = await db
+      .select({
+        installment: branchLeaseInstallments,
+        contract: branchLeaseContracts,
+        clientName: users.name,
+        clientLastName: users.lastName,
+        clientEmail: users.email,
+      })
+      .from(branchLeaseInstallments)
+      .innerJoin(branchLeaseContracts, and(
+        eq(branchLeaseInstallments.leaseContractId, branchLeaseContracts.id),
+        eq(branchLeaseInstallments.branchId, branchLeaseContracts.branchId),
+      ))
+      .leftJoin(users, eq(branchLeaseContracts.clientUserId, users.id))
+      .where(and(
+        eq(branchLeaseInstallments.branchId, branchId),
+        isNull(branchLeaseInstallments.paymentSource),
+        isNull(branchLeaseContracts.cancelledAt),
+        isNull(branchLeaseContracts.completedAt),
+        lte(branchLeaseInstallments.dueDate, dueHorizon),
+        ...(leaseInstallmentId
+          ? [eq(branchLeaseInstallments.id, leaseInstallmentId)]
+          : []),
+      ))
+      .orderBy(asc(branchLeaseInstallments.dueDate), asc(branchLeaseInstallments.installmentNumber));
+
+    return rows.flatMap((row) => {
+      const alertKind = getLeaseInstallmentAlertKind(row.installment.dueDate, today);
+      if (!alertKind) {
+        return [];
+      }
+
+      const clientDisplayName = [row.clientName, row.clientLastName]
+        .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        .join(" ")
+        .trim() || row.clientEmail || "Cliente";
+      return [{
+        branchId,
+        leaseContractId: row.contract.id,
+        leaseInstallmentId: row.installment.id,
+        installmentNumber: row.installment.installmentNumber,
+        contractTermMonths: row.contract.contractTermMonths,
+        dueDate: row.installment.dueDate,
+        finalTotalCents: row.installment.finalTotalCents,
+        clientUserId: row.contract.clientUserId ?? null,
+        clientDisplayName,
+        leasedItemDescription: row.contract.leasedItemDescription,
+        alertKind,
+      }];
+    });
+  }
+
+  async emitLeaseInstallmentAlert(data: {
+    branchId: string;
+    leaseContractId: string;
+    leaseInstallmentId: string;
+    alertKind: BranchLeaseInstallmentAlertKind;
+    dueDate: string;
+    today: string;
+    title: string;
+    message: string;
+    notificationData: Record<string, unknown>;
+  }): Promise<boolean> {
+    return db.transaction(async (tx) => {
+      const leaseContract = await this.lockBranchLeaseContractTx(tx, data.branchId, data.leaseContractId);
+      if (!leaseContract || leaseContract.cancelledAt || leaseContract.completedAt) {
+        return false;
+      }
+      const installment = await this.lockBranchLeaseInstallmentTx(
+        tx,
+        data.branchId,
+        leaseContract.id,
+        data.leaseInstallmentId,
+      );
+      if (!installment || installment.paymentSource !== null || installment.dueDate !== data.dueDate) {
+        return false;
+      }
+      if (getLeaseInstallmentAlertKind(installment.dueDate, data.today) !== data.alertKind) {
+        return false;
+      }
+
+      const [alert] = await tx
+        .insert(branchLeaseInstallmentAlerts)
+        .values({
+          branchId: data.branchId,
+          leaseContractId: leaseContract.id,
+          leaseInstallmentId: installment.id,
+          alertKind: data.alertKind,
+          dueDate: installment.dueDate,
+        })
+        .onConflictDoNothing({
+          target: [
+            branchLeaseInstallmentAlerts.branchId,
+            branchLeaseInstallmentAlerts.leaseInstallmentId,
+            branchLeaseInstallmentAlerts.alertKind,
+            branchLeaseInstallmentAlerts.dueDate,
+          ],
+        })
+        .returning({ id: branchLeaseInstallmentAlerts.id });
+      if (!alert) {
+        return false;
+      }
+
+      const [notification] = await tx
+        .insert(notifications)
+        .values({
+          branchId: data.branchId,
+          recipientUserId: null,
+          roleTarget: "BRANCH_ADMIN",
+          type: `lease_installment_${data.alertKind}`,
+          title: data.title,
+          message: data.message,
+          data: data.notificationData,
+          isRead: false,
+          readAt: null,
+        })
+        .returning({ id: notifications.id });
+      if (!notification) {
+        throw new Error("LEASE_INSTALLMENT_ALERT_NOTIFICATION_CREATE_FAILED");
+      }
+
+      await tx
+        .update(branchLeaseInstallmentAlerts)
+        .set({ notificationId: notification.id })
+        .where(eq(branchLeaseInstallmentAlerts.id, alert.id));
+      return true;
     });
   }
 
