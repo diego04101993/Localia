@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { eq, and, sql, or, ne, isNull, count, desc, asc, gte, inArray, lte } from "drizzle-orm";
+import { eq, and, sql, or, ne, isNull, count, desc, asc, gte, inArray, lte, notInArray } from "drizzle-orm";
 import { db } from "./db";
 import {
   type BranchClientAccessEvidence,
@@ -193,6 +193,10 @@ import {
   getLeaseInstallmentPaymentOperationKey,
 } from "@shared/lease-contract";
 import { type LeaseQuotePreview } from "@shared/lease-quote";
+import {
+  isProtectedFinanceSource,
+  protectedFinanceSourceValues,
+} from "@shared/finance-source";
 
 const BRANCH_CLIENT_PASSWORD_RESET_COOLDOWN_MS = 60_000;
 
@@ -17070,6 +17074,8 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateBranchFinanceEntry(branchId: string, entryId: string, data: Partial<InsertBranchFinanceEntry>): Promise<BranchFinanceEntryRow | undefined> {
+    if (isProtectedFinanceSource(data.source)) return undefined;
+
     const updateData: Record<string, any> = {
       updatedAt: new Date(),
     };
@@ -17097,6 +17103,10 @@ export class DatabaseStorage implements IStorage {
         eq(branchFinanceEntries.id, entryId),
         eq(branchFinanceEntries.branchId, branchId),
         isNull(branchFinanceEntries.deletedAt),
+        or(
+          isNull(branchFinanceEntries.source),
+          notInArray(branchFinanceEntries.source, [...protectedFinanceSourceValues]),
+        ),
       ))
       .returning({
         id: branchFinanceEntries.id,
@@ -17117,6 +17127,10 @@ export class DatabaseStorage implements IStorage {
         eq(branchFinanceEntries.id, entryId),
         eq(branchFinanceEntries.branchId, branchId),
         isNull(branchFinanceEntries.deletedAt),
+        or(
+          isNull(branchFinanceEntries.source),
+          notInArray(branchFinanceEntries.source, [...protectedFinanceSourceValues]),
+        ),
       ))
       .returning({
         id: branchFinanceEntries.id,

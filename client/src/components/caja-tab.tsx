@@ -10,6 +10,7 @@ import {
   Download,
   FileText,
   Loader2,
+  LockKeyhole,
   Pencil,
   PiggyBank,
   Plus,
@@ -27,6 +28,7 @@ import {
   branchRecurringExpenseCategoryValues,
   branchRecurringExpenseFrequencyValues,
 } from "@shared/schema";
+import { isProtectedFinanceSource } from "@shared/finance-source";
 import { apiRequest } from "@/lib/queryClient";
 import { downloadAuthenticatedFile } from "@/lib/download-file";
 import {
@@ -348,12 +350,13 @@ const SOURCE_LABELS: Record<string, string> = {
   fixed_expense: "Gasto fijo",
   membership_assign: "Membresía",
   membership_renew: "Renovación",
+  service_sale: "Cobro rápido",
   staff_class_log: "Trabajo registrado",
   commercial_sale: "Venta comercial",
+  commercial_sale_cancellation: "Cancelación de venta",
   sales_commission_payment: "Pago de comisión",
+  lease_installment_payment: "Mensualidad de arrendamiento",
 };
-
-const READ_ONLY_FINANCE_SOURCES = new Set(["commercial_sale", "sales_commission_payment"]);
 
 const ALL_CATEGORY_OPTIONS = Array.from(
   new Set([...branchFinanceIncomeCategories, ...branchFinanceExpenseCategories]),
@@ -580,10 +583,6 @@ function getFinanceSourceLabel(source: string | null) {
   return SOURCE_LABELS[source] || source;
 }
 
-function isReadOnlyFinanceSource(source: string | null) {
-  return !!source && READ_ONLY_FINANCE_SOURCES.has(source);
-}
-
 function getFinanceEntryContextLine(entry: BranchFinanceEntry) {
   if (entry.source === "commercial_sale") {
     const folio = entry.metadata?.folio ? `Folio ${entry.metadata.folio}` : null;
@@ -605,6 +604,11 @@ function getSaleEntryTargetId(entry: BranchFinanceEntry) {
       ? entry.metadata.saleId.trim()
       : null;
   return metadataSaleId || entry.sourceId || null;
+}
+
+function canOpenFinanceEntryOrigin(entry: BranchFinanceEntry) {
+  return !!getSaleEntryTargetId(entry)
+    || (entry.source === "sales_commission_payment" && !!entry.sourceId);
 }
 
 function getFinanceEntryPrimaryConcept(entry: BranchFinanceEntry) {
@@ -1133,7 +1137,7 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
   }
 
   function handleEditEntry(entry: BranchFinanceEntry) {
-    if (isReadOnlyFinanceSource(entry.source)) {
+    if (isProtectedFinanceSource(entry.source)) {
       toast({
         title: "Movimiento automático",
         description: "Este movimiento se administra desde su origen y no puede editarse manualmente.",
@@ -2442,6 +2446,16 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
                         <Badge variant="outline" className="text-[10px]">
                           {getFinanceSourceLabel(entry.source)}
                         </Badge>
+                        {isProtectedFinanceSource(entry.source) ? (
+                          <Badge
+                            variant="secondary"
+                            className="gap-1 text-[10px]"
+                            title="Este movimiento fue generado automáticamente y debe corregirse desde su operación de origen."
+                          >
+                            <LockKeyhole className="h-3 w-3" />
+                            Automático
+                          </Badge>
+                        ) : null}
                       </div>
                       <div className="mt-2 space-y-1 text-sm">
                         <p className="break-words text-muted-foreground">
@@ -2454,20 +2468,21 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
                         {entry.notes ? <p className="break-words text-xs text-muted-foreground">{entry.notes}</p> : null}
                       </div>
                       <div className="mt-3 flex flex-col gap-2">
-                        {isReadOnlyFinanceSource(entry.source) ? (
+                        {isProtectedFinanceSource(entry.source) ? (
                           <>
-                            <Button
-                              className="w-full justify-center"
-                              variant="outline"
-                              size="sm"
-                              onClick={() => handleOpenEntryDetail(entry)}
-                              title="Movimiento automático. Para modificarlo debe gestionarse desde la venta."
-                            >
-                              <ReceiptText className="mr-2 h-3.5 w-3.5" />
-                              Ver detalle
-                            </Button>
+                            {canOpenFinanceEntryOrigin(entry) ? (
+                              <Button
+                                className="w-full justify-center"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleOpenEntryDetail(entry)}
+                              >
+                                <ReceiptText className="mr-2 h-3.5 w-3.5" />
+                                Ver detalle
+                              </Button>
+                            ) : null}
                             <p className="text-xs text-muted-foreground">
-                              Movimiento automático. Para modificarlo debe gestionarse desde su origen.
+                              Movimiento automático. No puede editarse ni eliminarse desde Caja.
                             </p>
                           </>
                         ) : (
@@ -2566,6 +2581,16 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
                               <Badge variant="outline" className="text-[10px]">
                                 {getFinanceSourceLabel(entry.source)}
                               </Badge>
+                              {isProtectedFinanceSource(entry.source) ? (
+                                <Badge
+                                  variant="secondary"
+                                  className="gap-1 text-[10px]"
+                                  title="Este movimiento fue generado automáticamente y no puede editarse ni eliminarse desde Caja."
+                                >
+                                  <LockKeyhole className="h-3 w-3" />
+                                  Automático
+                                </Badge>
+                              ) : null}
                             </div>
                             {getFinanceEntrySecondaryConcept(entry) ? (
                               <p className="break-words text-xs text-muted-foreground">{getFinanceEntrySecondaryConcept(entry)}</p>
@@ -2588,15 +2613,22 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
                         </TableCell>
                         <TableCell className={`sticky right-0 z-[14] align-top shadow-[-8px_0_12px_-10px_rgba(15,23,42,0.18)] ${editingEntry?.id === entry.id ? "bg-primary/5" : "bg-background group-hover:bg-muted/50"}`}>
                           <div className="flex justify-end gap-2">
-                            {isReadOnlyFinanceSource(entry.source) ? (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => handleOpenEntryDetail(entry)}
-                                title="Movimiento automático. Para modificarlo debe gestionarse desde la venta."
-                              >
-                                <ReceiptText className="h-3.5 w-3.5" />
-                              </Button>
+                            {isProtectedFinanceSource(entry.source) ? (
+                              canOpenFinanceEntryOrigin(entry) ? (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleOpenEntryDetail(entry)}
+                                  title="Abrir operación de origen"
+                                >
+                                  <ReceiptText className="h-3.5 w-3.5" />
+                                </Button>
+                              ) : (
+                                <LockKeyhole
+                                  className="h-4 w-4 text-muted-foreground"
+                                  aria-label="Movimiento automático sin edición manual"
+                                />
+                              )
                             ) : (
                               <>
                                 <Button

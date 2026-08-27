@@ -76,6 +76,7 @@ import {
   computeMembershipPlanChargeSnapshot,
   resolveMembershipPlanTaxConfig,
 } from "@shared/membership-plan-tax";
+import { isProtectedFinanceSource } from "@shared/finance-source";
 import {
   calculateLeaseQuote,
   leaseQuoteRequestSchema,
@@ -201,12 +202,7 @@ const assignPlanWithFinanceSchema = assignPlanSchema.extend({
   idempotencyKey: membershipBillingIdempotencyKeySchema,
   leaseContract: leaseAssignmentSchema.optional(),
 });
-const AUTOMATED_FINANCE_SOURCES = new Set([
-  "commercial_sale",
-  "sales_commission_payment",
-  "lease_installment_payment",
-]);
-const RESERVED_MANUAL_FINANCE_SOURCES = new Set(["lease_installment_payment"]);
+const PROTECTED_FINANCE_ENTRY_MUTATION_MESSAGE = "Este movimiento fue generado automáticamente por otra operación y no puede editarse ni eliminarse desde Caja.";
 const leaseContractAdministrativeUpdateSchema = z.object({
   leasedItemDescription: z.string().trim().min(1, "El bien o equipo es obligatorio").max(200, "Máximo 200 caracteres").optional(),
   notes: z.string().trim().max(500, "Las notas no pueden exceder 500 caracteres").nullable().optional(),
@@ -4688,7 +4684,7 @@ if (!user) {
     try {
       const data = parsed.data;
       const source = normalizeOptionalText(data.source) ?? null;
-      if (source && RESERVED_MANUAL_FINANCE_SOURCES.has(source)) {
+      if (isProtectedFinanceSource(source)) {
         return res.status(409).json({ message: "Este origen se administra automáticamente y no puede crearse manualmente desde Caja" });
       }
       let clientUserId = normalizeOptionalText(data.clientUserId) ?? null;
@@ -4747,13 +4743,13 @@ if (!user) {
       if (!existingEntry) {
         return res.status(404).json({ message: "Movimiento no encontrado" });
       }
-      if (existingEntry.source && AUTOMATED_FINANCE_SOURCES.has(existingEntry.source)) {
-        return res.status(409).json({ message: "Este movimiento se administra automaticamente desde su origen y no puede editarse manualmente" });
+      if (isProtectedFinanceSource(existingEntry.source)) {
+        return res.status(409).json({ message: PROTECTED_FINANCE_ENTRY_MUTATION_MESSAGE });
       }
 
       const data = parsed.data;
       const source = data.source === undefined ? undefined : (normalizeOptionalText(data.source) ?? null);
-      if (source && RESERVED_MANUAL_FINANCE_SOURCES.has(source)) {
+      if (isProtectedFinanceSource(source)) {
         return res.status(409).json({ message: "Este origen se administra automáticamente y no puede asignarse manualmente desde Caja" });
       }
       let clientUserId = data.clientUserId === undefined ? undefined : (normalizeOptionalText(data.clientUserId) ?? null);
@@ -4808,8 +4804,8 @@ if (!user) {
       if (!existingEntry) {
         return res.status(404).json({ message: "Movimiento no encontrado" });
       }
-      if (existingEntry.source && AUTOMATED_FINANCE_SOURCES.has(existingEntry.source)) {
-        return res.status(409).json({ message: "Este movimiento se administra automaticamente desde su origen y no puede eliminarse manualmente" });
+      if (isProtectedFinanceSource(existingEntry.source)) {
+        return res.status(409).json({ message: PROTECTED_FINANCE_ENTRY_MUTATION_MESSAGE });
       }
 
       const deleted = await storage.softDeleteBranchFinanceEntry(user.branchId, entryId);
