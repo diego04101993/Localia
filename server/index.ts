@@ -103,17 +103,10 @@ app.use((req, res, next) => {
 
   const { registerRoutes } = await import("./routes");
   const { createNotificationCleanupJob } = await import("./notifications");
-  const { storage } = await import("./storage");
   await registerRoutes(httpServer, app);
   if (shouldRunStartupMaintenance()) {
     createNotificationCleanupJob();
-
-    try {
-      const deletedFinanceEntries = await storage.cleanupOldBranchFinanceEntries(90);
-      log(`finance cleanup removed ${deletedFinanceEntries} entries older than 90 days`, "finance-cleanup");
-    } catch (err: any) {
-      console.error("[FINANCE_CLEANUP]", err?.stack || err);
-    }
+    log("automatic age-based deletion disabled", "finance-retention");
   } else {
     log("startup maintenance disabled outside production", "runtime");
   }

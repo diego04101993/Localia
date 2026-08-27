@@ -2233,7 +2233,6 @@ export interface IStorage {
   deleteReadNotifications(actor: { id: string; role: string; branchId?: string | null }): Promise<number>;
   deleteAllNotifications(actor: { id: string; role: string; branchId?: string | null }): Promise<number>;
   cleanupOldNotifications(maxAgeDays?: number): Promise<number>;
-  cleanupOldBranchFinanceEntries(maxAgeDays?: number): Promise<number>;
   getBranchRecurringExpenses(branchId: string): Promise<BranchRecurringExpenseRow[]>;
   createBranchRecurringExpense(data: InsertBranchRecurringExpense): Promise<BranchRecurringExpenseRow>;
   updateBranchRecurringExpense(branchId: string, recurringExpenseId: string, data: Partial<InsertBranchRecurringExpense>): Promise<BranchRecurringExpenseRow | undefined>;
@@ -5268,18 +5267,6 @@ export class DatabaseStorage implements IStorage {
       .delete(notifications)
       .where(sql`${notifications.createdAt} < ${cutoff}`)
       .returning({ id: notifications.id });
-
-    return rows.length;
-  }
-
-  async cleanupOldBranchFinanceEntries(maxAgeDays = 90): Promise<number> {
-    const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000)
-      .toLocaleDateString("en-CA", { timeZone: BRANCH_TIMEZONE });
-
-    const rows = await db
-      .delete(branchFinanceEntries)
-      .where(sql`${branchFinanceEntries.entryDate} < ${cutoff}`)
-      .returning({ id: branchFinanceEntries.id });
 
     return rows.length;
   }
