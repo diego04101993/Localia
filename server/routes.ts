@@ -1489,10 +1489,7 @@ async function getBranchReportBranding(branchId: string): Promise<BranchReportBr
 
 function mapFinanceExportRows(entries: Awaited<ReturnType<typeof storage.listBranchFinanceEntriesForExport>>): FinanceExportRow[] {
   return entries.map((entry) => {
-    const fiscalSnapshot =
-      entry.fiscalSnapshot && entry.fiscalSnapshot.taxTransferred > 0
-        ? entry.fiscalSnapshot
-        : null;
+    const fiscalSnapshot = entry.fiscalSnapshot;
 
     return {
       entryDate: entry.entryDate,
@@ -4831,7 +4828,7 @@ if (!user) {
     const user = req.user as any;
     try {
       const exportData = await loadFinanceExportData(user.branchId, req.query);
-      const header = "fecha,tipo,categoria,concepto,cliente,correo_cliente,metodo_pago,monto,notas";
+      const header = "fecha,tipo,categoria,concepto,cliente,correo_cliente,metodo_pago,monto,subtotal_fiscal,iva_trasladado,total_fiscal,notas";
       const rows = exportData.rows.map((entry) => [
         escapeCsvValue(entry.entryDate),
         escapeCsvValue(entry.typeLabel),
@@ -4841,6 +4838,9 @@ if (!user) {
         escapeCsvValue(entry.clientEmail),
         escapeCsvValue(entry.paymentMethod),
         escapeCsvValue(entry.amount.toFixed(2)),
+        escapeCsvValue(entry.subtotalAmount == null ? "" : entry.subtotalAmount.toFixed(2)),
+        escapeCsvValue(entry.taxAmount == null ? "" : entry.taxAmount.toFixed(2)),
+        escapeCsvValue(entry.totalAmount.toFixed(2)),
         escapeCsvValue(entry.notes),
       ].join(","));
 

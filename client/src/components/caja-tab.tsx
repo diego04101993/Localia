@@ -645,7 +645,7 @@ function getFinanceEntryFiscalCaption(entry: BranchFinanceEntry) {
   if (!snapshot) return null;
 
   const baseLabel = `Base ${formatCurrency(snapshot.baseBeforeTax)}`;
-  if (snapshot.taxMode === "tax_exempt" || snapshot.taxTransferred <= 0) {
+  if (snapshot.taxMode === "tax_exempt" || Math.abs(snapshot.taxTransferred) < 0.005) {
     return `${baseLabel} · Sin IVA`;
   }
 

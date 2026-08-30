@@ -197,6 +197,13 @@ import {
   isProtectedFinanceSource,
   protectedFinanceSourceValues,
 } from "@shared/finance-source";
+import {
+  allocateCommercialSaleFiscalSnapshot,
+  buildCommercialSaleFiscalSnapshot,
+  sumUniqueFinanceFiscalContributions,
+  type CommercialTaxMode,
+  type FinanceFiscalContribution,
+} from "@shared/commercial-sale-fiscal";
 
 const BRANCH_CLIENT_PASSWORD_RESET_COOLDOWN_MS = 60_000;
 
@@ -545,6 +552,7 @@ function toNullableInteger(value: unknown): number | null {
 
 type BranchFinanceFiscalRowLike = {
   source: string | null;
+  sourceId: string | null;
   amount: number;
   metadata: any;
   chargeEventTaxMode?: string | null;
@@ -553,13 +561,14 @@ type BranchFinanceFiscalRowLike = {
   chargeEventTaxableSubtotalCents?: unknown;
   chargeEventTaxTotalCents?: unknown;
   chargeEventFinalTotalCents?: unknown;
+  commercialSaleTaxMode?: string | null;
+  commercialSaleTaxRate?: unknown;
+  commercialSaleTaxableSubtotal?: unknown;
+  commercialSaleTaxTotal?: unknown;
+  commercialSaleGrandTotal?: unknown;
 };
 
-type BranchFinanceFiscalContribution = {
-  groupKey: string | null;
-  baseBeforeTax: number;
-  taxTransferred: number;
-};
+type BranchFinanceFiscalContribution = FinanceFiscalContribution;
 
 function buildBranchFinanceFiscalSnapshot(params: {
   taxMode: CommercialTaxMode;
@@ -644,52 +653,34 @@ function buildBranchFinanceFiscalSnapshotFromCommercialSale(
   entry: BranchFinanceFiscalRowLike,
   mode: "row" | "summary",
 ): BranchFinanceFiscalSnapshotRow | null {
+  const isCancellation = entry.source === "commercial_sale_cancellation";
   const metadata = entry.metadata && typeof entry.metadata === "object" ? entry.metadata : null;
-  if (!metadata) return null;
+  const snapshot = buildCommercialSaleFiscalSnapshot(
+    isCancellation
+      ? {
+          taxMode: entry.commercialSaleTaxMode,
+          taxRate: entry.commercialSaleTaxRate,
+          taxableSubtotal: entry.commercialSaleTaxableSubtotal,
+          taxTotal: entry.commercialSaleTaxTotal,
+          grandTotal: entry.commercialSaleGrandTotal,
+        }
+      : {
+          taxMode: metadata?.taxMode,
+          taxRate: metadata?.taxRate,
+          taxableSubtotal: metadata?.taxableSubtotal,
+          taxTotal: metadata?.taxTotal,
+          grandTotal: metadata?.grandTotal,
+        },
+    isCancellation ? "cancellation" : "sale",
+  );
+  if (!snapshot || mode === "summary" || isCancellation) return snapshot;
 
-  const taxMode = typeof metadata.taxMode === "string" ? metadata.taxMode : null;
-  const taxableSubtotal = toNullableFinanceAmount(metadata.taxableSubtotal);
-  const taxTotal = toNullableFinanceAmount(metadata.taxTotal);
-  const grandTotal = toNullableFinanceAmount(metadata.grandTotal);
-
-  if (taxMode == null || taxableSubtotal == null || taxTotal == null || grandTotal == null || grandTotal <= 0) {
-    return null;
+  const paymentCount = Math.max(1, Number(metadata?.paymentCount || 1));
+  if (paymentCount <= 1 || Math.abs(entry.amount - snapshot.totalCharged) <= 0.01) {
+    return snapshot;
   }
 
-  if (mode === "summary") {
-    return buildBranchFinanceFiscalSnapshot({
-      taxMode: taxMode as CommercialTaxMode,
-      taxRate: toNullableFinanceAmount(metadata.taxRate) ?? 0,
-      baseBeforeTax: taxableSubtotal,
-      taxTransferred: taxTotal,
-      totalCharged: grandTotal,
-    });
-  }
-
-  const paymentCount = Math.max(1, Number(metadata.paymentCount || 1));
-  const isSinglePayment = paymentCount <= 1 || Math.abs(entry.amount - grandTotal) <= 0.01;
-  if (isSinglePayment) {
-    return buildBranchFinanceFiscalSnapshot({
-      taxMode: taxMode as CommercialTaxMode,
-      taxRate: toNullableFinanceAmount(metadata.taxRate) ?? 0,
-      baseBeforeTax: taxableSubtotal,
-      taxTransferred: taxTotal,
-      totalCharged: grandTotal,
-    });
-  }
-
-  const ratio = grandTotal > 0 ? entry.amount / grandTotal : 0;
-  const baseBeforeTax = roundMoney(taxableSubtotal * ratio);
-  const totalCharged = roundMoney(entry.amount);
-  const taxTransferred = roundMoney(Math.max(0, totalCharged - baseBeforeTax));
-
-  return buildBranchFinanceFiscalSnapshot({
-    taxMode: taxMode as CommercialTaxMode,
-    taxRate: toNullableFinanceAmount(metadata.taxRate) ?? 0,
-    baseBeforeTax,
-    taxTransferred,
-    totalCharged,
-  });
+  return allocateCommercialSaleFiscalSnapshot(snapshot, entry.amount);
 }
 
 function getBranchFinanceEntryFiscalSnapshot(entry: BranchFinanceFiscalRowLike): BranchFinanceFiscalSnapshotRow | null {
@@ -705,7 +696,7 @@ function getBranchFinanceEntryFiscalSnapshot(entry: BranchFinanceFiscalRowLike):
     return buildBranchFinanceFiscalSnapshotFromServiceSale(entry);
   }
 
-  if (entry.source === "commercial_sale") {
+  if (entry.source === "commercial_sale" || entry.source === "commercial_sale_cancellation") {
     return buildBranchFinanceFiscalSnapshotFromCommercialSale(entry, "row");
   }
 
@@ -713,17 +704,24 @@ function getBranchFinanceEntryFiscalSnapshot(entry: BranchFinanceFiscalRowLike):
 }
 
 function getBranchFinanceSummaryFiscalContribution(entry: BranchFinanceFiscalRowLike): BranchFinanceFiscalContribution | null {
-  if (entry.source === "commercial_sale") {
+  if (entry.source === "commercial_sale" || entry.source === "commercial_sale_cancellation") {
     const snapshot = buildBranchFinanceFiscalSnapshotFromCommercialSale(entry, "summary");
     if (!snapshot) return null;
-    const saleId =
+    const metadataSaleId =
       entry.metadata && typeof entry.metadata === "object" && typeof entry.metadata.saleId === "string"
         ? entry.metadata.saleId.trim()
         : "";
+    const saleId = entry.source === "commercial_sale_cancellation"
+      ? entry.sourceId?.trim() || metadataSaleId
+      : metadataSaleId;
+    if (!saleId) return null;
     return {
-      groupKey: saleId ? `commercial_sale:${saleId}` : null,
+      groupKey: `${entry.source}:${saleId}`,
+      taxMode: snapshot.taxMode,
+      taxRate: snapshot.taxRate,
       baseBeforeTax: snapshot.baseBeforeTax,
       taxTransferred: snapshot.taxTransferred,
+      totalCharged: snapshot.totalCharged,
     };
   }
 
@@ -731,8 +729,11 @@ function getBranchFinanceSummaryFiscalContribution(entry: BranchFinanceFiscalRow
   if (!snapshot) return null;
   return {
     groupKey: null,
+    taxMode: snapshot.taxMode,
+    taxRate: snapshot.taxRate,
     baseBeforeTax: snapshot.baseBeforeTax,
     taxTransferred: snapshot.taxTransferred,
+    totalCharged: snapshot.totalCharged,
   };
 }
 
@@ -753,8 +754,6 @@ function hasStoredCommercialTaxBreakdown(row: CommercialTaxSnapshotLike) {
 }
 
 const BRANCH_COMMERCIAL_PROJECT_CODE_UNIQUE = "branch_commercial_projects_branch_code_unique";
-
-type CommercialTaxMode = "tax_included" | "tax_added" | "tax_exempt";
 
 function computeCommercialTaxSnapshot(params: {
   subtotalAmount: number;
@@ -16410,6 +16409,7 @@ export class DatabaseStorage implements IStorage {
       metadata: row.metadata ?? null,
       fiscalSnapshot: getBranchFinanceEntryFiscalSnapshot({
         source: row.source ?? null,
+        sourceId: row.sourceId ?? null,
         amount,
         metadata: row.metadata ?? null,
         chargeEventTaxMode: row.chargeEventTaxMode ?? null,
@@ -16418,6 +16418,11 @@ export class DatabaseStorage implements IStorage {
         chargeEventTaxableSubtotalCents: row.chargeEventTaxableSubtotalCents ?? null,
         chargeEventTaxTotalCents: row.chargeEventTaxTotalCents ?? null,
         chargeEventFinalTotalCents: row.chargeEventFinalTotalCents ?? null,
+        commercialSaleTaxMode: row.commercialSaleTaxMode ?? null,
+        commercialSaleTaxRate: row.commercialSaleTaxRate ?? null,
+        commercialSaleTaxableSubtotal: row.commercialSaleTaxableSubtotal ?? null,
+        commercialSaleTaxTotal: row.commercialSaleTaxTotal ?? null,
+        commercialSaleGrandTotal: row.commercialSaleGrandTotal ?? null,
       }),
       createdBy: row.createdBy ?? null,
       createdAt: row.createdAt,
@@ -16454,12 +16459,22 @@ export class DatabaseStorage implements IStorage {
         chargeEventTaxableSubtotalCents: branchChargeEvents.taxableSubtotalCents,
         chargeEventTaxTotalCents: branchChargeEvents.taxTotalCents,
         chargeEventFinalTotalCents: branchChargeEvents.finalTotalCents,
+        commercialSaleTaxMode: branchSales.taxMode,
+        commercialSaleTaxRate: branchSales.taxRate,
+        commercialSaleTaxableSubtotal: branchSales.taxableSubtotal,
+        commercialSaleTaxTotal: branchSales.taxTotal,
+        commercialSaleGrandTotal: branchSales.grandTotal,
       })
       .from(branchFinanceEntries)
       .leftJoin(users, eq(branchFinanceEntries.clientUserId, users.id))
       .leftJoin(branchChargeEvents, and(
         eq(branchChargeEvents.financeEntryId, branchFinanceEntries.id),
         eq(branchChargeEvents.branchId, branchFinanceEntries.branchId),
+      ))
+      .leftJoin(branchSales, and(
+        eq(branchFinanceEntries.source, "commercial_sale_cancellation"),
+        eq(branchSales.id, branchFinanceEntries.sourceId),
+        eq(branchSales.branchId, branchFinanceEntries.branchId),
       ))
       .where(and(
         eq(branchFinanceEntries.branchId, branchId),
@@ -16517,12 +16532,22 @@ export class DatabaseStorage implements IStorage {
         chargeEventTaxableSubtotalCents: branchChargeEvents.taxableSubtotalCents,
         chargeEventTaxTotalCents: branchChargeEvents.taxTotalCents,
         chargeEventFinalTotalCents: branchChargeEvents.finalTotalCents,
+        commercialSaleTaxMode: branchSales.taxMode,
+        commercialSaleTaxRate: branchSales.taxRate,
+        commercialSaleTaxableSubtotal: branchSales.taxableSubtotal,
+        commercialSaleTaxTotal: branchSales.taxTotal,
+        commercialSaleGrandTotal: branchSales.grandTotal,
       })
       .from(branchFinanceEntries)
       .leftJoin(users, eq(branchFinanceEntries.clientUserId, users.id))
       .leftJoin(branchChargeEvents, and(
         eq(branchChargeEvents.financeEntryId, branchFinanceEntries.id),
         eq(branchChargeEvents.branchId, branchFinanceEntries.branchId),
+      ))
+      .leftJoin(branchSales, and(
+        eq(branchFinanceEntries.source, "commercial_sale_cancellation"),
+        eq(branchSales.id, branchFinanceEntries.sourceId),
+        eq(branchSales.branchId, branchFinanceEntries.branchId),
       ))
       .where(and(
         eq(branchFinanceEntries.branchId, branchId),
@@ -16748,7 +16773,7 @@ export class DatabaseStorage implements IStorage {
       ...optionalTypeCondition,
     )!;
 
-    const [summaryRows, todayRows, monthRows, dailyRows, topIncomeRows, topExpenseRows, incomeFiscalRows] = await Promise.all([
+    const [summaryRows, todayRows, monthRows, dailyRows, topIncomeRows, topExpenseRows, fiscalRows] = await Promise.all([
       db
         .select({
           totalIncome: sql<string>`COALESCE(SUM(CASE WHEN ${branchFinanceEntries.type} = 'income' THEN ${branchFinanceEntries.amount} ELSE 0 END), 0)`,
@@ -16805,6 +16830,7 @@ export class DatabaseStorage implements IStorage {
           id: branchFinanceEntries.id,
           amount: branchFinanceEntries.amount,
           source: branchFinanceEntries.source,
+          sourceId: branchFinanceEntries.sourceId,
           metadata: branchFinanceEntries.metadata,
           chargeEventTaxMode: branchChargeEvents.taxMode,
           chargeEventTaxRate: branchChargeEvents.taxRate,
@@ -16812,13 +16838,23 @@ export class DatabaseStorage implements IStorage {
           chargeEventTaxableSubtotalCents: branchChargeEvents.taxableSubtotalCents,
           chargeEventTaxTotalCents: branchChargeEvents.taxTotalCents,
           chargeEventFinalTotalCents: branchChargeEvents.finalTotalCents,
+          commercialSaleTaxMode: branchSales.taxMode,
+          commercialSaleTaxRate: branchSales.taxRate,
+          commercialSaleTaxableSubtotal: branchSales.taxableSubtotal,
+          commercialSaleTaxTotal: branchSales.taxTotal,
+          commercialSaleGrandTotal: branchSales.grandTotal,
         })
         .from(branchFinanceEntries)
         .leftJoin(branchChargeEvents, and(
           eq(branchChargeEvents.financeEntryId, branchFinanceEntries.id),
           eq(branchChargeEvents.branchId, branchFinanceEntries.branchId),
         ))
-        .where(and(baseConditions, eq(branchFinanceEntries.type, "income"))!),
+        .leftJoin(branchSales, and(
+          eq(branchFinanceEntries.source, "commercial_sale_cancellation"),
+          eq(branchSales.id, branchFinanceEntries.sourceId),
+          eq(branchSales.branchId, branchFinanceEntries.branchId),
+        ))
+        .where(baseConditions),
     ]);
 
     const totalIncome = toFinanceAmount(summaryRows[0]?.totalIncome);
@@ -16827,13 +16863,12 @@ export class DatabaseStorage implements IStorage {
     const todayExpense = toFinanceAmount(todayRows[0]?.totalExpense);
     const monthIncome = toFinanceAmount(monthRows[0]?.totalIncome);
     const monthExpense = toFinanceAmount(monthRows[0]?.totalExpense);
-    const seenContributionKeys = new Set<string>();
-    let incomeBaseBeforeTax = 0;
-    let incomeTransferredTax = 0;
+    const fiscalContributions: BranchFinanceFiscalContribution[] = [];
 
-    for (const row of incomeFiscalRows) {
+    for (const row of fiscalRows) {
       const contribution = getBranchFinanceSummaryFiscalContribution({
         source: row.source ?? null,
+        sourceId: row.sourceId ?? null,
         amount: toFinanceAmount(row.amount),
         metadata: row.metadata ?? null,
         chargeEventTaxMode: row.chargeEventTaxMode ?? null,
@@ -16842,17 +16877,17 @@ export class DatabaseStorage implements IStorage {
         chargeEventTaxableSubtotalCents: row.chargeEventTaxableSubtotalCents ?? null,
         chargeEventTaxTotalCents: row.chargeEventTaxTotalCents ?? null,
         chargeEventFinalTotalCents: row.chargeEventFinalTotalCents ?? null,
+        commercialSaleTaxMode: row.commercialSaleTaxMode ?? null,
+        commercialSaleTaxRate: row.commercialSaleTaxRate ?? null,
+        commercialSaleTaxableSubtotal: row.commercialSaleTaxableSubtotal ?? null,
+        commercialSaleTaxTotal: row.commercialSaleTaxTotal ?? null,
+        commercialSaleGrandTotal: row.commercialSaleGrandTotal ?? null,
       });
 
       if (!contribution) continue;
-      if (contribution.groupKey) {
-        if (seenContributionKeys.has(contribution.groupKey)) continue;
-        seenContributionKeys.add(contribution.groupKey);
-      }
-
-      incomeBaseBeforeTax = roundMoney(incomeBaseBeforeTax + contribution.baseBeforeTax);
-      incomeTransferredTax = roundMoney(incomeTransferredTax + contribution.taxTransferred);
+      fiscalContributions.push(contribution);
     }
+    const fiscalTotals = sumUniqueFinanceFiscalContributions(fiscalContributions);
 
     return {
       totalIncome,
@@ -16862,8 +16897,8 @@ export class DatabaseStorage implements IStorage {
       todayExpense,
       monthIncome,
       monthExpense,
-      incomeBaseBeforeTax,
-      incomeTransferredTax,
+      incomeBaseBeforeTax: fiscalTotals.baseBeforeTax,
+      incomeTransferredTax: fiscalTotals.taxTransferred,
       dailyBreakdown: dailyRows.map((row) => {
         const income = toFinanceAmount(row.income);
         const expense = toFinanceAmount(row.expense);
@@ -16972,12 +17007,22 @@ export class DatabaseStorage implements IStorage {
           chargeEventTaxableSubtotalCents: branchChargeEvents.taxableSubtotalCents,
           chargeEventTaxTotalCents: branchChargeEvents.taxTotalCents,
           chargeEventFinalTotalCents: branchChargeEvents.finalTotalCents,
+          commercialSaleTaxMode: branchSales.taxMode,
+          commercialSaleTaxRate: branchSales.taxRate,
+          commercialSaleTaxableSubtotal: branchSales.taxableSubtotal,
+          commercialSaleTaxTotal: branchSales.taxTotal,
+          commercialSaleGrandTotal: branchSales.grandTotal,
         })
         .from(branchFinanceEntries)
         .leftJoin(users, eq(branchFinanceEntries.clientUserId, users.id))
         .leftJoin(branchChargeEvents, and(
           eq(branchChargeEvents.financeEntryId, branchFinanceEntries.id),
           eq(branchChargeEvents.branchId, branchFinanceEntries.branchId),
+        ))
+        .leftJoin(branchSales, and(
+          eq(branchFinanceEntries.source, "commercial_sale_cancellation"),
+          eq(branchSales.id, branchFinanceEntries.sourceId),
+          eq(branchSales.branchId, branchFinanceEntries.branchId),
         ))
         .where(whereClause)
         .orderBy(desc(branchFinanceEntries.entryDate), desc(branchFinanceEntries.createdAt))
@@ -17043,12 +17088,22 @@ export class DatabaseStorage implements IStorage {
         chargeEventTaxableSubtotalCents: branchChargeEvents.taxableSubtotalCents,
         chargeEventTaxTotalCents: branchChargeEvents.taxTotalCents,
         chargeEventFinalTotalCents: branchChargeEvents.finalTotalCents,
+        commercialSaleTaxMode: branchSales.taxMode,
+        commercialSaleTaxRate: branchSales.taxRate,
+        commercialSaleTaxableSubtotal: branchSales.taxableSubtotal,
+        commercialSaleTaxTotal: branchSales.taxTotal,
+        commercialSaleGrandTotal: branchSales.grandTotal,
       })
       .from(branchFinanceEntries)
       .leftJoin(users, eq(branchFinanceEntries.clientUserId, users.id))
       .leftJoin(branchChargeEvents, and(
         eq(branchChargeEvents.financeEntryId, branchFinanceEntries.id),
         eq(branchChargeEvents.branchId, branchFinanceEntries.branchId),
+      ))
+      .leftJoin(branchSales, and(
+        eq(branchFinanceEntries.source, "commercial_sale_cancellation"),
+        eq(branchSales.id, branchFinanceEntries.sourceId),
+        eq(branchSales.branchId, branchFinanceEntries.branchId),
       ))
       .where(and(...conditions))
       .orderBy(desc(branchFinanceEntries.entryDate), desc(branchFinanceEntries.createdAt));
