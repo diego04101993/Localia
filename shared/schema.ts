@@ -3,6 +3,11 @@ import { pgTable, text, varchar, timestamp, pgEnum, doublePrecision, boolean, un
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { membershipPlanTaxModeValues } from "./membership-plan-tax";
+import {
+  QUICK_CHARGE_OPERATION_KEY_MAX_LENGTH,
+  QUICK_CHARGE_OPERATION_KEY_MIN_LENGTH,
+  QUICK_CHARGE_OPERATION_KEY_PATTERN,
+} from "./quick-charge";
 
 export const userRoleEnum = pgEnum("user_role", [
   "SUPER_ADMIN",
@@ -2171,13 +2176,35 @@ export const branchFinancePaymentMethodValues = [
   "mercado_pago",
   "otro",
 ] as const;
+const quickChargeOperationKeySchema = z
+  .string()
+  .trim()
+  .min(QUICK_CHARGE_OPERATION_KEY_MIN_LENGTH, "Clave de operacion invalida")
+  .max(QUICK_CHARGE_OPERATION_KEY_MAX_LENGTH, "Maximo 120 caracteres")
+  .regex(QUICK_CHARGE_OPERATION_KEY_PATTERN, "Clave de operacion invalida");
 export const quickChargeSingleSessionSchema = z.object({
   customerName: z.string().min(1, "El nombre del cliente es obligatorio").max(160, "Maximo 160 caracteres"),
   whatsapp: z.string().max(40, "Maximo 40 caracteres").nullable().optional(),
   paymentMethod: z.enum(branchFinancePaymentMethodValues),
   note: z.string().max(500, "Maximo 500 caracteres").nullable().optional(),
   entryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Formato YYYY-MM-DD").optional(),
-  requestId: z.string().max(120, "Maximo 120 caracteres").optional(),
+  operationKey: quickChargeOperationKeySchema.optional(),
+  requestId: quickChargeOperationKeySchema.optional(),
+}).superRefine((data, context) => {
+  if (!data.operationKey && !data.requestId) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["operationKey"],
+      message: "La clave de operacion es obligatoria",
+    });
+  }
+  if (data.operationKey && data.requestId && data.operationKey !== data.requestId) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["operationKey"],
+      message: "Las claves de operacion no coinciden",
+    });
+  }
 });
 export const monthlyBillingStatusValues = [
   "pending",

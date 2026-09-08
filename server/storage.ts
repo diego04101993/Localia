@@ -204,6 +204,21 @@ import {
   type CommercialTaxMode,
   type FinanceFiscalContribution,
 } from "@shared/commercial-sale-fiscal";
+import {
+  getQuickChargePhoneLockToken,
+  QUICK_CHARGE_OPERATION_DOMAIN,
+  QUICK_CHARGE_OPERATION_SNAPSHOT_VERSION,
+  normalizeQuickChargeOperationKey,
+  normalizeQuickChargePhone,
+} from "@shared/quick-charge";
+import {
+  commitLockedQuickChargeOperation,
+  createQuickChargePayloadFingerprint,
+  QuickChargeIdempotencyError,
+  QUICK_CHARGE_INCOMPLETE_REPLAY_CONFLICT,
+  QUICK_CHARGE_OPERATION_KEY_CONFLICT,
+  QUICK_CHARGE_LEGACY_OPERATION_KEY_CONFLICT,
+} from "./quick-charge-operation";
 
 const BRANCH_CLIENT_PASSWORD_RESET_COOLDOWN_MS = 60_000;
 
@@ -1223,6 +1238,18 @@ export interface BranchFinanceEntryRow {
   updatedAt: Date | string;
 }
 
+export interface QuickChargeOperationResult {
+  operationKey: string;
+  replayed: boolean;
+  financeEntry: BranchFinanceEntryRow;
+  client: {
+    userId: string;
+    membershipId: string;
+    displayName: string;
+    action: "matched" | "reactivated" | "created";
+  };
+}
+
 export interface BranchFinanceFiscalSnapshotRow {
   taxMode: CommercialTaxMode;
   taxRate: number;
@@ -2172,6 +2199,20 @@ export interface IStorage {
   getBranchFinanceEntry(branchId: string, entryId: string): Promise<BranchFinanceEntryRow | undefined>;
   createBranchFinanceEntry(data: InsertBranchFinanceEntry): Promise<BranchFinanceEntryRow>;
   findBranchFinanceEntryBySource(branchId: string, source: string, sourceId: string): Promise<BranchFinanceEntryRow | undefined>;
+  commitQuickChargeOperation(data: {
+    branchId: string;
+    actorUserId: string;
+    planId: string;
+    operationKey: string;
+    customerName: string;
+    firstName: string;
+    lastName: string | null;
+    normalizedPhone: string | null;
+    paymentMethod: string;
+    note: string | null;
+    entryDate: string;
+    crmPasswordHash: string;
+  }): Promise<QuickChargeOperationResult>;
   updateBranchFinanceEntry(branchId: string, entryId: string, data: Partial<InsertBranchFinanceEntry>): Promise<BranchFinanceEntryRow | undefined>;
   softDeleteBranchFinanceEntry(branchId: string, entryId: string): Promise<boolean>;
   getSuperAdminMonthlyBilling(): Promise<BranchMonthlyBillingRow[]>;
@@ -17126,6 +17167,416 @@ export class DatabaseStorage implements IStorage {
     sourceId: string,
   ): Promise<BranchFinanceEntryRow | undefined> {
     return this.getBranchFinanceEntryBySource(branchId, source, sourceId);
+  }
+
+  async commitQuickChargeOperation(data: {
+    branchId: string;
+    actorUserId: string;
+    planId: string;
+    operationKey: string;
+    customerName: string;
+    firstName: string;
+    lastName: string | null;
+    normalizedPhone: string | null;
+    paymentMethod: string;
+    note: string | null;
+    entryDate: string;
+    crmPasswordHash: string;
+  }): Promise<QuickChargeOperationResult> {
+    const operationKey = normalizeQuickChargeOperationKey(data.operationKey);
+    const customerName = normalizeOptionalTextValue(data.customerName);
+    const normalizedPhone = normalizeQuickChargePhone(data.normalizedPhone);
+    const phoneLockToken = getQuickChargePhoneLockToken(normalizedPhone);
+    const normalizedNote = normalizeOptionalTextValue(data.note) ?? null;
+    const normalizedPaymentMethod = normalizeOptionalTextValue(data.paymentMethod);
+
+    if (!operationKey) {
+      throw new Error("QUICK_CHARGE_OPERATION_KEY_INVALID");
+    }
+    if (!customerName || !normalizedPaymentMethod) {
+      throw new Error("QUICK_CHARGE_PAYLOAD_INVALID");
+    }
+
+    const payloadFingerprint = createQuickChargePayloadFingerprint({
+      planId: data.planId,
+      customerName,
+      whatsapp: normalizedPhone,
+      paymentMethod: normalizedPaymentMethod,
+      note: normalizedNote,
+      entryDate: data.entryDate,
+    });
+
+    type OperationResult = Omit<QuickChargeOperationResult, "replayed">;
+    const committed = await commitLockedQuickChargeOperation<any, BranchFinanceEntry, OperationResult>({
+      fingerprint: payloadFingerprint,
+      transaction: (work) => db.transaction(async (tx) => work(tx)),
+      acquireLock: async (tx) => {
+        await tx.execute(sql.raw("SET LOCAL statement_timeout = '15000ms'"));
+        await tx.execute(sql`
+          SELECT pg_advisory_xact_lock(
+            hashtext(${data.branchId}),
+            hashtext(${`${QUICK_CHARGE_OPERATION_DOMAIN}:${operationKey}`})
+          )
+        `);
+      },
+      findExisting: async (tx) => {
+        const [existing] = await tx
+          .select()
+          .from(branchFinanceEntries)
+          .where(and(
+            eq(branchFinanceEntries.branchId, data.branchId),
+            eq(branchFinanceEntries.source, QUICK_CHARGE_OPERATION_DOMAIN),
+            eq(branchFinanceEntries.sourceId, operationKey),
+          ))
+          .orderBy(desc(branchFinanceEntries.createdAt))
+          .limit(1);
+        return existing;
+      },
+      getExistingFingerprint: (existing) => {
+        if (existing.deletedAt) return null;
+        const metadata = existing.metadata && typeof existing.metadata === "object"
+          ? existing.metadata as Record<string, unknown>
+          : null;
+        return typeof metadata?.quickChargePayloadFingerprint === "string"
+          ? metadata.quickChargePayloadFingerprint
+          : null;
+      },
+      replay: async (tx, existing) => {
+        const metadata = existing.metadata && typeof existing.metadata === "object"
+          ? existing.metadata as Record<string, unknown>
+          : {};
+        const membershipId = typeof metadata.quickChargeMembershipId === "string"
+          ? metadata.quickChargeMembershipId
+          : null;
+        const clientAction = metadata.quickChargeClientAction;
+        const clientUserId = existing.clientUserId;
+
+        if (
+          existing.deletedAt
+          || metadata.quickChargeOperationVersion !== QUICK_CHARGE_OPERATION_SNAPSHOT_VERSION
+          || metadata.quickChargeOperationKey !== operationKey
+          || metadata.quickChargePlanId !== data.planId
+          || !clientUserId
+          || metadata.quickChargeClientUserId !== clientUserId
+          || !membershipId
+          || !["matched", "reactivated", "created"].includes(String(clientAction))
+        ) {
+          throw new QuickChargeIdempotencyError(QUICK_CHARGE_INCOMPLETE_REPLAY_CONFLICT);
+        }
+
+        const [membership] = await tx
+          .select({ id: memberships.id })
+          .from(memberships)
+          .where(and(
+            eq(memberships.id, membershipId),
+            eq(memberships.branchId, data.branchId),
+            eq(memberships.userId, clientUserId),
+          ))
+          .limit(1);
+        const financeEntry = await this.getBranchFinanceEntryByIdTx(tx, data.branchId, existing.id);
+        const [crm] = await tx
+          .select({ id: branchClientCrm.id })
+          .from(branchClientCrm)
+          .where(and(
+            eq(branchClientCrm.branchId, data.branchId),
+            eq(branchClientCrm.userId, clientUserId),
+          ))
+          .limit(1);
+        const [audit] = await tx
+          .select({ id: auditLogs.id })
+          .from(auditLogs)
+          .where(and(
+            eq(auditLogs.branchId, data.branchId),
+            eq(auditLogs.action, "QUICK_CHARGE_SINGLE_SESSION"),
+            sql`${auditLogs.metadata}->>'operationKey' = ${operationKey}`,
+            sql`${auditLogs.metadata}->>'payloadFingerprint' = ${payloadFingerprint}`,
+            sql`${auditLogs.metadata}->>'financeEntryId' = ${existing.id}`,
+            sql`${auditLogs.metadata}->>'membershipId' = ${membershipId}`,
+            sql`${auditLogs.metadata}->>'userId' = ${clientUserId}`,
+          ))
+          .limit(1);
+        if (!membership || !financeEntry || !crm || !audit) {
+          throw new QuickChargeIdempotencyError(QUICK_CHARGE_INCOMPLETE_REPLAY_CONFLICT);
+        }
+
+        return {
+          operationKey,
+          financeEntry,
+          client: {
+            userId: clientUserId,
+            membershipId,
+            displayName: financeEntry.clientName || customerName,
+            action: clientAction as OperationResult["client"]["action"],
+          },
+        };
+      },
+      create: async (tx) => {
+        const plan = await this.getPlanTx(tx, data.planId);
+        if (!plan || plan.branchId !== data.branchId) {
+          throw new Error("QUICK_CHARGE_PLAN_NOT_FOUND");
+        }
+        if (!plan.isActive) {
+          throw new Error("QUICK_CHARGE_PLAN_INACTIVE");
+        }
+        if ((plan.cycleMonths ?? 1) !== 0) {
+          throw new Error("QUICK_CHARGE_PLAN_NOT_SINGLE_SESSION");
+        }
+        if (plan.price <= 0) {
+          throw new Error("QUICK_CHARGE_PLAN_PRICE_INVALID");
+        }
+
+        const taxSnapshot = computeMembershipPlanChargeSnapshot({
+          priceCents: plan.price,
+          taxMode: plan.taxMode,
+          taxRate: plan.taxRate,
+        });
+
+        if (phoneLockToken) {
+          await tx.execute(sql`
+            SELECT pg_advisory_xact_lock(
+              hashtext(${data.branchId}),
+              hashtext(${phoneLockToken})
+            )
+          `);
+        }
+
+        type QuickChargeClientCandidate = {
+          userId: string;
+          name: string;
+          lastName: string | null;
+          phone: string | null;
+          membershipId: string | null;
+          membershipStatus: string | null;
+        };
+        const membershipClients: QuickChargeClientCandidate[] = await tx
+          .select({
+            userId: users.id,
+            name: users.name,
+            lastName: users.lastName,
+            phone: users.phone,
+            membershipId: memberships.id,
+            membershipStatus: memberships.status,
+          })
+          .from(memberships)
+          .innerJoin(users, eq(memberships.userId, users.id))
+          .where(eq(memberships.branchId, data.branchId));
+        const crmOnlyClients: QuickChargeClientCandidate[] = await tx
+          .select({
+            userId: users.id,
+            name: users.name,
+            lastName: users.lastName,
+            phone: users.phone,
+            membershipId: memberships.id,
+            membershipStatus: memberships.status,
+          })
+          .from(branchClientCrm)
+          .innerJoin(users, eq(branchClientCrm.userId, users.id))
+          .leftJoin(memberships, and(
+            eq(memberships.branchId, data.branchId),
+            eq(memberships.userId, branchClientCrm.userId),
+          ))
+          .where(and(
+            eq(branchClientCrm.branchId, data.branchId),
+            isNull(memberships.id),
+          ));
+        const branchClients = [...membershipClients, ...crmOnlyClients];
+
+        const phoneMatches = normalizedPhone
+          ? branchClients.filter((client) => normalizeQuickChargePhone(client.phone) === normalizedPhone)
+          : [];
+        if (phoneMatches.length > 1) {
+          throw new Error("QUICK_CHARGE_DUPLICATE_PHONE_CONFLICT");
+        }
+
+        const matchedClient = phoneMatches[0];
+        let clientUserId: string;
+        let membershipId: string;
+        let clientDisplayName: string;
+        let clientAction: OperationResult["client"]["action"];
+
+        if (matchedClient) {
+          let membershipIdForClient = matchedClient.membershipId;
+          if (!membershipIdForClient) {
+            const [createdMembership] = await tx
+              .insert(memberships)
+              .values({
+                userId: matchedClient.userId,
+                branchId: data.branchId,
+                status: "active",
+                clientStatus: "active",
+                isFavorite: false,
+                source: "admin_created",
+              })
+              .onConflictDoNothing({ target: [memberships.userId, memberships.branchId] })
+              .returning({ id: memberships.id });
+
+            if (createdMembership?.id) {
+              membershipIdForClient = createdMembership.id;
+            } else {
+              const [existingMembership] = await tx
+                .select({ id: memberships.id })
+                .from(memberships)
+                .where(and(
+                  eq(memberships.branchId, data.branchId),
+                  eq(memberships.userId, matchedClient.userId),
+                ))
+                .limit(1);
+              membershipIdForClient = existingMembership?.id ?? null;
+            }
+          }
+
+          if (!membershipIdForClient) {
+            throw new Error("QUICK_CHARGE_CLIENT_SCOPE_CONFLICT");
+          }
+
+          const lockedMembership = await this.lockMembershipTx(tx, membershipIdForClient);
+          if (!lockedMembership || lockedMembership.branchId !== data.branchId || lockedMembership.userId !== matchedClient.userId) {
+            throw new Error("QUICK_CHARGE_CLIENT_SCOPE_CONFLICT");
+          }
+
+          if (lockedMembership.status === "left") {
+            const [reactivated] = await tx
+              .update(memberships)
+              .set(buildMembershipActivePatch("admin_created"))
+              .where(and(
+                eq(memberships.id, lockedMembership.id),
+                eq(memberships.branchId, data.branchId),
+              ))
+              .returning({ id: memberships.id });
+            if (!reactivated) {
+              throw new Error("QUICK_CHARGE_CLIENT_SCOPE_CONFLICT");
+            }
+            clientAction = "reactivated";
+          } else {
+            clientAction = "matched";
+          }
+
+          clientUserId = matchedClient.userId;
+          membershipId = membershipIdForClient;
+          clientDisplayName = `${matchedClient.name}${matchedClient.lastName ? ` ${matchedClient.lastName}` : ""}`.trim();
+        } else {
+          const branchToken = data.branchId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12) || "branch";
+          const phoneToken = normalizedPhone?.slice(-10) || crypto.randomBytes(4).toString("hex");
+          const uniqueToken = crypto.randomBytes(12).toString("hex");
+          const generatedEmail = `crm+${branchToken}.${phoneToken}.${uniqueToken}@crm.webcool.local`;
+
+          const [newUser] = await tx
+            .insert(users)
+            .values({
+              email: generatedEmail,
+              passwordHash: data.crmPasswordHash,
+              role: "CUSTOMER",
+              name: data.firstName || customerName,
+              lastName: data.lastName,
+              phone: normalizedPhone,
+              authProvider: "crm",
+            })
+            .returning();
+          const [membership] = await tx
+            .insert(memberships)
+            .values({
+              userId: newUser.id,
+              branchId: data.branchId,
+              status: "active",
+              clientStatus: "active",
+              isFavorite: false,
+              source: "admin_created",
+            })
+            .returning();
+
+          clientUserId = newUser.id;
+          membershipId = membership.id;
+          clientDisplayName = `${newUser.name}${newUser.lastName ? ` ${newUser.lastName}` : ""}`.trim();
+          clientAction = "created";
+        }
+
+        await this.upsertBranchClientCrmTx(tx, data.branchId, clientUserId, { lastVisit: new Date() });
+
+        const financeOutcome = await this.createBranchFinanceEntryTx(tx, {
+          branchId: data.branchId,
+          type: "income",
+          category: "servicio",
+          concept: plan.name,
+          amount: (taxSnapshot.finalTotalCents / 100).toFixed(2),
+          paymentMethod: normalizedPaymentMethod,
+          clientUserId,
+          clientName: clientDisplayName,
+          notes: normalizedNote ?? "Ingreso automático por cobro rápido de servicio individual",
+          entryDate: data.entryDate,
+          source: QUICK_CHARGE_OPERATION_DOMAIN,
+          sourceId: operationKey,
+          metadata: {
+            planId: plan.id,
+            planName: plan.name,
+            cycleMonths: plan.cycleMonths,
+            durationDays: plan.durationDays,
+            classLimit: plan.classLimit,
+            quickCharge: true,
+            saleKind: "single_session",
+            matchedByPhone: !!matchedClient,
+            clientAction,
+            normalizedPhone,
+            taxMode: taxSnapshot.taxMode,
+            taxRate: taxSnapshot.taxRate,
+            taxConfigured: !taxSnapshot.isLegacy,
+            basePriceCents: taxSnapshot.basePriceCents,
+            subtotalBeforeTaxCents: taxSnapshot.subtotalBeforeTaxCents,
+            taxableSubtotalCents: taxSnapshot.taxableSubtotalCents,
+            taxTotalCents: taxSnapshot.taxTotalCents,
+            finalTotalCents: taxSnapshot.finalTotalCents,
+            quickChargeOperationVersion: QUICK_CHARGE_OPERATION_SNAPSHOT_VERSION,
+            quickChargeOperationKey: operationKey,
+            quickChargePayloadFingerprint: payloadFingerprint,
+            quickChargePlanId: plan.id,
+            quickChargeClientUserId: clientUserId,
+            quickChargeMembershipId: membershipId,
+            quickChargeClientAction: clientAction,
+          },
+          createdBy: data.actorUserId,
+        } as InsertBranchFinanceEntry);
+
+        if (!financeOutcome.created) {
+          throw new QuickChargeIdempotencyError(QUICK_CHARGE_OPERATION_KEY_CONFLICT);
+        }
+
+        await this.createAuditLogTx(tx, {
+          actorUserId: data.actorUserId,
+          action: "QUICK_CHARGE_SINGLE_SESSION",
+          branchId: data.branchId,
+          metadata: {
+            operationKey,
+            payloadFingerprint,
+            operationVersion: QUICK_CHARGE_OPERATION_SNAPSHOT_VERSION,
+            planId: plan.id,
+            membershipId,
+            userId: clientUserId,
+            basePriceCents: taxSnapshot.basePriceCents,
+            taxMode: taxSnapshot.taxMode,
+            taxRate: taxSnapshot.taxRate,
+            taxTotalCents: taxSnapshot.taxTotalCents,
+            finalTotalCents: taxSnapshot.finalTotalCents,
+            financeEntryId: financeOutcome.entry.id,
+            clientAction,
+          },
+        });
+
+        return {
+          operationKey,
+          financeEntry: financeOutcome.entry,
+          client: {
+            userId: clientUserId,
+            membershipId,
+            displayName: clientDisplayName,
+            action: clientAction,
+          },
+        };
+      },
+    });
+
+    return {
+      ...committed.result,
+      replayed: committed.replayed,
+    };
   }
 
   async updateBranchFinanceEntry(branchId: string, entryId: string, data: Partial<InsertBranchFinanceEntry>): Promise<BranchFinanceEntryRow | undefined> {

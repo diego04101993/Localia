@@ -37,12 +37,14 @@ import {
 } from "@/components/ui/dialog";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { invalidateBranchMembershipQueries } from "@/lib/branch-dashboard-cache";
+import { useStableOperationKey } from "@/lib/stable-operation-key";
 import { useToast } from "@/hooks/use-toast";
 import {
   computeMembershipPlanChargeSnapshot,
   type MembershipPlanTaxMode,
   resolveMembershipPlanTaxConfig,
 } from "@shared/membership-plan-tax";
+import { serializeQuickChargeCanonicalPayload } from "@shared/quick-charge";
 
 interface MembershipPlan {
   id: string;
@@ -538,27 +540,27 @@ function QuickChargeDialog({
   const [paymentMethod, setPaymentMethod] =
     useState<(typeof QUICK_CHARGE_PAYMENT_METHOD_OPTIONS)[number]["value"]>("efectivo");
   const [note, setNote] = useState("");
-  const [requestId, setRequestId] = useState(() => crypto.randomUUID());
+  const quickChargeOperation = useStableOperationKey();
 
   const resetForm = () => {
     setCustomerName("");
     setWhatsapp("");
     setPaymentMethod("efectivo");
     setNote("");
-    setRequestId(crypto.randomUUID());
+    quickChargeOperation.reset();
   };
 
   const mutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (payload: {
+      customerName: string;
+      whatsapp: string | null;
+      paymentMethod: (typeof QUICK_CHARGE_PAYMENT_METHOD_OPTIONS)[number]["value"];
+      note: string | null;
+      entryDate: string;
+      operationKey: string;
+    }) => {
       if (!plan) throw new Error("No hay servicio seleccionado");
-      const response = await apiRequest("POST", `/api/branch/plans/${plan.id}/quick-charge`, {
-        customerName: customerName.trim(),
-        whatsapp: whatsapp.trim() || null,
-        paymentMethod,
-        note: note.trim() || null,
-        entryDate: new Date().toLocaleDateString("en-CA"),
-        requestId,
-      });
+      const response = await apiRequest("POST", `/api/branch/plans/${plan.id}/quick-charge`, payload);
       return response.json();
     },
     onSuccess: async (data: any) => {
@@ -582,6 +584,31 @@ function QuickChargeDialog({
     },
   });
 
+  const handleQuickChargeSubmit = async () => {
+    if (!plan || !customerName.trim()) return;
+
+    const payload = {
+      customerName: customerName.trim(),
+      whatsapp: whatsapp.trim() || null,
+      paymentMethod,
+      note: note.trim() || null,
+      entryDate: new Date().toLocaleDateString("en-CA", { timeZone: "America/Mexico_City" }),
+    };
+    const fingerprint = serializeQuickChargeCanonicalPayload({
+      planId: plan.id,
+      ...payload,
+    });
+    const attempt = quickChargeOperation.begin(fingerprint);
+    if (!attempt.allowed) return;
+
+    try {
+      await mutation.mutateAsync({ ...payload, operationKey: attempt.key });
+      quickChargeOperation.markSuccess(fingerprint);
+    } catch {
+      quickChargeOperation.markError(fingerprint);
+    }
+  };
+
   const chargeSnapshot = plan ? getPlanChargeSnapshot(plan) : null;
   const chargeTotalCents = chargeSnapshot?.finalTotalCents ?? plan?.price ?? 0;
 
@@ -589,6 +616,7 @@ function QuickChargeDialog({
     <Dialog
       open={open}
       onOpenChange={(nextOpen) => {
+        if (!nextOpen && mutation.isPending) return;
         if (!nextOpen) resetForm();
         onOpenChange(nextOpen);
       }}
@@ -635,7 +663,7 @@ function QuickChargeDialog({
               {chargeSnapshot ? (
                 chargeSnapshot.isLegacy ? (
                   <div className="mt-3 rounded-xl border border-dashed border-muted-foreground/30 bg-background/80 p-3 text-xs text-muted-foreground">
-                    Sin configuraciÃ³n fiscal: este cobro rÃ¡pido usarÃ¡ exactamente el precio actual del plan.
+                    Sin configuración fiscal: este cobro rápido usará exactamente el precio actual del plan.
                   </div>
                 ) : (
                   <div className="mt-3 grid gap-2 rounded-xl border bg-background/80 p-3 text-xs text-muted-foreground sm:grid-cols-2">
@@ -718,17 +746,23 @@ function QuickChargeDialog({
         )}
 
         <DialogFooter className="gap-2 border-t pt-4 max-md:sticky max-md:bottom-0 max-md:z-10 max-md:-mx-4 max-md:bg-background/95 max-md:px-4 max-md:pb-[calc(env(safe-area-inset-bottom)+0.5rem)] max-md:backdrop-blur">
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)} data-testid="button-cancel-quick-charge">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={mutation.isPending}
+            data-testid="button-cancel-quick-charge"
+          >
             Cancelar
           </Button>
           <Button
             type="button"
-            onClick={() => mutation.mutate()}
+            onClick={handleQuickChargeSubmit}
             disabled={mutation.isPending || !customerName.trim() || !plan}
             data-testid="button-submit-quick-charge"
           >
             {mutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CreditCard className="mr-2 h-4 w-4" />}
-            Cobrar
+            {mutation.isPending ? "Procesando cobro..." : "Cobrar"}
           </Button>
         </DialogFooter>
       </DialogContent>

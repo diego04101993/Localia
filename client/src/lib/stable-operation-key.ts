@@ -1,65 +1,67 @@
 import { useCallback, useRef } from "react";
 
-type OperationAttemptState = {
+export type OperationAttemptState = {
   fingerprint: string;
   key: string;
   inFlight: boolean;
 };
 
+export function beginStableOperationAttempt(
+  current: OperationAttemptState | null,
+  fingerprint: string,
+  createKey: () => string = () => crypto.randomUUID(),
+): {
+  state: OperationAttemptState;
+  attempt: { allowed: boolean; key: string };
+} {
+  if (current?.inFlight) {
+    return {
+      state: current,
+      attempt: { allowed: false, key: current.key },
+    };
+  }
+
+  const state = !current || current.fingerprint !== fingerprint
+    ? { fingerprint, key: createKey(), inFlight: true }
+    : { ...current, inFlight: true };
+
+  return {
+    state,
+    attempt: { allowed: true, key: state.key },
+  };
+}
+
+export function markStableOperationError(
+  current: OperationAttemptState | null,
+  fingerprint: string,
+): OperationAttemptState | null {
+  if (!current || current.fingerprint !== fingerprint) return current;
+  return { ...current, inFlight: false };
+}
+
+export function markStableOperationSuccess(
+  current: OperationAttemptState | null,
+  fingerprint: string,
+): OperationAttemptState | null {
+  if (!current || current.fingerprint !== fingerprint) return current;
+  return null;
+}
+
 export function useStableOperationKey() {
   const attemptRef = useRef<OperationAttemptState | null>(null);
 
   const begin = useCallback((fingerprint: string) => {
-    const current = attemptRef.current;
-
-    if (current?.inFlight) {
-      return {
-        allowed: false,
-        key: current.key,
-      };
-    }
-
-    if (!current || current.fingerprint !== fingerprint) {
-      attemptRef.current = {
-        fingerprint,
-        key: crypto.randomUUID(),
-        inFlight: true,
-      };
-
-      return {
-        allowed: true,
-        key: attemptRef.current.key,
-      };
-    }
-
-    attemptRef.current = {
-      ...current,
-      inFlight: true,
-    };
-
-    return {
-      allowed: true,
-      key: current.key,
-    };
+    const next = beginStableOperationAttempt(attemptRef.current, fingerprint);
+    attemptRef.current = next.state;
+    return next.attempt;
   }, []);
 
   const markError = useCallback((fingerprint: string) => {
-    if (!attemptRef.current || attemptRef.current.fingerprint !== fingerprint) {
-      return;
-    }
-
-    attemptRef.current = {
-      ...attemptRef.current,
-      inFlight: false,
-    };
+    attemptRef.current = markStableOperationError(attemptRef.current, fingerprint);
   }, []);
 
   const markSuccess = useCallback((fingerprint: string) => {
-    if (!attemptRef.current || attemptRef.current.fingerprint !== fingerprint) {
-      return;
-    }
-
-    attemptRef.current = null;
+    attemptRef.current = markStableOperationSuccess(attemptRef.current, fingerprint);
   }, []);
 
   const reset = useCallback(() => {

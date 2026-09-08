@@ -177,6 +177,12 @@ import {
 } from "@shared/schema";
 import { z } from "zod";
 import { normalizeSearchText } from "./search-utils";
+import {
+  maskQuickChargeOperationKey,
+  QuickChargeIdempotencyError,
+  QUICK_CHARGE_INCOMPLETE_REPLAY_CONFLICT,
+  QUICK_CHARGE_LEGACY_OPERATION_KEY_CONFLICT,
+} from "./quick-charge-operation";
 
 const DEFAULT_CANCEL_CUTOFF_MINUTES = 180;
 const membershipBillingIdempotencyKeySchema = z.string().trim().min(8, "Idempotency key invalida").max(120, "Maximo 120 caracteres").optional();
@@ -987,13 +993,6 @@ async function maybeLinkExistingBranchClientToAuthenticatedUser(
   }
 
   return { membership: null, blocked: null };
-}
-
-function buildCrmPlaceholderEmail(branchId: string, normalizedPhone: string | null): string {
-  const branchToken = branchId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12) || "branch";
-  const phoneToken = normalizedPhone?.slice(-10) || crypto.randomBytes(4).toString("hex");
-  const uniqueToken = crypto.randomBytes(3).toString("hex");
-  return `crm+${branchToken}.${phoneToken}.${uniqueToken}@crm.webcool.local`;
 }
 
 function getMxIsoDate(date = new Date()): string {
@@ -6964,20 +6963,6 @@ if (!user) {
     }
 
     try {
-      const plan = await storage.getPlan(planId);
-      if (!plan || plan.branchId !== actor.branchId) {
-        return res.status(404).json({ message: "Servicio o plan no encontrado" });
-      }
-      if (!plan.isActive) {
-        return res.status(400).json({ message: "Este servicio o plan está desactivado" });
-      }
-      if ((plan.cycleMonths ?? 1) !== 0) {
-        return res.status(400).json({ message: "El cobro rápido solo está disponible para clase suelta o sesión única" });
-      }
-      if (plan.price <= 0) {
-        return res.status(400).json({ message: "El servicio debe tener precio mayor a 0 para registrarlo en Caja" });
-      }
-
       const customerName = normalizeOptionalText(result.data.customerName);
       if (!customerName) {
         return res.status(400).json({ message: "El nombre del cliente es obligatorio" });
@@ -6988,157 +6973,84 @@ if (!user) {
         return res.status(400).json({ message: "El WhatsApp no tiene un formato válido" });
       }
 
-      if (result.data.requestId) {
-        const existingEntry = await storage.findBranchFinanceEntryBySource(actor.branchId, "service_sale", result.data.requestId);
-        if (existingEntry) {
-          return res.status(200).json({ success: true, duplicate: true, financeEntry: existingEntry });
-        }
-      }
-
-      const taxSnapshot = computeMembershipPlanChargeSnapshot({
-        priceCents: plan.price,
-        taxMode: plan.taxMode,
-        taxRate: plan.taxRate,
-      });
-
-      const existingClients = await storage.getBranchClients(actor.branchId, true);
-      const phoneMatches = normalizedPhone
-        ? existingClients.filter((client: any) => normalizeMxPhoneLike(client.phone) === normalizedPhone)
-        : [];
-      if (phoneMatches.length > 1) {
-        await storage.createAuditLog({
-          actorUserId: actor.id,
-          action: "QUICK_CHARGE_DUPLICATE_PHONE_CONFLICT",
-          branchId: actor.branchId,
-          metadata: {
-            planId,
-            normalizedPhone,
-            candidateUserIds: phoneMatches.map((client: any) => client.userId),
-          },
-        });
-        return res.status(409).json({
-          code: "AMBIGUOUS_DUPLICATE",
-          message: "Ya existen varios clientes con ese telefono en esta sucursal. Revisa la base de clientes antes de cobrar.",
-        });
-      }
-      const matchedClient = phoneMatches[0];
-
-      let clientUserId = matchedClient?.userId as string | undefined;
-      let membershipId = matchedClient?.membershipId as string | undefined;
-      let clientDisplayName = matchedClient
-        ? `${matchedClient.name}${matchedClient.lastName ? ` ${matchedClient.lastName}` : ""}`.trim()
-        : customerName;
-      let clientAction: "matched" | "reactivated" | "created" = matchedClient ? "matched" : "created";
-
-      if (matchedClient && matchedClient.membershipStatus === "left" && membershipId) {
-        await storage.updateMembership(membershipId, {
-          ...buildMembershipActivePatch("admin_created"),
-        });
-        clientAction = "reactivated";
-      }
-
-      if (!clientUserId || !membershipId) {
-        const generatedPassword = generateSecurePassword(24);
-        const passwordHash = await bcrypt.hash(generatedPassword, 10);
-        const { firstName, lastName } = splitFullName(customerName);
-
-        let generatedEmail = buildCrmPlaceholderEmail(actor.branchId, normalizedPhone);
-        while (await storage.getUserByEmail(generatedEmail)) {
-          generatedEmail = buildCrmPlaceholderEmail(actor.branchId, normalizedPhone);
-        }
-
-        const newUser = await storage.createUser({
-          email: generatedEmail,
-          passwordHash,
-          role: "CUSTOMER",
-          name: firstName || customerName,
-          lastName: lastName ?? null,
-          phone: normalizedPhone,
-          authProvider: "crm",
-        } as any);
-
-        const membership = await storage.createMembership({
-          userId: newUser.id,
-          branchId: actor.branchId,
-          status: "active",
-          isFavorite: false,
-          source: "admin_created",
-        });
-
-        clientUserId = newUser.id;
-        membershipId = membership.id;
-        clientDisplayName = `${newUser.name}${newUser.lastName ? ` ${newUser.lastName}` : ""}`.trim();
-        clientAction = "created";
-      }
-
-      await storage.updateBranchClientCrm(actor.branchId, clientUserId, { lastVisit: new Date() });
-
-      const requestSourceId = result.data.requestId || crypto.randomUUID();
-      const financeEntry = await storage.createBranchFinanceEntry({
+      const operationKey = (result.data.operationKey ?? result.data.requestId)!.trim();
+      const { firstName, lastName } = splitFullName(customerName);
+      const crmPasswordHash = await bcrypt.hash(generateSecurePassword(24), 10);
+      const operation = await storage.commitQuickChargeOperation({
         branchId: actor.branchId,
-        type: "income",
-        category: "servicio",
-        concept: plan.name,
-        amount: (taxSnapshot.finalTotalCents / 100).toFixed(2),
-        paymentMethod: result.data.paymentMethod,
-        clientUserId,
-        clientName: clientDisplayName,
-        notes: normalizeOptionalText(result.data.note) ?? "Ingreso automático por cobro rápido de servicio individual",
-        entryDate: result.data.entryDate || getMxIsoDate(),
-        source: "service_sale",
-        sourceId: requestSourceId,
-        metadata: {
-          planId: plan.id,
-          planName: plan.name,
-          cycleMonths: plan.cycleMonths,
-          durationDays: plan.durationDays,
-          classLimit: plan.classLimit,
-          quickCharge: true,
-          saleKind: "single_session",
-          matchedByPhone: !!matchedClient,
-          clientAction,
-          normalizedPhone,
-          taxMode: taxSnapshot.taxMode,
-          taxRate: taxSnapshot.taxRate,
-          taxConfigured: !taxSnapshot.isLegacy,
-          basePriceCents: taxSnapshot.basePriceCents,
-          subtotalBeforeTaxCents: taxSnapshot.subtotalBeforeTaxCents,
-          taxableSubtotalCents: taxSnapshot.taxableSubtotalCents,
-          taxTotalCents: taxSnapshot.taxTotalCents,
-          finalTotalCents: taxSnapshot.finalTotalCents,
-        },
-        createdBy: actor.id,
-      } as any);
-
-      await storage.createAuditLog({
         actorUserId: actor.id,
-        action: "QUICK_CHARGE_SINGLE_SESSION",
-        branchId: actor.branchId,
-        metadata: {
-          planId: plan.id,
-          membershipId,
-          userId: clientUserId,
-          basePriceCents: taxSnapshot.basePriceCents,
-          taxMode: taxSnapshot.taxMode,
-          taxRate: taxSnapshot.taxRate,
-          taxTotalCents: taxSnapshot.taxTotalCents,
-          finalTotalCents: taxSnapshot.finalTotalCents,
-          financeEntryId: financeEntry.id,
-          clientAction,
-        },
+        planId,
+        operationKey,
+        customerName,
+        firstName: firstName || customerName,
+        lastName,
+        normalizedPhone,
+        paymentMethod: result.data.paymentMethod,
+        note: normalizeOptionalText(result.data.note) ?? null,
+        entryDate: result.data.entryDate || getMxIsoDate(),
+        crmPasswordHash,
       });
 
-      res.status(201).json({
+      res.status(operation.replayed ? 200 : 201).json({
         success: true,
-        client: {
-          userId: clientUserId,
-          membershipId,
-          displayName: clientDisplayName,
-          action: clientAction,
-        },
-        financeEntry,
+        duplicate: operation.replayed,
+        replayed: operation.replayed,
+        operationKey: operation.operationKey,
+        client: operation.client,
+        financeEntry: operation.financeEntry,
       });
     } catch (err: any) {
+      if (err instanceof QuickChargeIdempotencyError) {
+        if (err.code === QUICK_CHARGE_INCOMPLETE_REPLAY_CONFLICT) {
+          console.error("[QUICK_CHARGE_REPLAY_INCOMPLETE]", {
+            branchId: actor.branchId,
+            operationKey: maskQuickChargeOperationKey(
+              String(result.data.operationKey ?? result.data.requestId ?? ""),
+            ),
+          });
+        }
+        return res.status(409).json({
+          code: err.code,
+          message: err.code === QUICK_CHARGE_INCOMPLETE_REPLAY_CONFLICT
+            ? "La operación ya existe, pero su resultado persistido está incompleto. Contacta a soporte antes de reintentar."
+            : err.code === QUICK_CHARGE_LEGACY_OPERATION_KEY_CONFLICT
+              ? "La clave de operación ya existe, pero su contenido histórico no puede verificarse de forma segura."
+              : "La clave de operación ya fue utilizada con datos diferentes.",
+        });
+      }
+      if (err instanceof Error && err.message === "QUICK_CHARGE_DUPLICATE_PHONE_CONFLICT") {
+        return res.status(409).json({
+          code: "AMBIGUOUS_DUPLICATE",
+          message: "Ya existen varios clientes con ese teléfono en esta sucursal. Revisa la base de clientes antes de cobrar.",
+        });
+      }
+      if (err instanceof Error && err.message === "QUICK_CHARGE_CLIENT_SCOPE_CONFLICT") {
+        return res.status(409).json({
+          code: "CLIENT_SCOPE_CONFLICT",
+          message: "El cliente cambió mientras se procesaba el cobro. Revisa sus datos e intenta nuevamente.",
+        });
+      }
+      if (
+        err instanceof Error
+        && ["QUICK_CHARGE_OPERATION_KEY_INVALID", "QUICK_CHARGE_PAYLOAD_INVALID"].includes(err.message)
+      ) {
+        return res.status(400).json({ message: "Los datos del cobro no son válidos" });
+      }
+      if (err instanceof Error && err.message === "QUICK_CHARGE_PLAN_NOT_FOUND") {
+        return res.status(404).json({ message: "Servicio o plan no encontrado" });
+      }
+      if (err instanceof Error && err.message === "QUICK_CHARGE_PLAN_INACTIVE") {
+        return res.status(400).json({ message: "Este servicio o plan está desactivado" });
+      }
+      if (err instanceof Error && err.message === "QUICK_CHARGE_PLAN_NOT_SINGLE_SESSION") {
+        return res.status(400).json({ message: "El cobro rápido solo está disponible para clase suelta o sesión única" });
+      }
+      if (err instanceof Error && err.message === "QUICK_CHARGE_PLAN_PRICE_INVALID") {
+        return res.status(400).json({ message: "El servicio debe tener precio mayor a 0 para registrarlo en Caja" });
+      }
+      if (err?.code === "57014") {
+        return res.status(503).json({ message: "El cobro está siendo procesado. Intenta nuevamente con la misma operación." });
+      }
       if (
         err instanceof Error
         && [
