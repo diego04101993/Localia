@@ -219,6 +219,12 @@ import {
   QUICK_CHARGE_OPERATION_KEY_CONFLICT,
   QUICK_CHARGE_LEGACY_OPERATION_KEY_CONFLICT,
 } from "./quick-charge-operation";
+import {
+  commitLockedMembershipPlanRemoval,
+  MembershipPlanRemovalError,
+  MEMBERSHIP_PLAN_REMOVAL_BUSY,
+  type MembershipPlanRemovalOperationResult,
+} from "./membership-plan-removal";
 
 const BRANCH_CLIENT_PASSWORD_RESET_COOLDOWN_MS = 60_000;
 
@@ -403,6 +409,8 @@ const CRM_ACTIVITY_WINDOW_DAYS = 30;
 const CRM_ACTIVITY_WINDOW_MS = CRM_ACTIVITY_WINDOW_DAYS * 24 * 60 * 60 * 1000;
 const BRANCH_CLIENT_ACCESS_LOCK_TIMEOUT_MS = 5_000;
 const BRANCH_CLIENT_ACCESS_STATEMENT_TIMEOUT_MS = 20_000;
+const MEMBERSHIP_PLAN_REMOVAL_LOCK_TIMEOUT_MS = 5_000;
+const MEMBERSHIP_PLAN_REMOVAL_STATEMENT_TIMEOUT_MS = 20_000;
 
 function buildLocalAccessProvisioningPatch(
   user: {
@@ -2406,7 +2414,12 @@ export interface IStorage {
     expiresAt: Date | null,
     startDate: Date,
   ): Promise<Membership | undefined>;
-  removePlanFromMembership(membershipId: string, branchId: string): Promise<Membership | undefined>;
+  commitRemoveMembershipPlanOperation(data: {
+    branchId: string;
+    membershipId: string;
+    actorUserId: string;
+    actorRole: string;
+  }): Promise<MembershipPlanRemovalOperationResult<Membership>>;
   commitLeaseMembershipAssignmentOperation(data: {
     branchId: string;
     membershipId: string;
@@ -2446,7 +2459,6 @@ export interface IStorage {
   }): Promise<BookingStatusTransitionResponse>;
   reconcilePastBookings(branchId: string): Promise<number>;
   getAllActiveBranchIds(): Promise<string[]>;
-  cancelFutureBookingsForUser(userId: string, branchId: string): Promise<number>;
   decrementClassesRemaining(membershipId: string): Promise<Membership | undefined>;
   getBranchClassSchedules(branchId: string): Promise<ClassSchedule[]>;
   createClassSchedule(data: InsertClassSchedule): Promise<ClassSchedule>;
@@ -7515,6 +7527,28 @@ export class DatabaseStorage implements IStorage {
     return membership;
   }
 
+  private async lockMembershipForBranchTx(
+    tx: any,
+    membershipId: string,
+    branchId: string,
+  ): Promise<Membership | undefined> {
+    await tx.execute(sql`
+      SELECT id
+      FROM memberships
+      WHERE id = ${membershipId}
+        AND branch_id = ${branchId}
+      FOR UPDATE
+    `);
+
+    const [membership] = await tx
+      .select()
+      .from(memberships)
+      .where(and(eq(memberships.id, membershipId), eq(memberships.branchId, branchId)))
+      .limit(1);
+
+    return membership;
+  }
+
   private async getPlanTx(tx: any, planId: string): Promise<MembershipPlan | undefined> {
     const [plan] = await tx
       .select()
@@ -8722,20 +8756,97 @@ export class DatabaseStorage implements IStorage {
     );
   }
 
-  async removePlanFromMembership(membershipId: string, branchId: string): Promise<Membership | undefined> {
-    return db.transaction(async (tx) => {
-      const membership = await this.lockMembershipTx(tx, membershipId);
-      if (!membership || membership.branchId !== branchId) {
-        return undefined;
-      }
+  private async removePlanFromMembershipTx(
+    executor: any,
+    membership: Membership,
+    branchId: string,
+  ): Promise<Membership | undefined> {
+    const [updated] = await executor
+      .update(memberships)
+      .set({
+        planId: null,
+        classesRemaining: null,
+        classesTotal: null,
+        expiresAt: null,
+        membershipStartDate: null,
+        membershipEndDate: null,
+        paidAt: null,
+        renewedFromId: null,
+      })
+      .where(and(
+        eq(memberships.id, membership.id),
+        eq(memberships.branchId, branchId),
+        eq(memberships.planId, membership.planId!),
+      ))
+      .returning();
+    return updated;
+  }
 
-      const [updated] = await tx
-        .update(memberships)
-        .set({ planId: null, classesRemaining: null, classesTotal: null, expiresAt: null, membershipStartDate: null, membershipEndDate: null, paidAt: null, renewedFromId: null })
-        .where(and(eq(memberships.id, membershipId), eq(memberships.branchId, branchId)))
-        .returning();
-      return updated;
-    });
+  async commitRemoveMembershipPlanOperation(data: {
+    branchId: string;
+    membershipId: string;
+    actorUserId: string;
+    actorRole: string;
+  }): Promise<MembershipPlanRemovalOperationResult<Membership>> {
+    try {
+      return await commitLockedMembershipPlanRemoval({
+        branchId: data.branchId,
+        membershipId: data.membershipId,
+        actorUserId: data.actorUserId,
+        actorRole: data.actorRole,
+        transaction: (work) => db.transaction(async (tx) => {
+          await tx.execute(
+            sql.raw(`SET LOCAL lock_timeout = '${MEMBERSHIP_PLAN_REMOVAL_LOCK_TIMEOUT_MS}ms'`),
+          );
+          await tx.execute(
+            sql.raw(`SET LOCAL statement_timeout = '${MEMBERSHIP_PLAN_REMOVAL_STATEMENT_TIMEOUT_MS}ms'`),
+          );
+          return work(tx);
+        }),
+        validateActorScope: async (tx: any, actorUserId, actorRole, branchId) => {
+          const [actor] = await tx
+            .select({ role: users.role, branchId: users.branchId })
+            .from(users)
+            .where(eq(users.id, actorUserId))
+            .limit(1);
+
+          if (!actor || actor.role !== actorRole) return false;
+          if (actor.role === "SUPER_ADMIN") return true;
+          return actor.role === "BRANCH_ADMIN" && actor.branchId === branchId;
+        },
+        lockMembership: (tx, membershipId, branchId) =>
+          this.lockMembershipForBranchTx(tx, membershipId, branchId),
+        loadPlan: (tx, planId) => this.getPlanTx(tx, planId),
+        hasOpenLeaseContract: async (tx, membershipId, branchId) =>
+          !!(await this.getOpenLeaseContractForMembershipTx(tx, branchId, membershipId)),
+        removePlan: (tx, membership) =>
+          this.removePlanFromMembershipTx(tx, membership, data.branchId),
+        cancelApplicableFutureBookings: (tx, membership) =>
+          this.cancelApplicableFutureBookingsForPlanRemovalTx(tx, membership.userId, data.branchId),
+        createAudit: async (tx, audit) => {
+          await this.createAuditLogTx(tx, {
+            actorUserId: audit.actorUserId,
+            action: "REMOVE_PLAN",
+            branchId: audit.branchId,
+            metadata: {
+              clientUserId: audit.clientUserId,
+              membershipId: audit.membershipId,
+              previousPlanId: audit.previousPlanId,
+              previousPlanName: audit.previousPlanName,
+              before: audit.before,
+              after: audit.after,
+              cancelledBookings: audit.cancelledBookings,
+              result: "success",
+            },
+          });
+        },
+      });
+    } catch (error: any) {
+      if (error?.code === "55P03" || error?.code === "57014") {
+        throw new MembershipPlanRemovalError(MEMBERSHIP_PLAN_REMOVAL_BUSY);
+      }
+      throw error;
+    }
   }
 
   async getMembershipByUserAndBranch(userId: string, branchId: string): Promise<Membership | undefined> {
@@ -9365,8 +9476,48 @@ export class DatabaseStorage implements IStorage {
     return result.length;
   }
 
-  async cancelFutureBookingsForUser(userId: string, branchId: string): Promise<number> {
-    return this.cancelFutureBookingsForUserTx(db, userId, branchId);
+  private async cancelApplicableFutureBookingsForPlanRemovalTx(
+    executor: any,
+    userId: string,
+    branchId: string,
+  ): Promise<number> {
+    const now = getMxLocalDateAndTime();
+    const candidates = await executor
+      .select({
+        id: classBookings.id,
+        bookingDate: classBookings.bookingDate,
+        startTime: classSchedules.startTime,
+      })
+      .from(classBookings)
+      .innerJoin(classSchedules, eq(classBookings.classScheduleId, classSchedules.id))
+      .where(and(
+        eq(classBookings.userId, userId),
+        eq(classBookings.branchId, branchId),
+        eq(classSchedules.branchId, branchId),
+        eq(classBookings.status, "confirmed"),
+        isNull(classBookings.classConsumed),
+        gte(classBookings.bookingDate, now.today),
+      ));
+
+    const futureBookingIds = candidates
+      .filter((booking: { bookingDate: string; startTime: string }) =>
+        !hasMxClassStarted(booking.bookingDate, booking.startTime, now))
+      .map((booking: { id: string }) => booking.id);
+
+    if (futureBookingIds.length === 0) return 0;
+
+    const cancelled = await executor
+      .update(classBookings)
+      .set({ status: "cancelled" as any })
+      .where(and(
+        inArray(classBookings.id, futureBookingIds),
+        eq(classBookings.userId, userId),
+        eq(classBookings.branchId, branchId),
+        eq(classBookings.status, "confirmed"),
+        isNull(classBookings.classConsumed),
+      ))
+      .returning({ id: classBookings.id });
+    return cancelled.length;
   }
 
   async decrementClassesRemaining(membershipId: string): Promise<Membership | undefined> {

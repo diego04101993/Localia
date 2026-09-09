@@ -186,6 +186,7 @@ import {
 
 const DEFAULT_CANCEL_CUTOFF_MINUTES = 180;
 const membershipBillingIdempotencyKeySchema = z.string().trim().min(8, "Idempotency key invalida").max(120, "Maximo 120 caracteres").optional();
+const membershipIdParamSchema = z.string().trim().min(1, "ID de membresia invalido").max(36, "ID de membresia invalido");
 const membershipFinancePayloadSchema = z.object({
   paymentMethod: z.enum(branchFinancePaymentMethodValues).nullable().optional(),
   idempotencyKey: membershipBillingIdempotencyKeySchema,
@@ -1084,6 +1085,15 @@ function handleMembershipBillingRouteError(
   }
   if (code === "MEMBERSHIP_NOT_FOUND") {
     return res.status(404).json({ message: "Membresía no encontrada" });
+  }
+  if (code === "MEMBERSHIP_PLAN_REMOVAL_FORBIDDEN") {
+    return res.status(403).json({ message: "No tienes acceso a esta membresía" });
+  }
+  if (code === "MEMBERSHIP_PLAN_REMOVAL_STATE_CONFLICT") {
+    return res.status(409).json({ message: "El estado actual de la membresía no permite quitar el plan de forma segura" });
+  }
+  if (code === "MEMBERSHIP_PLAN_REMOVAL_BUSY") {
+    return res.status(409).json({ message: "Esta membresía está siendo procesada. Intenta nuevamente en un momento." });
   }
   if (code === "START_DATE_IN_FUTURE") {
     return res.status(400).json({ message: "La fecha de inicio no puede estar en el futuro" });
@@ -7124,30 +7134,27 @@ if (!user) {
 
   app.delete("/api/branch/memberships/:id/plan", requireBranchAdmin, async (req, res) => {
     const actor = req.user as any;
-    const membershipId = req.params.id as string;
+    const parsedMembershipId = membershipIdParamSchema.safeParse(req.params.id);
+    if (!parsedMembershipId.success) {
+      return res.status(400).json({ message: parsedMembershipId.error.issues[0]?.message || "ID de membresía inválido" });
+    }
+
+    const membershipId = parsedMembershipId.data;
     try {
-      const membership = await storage.removePlanFromMembership(membershipId, actor.branchId);
-      if (!membership) {
-        return res.status(404).json({ message: "Membresía no encontrada" });
-      }
-
-      const cancelled = await storage.cancelFutureBookingsForUser(membership.userId, actor.branchId);
-      if (cancelled > 0) {
-        console.log(`[PLAN] Cancelled ${cancelled} future bookings for user ${membership.userId} on plan removal`);
-      }
-
-      await storage.createAuditLog({
-        actorUserId: actor.id,
-        action: "REMOVE_PLAN",
+      const result = await storage.commitRemoveMembershipPlanOperation({
         branchId: actor.branchId,
-        metadata: { membershipId, cancelledBookings: cancelled },
+        membershipId,
+        actorUserId: actor.id,
+        actorRole: actor.role,
       });
+      if (result.cancelledBookings > 0) {
+        console.log(`[PLAN] Cancelled ${result.cancelledBookings} future bookings for user ${result.membership.userId} on plan removal`);
+      }
 
-      console.log(`[PLAN] Removed plan from membership ${membershipId} by ${actor.email}`);
-      res.json(membership);
+      console.log(`[PLAN] Removed plan from membership ${membershipId} by ${actor.email}${result.idempotentReplay ? " (idempotent replay)" : ""}`);
+      return res.json(result.membership);
     } catch (err: any) {
-      console.error(`[PLAN] Error removing:`, err.stack || err);
-      res.status(500).json({ message: "Error al quitar plan" });
+      return handleMembershipBillingRouteError(res, err, "[PLAN] Error removing", "Error al quitar plan");
     }
   });
 

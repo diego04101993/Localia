@@ -3327,8 +3327,21 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                         {profile.planStatus === "expired" ? "Vencido" : "Activo"}
                       </Badge>
                     </div>
-                    <Button variant="ghost" size="sm" className="h-10 w-full px-2 text-xs sm:h-6 sm:w-auto" onClick={() => removePlanMutation.mutate()} disabled={removePlanMutation.isPending} data-testid="button-remove-plan">
-                      <XCircle className="h-3 w-3 mr-1" /> Quitar
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-10 w-full px-2 text-xs sm:h-6 sm:w-auto"
+                      onClick={() => {
+                        if (!removePlanMutation.isPending) removePlanMutation.mutate();
+                      }}
+                      disabled={removePlanMutation.isPending}
+                      aria-busy={removePlanMutation.isPending}
+                      data-testid="button-remove-plan"
+                    >
+                      {removePlanMutation.isPending
+                        ? <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                        : <XCircle className="h-3 w-3 mr-1" />}
+                      {removePlanMutation.isPending ? "Quitando plan..." : "Quitar"}
                     </Button>
                   </div>
 
