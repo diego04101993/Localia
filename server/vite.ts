@@ -5,6 +5,7 @@ import viteConfig from "../vite.config";
 import fs from "fs";
 import path from "path";
 import { nanoid } from "nanoid";
+import { shouldServeSpaNavigation } from "./http-security";
 
 const viteLogger = createLogger();
 
@@ -32,6 +33,11 @@ export async function setupVite(server: Server, app: Express) {
   app.use(vite.middlewares);
 
   app.get("/{*path}", async (req, res, next) => {
+    if (!shouldServeSpaNavigation(req)) {
+      next();
+      return;
+    }
+
     const url = req.originalUrl;
 
     try {
@@ -55,4 +61,6 @@ export async function setupVite(server: Server, app: Express) {
       next(e);
     }
   });
+
+  return vite;
 }

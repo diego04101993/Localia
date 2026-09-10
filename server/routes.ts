@@ -1332,7 +1332,7 @@ function completeLoginSession(
       if (saveErr) return next(saveErr);
 
       if (process.env.SESSION_DEBUG_LOGS === "true") {
-        console.log(`[AUTH] Sesión ${loginLabel} creada para ${user.email} (${user.role}) :: sid=${req.sessionID}`);
+        console.log(`[AUTH] Sesión ${loginLabel} creada para ${user.email} (${user.role})`);
       }
 
       return res.status(statusCode).json(responseBody);
@@ -1870,7 +1870,14 @@ export async function registerRoutes(
   setupAuth(app);
 
   const express = (await import("express")).default;
-  app.use("/uploads", express.static(uploadsDir));
+  app.use("/uploads", express.static(uploadsDir, {
+    dotfiles: "deny",
+    fallthrough: true,
+    index: false,
+  }));
+  app.use("/uploads", (_req, res) => {
+    res.status(404).json({ message: "Archivo no encontrado" });
+  });
 
   app.post("/api/branch/upload", requireAuth, (req, res, next) => {
     const user = req.user as any;
@@ -2101,7 +2108,7 @@ if (!user) {
         return res.status(503).json({ message: err.message, code: "GOOGLE_AUTH_NOT_CONFIGURED" });
       }
       if (err instanceof GoogleAuthTokenError) {
-        console.warn("[GOOGLE_AUTH] token rejected:", err.message);
+        console.warn("[GOOGLE_AUTH] token rejected");
         return res.status(401).json({ message: err.message, code: "INVALID_GOOGLE_TOKEN" });
       }
       const errorCode = typeof (err as any)?.code === "string" ? (err as any).code : "";
@@ -2123,7 +2130,7 @@ if (!user) {
         errorMessage.toLowerCase().includes("token used too late") ||
         errorMessage.toLowerCase().includes("token used too early")
       ) {
-        console.warn("[GOOGLE_AUTH] invalid token:", errorMessage);
+        console.warn("[GOOGLE_AUTH] invalid token");
         return res.status(401).json({
           message: "No fue posible validar el token de Google",
           code: "INVALID_GOOGLE_TOKEN",
@@ -2284,8 +2291,11 @@ if (!user) {
         return res.status(503).json({ message: err.message, code: "FIREBASE_AUTH_NOT_CONFIGURED" });
       }
       if (err instanceof FirebaseAdminTokenError) {
-        console.warn("[APPLE_AUTH] token rejected:", err.message);
-        return res.status(401).json({ message: err.message, code: "INVALID_APPLE_TOKEN" });
+        console.warn("[APPLE_AUTH] token rejected");
+        return res.status(401).json({
+          message: "No fue posible validar el token de Apple",
+          code: "INVALID_APPLE_TOKEN",
+        });
       }
       next(err);
     }
@@ -2296,7 +2306,7 @@ if (!user) {
     req.logout((err) => {
       if (err) return res.status(500).json({ message: "Error al cerrar sesión" });
       if (process.env.SESSION_DEBUG_LOGS === "true" && actor?.email) {
-        console.log(`[AUTH] Sesión cerrada para ${actor.email} :: sid=${req.sessionID}`);
+        console.log(`[AUTH] Sesión cerrada para ${actor.email}`);
       }
       res.json({ message: "Sesión cerrada" });
     });

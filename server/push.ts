@@ -20,6 +20,7 @@ type PushSendResult = {
 };
 
 const PUSH_BATCH_SIZE = 500;
+let firebaseUnavailableWarningLogged = false;
 
 function normalizePushData(data?: PushData): Record<string, string> | undefined {
   if (!data) return undefined;
@@ -81,7 +82,10 @@ async function sendPushToTokens(tokens: string[], title: string, body: string, d
 
   const app = getFirebaseAdminApp();
   if (!app) {
-    console.log("Firebase no configurado, push omitido");
+    if (!firebaseUnavailableWarningLogged) {
+      console.warn("[PUSH] Firebase no configurado; los envíos push se omitirán");
+      firebaseUnavailableWarningLogged = true;
+    }
     return {
       attempted: normalizedTokens.length,
       sent: 0,
@@ -131,7 +135,7 @@ async function sendPushToTokens(tokens: string[], title: string, body: string, d
         const code = item.error?.code || null;
         console.error("Error enviando push", code || item.error?.message || "unknown_error");
         if (isInvalidTokenErrorCode(code)) {
-          console.error(`[PUSH] Token inválido, se omite: ${batch[index]}`);
+          console.error(`[PUSH] Token inválido, se omite (posición ${offset + index})`);
         }
       });
     } catch (err: any) {

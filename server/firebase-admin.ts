@@ -35,7 +35,7 @@ function loadServiceAccountFromEnv(): admin.ServiceAccount | null {
       const raw = fs.readFileSync(filePath, "utf8");
       return normalizeServiceAccount(JSON.parse(raw));
     } catch (err: any) {
-      console.error("[FIREBASE_ADMIN] FIREBASE_SERVICE_ACCOUNT_PATH invalido:", err?.message || err);
+      console.error("[FIREBASE_ADMIN] FIREBASE_SERVICE_ACCOUNT_PATH no se pudo cargar:", err?.code || "invalid_file");
       return null;
     }
   }
@@ -61,7 +61,7 @@ export function getFirebaseAdminApp(): admin.app.App | null {
           credential: admin.credential.cert(serviceAccount),
         });
   } catch (err: any) {
-    console.error("[FIREBASE_ADMIN] Error inicializando Firebase Admin:", err?.message || err);
+    console.error("[FIREBASE_ADMIN] Error inicializando Firebase Admin:", err?.code || err?.name || "configuration_error");
     firebaseApp = null;
   }
 

@@ -1,33 +1,39 @@
 import dotenv from "dotenv";
-import express, { type Request, Response, NextFunction } from "express";
+import express from "express";
 import { createServer } from "http";
+import path from "node:path";
 import {
   assertDevelopmentDatabaseSafety,
   getRuntimeDatabaseTarget,
   isRemoteDatabaseAllowedInDevelopment,
   shouldRunStartupMaintenance,
 } from "./runtime-safety";
+import {
+  apiNotFoundHandler,
+  checkPostgresReadiness,
+  createHttpErrorHandler,
+  createSensitiveRequestPathGuard,
+  generalNotFoundHandler,
+  JSON_BODY_LIMIT,
+  registerOperationalHealthRoutes,
+  registerPublicAuthRateLimits,
+  rejectSensitiveRequestPaths,
+  requestContextMiddleware,
+  sanitizeProductionJsonErrors,
+  summarizeJsonResponseForLog,
+} from "./http-security";
 
 dotenv.config();
 
 const app = express();
 const httpServer = createServer(app);
+app.disable("x-powered-by");
 
 declare module "http" {
   interface IncomingMessage {
     rawBody: unknown;
   }
 }
-
-app.use(
-  express.json({
-    verify: (req, _res, buf) => {
-      req.rawBody = buf;
-    },
-  }),
-);
-
-app.use(express.urlencoded({ extended: false }));
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {
@@ -40,28 +46,11 @@ export function log(message: string, source = "express") {
   console.log(`${formattedTime} [${source}] ${message}`);
 }
 
-function summarizeApiResponseForLogs(body: unknown, statusCode: number, isProduction: boolean): string | null {
-  if (!body || typeof body !== "object") {
-    return null;
-  }
-
-  const responseBody = body as Record<string, unknown>;
-  const message = typeof responseBody.message === "string" ? responseBody.message : null;
-
-  if (isProduction) {
-    if (statusCode >= 400 && message) {
-      return `message=${JSON.stringify(message)}`;
-    }
-    return null;
-  }
-
-  return JSON.stringify(responseBody);
-}
+app.use(requestContextMiddleware);
 
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
-  const isProduction = process.env.NODE_ENV === "production";
   let capturedJsonResponse: Record<string, any> | undefined = undefined;
 
   const originalResJson = res.json;
@@ -72,9 +61,9 @@ app.use((req, res, next) => {
 
   res.on("finish", () => {
     const duration = Date.now() - start;
-    if (path.startsWith("/api")) {
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      const responseSummary = summarizeApiResponseForLogs(capturedJsonResponse, res.statusCode, isProduction);
+    if (path === "/api" || path.startsWith("/api/")) {
+      let logLine = `requestId=${res.locals.requestId} ${req.method} ${path} ${res.statusCode} in ${duration}ms`;
+      const responseSummary = summarizeJsonResponseForLog(capturedJsonResponse, res.statusCode);
       if (responseSummary) {
         logLine += ` :: ${responseSummary}`;
       }
@@ -85,6 +74,30 @@ app.use((req, res, next) => {
 
   next();
 });
+
+app.use(sanitizeProductionJsonErrors());
+app.use(process.env.NODE_ENV === "production"
+  ? rejectSensitiveRequestPaths
+  : createSensitiveRequestPathGuard({ viteDevelopmentRoot: path.resolve(process.cwd()) }));
+
+registerOperationalHealthRoutes(app, {
+  checkReadiness: async (signal) => {
+    const { pool } = await import("./db");
+    await checkPostgresReadiness(pool, signal);
+  },
+});
+
+app.use(
+  express.json({
+    limit: JSON_BODY_LIMIT,
+    verify: (req, _res, buf) => {
+      req.rawBody = buf;
+    },
+  }),
+);
+
+app.use(express.urlencoded({ extended: false, limit: JSON_BODY_LIMIT }));
+registerPublicAuthRateLimits(app);
 
 (async () => {
   assertDevelopmentDatabaseSafety();
@@ -111,22 +124,7 @@ app.use((req, res, next) => {
     log("startup maintenance disabled outside production", "runtime");
   }
 
-  app.use("/api", (_req, res) => {
-    return res.status(404).json({ message: "API endpoint no encontrado" });
-  });
-
-  app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
-    const status = err.status || err.statusCode || 500;
-    const message = err.message || "Internal Server Error";
-
-    console.error("Internal Server Error:", err);
-
-    if (res.headersSent) {
-      return next(err);
-    }
-
-    return res.status(status).json({ message });
-  });
+  app.use("/api", apiNotFoundHandler);
 
   // importantly only setup vite in development and after
   // setting up all the other routes so the catch-all route
@@ -138,6 +136,16 @@ app.use((req, res, next) => {
     const { setupVite } = await import("./vite");
     await setupVite(httpServer, app);
   }
+
+  app.use(generalNotFoundHandler);
+  app.use(createHttpErrorHandler({
+    onError: ({ requestId, method, path, status, errorType, error }) => {
+      log(`requestId=${requestId} ${method} ${path} ${status} type=${errorType}`, "http-error");
+      if (process.env.NODE_ENV !== "production") {
+        console.error(error);
+      }
+    },
+  }));
 
   // ALWAYS serve the app on the port specified in the environment variable PORT
   // Other ports are firewalled. Default to 5000 if not specified.
