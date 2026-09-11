@@ -6,6 +6,7 @@ import {
   ChevronUp,
   CheckCircle2,
   ClipboardList,
+  CreditCard,
   Loader2,
   PackageCheck,
   Pencil,
@@ -16,7 +17,8 @@ import {
   Truck,
 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { invalidateBranchCommercialQueries } from "@/lib/branch-dashboard-cache";
+import { invalidateBranchCommercialQueries, invalidateBranchFinanceQueries } from "@/lib/branch-dashboard-cache";
+import { useStableOperationKey } from "@/lib/stable-operation-key";
 import { useToast } from "@/hooks/use-toast";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -143,10 +145,26 @@ type Purchase = {
   totalItems: number;
   totalUnitsOrdered: number;
   totalUnitsReceived: number;
+  balanceAmount: number;
+};
+
+type PurchasePayment = {
+  id: string;
+  amount: number;
+  paymentMethod: string;
+  paidAt: string;
+  entryDate: string;
+  reference: string | null;
+  notes: string | null;
+  financeEntryId: string;
 };
 
 type PurchaseDetail = Purchase & {
   items: PurchaseItem[];
+  payments: PurchasePayment[];
+  detailedPaidAmount: number;
+  legacyPaidAmount: number;
+  hasLegacyPaidAmount: boolean;
 };
 
 type SupplierFormState = {
@@ -176,12 +194,23 @@ type PurchaseFormState = {
   expectedDate: string;
   paymentMethod: string;
   paidAmount: string;
+  initialPaymentEntryDate: string;
+  initialPaymentReference: string;
+  initialPaymentNotes: string;
   discountAmount: string;
   taxMode: "tax_included" | "tax_added" | "tax_exempt";
   taxRate: string;
   reference: string;
   notes: string;
   items: PurchaseItemDraft[];
+};
+
+type PurchasePaymentFormState = {
+  amount: string;
+  paymentMethod: string;
+  entryDate: string;
+  reference: string;
+  notes: string;
 };
 
 type PurchaseFilters = {
@@ -274,12 +303,25 @@ function createInitialPurchaseFormState(): PurchaseFormState {
     expectedDate: "",
     paymentMethod: "none",
     paidAmount: "0",
+    initialPaymentEntryDate: getTodayIsoDate(),
+    initialPaymentReference: "",
+    initialPaymentNotes: "",
     discountAmount: "0",
     taxMode: "tax_exempt",
     taxRate: "16",
     reference: "",
     notes: "",
     items: [createInitialPurchaseItemDraft()],
+  };
+}
+
+function createInitialPurchasePaymentFormState(balanceAmount = 0): PurchasePaymentFormState {
+  return {
+    amount: balanceAmount > 0 ? balanceAmount.toFixed(2) : "",
+    paymentMethod: "efectivo",
+    entryDate: getTodayIsoDate(),
+    reference: "",
+    notes: "",
   };
 }
 
@@ -402,12 +444,61 @@ function getStatusLabel(status: Purchase["status"]) {
   return PURCHASE_STATUS_OPTIONS.find((option) => option.value === status)?.label ?? status;
 }
 
+function getPaymentStatusLabel(status: Purchase["paymentStatus"]) {
+  if (status === "paid") return "Pagada";
+  if (status === "partial") return "Pago parcial";
+  return "Sin pagar";
+}
+
+function buildCreatePurchaseRequest(payload: PurchaseFormState, operationKey?: string) {
+  const initialPaymentAmount = Number(payload.paidAmount || 0);
+  return {
+    ...(operationKey ? { operationKey } : {}),
+    supplierId: payload.supplierId === "none" ? null : payload.supplierId,
+    projectId: payload.projectId === "none" ? null : payload.projectId,
+    status: payload.status,
+    purchaseDate: payload.purchaseDate,
+    expectedDate: payload.expectedDate || null,
+    discountAmount: Number(payload.discountAmount || 0),
+    taxMode: payload.taxMode,
+    taxRate: Math.max(0, Number.parseFloat(payload.taxRate) || 0),
+    reference: payload.reference || null,
+    notes: payload.notes || null,
+    items: payload.items.map((item) => ({
+      commercialProductId: item.commercialProductId,
+      quantityOrdered: Number(item.quantityOrdered || 0),
+      unitCost: Number(item.unitCost || 0),
+      updateReferenceCost: item.updateReferenceCost,
+    })),
+    initialPayment: initialPaymentAmount > 0 ? {
+      amount: initialPaymentAmount,
+      paymentMethod: payload.paymentMethod,
+      entryDate: payload.initialPaymentEntryDate,
+      reference: payload.initialPaymentReference || null,
+      notes: payload.initialPaymentNotes || null,
+    } : null,
+  };
+}
+
+function buildPurchasePaymentRequest(payload: PurchasePaymentFormState, operationKey?: string) {
+  return {
+    ...(operationKey ? { operationKey } : {}),
+    amount: Number(payload.amount || 0),
+    paymentMethod: payload.paymentMethod,
+    entryDate: payload.entryDate,
+    reference: payload.reference || null,
+    notes: payload.notes || null,
+  };
+}
+
 function isQueryForPurchases(queryKey: readonly unknown[]) {
   return Array.isArray(queryKey) && typeof queryKey[0] === "string" && queryKey[0].startsWith("/api/branch/purchases");
 }
 
 export default function ProveedoresComprasTab({ focusRequest }: { focusRequest?: PurchaseFocusRequest | null } = {}) {
   const { toast } = useToast();
+  const createPurchaseOperation = useStableOperationKey();
+  const purchasePaymentOperation = useStableOperationKey();
   const [section, setSection] = useState<"purchases" | "suppliers">("purchases");
   const [supplierSearch, setSupplierSearch] = useState("");
   const [purchaseFilters, setPurchaseFilters] = useState<PurchaseFilters>({
@@ -426,6 +517,10 @@ export default function ProveedoresComprasTab({ focusRequest }: { focusRequest?:
   const [supplierToDelete, setSupplierToDelete] = useState<Supplier | null>(null);
   const [purchaseToReceive, setPurchaseToReceive] = useState<Purchase | null>(null);
   const [purchaseToCancel, setPurchaseToCancel] = useState<Purchase | null>(null);
+  const [purchaseToPay, setPurchaseToPay] = useState<Purchase | null>(null);
+  const [purchasePaymentForm, setPurchasePaymentForm] = useState<PurchasePaymentFormState>(
+    createInitialPurchasePaymentFormState(),
+  );
 
   const purchasesUrl = useMemo(() => buildPurchasesQuery(purchaseFilters), [purchaseFilters]);
   const purchaseDetailUrl = purchaseDetailId ? `/api/branch/purchases/${purchaseDetailId}` : "";
@@ -535,7 +630,10 @@ export default function ProveedoresComprasTab({ focusRequest }: { focusRequest?:
       errors.push("El pago registrado no puede ser negativo.");
     }
     if (purchaseForm.paymentMethod === "none" && purchaseTotals.paid > 0) {
-      errors.push('Si eliges "No registrar todavia", el pago debe quedar en cero.');
+      errors.push('Si eliges "Sin pago inicial", el pago debe quedar en cero.');
+    }
+    if (purchaseTotals.paid > 0 && !purchaseForm.initialPaymentEntryDate) {
+      errors.push("La fecha del pago inicial es obligatoria.");
     }
     if (purchaseTotals.paid > purchaseTotals.total) {
       errors.push("El pago registrado no puede ser mayor al total de la compra.");
@@ -554,7 +652,7 @@ export default function ProveedoresComprasTab({ focusRequest }: { focusRequest?:
       errors,
       isValid: errors.length === 0,
     };
-  }, [purchaseForm.items, purchaseForm.paymentMethod, purchaseTotals.discount, purchaseTotals.paid, purchaseTotals.subtotal, purchaseTotals.total]);
+  }, [purchaseForm.initialPaymentEntryDate, purchaseForm.items, purchaseForm.paymentMethod, purchaseTotals.discount, purchaseTotals.paid, purchaseTotals.subtotal, purchaseTotals.total]);
 
   const invalidateSuppliers = async () => {
     await queryClient.invalidateQueries({ queryKey: SUPPLIERS_QUERY_KEY });
@@ -619,48 +717,79 @@ export default function ProveedoresComprasTab({ focusRequest }: { focusRequest?:
   });
 
   const createPurchaseMutation = useMutation({
-    mutationFn: async (payload: PurchaseFormState) => {
-      const body = {
-        supplierId: payload.supplierId === "none" ? null : payload.supplierId,
-        projectId: payload.projectId === "none" ? null : payload.projectId,
-        status: payload.status,
-        purchaseDate: payload.purchaseDate,
-        expectedDate: payload.expectedDate || null,
-        paymentMethod: payload.paymentMethod === "none" ? null : payload.paymentMethod,
-        paidAmount: Number(payload.paidAmount || 0),
-        discountAmount: Number(payload.discountAmount || 0),
-        taxMode: payload.taxMode,
-        taxRate: Math.max(0, Number.parseFloat(payload.taxRate) || 0),
-        reference: payload.reference || null,
-        notes: payload.notes || null,
-        items: payload.items.map((item) => ({
-          commercialProductId: item.commercialProductId,
-          quantityOrdered: Number(item.quantityOrdered || 0),
-          unitCost: Number(item.unitCost || 0),
-          updateReferenceCost: item.updateReferenceCost,
-        })),
-      };
+    mutationFn: async ({ payload, operationKey }: {
+      payload: PurchaseFormState;
+      operationKey: string;
+      attemptFingerprint: string;
+    }) => {
+      const body = buildCreatePurchaseRequest(payload, operationKey);
       const response = await apiRequest("POST", "/api/branch/purchases", body);
       return response.json();
     },
-    onSuccess: async (purchase: PurchaseDetail) => {
+    onSuccess: async (purchase: PurchaseDetail, variables) => {
       await Promise.all([
         invalidatePurchases(),
+        invalidateBranchFinanceQueries(),
         invalidateBranchCommercialQueries({
           purchaseId: purchase.id,
           supplierId: purchase.supplierId,
           projectId: purchase.projectId ?? null,
         }),
       ]);
+      createPurchaseOperation.markSuccess(variables.attemptFingerprint);
       setPurchaseDialogOpen(false);
       setPurchaseForm(createInitialPurchaseFormState());
       setPurchaseDetailId(purchase.id);
       toast({ title: "Compra guardada", description: `Folio ${purchase.folio}` });
     },
-    onError: (error: any) => {
+    onError: (error: any, variables) => {
+      createPurchaseOperation.markError(variables.attemptFingerprint);
       toast({
         title: "No se pudo crear la compra",
         description: parseMutationErrorMessage(error, "Revisa los datos e intenta de nuevo."),
+        variant: "destructive",
+      });
+    },
+  });
+
+  const registerPurchasePaymentMutation = useMutation({
+    mutationFn: async ({ purchaseId, payload, operationKey }: {
+      purchaseId: string;
+      payload: PurchasePaymentFormState;
+      operationKey: string;
+      attemptFingerprint: string;
+    }) => {
+      const response = await apiRequest(
+        "POST",
+        `/api/branch/purchases/${purchaseId}/pay`,
+        buildPurchasePaymentRequest(payload, operationKey),
+      );
+      return response.json() as Promise<{ purchase: PurchaseDetail; payment: PurchasePayment; replayed: boolean }>;
+    },
+    onSuccess: async (result, variables) => {
+      await Promise.all([
+        invalidatePurchases(),
+        invalidateBranchFinanceQueries(),
+        invalidateBranchCommercialQueries({
+          purchaseId: result.purchase.id,
+          supplierId: result.purchase.supplierId,
+          projectId: result.purchase.projectId ?? null,
+        }),
+      ]);
+      purchasePaymentOperation.markSuccess(variables.attemptFingerprint);
+      setPurchaseToPay(null);
+      setPurchasePaymentForm(createInitialPurchasePaymentFormState());
+      setPurchaseDetailId(result.purchase.id);
+      toast({
+        title: result.replayed ? "Pago ya registrado" : "Pago registrado",
+        description: `${formatCurrencyMx(result.payment.amount)} aplicado a ${result.purchase.folio}.`,
+      });
+    },
+    onError: (error: any, variables) => {
+      purchasePaymentOperation.markError(variables.attemptFingerprint);
+      toast({
+        title: "No se pudo registrar el pago",
+        description: parseMutationErrorMessage(error, "Revisa el saldo e intenta de nuevo."),
         variant: "destructive",
       });
     },
@@ -768,7 +897,7 @@ export default function ProveedoresComprasTab({ focusRequest }: { focusRequest?:
       ...current,
       paymentMethod: value,
       paidAmount: value === "none" ? "0" : current.paidAmount,
-      reference: value === "none" ? "" : current.reference,
+      initialPaymentReference: value === "none" ? "" : current.initialPaymentReference,
     }));
   };
 
@@ -806,6 +935,55 @@ export default function ProveedoresComprasTab({ focusRequest }: { focusRequest?:
     }));
   };
 
+  const submitCreatePurchase = () => {
+    const attemptFingerprint = JSON.stringify(buildCreatePurchaseRequest(purchaseForm));
+    const attempt = createPurchaseOperation.begin(attemptFingerprint);
+    if (!attempt.allowed) return;
+    createPurchaseMutation.mutate({
+      payload: purchaseForm,
+      operationKey: attempt.key,
+      attemptFingerprint,
+    });
+  };
+
+  const openPurchasePayment = (purchase: Purchase) => {
+    if (purchase.status === "cancelled" || purchase.balanceAmount <= 0) return;
+    purchasePaymentOperation.reset();
+    setPurchasePaymentForm(createInitialPurchasePaymentFormState(purchase.balanceAmount));
+    setPurchaseDetailId(null);
+    setPurchaseToPay(purchase);
+  };
+
+  const submitPurchasePayment = () => {
+    if (!purchaseToPay) return;
+    const amount = Number(purchasePaymentForm.amount || 0);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      toast({ title: "Monto inválido", description: "El pago debe ser mayor a cero.", variant: "destructive" });
+      return;
+    }
+    if (amount > purchaseToPay.balanceAmount + 0.0001) {
+      toast({ title: "Monto inválido", description: "El pago no puede superar el saldo pendiente.", variant: "destructive" });
+      return;
+    }
+    if (!purchasePaymentForm.entryDate) {
+      toast({ title: "Fecha requerida", description: "Selecciona la fecha del pago.", variant: "destructive" });
+      return;
+    }
+
+    const attemptFingerprint = JSON.stringify({
+      purchaseId: purchaseToPay.id,
+      ...buildPurchasePaymentRequest(purchasePaymentForm),
+    });
+    const attempt = purchasePaymentOperation.begin(attemptFingerprint);
+    if (!attempt.allowed) return;
+    registerPurchasePaymentMutation.mutate({
+      purchaseId: purchaseToPay.id,
+      payload: purchasePaymentForm,
+      operationKey: attempt.key,
+      attemptFingerprint,
+    });
+  };
+
   return (
     <div className="space-y-4" data-testid="tab-proveedores-compras">
       <div className="flex flex-col gap-3 rounded-3xl border border-border/60 bg-card/80 p-4 shadow-sm">
@@ -814,7 +992,7 @@ export default function ProveedoresComprasTab({ focusRequest }: { focusRequest?:
             <p className="text-xs uppercase tracking-[0.28em] text-muted-foreground">Núcleo comercial</p>
             <h2 className="text-2xl font-semibold tracking-tight">Proveedores y compras</h2>
             <p className="text-sm text-muted-foreground">
-              Registra proveedores, crea compras y recibe mercancía sin tocar Caja en esta fase.
+              Registra proveedores, compras, pagos a proveedor y recepción de mercancía.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -853,7 +1031,7 @@ export default function ProveedoresComprasTab({ focusRequest }: { focusRequest?:
             </CardHeader>
             <CardContent className="flex items-end justify-between">
               <span className="text-3xl font-semibold">{purchasesQuery.data?.length ?? 0}</span>
-              <Badge variant="outline">No afecta Caja</Badge>
+              <Badge variant="outline">Pagos reflejados en Caja</Badge>
             </CardContent>
           </Card>
           <Card className="border-border/60">
@@ -992,10 +1170,11 @@ export default function ProveedoresComprasTab({ focusRequest }: { focusRequest?:
                 <div>
                   <CardTitle>Compras de mercancía</CardTitle>
                   <CardDescription>
-                    Crea borradores o compras pedidas. El stock solo aumenta cuando recibes la mercancía.
+                    El stock aumenta al recibir mercancía; cada pago real queda vinculado a Caja.
                   </CardDescription>
                 </div>
                 <Button onClick={() => {
+                  createPurchaseOperation.reset();
                   setPurchaseForm(createInitialPurchaseFormState());
                   setPurchaseDialogOpen(true);
                 }}>
@@ -1047,7 +1226,7 @@ export default function ProveedoresComprasTab({ focusRequest }: { focusRequest?:
               ) : (purchasesQuery.data ?? []).length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-border/80 bg-muted/20 p-6 text-center">
                   <p className="text-sm font-medium">Aún no hay compras registradas</p>
-                  <p className="mt-1 text-sm text-muted-foreground">Registra la llegada de mercancía desde proveedores sin afectar Caja en esta fase.</p>
+                  <p className="mt-1 text-sm text-muted-foreground">Crea una compra y registra pagos solo cuando realmente ocurran.</p>
                 </div>
               ) : (
                 <>
@@ -1077,6 +1256,18 @@ export default function ProveedoresComprasTab({ focusRequest }: { focusRequest?:
                               <p>{formatCurrencyMx(purchase.totalAmount)}</p>
                             </div>
                             <div>
+                              <p className="text-muted-foreground">Pagado</p>
+                              <p>{formatCurrencyMx(purchase.paidAmount)}</p>
+                            </div>
+                            <div>
+                              <p className="text-muted-foreground">Saldo</p>
+                              <p>{formatCurrencyMx(purchase.balanceAmount)}</p>
+                            </div>
+                            <div>
+                              <p className="text-muted-foreground">Estado de pago</p>
+                              <p>{getPaymentStatusLabel(purchase.paymentStatus)}</p>
+                            </div>
+                            <div>
                               <p className="text-muted-foreground">Productos</p>
                               <p>{purchase.totalItems}</p>
                             </div>
@@ -1090,13 +1281,19 @@ export default function ProveedoresComprasTab({ focusRequest }: { focusRequest?:
                               <ClipboardList className="mr-2 h-4 w-4" />
                               Ver detalle
                             </Button>
+                            {purchase.status !== "cancelled" && purchase.balanceAmount > 0 ? (
+                              <Button variant="outline" onClick={() => openPurchasePayment(purchase)}>
+                                <CreditCard className="mr-2 h-4 w-4" />
+                                Registrar pago
+                              </Button>
+                            ) : null}
                             {purchase.status !== "received" && purchase.status !== "cancelled" ? (
                               <Button onClick={() => setPurchaseToReceive(purchase)}>
                                 <PackageCheck className="mr-2 h-4 w-4" />
                                 Recibir mercancía
                               </Button>
                             ) : null}
-                            {purchase.status === "draft" ? (
+                            {purchase.status === "draft" && purchase.paymentStatus === "unpaid" && purchase.paidAmount === 0 && purchase.totalUnitsReceived === 0 ? (
                               <Button variant="outline" className="text-destructive" onClick={() => setPurchaseToCancel(purchase)}>
                                 <AlertTriangle className="mr-2 h-4 w-4" />
                                 Cancelar borrador
@@ -1119,6 +1316,8 @@ export default function ProveedoresComprasTab({ focusRequest }: { focusRequest?:
                           <TableHead>Pago</TableHead>
                           <TableHead>Productos</TableHead>
                           <TableHead>Total</TableHead>
+                          <TableHead>Pagado</TableHead>
+                          <TableHead>Saldo</TableHead>
                           <TableHead>Recibido</TableHead>
                           <TableHead className="text-right">Acciones</TableHead>
                         </TableRow>
@@ -1141,17 +1340,22 @@ export default function ProveedoresComprasTab({ focusRequest }: { focusRequest?:
                             <TableCell>
                               <Badge variant={getStatusBadgeVariant(purchase.status)}>{getStatusLabel(purchase.status)}</Badge>
                             </TableCell>
-                            <TableCell>{purchase.paymentStatus}</TableCell>
+                            <TableCell>{getPaymentStatusLabel(purchase.paymentStatus)}</TableCell>
                             <TableCell>{purchase.totalItems}</TableCell>
                             <TableCell>{formatCurrencyMx(purchase.totalAmount)}</TableCell>
+                            <TableCell>{formatCurrencyMx(purchase.paidAmount)}</TableCell>
+                            <TableCell>{formatCurrencyMx(purchase.balanceAmount)}</TableCell>
                             <TableCell>{purchase.totalUnitsReceived}/{purchase.totalUnitsOrdered}</TableCell>
                             <TableCell className="text-right">
                               <div className="flex justify-end gap-2">
                                 <Button size="sm" variant="outline" onClick={() => setPurchaseDetailId(purchase.id)}>Detalle</Button>
+                                {purchase.status !== "cancelled" && purchase.balanceAmount > 0 ? (
+                                  <Button size="sm" variant="outline" onClick={() => openPurchasePayment(purchase)}>Pagar</Button>
+                                ) : null}
                                 {purchase.status !== "received" && purchase.status !== "cancelled" ? (
                                   <Button size="sm" onClick={() => setPurchaseToReceive(purchase)}>Recibir</Button>
                                 ) : null}
-                                {purchase.status === "draft" ? (
+                                {purchase.status === "draft" && purchase.paymentStatus === "unpaid" && purchase.paidAmount === 0 && purchase.totalUnitsReceived === 0 ? (
                                   <Button size="sm" variant="outline" className="text-destructive" onClick={() => setPurchaseToCancel(purchase)}>Cancelar</Button>
                                 ) : null}
                               </div>
@@ -1366,8 +1570,10 @@ export default function ProveedoresComprasTab({ focusRequest }: { focusRequest?:
       </Dialog>
 
       <Dialog open={purchaseDialogOpen} onOpenChange={(open) => {
+        if (!open && createPurchaseMutation.isPending) return;
         setPurchaseDialogOpen(open);
         if (!open) {
+          createPurchaseOperation.reset();
           setPurchaseForm(createInitialPurchaseFormState());
         }
       }}>
@@ -1507,11 +1713,11 @@ export default function ProveedoresComprasTab({ focusRequest }: { focusRequest?:
 
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               <div className="space-y-2">
-                <Label>Metodo de pago</Label>
+                <Label>Método del pago inicial</Label>
                 <Select value={purchaseForm.paymentMethod} onValueChange={handlePurchasePaymentMethodChange}>
-                  <SelectTrigger><SelectValue placeholder="No registrar todavia" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder="No registrar todavía" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="none">No registrar todavia</SelectItem>
+                    <SelectItem value="none">Sin pago inicial</SelectItem>
                     {PAYMENT_METHOD_OPTIONS.map((option) => (
                       <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
                     ))}
@@ -1519,8 +1725,25 @@ export default function ProveedoresComprasTab({ focusRequest }: { focusRequest?:
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>Pago registrado</Label>
+                <Label>Pago inicial</Label>
                 <Input type="number" min="0" step="0.01" value={purchaseForm.paidAmount} onChange={(event) => setPurchaseForm((current) => ({ ...current, paidAmount: event.target.value }))} />
+              </div>
+              <div className="space-y-2">
+                <Label>Fecha del pago inicial</Label>
+                <Input
+                  type="date"
+                  value={purchaseForm.initialPaymentEntryDate}
+                  onChange={(event) => setPurchaseForm((current) => ({ ...current, initialPaymentEntryDate: event.target.value }))}
+                  disabled={purchaseTotals.paid <= 0}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Referencia del pago</Label>
+                <Input
+                  value={purchaseForm.initialPaymentReference}
+                  onChange={(event) => setPurchaseForm((current) => ({ ...current, initialPaymentReference: event.target.value }))}
+                  disabled={purchaseTotals.paid <= 0}
+                />
               </div>
               <div className="space-y-2">
                 <Label>Descuento</Label>
@@ -1550,13 +1773,21 @@ export default function ProveedoresComprasTab({ focusRequest }: { focusRequest?:
                 />
               </div>
               <div className="space-y-2 md:col-span-2 xl:col-span-2">
-                <Label>Referencia / factura</Label>
+                <Label>Referencia / factura de compra</Label>
                 <Input value={purchaseForm.reference} onChange={(event) => setPurchaseForm((current) => ({ ...current, reference: event.target.value }))} />
+              </div>
+              <div className="space-y-2 md:col-span-2 xl:col-span-2">
+                <Label>Notas del pago inicial</Label>
+                <Input
+                  value={purchaseForm.initialPaymentNotes}
+                  onChange={(event) => setPurchaseForm((current) => ({ ...current, initialPaymentNotes: event.target.value }))}
+                  disabled={purchaseTotals.paid <= 0}
+                />
               </div>
             </div>
 
             <div className="rounded-xl border border-sky-500/20 bg-sky-500/5 px-4 py-3 text-sm text-muted-foreground">
-              El pago queda registrado dentro de la compra. En esta fase no genera un gasto autom&aacute;tico en Caja.
+              Si registras un pago inicial, WebCool creará el gasto correspondiente en Caja dentro de la misma operación.
             </div>
 
             {purchaseValidation.errors.length > 0 ? (
@@ -1613,9 +1844,15 @@ export default function ProveedoresComprasTab({ focusRequest }: { focusRequest?:
             </Card>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setPurchaseDialogOpen(false)}>Cancelar</Button>
             <Button
-              onClick={() => createPurchaseMutation.mutate(purchaseForm)}
+              variant="outline"
+              disabled={createPurchaseMutation.isPending}
+              onClick={() => setPurchaseDialogOpen(false)}
+            >
+              Cancelar
+            </Button>
+            <Button
+              onClick={submitCreatePurchase}
               disabled={
                 createPurchaseMutation.isPending ||
                 !purchaseForm.purchaseDate ||
@@ -1698,7 +1935,7 @@ export default function ProveedoresComprasTab({ focusRequest }: { focusRequest?:
                   </div>
                   <div>
                     <p className="text-sm text-muted-foreground">Pago</p>
-                    <p className="font-medium">{purchaseDetailQuery.data.paymentStatus}{purchaseDetailQuery.data.paymentMethod ? ` · ${purchaseDetailQuery.data.paymentMethod}` : ""}</p>
+                    <p className="font-medium">{getPaymentStatusLabel(purchaseDetailQuery.data.paymentStatus)}{purchaseDetailQuery.data.paymentMethod ? ` · ${purchaseDetailQuery.data.paymentMethod}` : ""}</p>
                   </div>
                 </CardContent>
               </Card>
@@ -1730,7 +1967,7 @@ export default function ProveedoresComprasTab({ focusRequest }: { focusRequest?:
               </div>
 
               <Card className="border-border/60 bg-muted/20">
-                <CardContent className="grid gap-3 p-4 md:grid-cols-3 xl:grid-cols-6">
+                <CardContent className="grid gap-3 p-4 md:grid-cols-3 xl:grid-cols-7">
                   <div>
                     <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Subtotal</p>
                     <p className="mt-1 font-semibold">{formatCurrencyMx(purchaseDetailQuery.data.subtotalBeforeTax ?? purchaseDetailQuery.data.subtotalAmount)}</p>
@@ -1754,20 +1991,58 @@ export default function ProveedoresComprasTab({ focusRequest }: { focusRequest?:
                     <p className="mt-1 font-semibold">{formatCurrencyMx(purchaseDetailQuery.data.grandTotal ?? purchaseDetailQuery.data.totalAmount)}</p>
                   </div>
                   <div>
-                    <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Pago capturado</p>
+                    <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Pagado</p>
                     <p className="mt-1 font-semibold">{formatCurrencyMx(purchaseDetailQuery.data.paidAmount)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Saldo</p>
+                    <p className="mt-1 font-semibold">{formatCurrencyMx(purchaseDetailQuery.data.balanceAmount)}</p>
                   </div>
                 </CardContent>
               </Card>
 
+              {purchaseDetailQuery.data.hasLegacyPaidAmount ? (
+                <div className="rounded-xl border border-amber-500/25 bg-amber-500/5 px-4 py-3 text-sm text-muted-foreground">
+                  {formatCurrencyMx(purchaseDetailQuery.data.legacyPaidAmount)} corresponde a saldo pagado anterior al historial detallado. WebCool no inventó fecha ni método para ese importe.
+                </div>
+              ) : null}
+
+              {purchaseDetailQuery.data.payments.length > 0 ? (
+                <Card className="border-border/60">
+                  <CardHeader>
+                    <CardTitle className="text-base">Pagos registrados en WebCool</CardTitle>
+                    <CardDescription>Estos movimientos tienen un gasto protegido y vinculado en Caja.</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    {purchaseDetailQuery.data.payments.map((payment) => (
+                      <div key={payment.id} className="flex flex-col gap-1 rounded-xl border border-border/60 p-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <p className="font-medium">{formatCurrencyMx(payment.amount)} · {payment.paymentMethod}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {formatShortDate(payment.entryDate)}{payment.reference ? ` · ${payment.reference}` : ""}
+                          </p>
+                        </div>
+                        {payment.notes ? <p className="text-sm text-muted-foreground">{payment.notes}</p> : null}
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+              ) : null}
+
               <div className="flex flex-wrap gap-2">
+                {purchaseDetailQuery.data.status !== "cancelled" && purchaseDetailQuery.data.balanceAmount > 0 ? (
+                  <Button variant="outline" onClick={() => openPurchasePayment(purchaseDetailQuery.data)}>
+                    <CreditCard className="mr-2 h-4 w-4" />
+                    Registrar pago
+                  </Button>
+                ) : null}
                 {purchaseDetailQuery.data.status !== "received" && purchaseDetailQuery.data.status !== "cancelled" ? (
                   <Button onClick={() => setPurchaseToReceive(purchaseDetailQuery.data)}>
                     <PackageCheck className="mr-2 h-4 w-4" />
                     Recibir mercancía
                   </Button>
                 ) : null}
-                {purchaseDetailQuery.data.status === "draft" ? (
+                {purchaseDetailQuery.data.status === "draft" && purchaseDetailQuery.data.paymentStatus === "unpaid" && purchaseDetailQuery.data.paidAmount === 0 && purchaseDetailQuery.data.totalUnitsReceived === 0 ? (
                   <Button variant="outline" className="text-destructive" onClick={() => setPurchaseToCancel(purchaseDetailQuery.data)}>
                     <AlertTriangle className="mr-2 h-4 w-4" />
                     Cancelar borrador
@@ -1776,6 +2051,92 @@ export default function ProveedoresComprasTab({ focusRequest }: { focusRequest?:
               </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!purchaseToPay} onOpenChange={(open) => {
+        if (!open && !registerPurchasePaymentMutation.isPending) {
+          setPurchaseToPay(null);
+          setPurchasePaymentForm(createInitialPurchasePaymentFormState());
+          purchasePaymentOperation.reset();
+        }
+      }}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Registrar pago</DialogTitle>
+            <DialogDescription>
+              {purchaseToPay
+                ? `${purchaseToPay.folio} · Saldo ${formatCurrencyMx(purchaseToPay.balanceAmount)}`
+                : "Registra un pago real a proveedor."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-2 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label>Monto</Label>
+              <Input
+                type="number"
+                min="0.01"
+                max={purchaseToPay?.balanceAmount}
+                step="0.01"
+                value={purchasePaymentForm.amount}
+                onChange={(event) => setPurchasePaymentForm((current) => ({ ...current, amount: event.target.value }))}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Método</Label>
+              <Select
+                value={purchasePaymentForm.paymentMethod}
+                onValueChange={(value) => setPurchasePaymentForm((current) => ({ ...current, paymentMethod: value }))}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {PAYMENT_METHOD_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Fecha</Label>
+              <Input
+                type="date"
+                value={purchasePaymentForm.entryDate}
+                onChange={(event) => setPurchasePaymentForm((current) => ({ ...current, entryDate: event.target.value }))}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Referencia</Label>
+              <Input
+                value={purchasePaymentForm.reference}
+                onChange={(event) => setPurchasePaymentForm((current) => ({ ...current, reference: event.target.value }))}
+              />
+            </div>
+            <div className="space-y-2 sm:col-span-2">
+              <Label>Notas</Label>
+              <Textarea
+                rows={3}
+                value={purchasePaymentForm.notes}
+                onChange={(event) => setPurchasePaymentForm((current) => ({ ...current, notes: event.target.value }))}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={registerPurchasePaymentMutation.isPending}
+              onClick={() => {
+                setPurchaseToPay(null);
+                setPurchasePaymentForm(createInitialPurchasePaymentFormState());
+                purchasePaymentOperation.reset();
+              }}
+            >
+              Cancelar
+            </Button>
+            <Button disabled={registerPurchasePaymentMutation.isPending} onClick={submitPurchasePayment}>
+              {registerPurchasePaymentMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              {registerPurchasePaymentMutation.isPending ? "Registrando..." : "Registrar pago"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

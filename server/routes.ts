@@ -142,6 +142,7 @@ import {
   linkBranchCommercialProjectSaleSchema,
   linkBranchCommercialProjectPurchaseSchema,
   createBranchPurchaseSchema,
+  registerBranchPurchasePaymentSchema,
   receiveBranchPurchaseSchema,
   createBranchSaleProductSchema,
   createBranchCheckoutSchema,
@@ -159,6 +160,11 @@ import {
   upsertBranchMonthlyBillingSchema,
 } from "@shared/schema";
 import { buildMembershipActivePatch, buildMembershipLeftPatch } from "./membership-state";
+import {
+  BranchPurchaseIdempotencyError,
+  BRANCH_PURCHASE_INCOMPLETE_REPLAY_CONFLICT,
+  BRANCH_PURCHASE_LEGACY_OPERATION_KEY_CONFLICT,
+} from "./branch-purchase-operation";
 import { shouldRunBackgroundJobs, shouldRunSeedOnStartup } from "./runtime-safety";
 import {
   branches,
@@ -9249,48 +9255,58 @@ if (!user) {
 
     try {
       const data = parsed.data;
-      const purchase = await storage.createBranchPurchase({
+      const operation = await storage.createBranchPurchase({
+        branchId: actor.branchId,
+        actorUserId: actor.id,
+        operationKey: data.operationKey,
         purchase: {
-          branchId: actor.branchId,
           supplierId: normalizeOptionalText(data.supplierId) ?? null,
           projectId: normalizeOptionalText(data.projectId) ?? null,
           status: data.status ?? "draft",
           purchaseDate: data.purchaseDate,
           expectedDate: normalizeOptionalText(data.expectedDate) ?? null,
-          paymentStatus: data.paymentStatus ?? "unpaid",
-          paymentMethod: normalizeOptionalText(data.paymentMethod) ?? null,
-          paidAmount: (data.paidAmount ?? 0).toFixed(2),
           discountAmount: (data.discountAmount ?? 0).toFixed(2),
           taxMode: data.taxMode,
           taxRate: data.taxRate.toFixed(2),
           reference: normalizeOptionalText(data.reference) ?? null,
           notes: normalizeOptionalText(data.notes) ?? null,
-          createdBy: actor.id,
         } as any,
         items: data.items.map((item) => ({
           branchId: actor.branchId,
           commercialProductId: item.commercialProductId,
           quantityOrdered: item.quantityOrdered,
           unitCost: item.unitCost.toFixed(2),
+          updateReferenceCost: item.updateReferenceCost ?? false,
         })) as any,
+        initialPayment: data.initialPayment ? {
+          amount: data.initialPayment.amount,
+          paymentMethod: data.initialPayment.paymentMethod,
+          entryDate: data.initialPayment.entryDate,
+          reference: normalizeOptionalText(data.initialPayment.reference) ?? null,
+          notes: normalizeOptionalText(data.initialPayment.notes) ?? null,
+        } : null,
       });
 
-      await storage.createAuditLog({
-        actorUserId: actor.id,
-        action: "CREATE_BRANCH_PURCHASE",
-        branchId: actor.branchId,
-        metadata: {
-          purchaseId: purchase.id,
-          folio: purchase.folio,
-          supplierId: purchase.supplierId,
-          totalAmount: purchase.totalAmount,
-          status: purchase.status,
-        },
+      res.status(operation.replayed ? 200 : 201).json({
+        ...operation.purchase,
+        duplicate: operation.replayed,
+        replayed: operation.replayed,
       });
-
-      res.status(201).json(purchase);
     } catch (err: any) {
+      if (err instanceof BranchPurchaseIdempotencyError) {
+        return res.status(409).json({
+          code: err.code,
+          message: err.code === BRANCH_PURCHASE_INCOMPLETE_REPLAY_CONFLICT
+            ? "La operación existente está incompleta. Contacta a soporte antes de reintentar."
+            : err.code === BRANCH_PURCHASE_LEGACY_OPERATION_KEY_CONFLICT
+              ? "La clave de operación ya existe, pero no puede verificarse de forma segura."
+              : "La clave de operación ya fue utilizada con datos diferentes.",
+        });
+      }
       if (err instanceof Error) {
+        if (err.message === "BRANCH_PURCHASE_OPERATION_KEY_INVALID") {
+          return res.status(400).json({ message: "La clave de operación es inválida" });
+        }
         if (err.message === "BRANCH_PURCHASE_REQUIRES_ITEMS") {
           return res.status(400).json({ message: "Debes agregar al menos un producto" });
         }
@@ -9324,10 +9340,74 @@ if (!user) {
         if (err.message === "BRANCH_PURCHASE_PAID_EXCEEDS_TOTAL") {
           return res.status(400).json({ message: "El pago registrado no puede ser mayor al total de la compra" });
         }
+        if (err.message === "BRANCH_PURCHASE_PAYMENT_INVALID") {
+          return res.status(400).json({ message: "El pago inicial debe ser mayor a cero" });
+        }
       }
 
       console.error("[PURCHASES] Error creating:", err?.stack || err);
       res.status(500).json({ message: "Error al crear compra" });
+    }
+  });
+
+  app.post("/api/branch/purchases/:id/pay", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const purchaseId = getStringParam(req.params.id);
+    const parsed = registerBranchPurchasePaymentSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.flatten() });
+    }
+
+    try {
+      const operation = await storage.registerBranchPurchasePayment({
+        branchId: actor.branchId,
+        actorUserId: actor.id,
+        purchaseId,
+        operationKey: parsed.data.operationKey,
+        amount: parsed.data.amount,
+        paymentMethod: parsed.data.paymentMethod,
+        entryDate: parsed.data.entryDate,
+        reference: normalizeOptionalText(parsed.data.reference) ?? null,
+        notes: normalizeOptionalText(parsed.data.notes) ?? null,
+      });
+
+      res.status(operation.replayed ? 200 : 201).json({
+        purchase: operation.purchase,
+        payment: operation.payment,
+        duplicate: operation.replayed,
+        replayed: operation.replayed,
+      });
+    } catch (err: any) {
+      if (err instanceof BranchPurchaseIdempotencyError) {
+        return res.status(409).json({
+          code: err.code,
+          message: err.code === BRANCH_PURCHASE_INCOMPLETE_REPLAY_CONFLICT
+            ? "El pago existente está incompleto. Contacta a soporte antes de reintentar."
+            : err.code === BRANCH_PURCHASE_LEGACY_OPERATION_KEY_CONFLICT
+              ? "La clave de operación ya existe, pero no puede verificarse de forma segura."
+              : "La clave de operación ya fue utilizada con datos diferentes.",
+        });
+      }
+      if (err instanceof Error) {
+        if (err.message === "BRANCH_PURCHASE_NOT_FOUND") {
+          return res.status(404).json({ message: "Compra no encontrada" });
+        }
+        if (err.message === "BRANCH_PURCHASE_PAYMENT_EXCEEDS_BALANCE") {
+          return res.status(409).json({ message: "El pago no puede ser mayor al saldo pendiente" });
+        }
+        if (err.message === "BRANCH_PURCHASE_PAYMENT_NOT_ALLOWED") {
+          return res.status(409).json({ message: "No puedes registrar pagos en una compra cancelada" });
+        }
+        if (err.message === "BRANCH_PURCHASE_PAYMENT_INVALID") {
+          return res.status(400).json({ message: "El pago debe ser mayor a cero" });
+        }
+        if (err.message === "BRANCH_PURCHASE_OPERATION_KEY_INVALID") {
+          return res.status(400).json({ message: "La clave de operación es inválida" });
+        }
+      }
+
+      console.error("[PURCHASES] Error registering payment:", err?.stack || err);
+      res.status(500).json({ message: "Error al registrar el pago" });
     }
   });
 
@@ -9387,22 +9467,21 @@ if (!user) {
     const actor = req.user as any;
     const purchaseId = getStringParam(req.params.id);
     try {
-      const purchase = await storage.cancelBranchPurchase(actor.branchId, purchaseId);
+      const purchase = await storage.cancelBranchPurchase(actor.branchId, purchaseId, actor.id);
       if (!purchase) {
         return res.status(404).json({ message: "Compra no encontrada" });
       }
 
-      await storage.createAuditLog({
-        actorUserId: actor.id,
-        action: "CANCEL_BRANCH_PURCHASE",
-        branchId: actor.branchId,
-        metadata: { purchaseId: purchase.id, folio: purchase.folio },
-      });
-
       res.json(purchase);
     } catch (err: any) {
-      if (err instanceof Error && err.message === "BRANCH_PURCHASE_CANNOT_CANCEL") {
+      if (err instanceof Error && err.message === "BRANCH_PURCHASE_CANNOT_CANCEL_STATUS") {
         return res.status(409).json({ message: "Solo puedes cancelar compras en borrador" });
+      }
+      if (err instanceof Error && err.message === "BRANCH_PURCHASE_CANNOT_CANCEL_PAID") {
+        return res.status(409).json({ message: "No puedes cancelar una compra que ya tiene pagos registrados" });
+      }
+      if (err instanceof Error && err.message === "BRANCH_PURCHASE_CANNOT_CANCEL_RECEIVED") {
+        return res.status(409).json({ message: "No puedes cancelar una compra que ya afectó inventario" });
       }
       if (err instanceof Error && err.message === "BRANCH_PURCHASE_NOT_FOUND") {
         return res.status(404).json({ message: "Compra no encontrada" });

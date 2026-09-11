@@ -19,6 +19,7 @@ const expectedProtectedSources = [
   "commercial_sale_cancellation",
   "sales_commission_payment",
   "lease_installment_payment",
+  "purchase_payment",
   "fixed_expense",
   "staff_class_log",
 ] as const;

@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, pgEnum, doublePrecision, boolean, uniqueIndex, jsonb, integer, index, numeric, date, foreignKey } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, pgEnum, doublePrecision, boolean, uniqueIndex, jsonb, integer, index, numeric, date, foreignKey, check } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { membershipPlanTaxModeValues } from "./membership-plan-tax";
@@ -8,6 +8,11 @@ import {
   QUICK_CHARGE_OPERATION_KEY_MIN_LENGTH,
   QUICK_CHARGE_OPERATION_KEY_PATTERN,
 } from "./quick-charge";
+import {
+  BRANCH_PURCHASE_OPERATION_KEY_MAX_LENGTH,
+  BRANCH_PURCHASE_OPERATION_KEY_MIN_LENGTH,
+  BRANCH_PURCHASE_OPERATION_KEY_PATTERN,
+} from "./branch-purchase-operation";
 
 export const userRoleEnum = pgEnum("user_role", [
   "SUPER_ADMIN",
@@ -1266,6 +1271,8 @@ export const branchPurchases = pgTable("branch_purchases", {
   grandTotal: numeric("grand_total", { precision: 12, scale: 2 }),
   totalAmount: numeric("total_amount", { precision: 12, scale: 2 }).notNull().default("0"),
   paidAmount: numeric("paid_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  idempotencyKey: varchar("idempotency_key", { length: 120 }),
+  idempotencyFingerprint: varchar("idempotency_fingerprint", { length: 64 }),
   reference: text("reference"),
   notes: text("notes"),
   createdBy: varchar("created_by", { length: 36 }).references(() => users.id, { onDelete: "set null" }),
@@ -1279,6 +1286,21 @@ export const branchPurchases = pgTable("branch_purchases", {
     name: "branch_purchases_branch_project_fk",
   }).onDelete("restrict"),
   uniqueIndex("branch_purchases_branch_folio_unique").on(table.branchId, table.folio),
+  uniqueIndex("branch_purchases_branch_idempotency_unique")
+    .on(table.branchId, table.idempotencyKey)
+    .where(sql`${table.idempotencyKey} IS NOT NULL`),
+  uniqueIndex("branch_purchases_branch_id_id_unique").on(table.branchId, table.id),
+  check("branch_purchases_idempotency_pair_check", sql`
+    (${table.idempotencyKey} IS NULL AND ${table.idempotencyFingerprint} IS NULL)
+    OR (${table.idempotencyKey} IS NOT NULL AND ${table.idempotencyFingerprint} IS NOT NULL)
+  `),
+  check("branch_purchases_idempotency_key_format_check", sql`
+    ${table.idempotencyKey} IS NULL
+    OR (${table.idempotencyKey} = btrim(${table.idempotencyKey}) AND char_length(${table.idempotencyKey}) BETWEEN 8 AND 120)
+  `),
+  check("branch_purchases_idempotency_fingerprint_format_check", sql`
+    ${table.idempotencyFingerprint} IS NULL OR ${table.idempotencyFingerprint} ~ '^[0-9a-f]{64}$'
+  `),
   index("branch_purchases_branch_idx").on(table.branchId),
   index("branch_purchases_branch_project_idx").on(table.branchId, table.projectId),
   index("branch_purchases_branch_project_status_idx").on(table.branchId, table.projectId, table.status),
@@ -1312,6 +1334,63 @@ export const branchPurchaseItems = pgTable("branch_purchase_items", {
   index("branch_purchase_items_purchase_idx").on(table.purchaseId),
   index("branch_purchase_items_branch_idx").on(table.branchId),
   index("branch_purchase_items_commercial_product_idx").on(table.commercialProductId),
+]);
+
+export const branchPurchasePayments = pgTable("branch_purchase_payments", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 }).notNull(),
+  purchaseId: varchar("purchase_id", { length: 36 }).notNull(),
+  idempotencyKey: varchar("idempotency_key", { length: 120 }).notNull(),
+  idempotencyFingerprint: varchar("idempotency_fingerprint", { length: 64 }).notNull(),
+  amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
+  paymentMethod: text("payment_method").notNull(),
+  paidAt: timestamp("paid_at", { withTimezone: true }).defaultNow().notNull(),
+  entryDate: date("entry_date").notNull(),
+  reference: text("reference"),
+  notes: text("notes"),
+  financeEntryId: varchar("finance_entry_id", { length: 36 }).notNull(),
+  createdBy: varchar("created_by", { length: 36 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  foreignKey({
+    columns: [table.branchId],
+    foreignColumns: [branches.id],
+    name: "branch_purchase_payments_branch_fk",
+  }).onDelete("restrict"),
+  foreignKey({
+    columns: [table.branchId, table.purchaseId],
+    foreignColumns: [branchPurchases.branchId, branchPurchases.id],
+    name: "branch_purchase_payments_branch_purchase_fk",
+  }).onDelete("restrict"),
+  foreignKey({
+    columns: [table.branchId, table.financeEntryId],
+    foreignColumns: [branchFinanceEntries.branchId, branchFinanceEntries.id],
+    name: "branch_purchase_payments_branch_finance_entry_fk",
+  }).onDelete("restrict"),
+  foreignKey({
+    columns: [table.createdBy],
+    foreignColumns: [users.id],
+    name: "branch_purchase_payments_created_by_fk",
+  }).onDelete("set null"),
+  check("branch_purchase_payments_amount_positive_check", sql`${table.amount} > 0`),
+  check("branch_purchase_payments_idempotency_key_format_check", sql`
+    ${table.idempotencyKey} = btrim(${table.idempotencyKey})
+    AND char_length(${table.idempotencyKey}) BETWEEN 8 AND 120
+  `),
+  check("branch_purchase_payments_fingerprint_format_check", sql`
+    ${table.idempotencyFingerprint} ~ '^[0-9a-f]{64}$'
+  `),
+  check("branch_purchase_payments_payment_method_check", sql`
+    ${table.paymentMethod} IN ('efectivo', 'tarjeta', 'transferencia', 'mercado_pago', 'otro')
+  `),
+  uniqueIndex("branch_purchase_payments_branch_idempotency_unique").on(table.branchId, table.idempotencyKey),
+  uniqueIndex("branch_purchase_payments_finance_entry_unique").on(table.financeEntryId),
+  index("branch_purchase_payments_branch_purchase_paid_idx")
+    .on(table.branchId, table.purchaseId, table.paidAt.desc(), table.id),
+  index("branch_purchase_payments_branch_entry_date_idx")
+    .on(table.branchId, table.entryDate, table.createdAt),
 ]);
 
 export const branchInventoryMovements = pgTable("branch_inventory_movements", {
@@ -1521,6 +1600,10 @@ export const insertBranchPurchaseItemSchema = createInsertSchema(branchPurchaseI
   createdAt: true,
 });
 
+export const insertBranchPurchasePaymentSchema = createInsertSchema(branchPurchasePayments).omit({
+  createdAt: true,
+});
+
 export const insertBranchInventoryMovementSchema = createInsertSchema(branchInventoryMovements).omit({
   id: true,
   createdAt: true,
@@ -1579,6 +1662,8 @@ export type BranchPurchase = typeof branchPurchases.$inferSelect;
 export type InsertBranchPurchase = z.infer<typeof insertBranchPurchaseSchema>;
 export type BranchPurchaseItem = typeof branchPurchaseItems.$inferSelect;
 export type InsertBranchPurchaseItem = z.infer<typeof insertBranchPurchaseItemSchema>;
+export type BranchPurchasePayment = typeof branchPurchasePayments.$inferSelect;
+export type InsertBranchPurchasePayment = z.infer<typeof insertBranchPurchasePaymentSchema>;
 export type BranchInventoryMovement = typeof branchInventoryMovements.$inferSelect;
 export type InsertBranchInventoryMovement = z.infer<typeof insertBranchInventoryMovementSchema>;
 export type BranchService = typeof branchServices.$inferSelect;
@@ -1719,6 +1804,7 @@ export const branchFinanceEntries = pgTable("branch_finance_entries", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
 }, (table) => [
+  uniqueIndex("branch_finance_entries_branch_id_id_unique").on(table.branchId, table.id),
   index("branch_finance_entries_branch_idx").on(table.branchId),
   index("branch_finance_entries_entry_date_idx").on(table.entryDate),
   index("branch_finance_entries_type_idx").on(table.type),
@@ -2514,21 +2600,39 @@ export const createBranchPurchaseItemInputSchema = z.object({
   updateReferenceCost: z.boolean().optional(),
 });
 
+const branchPurchaseOperationKeySchema = z
+  .string()
+  .trim()
+  .min(BRANCH_PURCHASE_OPERATION_KEY_MIN_LENGTH, "Clave de operacion invalida")
+  .max(BRANCH_PURCHASE_OPERATION_KEY_MAX_LENGTH, "Maximo 120 caracteres")
+  .regex(BRANCH_PURCHASE_OPERATION_KEY_PATTERN, "Clave de operacion invalida");
+
+const branchPurchasePaymentInputSchema = z.object({
+  amount: z.coerce.number().positive("El pago debe ser mayor a 0"),
+  paymentMethod: z.enum(branchFinancePaymentMethodValues),
+  entryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Formato YYYY-MM-DD"),
+  reference: z.string().max(160, "Maximo 160 caracteres").nullable().optional(),
+  notes: z.string().max(500, "Maximo 500 caracteres").nullable().optional(),
+});
+
 export const createBranchPurchaseSchema = z.object({
+  operationKey: branchPurchaseOperationKeySchema,
   projectId: z.string().min(1).nullable().optional(),
   supplierId: z.string().min(1).nullable().optional(),
   status: z.enum(branchPurchaseStatusValues).optional(),
   purchaseDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Formato YYYY-MM-DD"),
   expectedDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Formato YYYY-MM-DD").nullable().optional(),
-  paymentStatus: z.enum(branchPurchasePaymentStatusValues).optional(),
-  paymentMethod: z.enum(branchFinancePaymentMethodValues).nullable().optional(),
-  paidAmount: z.coerce.number().min(0, "El pago no puede ser negativo").optional(),
   discountAmount: z.coerce.number().min(0, "El descuento no puede ser negativo").optional(),
   taxMode: z.enum(branchSaleTaxModeValues).default("tax_exempt"),
   taxRate: z.coerce.number().min(0, "La tasa de IVA no puede ser negativa").max(100, "La tasa de IVA no puede ser mayor a 100").default(16),
   reference: z.string().max(120, "Maximo 120 caracteres").nullable().optional(),
   notes: z.string().max(500, "Maximo 500 caracteres").nullable().optional(),
   items: z.array(createBranchPurchaseItemInputSchema).min(1, "Debes agregar al menos un producto"),
+  initialPayment: branchPurchasePaymentInputSchema.nullable().optional(),
+});
+
+export const registerBranchPurchasePaymentSchema = branchPurchasePaymentInputSchema.extend({
+  operationKey: branchPurchaseOperationKeySchema,
 });
 
 export const receiveBranchPurchaseSchema = z.object({

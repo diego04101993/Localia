@@ -52,6 +52,8 @@ import {
   branchSuppliers,
   branchPurchases,
   branchPurchaseItems,
+  branchPurchasePayments,
+  branchFinancePaymentMethodValues,
   branchServices,
   branchServiceSaleOptions,
   branchVideos,
@@ -124,6 +126,7 @@ import {
   type InsertBranchPurchase,
   type BranchPurchaseItem,
   type InsertBranchPurchaseItem,
+  type BranchPurchasePayment,
   type BranchService,
   type InsertBranchService,
   type BranchServiceSaleOption,
@@ -225,6 +228,25 @@ import {
   MEMBERSHIP_PLAN_REMOVAL_BUSY,
   type MembershipPlanRemovalOperationResult,
 } from "./membership-plan-removal";
+import {
+  BRANCH_PURCHASE_CREATE_OPERATION,
+  BRANCH_PURCHASE_PAYMENT_OPERATION,
+  branchPurchaseCentsToFixed,
+  branchPurchaseMoneyToCents,
+  deriveBranchPurchasePaymentStatus,
+  getBranchPurchaseCancellationBlockReason,
+  getBranchPurchaseLegacyPaidCents,
+  normalizeBranchPurchaseOperationKey,
+  resolveBranchPurchaseParentPaymentMethod,
+  type BranchPurchaseInitialPaymentCanonicalInput,
+} from "@shared/branch-purchase-operation";
+import {
+  BranchPurchaseIdempotencyError,
+  BRANCH_PURCHASE_INCOMPLETE_REPLAY_CONFLICT,
+  commitLockedBranchPurchaseOperation,
+  createBranchPurchasePayloadFingerprint,
+  createBranchPurchasePaymentFingerprint,
+} from "./branch-purchase-operation";
 
 const BRANCH_CLIENT_PASSWORD_RESET_COOLDOWN_MS = 60_000;
 
@@ -411,6 +433,8 @@ const BRANCH_CLIENT_ACCESS_LOCK_TIMEOUT_MS = 5_000;
 const BRANCH_CLIENT_ACCESS_STATEMENT_TIMEOUT_MS = 20_000;
 const MEMBERSHIP_PLAN_REMOVAL_LOCK_TIMEOUT_MS = 5_000;
 const MEMBERSHIP_PLAN_REMOVAL_STATEMENT_TIMEOUT_MS = 20_000;
+const BRANCH_PURCHASE_OPERATION_STATEMENT_TIMEOUT_MS = 15_000;
+const BRANCH_PURCHASE_PAYMENT_METHODS = new Set<string>(branchFinancePaymentMethodValues);
 
 function buildLocalAccessProvisioningPatch(
   user: {
@@ -1662,6 +1686,21 @@ export interface BranchPurchaseItemRow {
   createdAt: Date | string;
 }
 
+export interface BranchPurchasePaymentRow {
+  id: string;
+  branchId: string;
+  purchaseId: string;
+  amount: number;
+  paymentMethod: string;
+  paidAt: Date | string;
+  entryDate: string;
+  reference: string | null;
+  notes: string | null;
+  financeEntryId: string;
+  createdBy: string | null;
+  createdAt: Date | string;
+}
+
 export interface BranchCommercialProjectSummaryRow {
   linkedSalesCount: number;
   linkedPurchasesCount: number;
@@ -1756,10 +1795,50 @@ export interface BranchPurchaseRow {
   totalItems: number;
   totalUnitsOrdered: number;
   totalUnitsReceived: number;
+  balanceAmount: number;
 }
 
 export interface BranchPurchaseDetailRow extends BranchPurchaseRow {
   items: BranchPurchaseItemRow[];
+  payments: BranchPurchasePaymentRow[];
+  detailedPaidAmount: number;
+  legacyPaidAmount: number;
+  hasLegacyPaidAmount: boolean;
+}
+
+export interface BranchPurchaseCreateOperationResult {
+  purchase: BranchPurchaseDetailRow;
+  replayed: boolean;
+}
+
+export interface BranchPurchasePaymentOperationResult {
+  purchase: BranchPurchaseDetailRow;
+  payment: BranchPurchasePaymentRow;
+  replayed: boolean;
+}
+
+export interface BranchPurchaseInitialPaymentInput {
+  amount: number;
+  paymentMethod: string;
+  entryDate: string;
+  reference?: string | null;
+  notes?: string | null;
+}
+
+export interface CreateBranchPurchaseOperationInput {
+  branchId: string;
+  actorUserId: string;
+  operationKey: string;
+  purchase: Omit<InsertBranchPurchase, "branchId" | "createdBy" | "paidAmount" | "paymentStatus" | "paymentMethod" | "idempotencyKey" | "idempotencyFingerprint">;
+  items: InsertBranchPurchaseItem[];
+  initialPayment?: BranchPurchaseInitialPaymentInput | null;
+}
+
+export interface RegisterBranchPurchasePaymentInput extends BranchPurchaseInitialPaymentInput {
+  branchId: string;
+  actorUserId: string;
+  purchaseId: string;
+  operationKey: string;
 }
 
 export interface BranchCommercialProjectLinkedPurchaseRow {
@@ -2613,17 +2692,15 @@ export interface IStorage {
     to?: string | null;
   }): Promise<BranchPurchaseRow[]>;
   getBranchPurchaseById(branchId: string, purchaseId: string): Promise<BranchPurchaseDetailRow | undefined>;
-  createBranchPurchase(data: {
-    purchase: InsertBranchPurchase;
-    items: InsertBranchPurchaseItem[];
-  }): Promise<BranchPurchaseDetailRow>;
+  createBranchPurchase(data: CreateBranchPurchaseOperationInput): Promise<BranchPurchaseCreateOperationResult>;
+  registerBranchPurchasePayment(data: RegisterBranchPurchasePaymentInput): Promise<BranchPurchasePaymentOperationResult>;
   receiveBranchPurchase(data: {
     branchId: string;
     purchaseId: string;
     receivedBy?: string | null;
     notes?: string | null;
   }): Promise<BranchPurchaseDetailRow>;
-  cancelBranchPurchase(branchId: string, purchaseId: string): Promise<BranchPurchaseDetailRow | undefined>;
+  cancelBranchPurchase(branchId: string, purchaseId: string, actorUserId: string): Promise<BranchPurchaseDetailRow | undefined>;
   createBranchSale(data: {
     sale: InsertBranchSale;
     items: InsertBranchSaleItem[];
@@ -3743,6 +3820,7 @@ export class DatabaseStorage implements IStorage {
       suppliersCount,
       purchasesCount,
       purchaseItemsCount,
+      purchasePaymentsCount,
       commissionRulesCount,
       commissionAccrualsCount,
       commissionPaymentsCount,
@@ -3778,6 +3856,7 @@ export class DatabaseStorage implements IStorage {
       countRow(db.select({ total: count() }).from(branchSuppliers).where(eq(branchSuppliers.branchId, branchId))),
       countRow(db.select({ total: count() }).from(branchPurchases).where(eq(branchPurchases.branchId, branchId))),
       countRow(db.select({ total: count() }).from(branchPurchaseItems).where(eq(branchPurchaseItems.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchPurchasePayments).where(eq(branchPurchasePayments.branchId, branchId))),
       countRow(db.select({ total: count() }).from(branchCommissionRules).where(eq(branchCommissionRules.branchId, branchId))),
       countRow(db.select({ total: count() }).from(branchCommissionAccruals).where(eq(branchCommissionAccruals.branchId, branchId))),
       countRow(db.select({ total: count() }).from(branchCommissionPayments).where(eq(branchCommissionPayments.branchId, branchId))),
@@ -3851,6 +3930,7 @@ export class DatabaseStorage implements IStorage {
         suppliers: suppliersCount,
         purchases: purchasesCount,
         purchaseItems: purchaseItemsCount,
+        purchasePayments: purchasePaymentsCount,
         commissionRules: commissionRulesCount,
         commissionAccruals: commissionAccrualsCount,
         commissionPayments: commissionPaymentsCount,
@@ -4051,6 +4131,9 @@ export class DatabaseStorage implements IStorage {
 
       purgePhase = "PURGE_DB_DELETE_STAFF_CLASS_LOGS";
       await tx.delete(branchStaffClassLogs).where(eq(branchStaffClassLogs.branchId, id));
+
+      purgePhase = "PURGE_DB_DELETE_PURCHASE_PAYMENTS";
+      await tx.delete(branchPurchasePayments).where(eq(branchPurchasePayments.branchId, id));
 
       purgePhase = "PURGE_DB_DELETE_FINANCE";
       const financeClauses = [eq(branchFinanceEntries.branchId, id)];
@@ -10301,6 +10384,23 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
+  private mapBranchPurchasePaymentRow(row: BranchPurchasePayment): BranchPurchasePaymentRow {
+    return {
+      id: row.id,
+      branchId: row.branchId,
+      purchaseId: row.purchaseId,
+      amount: toFinanceAmount(row.amount),
+      paymentMethod: row.paymentMethod,
+      paidAt: row.paidAt,
+      entryDate: typeof row.entryDate === "string" ? row.entryDate : String(row.entryDate).slice(0, 10),
+      reference: row.reference ?? null,
+      notes: row.notes ?? null,
+      financeEntryId: row.financeEntryId,
+      createdBy: row.createdBy ?? null,
+      createdAt: row.createdAt,
+    };
+  }
+
   private mapBranchPurchaseRow(row: {
     id: string;
     branchId: string;
@@ -10336,6 +10436,10 @@ export class DatabaseStorage implements IStorage {
     totalUnitsOrdered?: number;
     totalUnitsReceived?: number;
   }): BranchPurchaseRow {
+    const totalAmount = row.grandTotal == null
+      ? toFinanceAmount(row.totalAmount)
+      : toFinanceAmount(row.grandTotal);
+    const paidAmount = toFinanceAmount(row.paidAmount);
     return {
       id: row.id,
       branchId: row.branchId,
@@ -10363,8 +10467,8 @@ export class DatabaseStorage implements IStorage {
       taxableSubtotal: row.taxableSubtotal == null ? null : toFinanceAmount(row.taxableSubtotal),
       taxTotal: row.taxTotal == null ? null : toFinanceAmount(row.taxTotal),
       grandTotal: row.grandTotal == null ? null : toFinanceAmount(row.grandTotal),
-      totalAmount: toFinanceAmount(row.totalAmount),
-      paidAmount: toFinanceAmount(row.paidAmount),
+      totalAmount,
+      paidAmount,
       reference: row.reference ?? null,
       notes: row.notes ?? null,
       createdBy: row.createdBy ?? null,
@@ -10374,6 +10478,7 @@ export class DatabaseStorage implements IStorage {
       totalItems: Number(row.totalItems ?? 0),
       totalUnitsOrdered: Number(row.totalUnitsOrdered ?? 0),
       totalUnitsReceived: Number(row.totalUnitsReceived ?? 0),
+      balanceAmount: Math.max(0, Number((totalAmount - paidAmount).toFixed(2))),
     };
   }
 
@@ -10443,6 +10548,8 @@ export class DatabaseStorage implements IStorage {
       grandTotal: row.grand_total == null ? null : String(row.grand_total),
       totalAmount: String(row.total_amount ?? 0),
       paidAmount: String(row.paid_amount ?? 0),
+      idempotencyKey: row.idempotency_key ?? null,
+      idempotencyFingerprint: row.idempotency_fingerprint ?? null,
       reference: row.reference ?? null,
       notes: row.notes ?? null,
       createdBy: row.created_by ?? null,
@@ -12201,41 +12308,62 @@ export class DatabaseStorage implements IStorage {
           throw new Error("BRANCH_SALE_COMMISSION_ALREADY_PAID");
         }
 
-        for (const movement of inventoryMovementRows) {
-          const quantityToRestore = Math.abs(movement.quantityDelta ?? 0);
-          if (quantityToRestore <= 0) continue;
+        const restorableMovements = inventoryMovementRows
+          .filter((movement) => Math.abs(movement.quantityDelta ?? 0) > 0)
+          .sort((left, right) => {
+            const productOrder = left.commercialProductId.localeCompare(right.commercialProductId);
+            if (productOrder !== 0) return productOrder;
+            return left.id.localeCompare(right.id);
+          });
+        const lockedBalances = new Map<string, BranchInventoryBalance>();
+        const productIdsToRestore = Array.from(new Set(
+          restorableMovements.map((movement) => movement.commercialProductId),
+        )).sort();
 
-          const [existingBalance] = await tx
-            .select()
-            .from(branchInventoryBalances)
-            .where(and(
-              eq(branchInventoryBalances.branchId, data.branchId),
-              eq(branchInventoryBalances.commercialProductId, movement.commercialProductId),
-            ))
-            .limit(1);
-
-          const quantityBefore = existingBalance?.quantityOnHand ?? 0;
-          const quantityAfter = quantityBefore + quantityToRestore;
-          const minimumStock = existingBalance?.minimumStock ?? 0;
-
-          if (existingBalance) {
+        for (const commercialProductId of productIdsToRestore) {
+          let lockedBalance = await this.getLockedBranchInventoryBalance(tx, data.branchId, commercialProductId);
+          if (!lockedBalance) {
             await tx
-              .update(branchInventoryBalances)
-              .set({
-                quantityOnHand: quantityAfter,
+              .insert(branchInventoryBalances)
+              .values({
+                branchId: data.branchId,
+                commercialProductId,
+                quantityOnHand: 0,
+                minimumStock: 0,
                 updatedBy: data.cancelledByUserId,
-                updatedAt: new Date(),
               } as any)
-              .where(eq(branchInventoryBalances.id, existingBalance.id));
-          } else {
-            await tx.insert(branchInventoryBalances).values({
-              branchId: data.branchId,
-              commercialProductId: movement.commercialProductId,
-              quantityOnHand: quantityAfter,
-              minimumStock,
-              updatedBy: data.cancelledByUserId,
-            } as any);
+              .onConflictDoNothing({
+                target: [branchInventoryBalances.branchId, branchInventoryBalances.commercialProductId],
+              });
+            lockedBalance = await this.getLockedBranchInventoryBalance(tx, data.branchId, commercialProductId);
           }
+          if (!lockedBalance) throw new Error("INVENTORY_NOT_INITIALIZED");
+          lockedBalances.set(commercialProductId, lockedBalance);
+        }
+
+        for (const movement of restorableMovements) {
+          const quantityToRestore = Math.abs(movement.quantityDelta ?? 0);
+          const existingBalance = lockedBalances.get(movement.commercialProductId);
+          if (!existingBalance) throw new Error("INVENTORY_NOT_INITIALIZED");
+
+          const quantityBefore = existingBalance.quantityOnHand;
+          const quantityAfter = quantityBefore + quantityToRestore;
+
+          await tx
+            .update(branchInventoryBalances)
+            .set({
+              quantityOnHand: quantityAfter,
+              updatedBy: data.cancelledByUserId,
+              updatedAt: new Date(),
+            } as any)
+            .where(and(
+              eq(branchInventoryBalances.id, existingBalance.id),
+              eq(branchInventoryBalances.branchId, data.branchId),
+            ));
+          lockedBalances.set(movement.commercialProductId, {
+            ...existingBalance,
+            quantityOnHand: quantityAfter,
+          });
 
           await this.insertBranchInventoryMovementTx(tx, {
             branchId: data.branchId,
@@ -14016,13 +14144,27 @@ export class DatabaseStorage implements IStorage {
 
     if (!purchaseRow) return undefined;
 
-    const itemRows = await db
-      .select()
-      .from(branchPurchaseItems)
-      .where(eq(branchPurchaseItems.purchaseId, purchaseId))
-      .orderBy(asc(branchPurchaseItems.createdAt));
+    const [itemRows, paymentRows] = await Promise.all([
+      db
+        .select()
+        .from(branchPurchaseItems)
+        .where(and(
+          eq(branchPurchaseItems.branchId, branchId),
+          eq(branchPurchaseItems.purchaseId, purchaseId),
+        ))
+        .orderBy(asc(branchPurchaseItems.createdAt)),
+      db
+        .select()
+        .from(branchPurchasePayments)
+        .where(and(
+          eq(branchPurchasePayments.branchId, branchId),
+          eq(branchPurchasePayments.purchaseId, purchaseId),
+        ))
+        .orderBy(desc(branchPurchasePayments.paidAt), desc(branchPurchasePayments.id)),
+    ]);
 
     const items = itemRows.map((row) => this.mapBranchPurchaseItemRow(row));
+    const payments = paymentRows.map((row) => this.mapBranchPurchasePaymentRow(row));
     const summary = this.mapBranchPurchaseRow({
       ...purchaseRow,
       totalItems: items.length,
@@ -14030,161 +14172,250 @@ export class DatabaseStorage implements IStorage {
       totalUnitsReceived: items.reduce((acc, item) => acc + item.quantityReceived, 0),
     });
 
+    const detailedPaidCents = payments.reduce(
+      (total, payment) => total + branchPurchaseMoneyToCents(payment.amount),
+      0,
+    );
+    const legacyPaidCents = getBranchPurchaseLegacyPaidCents(
+      branchPurchaseMoneyToCents(summary.paidAmount),
+      detailedPaidCents,
+    );
+
     return {
       ...summary,
       items,
+      payments,
+      detailedPaidAmount: detailedPaidCents / 100,
+      legacyPaidAmount: legacyPaidCents / 100,
+      hasLegacyPaidAmount: legacyPaidCents > 0,
     };
   }
 
-  async createBranchPurchase(data: {
-    purchase: InsertBranchPurchase;
-    items: InsertBranchPurchaseItem[];
-  }): Promise<BranchPurchaseDetailRow> {
-    if (!data.items.length) {
-      throw new Error("BRANCH_PURCHASE_REQUIRES_ITEMS");
+  private async createBranchPurchasePaymentArtifactsTx(
+    tx: any,
+    data: {
+      branchId: string;
+      actorUserId: string;
+      purchaseId: string;
+      purchaseFolio: string;
+      paymentId: string;
+      operationKey: string;
+      fingerprint: string;
+      amountCents: number;
+      paymentMethod: string;
+      entryDate: string;
+      reference: string | null;
+      notes: string | null;
+      paymentKind: "initial" | "subsequent";
+    },
+  ): Promise<BranchPurchasePayment> {
+    const financeOutcome = await this.createBranchFinanceEntryTx(tx, {
+      branchId: data.branchId,
+      type: "expense",
+      category: "productos",
+      concept: `Compra ${data.purchaseFolio} · Pago a proveedor`,
+      amount: branchPurchaseCentsToFixed(data.amountCents),
+      paymentMethod: data.paymentMethod,
+      clientUserId: null,
+      clientName: null,
+      notes: data.notes,
+      entryDate: data.entryDate,
+      source: "purchase_payment",
+      sourceId: data.paymentId,
+      metadata: {
+        purchaseId: data.purchaseId,
+        purchaseFolio: data.purchaseFolio,
+        purchasePaymentId: data.paymentId,
+        paymentKind: data.paymentKind,
+      },
+      createdBy: data.actorUserId,
+    } as InsertBranchFinanceEntry);
+
+    if (!financeOutcome.created) {
+      throw new BranchPurchaseIdempotencyError(BRANCH_PURCHASE_INCOMPLETE_REPLAY_CONFLICT);
     }
 
-    const allowedStatuses = new Set(["draft", "ordered"]);
+    const [payment] = await tx
+      .insert(branchPurchasePayments)
+      .values({
+        id: data.paymentId,
+        branchId: data.branchId,
+        purchaseId: data.purchaseId,
+        idempotencyKey: data.operationKey,
+        idempotencyFingerprint: data.fingerprint,
+        amount: branchPurchaseCentsToFixed(data.amountCents),
+        paymentMethod: data.paymentMethod,
+        paidAt: new Date(),
+        entryDate: data.entryDate,
+        reference: data.reference,
+        notes: data.notes,
+        financeEntryId: financeOutcome.entry.id,
+        createdBy: data.actorUserId,
+      })
+      .returning();
+
+    return payment;
+  }
+
+  async createBranchPurchase(data: CreateBranchPurchaseOperationInput): Promise<BranchPurchaseCreateOperationResult> {
+    if (!data.items.length) throw new Error("BRANCH_PURCHASE_REQUIRES_ITEMS");
+
+    const operationKey = normalizeBranchPurchaseOperationKey(data.operationKey);
+    if (!operationKey) throw new Error("BRANCH_PURCHASE_OPERATION_KEY_INVALID");
+
     const requestedStatus = data.purchase.status?.trim() || "draft";
-    if (!allowedStatuses.has(requestedStatus)) {
+    if (!new Set(["draft", "ordered"]).has(requestedStatus)) {
       throw new Error("BRANCH_PURCHASE_INVALID_STATUS");
     }
 
-    const discountAmount = toFinanceAmount(data.purchase.discountAmount);
-    const requestedPaidAmount = toFinanceAmount(data.purchase.paidAmount);
+    const itemInputs = data.items.map((item) => {
+      if (!item.commercialProductId) throw new Error("BRANCH_PURCHASE_ITEM_PRODUCT_INVALID");
+      return {
+        commercialProductId: item.commercialProductId,
+        quantityOrdered: Number(item.quantityOrdered ?? 0),
+        unitCost: item.unitCost ?? 0,
+        updateReferenceCost: Boolean((item as { updateReferenceCost?: boolean }).updateReferenceCost),
+      };
+    });
+    const initialPayment = data.initialPayment ?? null;
+    const initialPaymentCents = initialPayment ? branchPurchaseMoneyToCents(initialPayment.amount) : 0;
+    if (initialPayment && initialPaymentCents <= 0) throw new Error("BRANCH_PURCHASE_PAYMENT_INVALID");
 
-    const created = await db.transaction(async (tx) => {
-      let supplierId = data.purchase.supplierId ?? null;
-      const projectId = normalizeOptionalTextValue((data.purchase as any).projectId);
-      if (supplierId) {
-        const [supplier] = await tx
+    const normalizedInitialMethod = initialPayment?.paymentMethod.trim().toLowerCase() ?? null;
+    if (initialPayment && (!normalizedInitialMethod || !BRANCH_PURCHASE_PAYMENT_METHODS.has(normalizedInitialMethod))) {
+      throw new Error("BRANCH_PURCHASE_PAYMENT_REQUIRES_METHOD");
+    }
+
+    const canonicalInput = {
+      branchId: data.branchId,
+      supplierId: data.purchase.supplierId ?? null,
+      projectId: data.purchase.projectId ?? null,
+      status: requestedStatus,
+      purchaseDate: String(data.purchase.purchaseDate),
+      expectedDate: data.purchase.expectedDate == null ? null : String(data.purchase.expectedDate),
+      discountAmount: data.purchase.discountAmount ?? 0,
+      taxMode: data.purchase.taxMode ?? "tax_exempt",
+      taxRate: data.purchase.taxRate ?? 0,
+      reference: data.purchase.reference ?? null,
+      notes: data.purchase.notes ?? null,
+      items: itemInputs,
+      initialPayment: initialPayment as BranchPurchaseInitialPaymentCanonicalInput | null,
+    };
+    const payloadFingerprint = createBranchPurchasePayloadFingerprint(canonicalInput);
+
+    const committed = await commitLockedBranchPurchaseOperation<any, BranchPurchase, { id: string; branchId: string }>({
+      fingerprint: payloadFingerprint,
+      transaction: (work) => db.transaction(async (tx) => work(tx)),
+      acquireLock: async (tx) => {
+        await tx.execute(sql.raw(`SET LOCAL statement_timeout = '${BRANCH_PURCHASE_OPERATION_STATEMENT_TIMEOUT_MS}ms'`));
+        await tx.execute(sql`
+          SELECT pg_advisory_xact_lock(
+            hashtext(${data.branchId}),
+            hashtext(${`${BRANCH_PURCHASE_CREATE_OPERATION}:${operationKey}`})
+          )
+        `);
+      },
+      findExisting: async (tx) => {
+        const [existing] = await tx
           .select()
-          .from(branchSuppliers)
+          .from(branchPurchases)
           .where(and(
-            eq(branchSuppliers.id, supplierId),
-            eq(branchSuppliers.branchId, data.purchase.branchId),
-            isNull(branchSuppliers.deletedAt),
+            eq(branchPurchases.branchId, data.branchId),
+            eq(branchPurchases.idempotencyKey, operationKey),
           ))
           .limit(1);
-
-        if (!supplier) {
-          throw new Error("BRANCH_PURCHASE_SUPPLIER_INVALID");
+        return existing;
+      },
+      getExistingFingerprint: (existing) => existing.idempotencyFingerprint ?? null,
+      replay: async (_tx, existing) => ({ id: existing.id, branchId: existing.branchId }),
+      create: async (tx) => {
+        const supplierId = normalizeOptionalTextValue(data.purchase.supplierId);
+        const projectId = normalizeOptionalTextValue(data.purchase.projectId);
+        if (supplierId) {
+          const [supplier] = await tx
+            .select({ id: branchSuppliers.id })
+            .from(branchSuppliers)
+            .where(and(
+              eq(branchSuppliers.id, supplierId),
+              eq(branchSuppliers.branchId, data.branchId),
+              isNull(branchSuppliers.deletedAt),
+            ))
+            .limit(1);
+          if (!supplier) throw new Error("BRANCH_PURCHASE_SUPPLIER_INVALID");
         }
-      }
 
-      if (projectId) {
-        const project = await this.getAssignableBranchCommercialProjectTx(tx, data.purchase.branchId, projectId);
-        if (!project) {
-          throw new Error("BRANCH_PURCHASE_PROJECT_INVALID");
+        if (projectId) {
+          const project = await this.getAssignableBranchCommercialProjectTx(tx, data.branchId, projectId);
+          if (!project) throw new Error("BRANCH_PURCHASE_PROJECT_INVALID");
         }
-      }
 
-      const requestedProductIds = data.items
-        .map((item) => item.commercialProductId)
-        .filter((value): value is string => typeof value === "string" && value.length > 0);
-      const productIds = Array.from(new Set(requestedProductIds));
+        const requestedProductIds = itemInputs.map((item) => item.commercialProductId);
+        const productIds = Array.from(new Set(requestedProductIds));
+        if (requestedProductIds.length !== productIds.length) {
+          throw new Error("BRANCH_PURCHASE_DUPLICATE_PRODUCTS");
+        }
 
-      if (requestedProductIds.length !== productIds.length) {
-        throw new Error("BRANCH_PURCHASE_DUPLICATE_PRODUCTS");
-      }
-
-      const productRows = productIds.length > 0
-        ? await tx
+        const productRows: BranchCommercialProduct[] = await tx
           .select()
           .from(branchCommercialProducts)
           .where(and(
-            eq(branchCommercialProducts.branchId, data.purchase.branchId),
+            eq(branchCommercialProducts.branchId, data.branchId),
             inArray(branchCommercialProducts.id, productIds),
             isNull(branchCommercialProducts.deletedAt),
-          ))
-        : [];
-
-      const productMap = new Map(productRows.map((row) => [row.id, row]));
-
-      const normalizedPaymentMethod = typeof data.purchase.paymentMethod === "string" && data.purchase.paymentMethod.trim().length > 0
-        ? data.purchase.paymentMethod.trim()
-        : null;
-
-      if (!normalizedPaymentMethod && requestedPaidAmount > 0) {
-        throw new Error("BRANCH_PURCHASE_PAYMENT_REQUIRES_METHOD");
-      }
-
-      const normalizedItems = data.items.map((item) => {
-        const productId = item.commercialProductId ?? null;
-        if (!productId) {
-          throw new Error("BRANCH_PURCHASE_ITEM_PRODUCT_INVALID");
-        }
-
-        const product = productMap.get(productId);
-        if (!product) {
-          throw new Error("BRANCH_PURCHASE_ITEM_PRODUCT_INVALID");
-        }
-
-        const quantityOrdered = Number(item.quantityOrdered ?? 0);
-        const unitCost = toFinanceAmount(item.unitCost);
-        const lineTotal = Number((quantityOrdered * unitCost).toFixed(2));
-        const updateReferenceCost = Boolean((item as { updateReferenceCost?: boolean }).updateReferenceCost);
-
-        return {
-          product,
-          quantityOrdered,
-          unitCost,
-          lineTotal,
-          updateReferenceCost,
-        };
-      });
-
-      const subtotalAmount = Number(normalizedItems.reduce((sum, item) => sum + item.lineTotal, 0).toFixed(2));
-      const taxSnapshot = computeCommercialTaxSnapshot({
-        subtotalAmount,
-        discountAmount,
-        taxMode: (((data.purchase as any).taxMode ?? "tax_exempt") as CommercialTaxMode),
-        taxRate: toFinanceAmount((data.purchase as any).taxRate ?? 0),
-      });
-      const totalAmount = taxSnapshot.grandTotal;
-      if (taxSnapshot.grandTotal < 0) {
-        throw new Error("BRANCH_PURCHASE_TOTAL_NEGATIVE");
-      }
-      if (requestedPaidAmount > totalAmount) {
-        throw new Error("BRANCH_PURCHASE_PAID_EXCEEDS_TOTAL");
-      }
-
-      const paymentStatus = requestedPaidAmount <= 0
-        ? "unpaid"
-        : requestedPaidAmount >= totalAmount
-          ? "paid"
-          : "partial";
-
-      const [purchaseRow] = await tx
-        .insert(branchPurchases)
-        .values({
-          ...data.purchase,
-          projectId,
-          supplierId,
-          folio: data.purchase.folio?.trim() || generateBranchPurchaseFolio(),
-          status: requestedStatus,
-          paymentStatus,
-          subtotalAmount: subtotalAmount.toFixed(2),
-          discountAmount: discountAmount.toFixed(2),
-          taxMode: taxSnapshot.taxMode,
-          taxRate: taxSnapshot.taxRate.toFixed(2),
-          subtotalBeforeTax: taxSnapshot.subtotalBeforeTax.toFixed(2),
-          taxableSubtotal: taxSnapshot.taxableSubtotal.toFixed(2),
-          taxTotal: taxSnapshot.taxTotal.toFixed(2),
-          grandTotal: taxSnapshot.grandTotal.toFixed(2),
-          totalAmount: totalAmount.toFixed(2),
-          paidAmount: requestedPaidAmount.toFixed(2),
-          paymentMethod: normalizedPaymentMethod,
-          reference: data.purchase.reference ?? null,
-          notes: data.purchase.notes ?? null,
-        } as any)
-        .returning({
-          id: branchPurchases.id,
-          branchId: branchPurchases.branchId,
+          ));
+        const productMap = new Map<string, BranchCommercialProduct>(productRows.map((row) => [row.id, row]));
+        const normalizedItems = itemInputs.map((item) => {
+          const product = productMap.get(item.commercialProductId);
+          if (!product) throw new Error("BRANCH_PURCHASE_ITEM_PRODUCT_INVALID");
+          const unitCostCents = branchPurchaseMoneyToCents(item.unitCost);
+          const lineTotalCents = unitCostCents * item.quantityOrdered;
+          return { ...item, product, unitCostCents, lineTotalCents };
         });
 
-      await tx.insert(branchPurchaseItems).values(
-        normalizedItems.map((item) => ({
+        const subtotalCents = normalizedItems.reduce((sum, item) => sum + item.lineTotalCents, 0);
+        const discountAmount = branchPurchaseMoneyToCents(data.purchase.discountAmount ?? 0) / 100;
+        const taxSnapshot = computeCommercialTaxSnapshot({
+          subtotalAmount: subtotalCents / 100,
+          discountAmount,
+          taxMode: ((data.purchase.taxMode ?? "tax_exempt") as CommercialTaxMode),
+          taxRate: toFinanceAmount(data.purchase.taxRate ?? 0),
+        });
+        const totalCents = branchPurchaseMoneyToCents(taxSnapshot.grandTotal);
+        if (totalCents < 0) throw new Error("BRANCH_PURCHASE_TOTAL_NEGATIVE");
+        if (initialPaymentCents > totalCents) throw new Error("BRANCH_PURCHASE_PAID_EXCEEDS_TOTAL");
+
+        const paymentStatus = deriveBranchPurchasePaymentStatus(initialPaymentCents, totalCents);
+        const [purchaseRow] = await tx
+          .insert(branchPurchases)
+          .values({
+            branchId: data.branchId,
+            projectId,
+            supplierId,
+            folio: data.purchase.folio?.trim() || generateBranchPurchaseFolio(),
+            status: requestedStatus,
+            purchaseDate: data.purchase.purchaseDate,
+            expectedDate: data.purchase.expectedDate ?? null,
+            paymentStatus,
+            paymentMethod: initialPaymentCents > 0 ? normalizedInitialMethod : null,
+            subtotalAmount: branchPurchaseCentsToFixed(subtotalCents),
+            discountAmount: branchPurchaseCentsToFixed(branchPurchaseMoneyToCents(discountAmount)),
+            taxMode: taxSnapshot.taxMode,
+            taxRate: taxSnapshot.taxRate.toFixed(2),
+            subtotalBeforeTax: taxSnapshot.subtotalBeforeTax.toFixed(2),
+            taxableSubtotal: taxSnapshot.taxableSubtotal.toFixed(2),
+            taxTotal: taxSnapshot.taxTotal.toFixed(2),
+            grandTotal: branchPurchaseCentsToFixed(totalCents),
+            totalAmount: branchPurchaseCentsToFixed(totalCents),
+            paidAmount: branchPurchaseCentsToFixed(initialPaymentCents),
+            idempotencyKey: operationKey,
+            idempotencyFingerprint: payloadFingerprint,
+            reference: data.purchase.reference ?? null,
+            notes: data.purchase.notes ?? null,
+            createdBy: data.actorUserId,
+          } as any)
+          .returning({ id: branchPurchases.id, branchId: branchPurchases.branchId, folio: branchPurchases.folio });
+
+        await tx.insert(branchPurchaseItems).values(normalizedItems.map((item) => ({
           purchaseId: purchaseRow.id,
           branchId: purchaseRow.branchId,
           commercialProductId: item.product.id,
@@ -14192,31 +14423,234 @@ export class DatabaseStorage implements IStorage {
           skuSnapshot: item.product.sku ?? null,
           quantityOrdered: item.quantityOrdered,
           quantityReceived: 0,
-          unitCost: item.unitCost.toFixed(2),
-          lineTotal: item.lineTotal.toFixed(2),
+          unitCost: branchPurchaseCentsToFixed(item.unitCostCents),
+          lineTotal: branchPurchaseCentsToFixed(item.lineTotalCents),
           metadata: {
             category: item.product.category,
             usesInventory: item.product.usesInventory,
             updateReferenceCost: item.updateReferenceCost,
           },
-        })) as any,
-      );
+        })) as any);
 
-      for (const item of normalizedItems) {
-        if (!item.updateReferenceCost) continue;
-        await tx
-          .update(branchCommercialProducts)
-          .set({
-            costAmount: item.unitCost.toFixed(2),
-            updatedAt: new Date(),
-          })
-          .where(eq(branchCommercialProducts.id, item.product.id));
-      }
+        for (const item of normalizedItems) {
+          if (!item.updateReferenceCost) continue;
+          await tx
+            .update(branchCommercialProducts)
+            .set({ costAmount: branchPurchaseCentsToFixed(item.unitCostCents), updatedAt: new Date() })
+            .where(and(
+              eq(branchCommercialProducts.id, item.product.id),
+              eq(branchCommercialProducts.branchId, data.branchId),
+            ));
+        }
 
-      return purchaseRow;
+        let initialPaymentId: string | null = null;
+        let initialFinanceEntryId: string | null = null;
+        if (initialPayment && initialPaymentCents > 0 && normalizedInitialMethod) {
+          const paymentId = crypto.randomUUID();
+          const initialOperationKey = `initial:${purchaseRow.id}`;
+          const paymentFingerprint = createBranchPurchasePaymentFingerprint({
+            branchId: data.branchId,
+            purchaseId: purchaseRow.id,
+            amount: initialPayment.amount,
+            paymentMethod: normalizedInitialMethod,
+            entryDate: initialPayment.entryDate,
+            reference: initialPayment.reference ?? null,
+            notes: initialPayment.notes ?? null,
+          });
+          const payment = await this.createBranchPurchasePaymentArtifactsTx(tx, {
+            branchId: data.branchId,
+            actorUserId: data.actorUserId,
+            purchaseId: purchaseRow.id,
+            purchaseFolio: purchaseRow.folio,
+            paymentId,
+            operationKey: initialOperationKey,
+            fingerprint: paymentFingerprint,
+            amountCents: initialPaymentCents,
+            paymentMethod: normalizedInitialMethod,
+            entryDate: initialPayment.entryDate,
+            reference: normalizeOptionalTextValue(initialPayment.reference),
+            notes: normalizeOptionalTextValue(initialPayment.notes),
+            paymentKind: "initial",
+          });
+          initialPaymentId = payment.id;
+          initialFinanceEntryId = payment.financeEntryId;
+        }
+
+        await this.createAuditLogTx(tx, {
+          actorUserId: data.actorUserId,
+          action: "CREATE_BRANCH_PURCHASE",
+          branchId: data.branchId,
+          metadata: {
+            purchaseId: purchaseRow.id,
+            folio: purchaseRow.folio,
+            supplierId,
+            projectId,
+            operationKey,
+            payloadFingerprint,
+            totalAmountCents: totalCents,
+            initialPaymentId,
+            initialFinanceEntryId,
+            initialPaymentAmountCents: initialPaymentCents,
+          },
+        });
+
+        return { id: purchaseRow.id, branchId: purchaseRow.branchId };
+      },
     });
 
-    return (await this.getBranchPurchaseById(created.branchId, created.id))!;
+    const purchase = await this.getBranchPurchaseById(committed.result.branchId, committed.result.id);
+    if (!purchase) throw new BranchPurchaseIdempotencyError(BRANCH_PURCHASE_INCOMPLETE_REPLAY_CONFLICT);
+    return { purchase, replayed: committed.replayed };
+  }
+
+  async registerBranchPurchasePayment(
+    data: RegisterBranchPurchasePaymentInput,
+  ): Promise<BranchPurchasePaymentOperationResult> {
+    const operationKey = normalizeBranchPurchaseOperationKey(data.operationKey);
+    if (!operationKey) throw new Error("BRANCH_PURCHASE_OPERATION_KEY_INVALID");
+
+    const amountCents = branchPurchaseMoneyToCents(data.amount);
+    if (amountCents <= 0) throw new Error("BRANCH_PURCHASE_PAYMENT_INVALID");
+    const paymentMethod = data.paymentMethod.trim().toLowerCase();
+    if (!BRANCH_PURCHASE_PAYMENT_METHODS.has(paymentMethod)) {
+      throw new Error("BRANCH_PURCHASE_PAYMENT_REQUIRES_METHOD");
+    }
+
+    const fingerprint = createBranchPurchasePaymentFingerprint({
+      branchId: data.branchId,
+      purchaseId: data.purchaseId,
+      amount: data.amount,
+      paymentMethod,
+      entryDate: data.entryDate,
+      reference: data.reference ?? null,
+      notes: data.notes ?? null,
+    });
+
+    const committed = await commitLockedBranchPurchaseOperation<any, BranchPurchasePayment, { purchaseId: string; paymentId: string }>({
+      fingerprint,
+      transaction: (work) => db.transaction(async (tx) => work(tx)),
+      acquireLock: async (tx) => {
+        await tx.execute(sql.raw(`SET LOCAL statement_timeout = '${BRANCH_PURCHASE_OPERATION_STATEMENT_TIMEOUT_MS}ms'`));
+        await tx.execute(sql`
+          SELECT pg_advisory_xact_lock(
+            hashtext(${data.branchId}),
+            hashtext(${`${BRANCH_PURCHASE_PAYMENT_OPERATION}:${operationKey}`})
+          )
+        `);
+      },
+      findExisting: async (tx) => {
+        const [existing] = await tx
+          .select()
+          .from(branchPurchasePayments)
+          .where(and(
+            eq(branchPurchasePayments.branchId, data.branchId),
+            eq(branchPurchasePayments.idempotencyKey, operationKey),
+          ))
+          .limit(1);
+        return existing;
+      },
+      getExistingFingerprint: (existing) => existing.idempotencyFingerprint ?? null,
+      replay: async (tx, existing) => {
+        if (existing.purchaseId !== data.purchaseId) {
+          throw new BranchPurchaseIdempotencyError(BRANCH_PURCHASE_INCOMPLETE_REPLAY_CONFLICT);
+        }
+        const [financeEntry] = await tx
+          .select({ id: branchFinanceEntries.id })
+          .from(branchFinanceEntries)
+          .where(and(
+            eq(branchFinanceEntries.id, existing.financeEntryId),
+            eq(branchFinanceEntries.branchId, data.branchId),
+            eq(branchFinanceEntries.source, "purchase_payment"),
+            eq(branchFinanceEntries.sourceId, existing.id),
+            isNull(branchFinanceEntries.deletedAt),
+          ))
+          .limit(1);
+        if (!financeEntry) {
+          throw new BranchPurchaseIdempotencyError(BRANCH_PURCHASE_INCOMPLETE_REPLAY_CONFLICT);
+        }
+        return { purchaseId: existing.purchaseId, paymentId: existing.id };
+      },
+      create: async (tx) => {
+        const purchase = await this.getLockedBranchPurchase(tx, data.branchId, data.purchaseId);
+        if (!purchase) throw new Error("BRANCH_PURCHASE_NOT_FOUND");
+        if (purchase.status === "cancelled") throw new Error("BRANCH_PURCHASE_PAYMENT_NOT_ALLOWED");
+
+        const totalCents = branchPurchaseMoneyToCents(purchase.grandTotal ?? purchase.totalAmount);
+        const currentPaidCents = branchPurchaseMoneyToCents(purchase.paidAmount);
+        const nextPaidCents = currentPaidCents + amountCents;
+        if (nextPaidCents > totalCents) throw new Error("BRANCH_PURCHASE_PAYMENT_EXCEEDS_BALANCE");
+
+        const existingPayments: Array<{ paymentMethod: string }> = await tx
+          .select({ paymentMethod: branchPurchasePayments.paymentMethod })
+          .from(branchPurchasePayments)
+          .where(and(
+            eq(branchPurchasePayments.branchId, data.branchId),
+            eq(branchPurchasePayments.purchaseId, data.purchaseId),
+          ));
+        const parentPaymentMethod = resolveBranchPurchaseParentPaymentMethod({
+          currentPaidCents,
+          currentPaymentMethod: purchase.paymentMethod ?? null,
+          detailedPaymentMethods: existingPayments.map((payment) => payment.paymentMethod),
+          newPaymentMethod: paymentMethod,
+        });
+
+        const paymentId = crypto.randomUUID();
+        const payment = await this.createBranchPurchasePaymentArtifactsTx(tx, {
+          branchId: data.branchId,
+          actorUserId: data.actorUserId,
+          purchaseId: purchase.id,
+          purchaseFolio: purchase.folio,
+          paymentId,
+          operationKey,
+          fingerprint,
+          amountCents,
+          paymentMethod,
+          entryDate: data.entryDate,
+          reference: normalizeOptionalTextValue(data.reference),
+          notes: normalizeOptionalTextValue(data.notes),
+          paymentKind: "subsequent",
+        });
+
+        await tx
+          .update(branchPurchases)
+          .set({
+            paidAmount: branchPurchaseCentsToFixed(nextPaidCents),
+            paymentStatus: deriveBranchPurchasePaymentStatus(nextPaidCents, totalCents),
+            paymentMethod: parentPaymentMethod,
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(branchPurchases.id, purchase.id),
+            eq(branchPurchases.branchId, data.branchId),
+          ));
+
+        await this.createAuditLogTx(tx, {
+          actorUserId: data.actorUserId,
+          action: "REGISTER_BRANCH_PURCHASE_PAYMENT",
+          branchId: data.branchId,
+          metadata: {
+            purchaseId: purchase.id,
+            paymentId: payment.id,
+            financeEntryId: payment.financeEntryId,
+            operationKey,
+            payloadFingerprint: fingerprint,
+            amountCents,
+            previousPaidAmountCents: currentPaidCents,
+            paidAmountCents: nextPaidCents,
+            paymentStatus: deriveBranchPurchasePaymentStatus(nextPaidCents, totalCents),
+          },
+        });
+
+        return { purchaseId: purchase.id, paymentId: payment.id };
+      },
+    });
+
+    const purchase = await this.getBranchPurchaseById(data.branchId, committed.result.purchaseId);
+    const payment = purchase?.payments.find((item) => item.id === committed.result.paymentId);
+    if (!purchase || !payment) {
+      throw new BranchPurchaseIdempotencyError(BRANCH_PURCHASE_INCOMPLETE_REPLAY_CONFLICT);
+    }
+    return { purchase, payment, replayed: committed.replayed };
   }
 
   async receiveBranchPurchase(data: {
@@ -14355,15 +14789,39 @@ export class DatabaseStorage implements IStorage {
     return (await this.getBranchPurchaseById(data.branchId, data.purchaseId))!;
   }
 
-  async cancelBranchPurchase(branchId: string, purchaseId: string): Promise<BranchPurchaseDetailRow | undefined> {
+  async cancelBranchPurchase(
+    branchId: string,
+    purchaseId: string,
+    actorUserId: string,
+  ): Promise<BranchPurchaseDetailRow | undefined> {
     const updated = await db.transaction(async (tx) => {
       const lockedPurchase = await this.getLockedBranchPurchase(tx, branchId, purchaseId);
       if (!lockedPurchase) {
         throw new Error("BRANCH_PURCHASE_NOT_FOUND");
       }
-      if (lockedPurchase.status !== "draft") {
-        throw new Error("BRANCH_PURCHASE_CANNOT_CANCEL");
-      }
+
+      const impactResult = await tx.execute(sql`
+        SELECT
+          (SELECT COUNT(*)::int
+             FROM branch_purchase_payments
+            WHERE branch_id = ${branchId} AND purchase_id = ${purchaseId}) AS payment_rows,
+          (SELECT COALESCE(SUM(quantity_received), 0)::int
+             FROM branch_purchase_items
+            WHERE branch_id = ${branchId} AND purchase_id = ${purchaseId}) AS received_units,
+          (SELECT COUNT(*)::int
+             FROM branch_inventory_movements
+            WHERE branch_id = ${branchId} AND purchase_id = ${purchaseId}) AS inventory_movements
+      `);
+      const impact = (impactResult as any)?.rows?.[0] ?? {};
+      const cancellationBlock = getBranchPurchaseCancellationBlockReason({
+        status: lockedPurchase.status,
+        paymentStatus: lockedPurchase.paymentStatus,
+        paidCents: branchPurchaseMoneyToCents(lockedPurchase.paidAmount),
+        paymentRows: Number(impact.payment_rows ?? 0),
+        receivedUnits: Number(impact.received_units ?? 0),
+        inventoryMovements: Number(impact.inventory_movements ?? 0),
+      });
+      if (cancellationBlock) throw new Error(cancellationBlock);
 
       const [purchase] = await tx
         .update(branchPurchases)
@@ -14372,8 +14830,18 @@ export class DatabaseStorage implements IStorage {
           cancelledAt: new Date(),
           updatedAt: new Date(),
         })
-        .where(eq(branchPurchases.id, purchaseId))
+        .where(and(
+          eq(branchPurchases.id, purchaseId),
+          eq(branchPurchases.branchId, branchId),
+        ))
         .returning({ id: branchPurchases.id, branchId: branchPurchases.branchId });
+
+      await this.createAuditLogTx(tx, {
+        actorUserId,
+        action: "CANCEL_BRANCH_PURCHASE",
+        branchId,
+        metadata: { purchaseId },
+      });
 
       return purchase;
     });
