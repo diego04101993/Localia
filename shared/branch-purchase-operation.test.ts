@@ -429,12 +429,12 @@ test("16. purchase_payment is centrally protected", () => {
 
 test("17. protected source blocks finance PATCH through the shared route guard", () => {
   const routes = readFileSync(path.join(repositoryRoot, "server/routes.ts"), "utf8");
-  assert.match(routes, /app\.patch\("\/api\/branch\/finance\/entries\/:id"[\s\S]*?isProtectedFinanceSource/);
+  assert.match(routes, /app\.patch\("\/api\/branch\/finance\/entries\/:id"[\s\S]*?classifyFinanceSource\(existingEntry\.source\) !== "manual"/);
 });
 
 test("18. protected source blocks finance DELETE through the shared route guard", () => {
   const routes = readFileSync(path.join(repositoryRoot, "server/routes.ts"), "utf8");
-  assert.match(routes, /app\.delete\("\/api\/branch\/finance\/entries\/:id"[\s\S]*?isProtectedFinanceSource/);
+  assert.match(routes, /app\.delete\("\/api\/branch\/finance\/entries\/:id"[\s\S]*?classifyFinanceSource\(existingEntry\.source\) !== "manual"/);
 });
 
 test("19. cancellation with any paid aggregate or ledger row is blocked", () => {

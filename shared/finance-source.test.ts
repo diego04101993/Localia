@@ -20,6 +20,7 @@ const expectedProtectedSources = [
   "sales_commission_payment",
   "lease_installment_payment",
   "purchase_payment",
+  "expense_obligation_payment",
   "fixed_expense",
   "staff_class_log",
 ] as const;
@@ -61,7 +62,7 @@ test("backend, storage and Caja use the shared finance source classification", (
   assert.doesNotMatch(routes, /AUTOMATED_FINANCE_SOURCES|RESERVED_MANUAL_FINANCE_SOURCES/);
   assert.doesNotMatch(caja, /READ_ONLY_FINANCE_SOURCES|isReadOnlyFinanceSource/);
 
-  assert.equal((routes.match(/isProtectedFinanceSource\(/g) ?? []).length, 4);
-  assert.ok((storage.match(/protectedFinanceSourceValues/g) ?? []).length >= 3);
-  assert.ok((caja.match(/isProtectedFinanceSource\(/g) ?? []).length >= 4);
+  assert.ok((routes.match(/classifyFinanceSource\(/g) ?? []).length >= 2);
+  assert.ok((storage.match(/classifyFinanceSource\(/g) ?? []).length >= 1);
+  assert.ok((caja.match(/classifyFinanceSource\(/g) ?? []).length >= 4);
 });

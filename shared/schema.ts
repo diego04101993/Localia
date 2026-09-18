@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, pgEnum, doublePrecision, boolean, uniqueIndex, jsonb, integer, index, numeric, date, foreignKey, check } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, pgEnum, doublePrecision, boolean, uniqueIndex, unique, jsonb, integer, index, numeric, date, foreignKey, check } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { membershipPlanTaxModeValues } from "./membership-plan-tax";
@@ -1239,6 +1239,7 @@ export const branchSuppliers = pgTable("branch_suppliers", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
 }, (table) => [
+  uniqueIndex("branch_suppliers_branch_id_id_unique").on(table.branchId, table.id),
   index("branch_suppliers_branch_idx").on(table.branchId),
   index("branch_suppliers_active_idx").on(table.isActive),
   index("branch_suppliers_deleted_at_idx").on(table.deletedAt),
@@ -1391,6 +1392,128 @@ export const branchPurchasePayments = pgTable("branch_purchase_payments", {
     .on(table.branchId, table.purchaseId, table.paidAt.desc(), table.id),
   index("branch_purchase_payments_branch_entry_date_idx")
     .on(table.branchId, table.entryDate, table.createdAt),
+]);
+
+export const branchExpenseObligations = pgTable("branch_expense_obligations", {
+  id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 }).notNull(),
+  projectId: varchar("project_id", { length: 36 }),
+  supplierId: varchar("supplier_id", { length: 36 }),
+  beneficiaryNameSnapshot: text("beneficiary_name_snapshot").notNull(),
+  concept: text("concept").notNull(),
+  category: text("category"),
+  documentReference: text("document_reference"),
+  issueDate: date("issue_date").notNull(),
+  dueDate: date("due_date"),
+  notes: text("notes"),
+  documentStatus: text("document_status").notNull().default("draft"),
+  subtotalAmount: numeric("subtotal_amount", { precision: 12, scale: 2 }).notNull(),
+  discountAmount: numeric("discount_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  subtotalBeforeTax: numeric("subtotal_before_tax", { precision: 12, scale: 2 }).notNull(),
+  taxableSubtotal: numeric("taxable_subtotal", { precision: 12, scale: 2 }).notNull(),
+  taxMode: text("tax_mode").notNull(),
+  taxRate: numeric("tax_rate", { precision: 8, scale: 4 }).notNull(),
+  taxTotal: numeric("tax_total", { precision: 12, scale: 2 }).notNull(),
+  grandTotal: numeric("grand_total", { precision: 12, scale: 2 }).notNull(),
+  idempotencyKey: varchar("idempotency_key", { length: 120 }).notNull(),
+  idempotencyFingerprint: varchar("idempotency_fingerprint", { length: 64 }).notNull(),
+  createdBy: varchar("created_by", { length: 36 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+}, (table) => [
+  unique("branch_expense_obligations_branch_id_id_unique").on(table.branchId, table.id),
+  unique("branch_expense_obligations_branch_key_unique").on(table.branchId, table.idempotencyKey),
+  foreignKey({ columns: [table.branchId], foreignColumns: [branches.id], name: "branch_expense_obligations_branch_fk" }).onDelete("restrict"),
+  foreignKey({ columns: [table.branchId, table.projectId], foreignColumns: [branchCommercialProjects.branchId, branchCommercialProjects.id], name: "branch_expense_obligations_project_fk" }).onDelete("restrict"),
+  foreignKey({ columns: [table.branchId, table.supplierId], foreignColumns: [branchSuppliers.branchId, branchSuppliers.id], name: "branch_expense_obligations_supplier_fk" }).onDelete("restrict"),
+  foreignKey({ columns: [table.createdBy], foreignColumns: [users.id], name: "branch_expense_obligations_created_by_fk" }).onDelete("set null"),
+  check("branch_expense_obligations_identity_check", sql`
+    char_length(btrim(${table.beneficiaryNameSnapshot})) BETWEEN 1 AND 160
+    AND char_length(btrim(${table.concept})) BETWEEN 1 AND 160
+  `),
+  check("branch_expense_obligations_status_check", sql`
+    ${table.documentStatus} IN ('draft', 'open', 'cancelled')
+    AND (${table.documentStatus} = 'cancelled') = (${table.cancelledAt} IS NOT NULL)
+  `),
+  check("branch_expense_obligations_key_check", sql`
+    ${table.idempotencyKey} = btrim(${table.idempotencyKey})
+    AND char_length(${table.idempotencyKey}) BETWEEN 8 AND 120
+    AND ${table.idempotencyKey} ~ '^[A-Za-z0-9][A-Za-z0-9._:-]*$'
+    AND ${table.idempotencyFingerprint} ~ '^[0-9a-f]{64}$'
+  `),
+  check("branch_expense_obligations_finite_check", sql`
+    ${table.subtotalAmount}::text NOT IN ('NaN', 'Infinity', '-Infinity')
+    AND ${table.discountAmount}::text NOT IN ('NaN', 'Infinity', '-Infinity')
+    AND ${table.subtotalBeforeTax}::text NOT IN ('NaN', 'Infinity', '-Infinity')
+    AND ${table.taxableSubtotal}::text NOT IN ('NaN', 'Infinity', '-Infinity')
+    AND ${table.taxRate}::text NOT IN ('NaN', 'Infinity', '-Infinity')
+    AND ${table.taxTotal}::text NOT IN ('NaN', 'Infinity', '-Infinity')
+    AND ${table.grandTotal}::text NOT IN ('NaN', 'Infinity', '-Infinity')
+  `),
+  check("branch_expense_obligations_amount_check", sql`
+    ${table.subtotalAmount} > 0 AND ${table.discountAmount} >= 0
+    AND ${table.discountAmount} < ${table.subtotalAmount}
+    AND ${table.subtotalBeforeTax} >= 0 AND ${table.taxableSubtotal} >= 0
+    AND ${table.taxTotal} >= 0 AND ${table.grandTotal} > 0
+  `),
+  check("branch_expense_obligations_tax_check", sql`
+    (
+      ${table.taxMode} = 'tax_exempt' AND ${table.taxRate} = 0
+      AND ${table.subtotalBeforeTax} = ${table.subtotalAmount}
+      AND ${table.taxableSubtotal} = ${table.subtotalAmount} - ${table.discountAmount}
+      AND ${table.taxTotal} = 0 AND ${table.grandTotal} = ${table.taxableSubtotal}
+    ) OR (
+      ${table.taxMode} = 'tax_added' AND ${table.taxRate} > 0 AND ${table.taxRate} <= 100
+      AND ${table.subtotalBeforeTax} = ${table.subtotalAmount}
+      AND ${table.taxableSubtotal} = ${table.subtotalAmount} - ${table.discountAmount}
+      AND ${table.taxTotal} = round(${table.taxableSubtotal} * ${table.taxRate} / 100, 2)
+      AND ${table.grandTotal} = ${table.taxableSubtotal} + ${table.taxTotal}
+    ) OR (
+      ${table.taxMode} = 'tax_included' AND ${table.taxRate} > 0 AND ${table.taxRate} <= 100
+      AND ${table.subtotalBeforeTax} = round(${table.subtotalAmount} / (1 + ${table.taxRate} / 100), 2)
+      AND ${table.taxableSubtotal} = round((${table.subtotalAmount} - ${table.discountAmount}) / (1 + ${table.taxRate} / 100), 2)
+      AND ${table.grandTotal} = ${table.subtotalAmount} - ${table.discountAmount}
+      AND ${table.taxTotal} = ${table.grandTotal} - ${table.taxableSubtotal}
+    )
+  `),
+  index("branch_expense_obligations_branch_status_issue_idx").on(table.branchId, table.documentStatus, table.issueDate.desc(), table.id),
+  index("branch_expense_obligations_branch_project_idx").on(table.branchId, table.projectId, table.documentStatus, table.issueDate.desc()).where(sql`${table.projectId} IS NOT NULL`),
+  index("branch_expense_obligations_branch_supplier_idx").on(table.branchId, table.supplierId, table.documentStatus).where(sql`${table.supplierId} IS NOT NULL`),
+  index("branch_expense_obligations_branch_due_open_idx").on(table.branchId, table.dueDate, table.id).where(sql`${table.documentStatus} = 'open' AND ${table.dueDate} IS NOT NULL`),
+]);
+
+export const branchExpenseObligationPayments = pgTable("branch_expense_obligation_payments", {
+  id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+  branchId: varchar("branch_id", { length: 36 }).notNull(),
+  obligationId: varchar("obligation_id", { length: 36 }).notNull(),
+  idempotencyKey: varchar("idempotency_key", { length: 120 }).notNull(),
+  idempotencyFingerprint: varchar("idempotency_fingerprint", { length: 64 }).notNull(),
+  amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
+  paymentMethod: text("payment_method").notNull(),
+  paidAt: timestamp("paid_at", { withTimezone: true }).defaultNow().notNull(),
+  entryDate: date("entry_date").notNull(),
+  reference: text("reference"),
+  notes: text("notes"),
+  financeEntryId: varchar("finance_entry_id", { length: 36 }).notNull(),
+  createdBy: varchar("created_by", { length: 36 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  unique("branch_expense_obligation_payments_branch_key_unique").on(table.branchId, table.idempotencyKey),
+  unique("branch_expense_obligation_payments_finance_unique").on(table.financeEntryId),
+  foreignKey({ columns: [table.branchId], foreignColumns: [branches.id], name: "branch_expense_obligation_payments_branch_fk" }).onDelete("restrict"),
+  foreignKey({ columns: [table.branchId, table.obligationId], foreignColumns: [branchExpenseObligations.branchId, branchExpenseObligations.id], name: "branch_expense_obligation_payments_obligation_fk" }).onDelete("restrict"),
+  foreignKey({ columns: [table.branchId, table.financeEntryId], foreignColumns: [branchFinanceEntries.branchId, branchFinanceEntries.id], name: "branch_expense_obligation_payments_finance_fk" }).onDelete("restrict"),
+  foreignKey({ columns: [table.createdBy], foreignColumns: [users.id], name: "branch_expense_obligation_payments_created_by_fk" }).onDelete("set null"),
+  check("branch_expense_obligation_payments_amount_check", sql`${table.amount}::text NOT IN ('NaN', 'Infinity', '-Infinity') AND ${table.amount} > 0`),
+  check("branch_expense_obligation_payments_method_check", sql`${table.paymentMethod} IN ('efectivo', 'tarjeta', 'transferencia', 'mercado_pago', 'otro')`),
+  check("branch_expense_obligation_payments_key_check", sql`
+    ${table.idempotencyKey} = btrim(${table.idempotencyKey})
+    AND char_length(${table.idempotencyKey}) BETWEEN 8 AND 120
+    AND ${table.idempotencyKey} ~ '^[A-Za-z0-9][A-Za-z0-9._:-]*$'
+    AND ${table.idempotencyFingerprint} ~ '^[0-9a-f]{64}$'
+  `),
+  index("branch_expense_obligation_payments_branch_obligation_paid_idx").on(table.branchId, table.obligationId, table.paidAt.desc(), table.id),
 ]);
 
 export const branchInventoryMovements = pgTable("branch_inventory_movements", {
@@ -1604,6 +1727,14 @@ export const insertBranchPurchasePaymentSchema = createInsertSchema(branchPurcha
   createdAt: true,
 });
 
+export const insertBranchExpenseObligationSchema = createInsertSchema(branchExpenseObligations).omit({
+  id: true, createdAt: true, updatedAt: true, cancelledAt: true,
+});
+
+export const insertBranchExpenseObligationPaymentSchema = createInsertSchema(branchExpenseObligationPayments).omit({
+  createdAt: true,
+});
+
 export const insertBranchInventoryMovementSchema = createInsertSchema(branchInventoryMovements).omit({
   id: true,
   createdAt: true,
@@ -1664,6 +1795,10 @@ export type BranchPurchaseItem = typeof branchPurchaseItems.$inferSelect;
 export type InsertBranchPurchaseItem = z.infer<typeof insertBranchPurchaseItemSchema>;
 export type BranchPurchasePayment = typeof branchPurchasePayments.$inferSelect;
 export type InsertBranchPurchasePayment = z.infer<typeof insertBranchPurchasePaymentSchema>;
+export type BranchExpenseObligation = typeof branchExpenseObligations.$inferSelect;
+export type InsertBranchExpenseObligation = z.infer<typeof insertBranchExpenseObligationSchema>;
+export type BranchExpenseObligationPayment = typeof branchExpenseObligationPayments.$inferSelect;
+export type InsertBranchExpenseObligationPayment = z.infer<typeof insertBranchExpenseObligationPaymentSchema>;
 export type BranchInventoryMovement = typeof branchInventoryMovements.$inferSelect;
 export type InsertBranchInventoryMovement = z.infer<typeof insertBranchInventoryMovementSchema>;
 export type BranchService = typeof branchServices.$inferSelect;
@@ -1787,6 +1922,7 @@ export const branchFinanceEntries = pgTable("branch_finance_entries", {
   branchId: varchar("branch_id", { length: 36 })
     .notNull()
     .references(() => branches.id),
+  projectId: varchar("project_id", { length: 36 }),
   type: text("type").notNull(),
   category: text("category"),
   concept: text("concept").notNull(),
@@ -1804,12 +1940,20 @@ export const branchFinanceEntries = pgTable("branch_finance_entries", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
 }, (table) => [
+  foreignKey({
+    columns: [table.branchId, table.projectId],
+    foreignColumns: [branchCommercialProjects.branchId, branchCommercialProjects.id],
+    name: "branch_finance_entries_branch_project_fk",
+  }).onDelete("restrict"),
   uniqueIndex("branch_finance_entries_branch_id_id_unique").on(table.branchId, table.id),
   index("branch_finance_entries_branch_idx").on(table.branchId),
   index("branch_finance_entries_entry_date_idx").on(table.entryDate),
   index("branch_finance_entries_type_idx").on(table.type),
   index("branch_finance_entries_deleted_at_idx").on(table.deletedAt),
   index("branch_finance_entries_client_user_idx").on(table.clientUserId),
+  index("branch_finance_entries_branch_project_deleted_date_idx")
+    .on(table.branchId, table.projectId, table.deletedAt, table.entryDate.desc(), table.createdAt.desc())
+    .where(sql`${table.projectId} IS NOT NULL`),
 ]);
 
 export const branchChargeEventDomainValues = ["membership_plan", "lease_installment"] as const;
@@ -2414,10 +2558,8 @@ export const createBranchFinanceEntrySchema = z.object({
   clientName: z.string().max(120).nullable().optional(),
   notes: z.string().max(500).nullable().optional(),
   entryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Formato YYYY-MM-DD"),
-  source: z.string().max(40).nullable().optional(),
-  sourceId: z.string().max(120).nullable().optional(),
-  metadata: z.any().optional(),
-});
+  projectId: z.string().min(1).max(36).nullable().optional(),
+}).strict();
 
 export const updateBranchFinanceEntrySchema = createBranchFinanceEntrySchema.partial().refine(
   (data) => Object.keys(data).length > 0,

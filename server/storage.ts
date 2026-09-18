@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { eq, and, sql, or, ne, isNull, count, desc, asc, gte, inArray, lte, notInArray } from "drizzle-orm";
+import { eq, and, sql, or, ne, isNull, count, desc, asc, gte, inArray, lte } from "drizzle-orm";
 import { db } from "./db";
 import {
   type BranchClientAccessEvidence,
@@ -53,6 +53,8 @@ import {
   branchPurchases,
   branchPurchaseItems,
   branchPurchasePayments,
+  branchExpenseObligations,
+  branchExpenseObligationPayments,
   branchFinancePaymentMethodValues,
   branchServices,
   branchServiceSaleOptions,
@@ -197,16 +199,13 @@ import {
 } from "@shared/lease-contract";
 import { type LeaseQuotePreview } from "@shared/lease-quote";
 import {
-  isProtectedFinanceSource,
-  protectedFinanceSourceValues,
-} from "@shared/finance-source";
-import {
   allocateCommercialSaleFiscalSnapshot,
   buildCommercialSaleFiscalSnapshot,
   sumUniqueFinanceFiscalContributions,
   type CommercialTaxMode,
   type FinanceFiscalContribution,
 } from "@shared/commercial-sale-fiscal";
+import { classifyFinanceSource } from "@shared/finance-source";
 import {
   getQuickChargePhoneLockToken,
   QUICK_CHARGE_OPERATION_DOMAIN,
@@ -247,6 +246,11 @@ import {
   createBranchPurchasePayloadFingerprint,
   createBranchPurchasePaymentFingerprint,
 } from "./branch-purchase-operation";
+import {
+  buildProjectProfitabilitySnapshots,
+  type ProjectProfitabilityContribution,
+  type ProjectProfitabilitySnapshot,
+} from "./project-profitability";
 
 const BRANCH_CLIENT_PASSWORD_RESET_COOLDOWN_MS = 60_000;
 
@@ -1250,6 +1254,10 @@ export interface BranchDashboardMetrics {
 export interface BranchFinanceEntryRow {
   id: string;
   branchId: string;
+  projectId: string | null;
+  projectCode: string | null;
+  projectName: string | null;
+  projectStatus: string | null;
   type: "income" | "expense";
   category: string | null;
   concept: string;
@@ -1268,6 +1276,19 @@ export interface BranchFinanceEntryRow {
   createdBy: string | null;
   createdAt: Date | string;
   updatedAt: Date | string;
+}
+
+export interface BranchManualFinanceEntryInput {
+  type: "income" | "expense";
+  category: string | null;
+  concept: string;
+  amount: string;
+  paymentMethod: string | null;
+  clientUserId: string | null;
+  clientName: string | null;
+  notes: string | null;
+  entryDate: string;
+  projectId: string | null;
 }
 
 export interface QuickChargeOperationResult {
@@ -1719,6 +1740,26 @@ export interface BranchCommercialProjectSummaryRow {
   receivedProfitEstimate: number;
   cashFlowNet: number;
   marginPercent: number | null;
+  salesBeforeTax: number;
+  salesFinalTotal: number;
+  salesPaidTotal: number;
+  accountsReceivable: number;
+  cogsTotal: number;
+  purchasesCommittedTotal: number;
+  accountsPayable: number;
+  accountsPayablePurchases: number;
+  accountsPayableOtherExpenses: number;
+  obligationBeforeTax: number;
+  obligationTotal: number;
+  obligationTaxTotal: number;
+  obligationPaidTotal: number;
+  directManualIncome: number;
+  directManualExpenses: number;
+  accruedCommissions: number;
+  cashIn: number;
+  cashOut: number;
+  profit: number | null;
+  profitIsComplete: boolean;
 }
 
 export interface BranchCommercialProjectRow {
@@ -1759,6 +1800,19 @@ export interface BranchCommercialProjectLinkedSaleRow {
   grandTotal: number | null;
   createdAt: Date | string;
   cancelledAt: Date | string | null;
+}
+
+export interface BranchCommercialProjectManualFinanceRow {
+  id: string;
+  type: "income" | "expense";
+  category: string | null;
+  concept: string;
+  amount: number;
+  paymentMethod: string | null;
+  clientDisplayName: string | null;
+  notes: string | null;
+  entryDate: string;
+  createdAt: Date | string;
 }
 
 export interface BranchPurchaseRow {
@@ -1867,6 +1921,7 @@ export interface BranchCommercialProjectLinkedPurchaseRow {
 export interface BranchCommercialProjectDetailRow extends BranchCommercialProjectRow {
   sales: BranchCommercialProjectLinkedSaleRow[];
   purchases: BranchCommercialProjectLinkedPurchaseRow[];
+  manualFinanceEntries: BranchCommercialProjectManualFinanceRow[];
 }
 
 export interface BranchCommercialProjectListPage {
@@ -2284,7 +2339,7 @@ export interface IStorage {
     type?: string;
   }): Promise<BranchFinanceEntryRow[]>;
   getBranchFinanceEntry(branchId: string, entryId: string): Promise<BranchFinanceEntryRow | undefined>;
-  createBranchFinanceEntry(data: InsertBranchFinanceEntry): Promise<BranchFinanceEntryRow>;
+  createManualBranchFinanceEntry(branchId: string, actorUserId: string, data: BranchManualFinanceEntryInput): Promise<BranchFinanceEntryRow>;
   findBranchFinanceEntryBySource(branchId: string, source: string, sourceId: string): Promise<BranchFinanceEntryRow | undefined>;
   commitQuickChargeOperation(data: {
     branchId: string;
@@ -2300,8 +2355,8 @@ export interface IStorage {
     entryDate: string;
     crmPasswordHash: string;
   }): Promise<QuickChargeOperationResult>;
-  updateBranchFinanceEntry(branchId: string, entryId: string, data: Partial<InsertBranchFinanceEntry>): Promise<BranchFinanceEntryRow | undefined>;
-  softDeleteBranchFinanceEntry(branchId: string, entryId: string): Promise<boolean>;
+  updateManualBranchFinanceEntry(branchId: string, entryId: string, actorUserId: string, data: Partial<BranchManualFinanceEntryInput>): Promise<BranchFinanceEntryRow | undefined>;
+  softDeleteManualBranchFinanceEntry(branchId: string, entryId: string, actorUserId: string): Promise<boolean>;
   getSuperAdminMonthlyBilling(): Promise<BranchMonthlyBillingRow[]>;
   upsertBranchMonthlyBilling(branchId: string, data: {
     monthlyFeeAmount: number;
@@ -3821,6 +3876,8 @@ export class DatabaseStorage implements IStorage {
       purchasesCount,
       purchaseItemsCount,
       purchasePaymentsCount,
+      expenseObligationsCount,
+      expenseObligationPaymentsCount,
       commissionRulesCount,
       commissionAccrualsCount,
       commissionPaymentsCount,
@@ -3857,6 +3914,8 @@ export class DatabaseStorage implements IStorage {
       countRow(db.select({ total: count() }).from(branchPurchases).where(eq(branchPurchases.branchId, branchId))),
       countRow(db.select({ total: count() }).from(branchPurchaseItems).where(eq(branchPurchaseItems.branchId, branchId))),
       countRow(db.select({ total: count() }).from(branchPurchasePayments).where(eq(branchPurchasePayments.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchExpenseObligations).where(eq(branchExpenseObligations.branchId, branchId))),
+      countRow(db.select({ total: count() }).from(branchExpenseObligationPayments).where(eq(branchExpenseObligationPayments.branchId, branchId))),
       countRow(db.select({ total: count() }).from(branchCommissionRules).where(eq(branchCommissionRules.branchId, branchId))),
       countRow(db.select({ total: count() }).from(branchCommissionAccruals).where(eq(branchCommissionAccruals.branchId, branchId))),
       countRow(db.select({ total: count() }).from(branchCommissionPayments).where(eq(branchCommissionPayments.branchId, branchId))),
@@ -3931,6 +3990,8 @@ export class DatabaseStorage implements IStorage {
         purchases: purchasesCount,
         purchaseItems: purchaseItemsCount,
         purchasePayments: purchasePaymentsCount,
+        expenseObligations: expenseObligationsCount,
+        expenseObligationPayments: expenseObligationPaymentsCount,
         commissionRules: commissionRulesCount,
         commissionAccruals: commissionAccrualsCount,
         commissionPayments: commissionPaymentsCount,
@@ -4135,6 +4196,9 @@ export class DatabaseStorage implements IStorage {
       purgePhase = "PURGE_DB_DELETE_PURCHASE_PAYMENTS";
       await tx.delete(branchPurchasePayments).where(eq(branchPurchasePayments.branchId, id));
 
+      purgePhase = "PURGE_DB_DELETE_EXPENSE_OBLIGATION_PAYMENTS";
+      await tx.delete(branchExpenseObligationPayments).where(eq(branchExpenseObligationPayments.branchId, id));
+
       purgePhase = "PURGE_DB_DELETE_FINANCE";
       const financeClauses = [eq(branchFinanceEntries.branchId, id)];
       if (adminIds.length > 0) {
@@ -4156,6 +4220,8 @@ export class DatabaseStorage implements IStorage {
       await tx.delete(branchInventoryMovements).where(eq(branchInventoryMovements.branchId, id));
       await tx.delete(branchPurchaseItems).where(eq(branchPurchaseItems.branchId, id));
       await tx.delete(branchPurchases).where(eq(branchPurchases.branchId, id));
+      purgePhase = "PURGE_DB_DELETE_EXPENSE_OBLIGATIONS";
+      await tx.delete(branchExpenseObligations).where(eq(branchExpenseObligations.branchId, id));
       await tx.delete(branchSuppliers).where(eq(branchSuppliers.branchId, id));
       await tx.delete(branchInventoryBalances).where(eq(branchInventoryBalances.branchId, id));
       await tx.delete(branchCommissionPaymentAllocations).where(eq(branchCommissionPaymentAllocations.branchId, id));
@@ -10773,51 +10839,51 @@ export class DatabaseStorage implements IStorage {
   }
 
   private createEmptyCommercialProjectSummary(): BranchCommercialProjectSummaryRow {
-    return {
-      linkedSalesCount: 0,
-      linkedPurchasesCount: 0,
-      linkedDraftPurchasesCount: 0,
-      revenueBeforeTax: 0,
-      revenueHistoricalWithoutBreakdown: 0,
-      taxCollected: 0,
-      revenueGrossTotal: 0,
-      cashCollectedTotal: 0,
-      purchaseCommittedBeforeTax: 0,
-      purchaseCommittedHistoricalWithoutBreakdown: 0,
-      purchaseReceivedBeforeTax: 0,
-      purchaseReceivedHistoricalWithoutBreakdown: 0,
-      purchasePaidTotal: 0,
-      committedProfitEstimate: 0,
-      receivedProfitEstimate: 0,
-      cashFlowNet: 0,
-      marginPercent: null,
-    };
+    const snapshot = buildProjectProfitabilitySnapshots(["empty"], []).get("empty")!;
+    return this.mapCommercialProjectProfitability(snapshot);
   }
 
-  private finalizeCommercialProjectSummary(summary: BranchCommercialProjectSummaryRow): BranchCommercialProjectSummaryRow {
-    const committedProfitEstimate = roundMoney(summary.revenueBeforeTax - summary.purchaseCommittedBeforeTax);
-    const receivedProfitEstimate = roundMoney(summary.revenueBeforeTax - summary.purchaseReceivedBeforeTax);
-    const cashFlowNet = roundMoney(summary.cashCollectedTotal - summary.purchasePaidTotal);
-    const marginPercent = summary.revenueBeforeTax > 0
-      ? roundMoney((committedProfitEstimate / summary.revenueBeforeTax) * 100)
-      : null;
-
+  private mapCommercialProjectProfitability(
+    snapshot: ProjectProfitabilitySnapshot,
+  ): BranchCommercialProjectSummaryRow {
     return {
-      ...summary,
-      revenueBeforeTax: roundMoney(summary.revenueBeforeTax),
-      revenueHistoricalWithoutBreakdown: roundMoney(summary.revenueHistoricalWithoutBreakdown),
-      taxCollected: roundMoney(summary.taxCollected),
-      revenueGrossTotal: roundMoney(summary.revenueGrossTotal),
-      cashCollectedTotal: roundMoney(summary.cashCollectedTotal),
-      purchaseCommittedBeforeTax: roundMoney(summary.purchaseCommittedBeforeTax),
-      purchaseCommittedHistoricalWithoutBreakdown: roundMoney(summary.purchaseCommittedHistoricalWithoutBreakdown),
-      purchaseReceivedBeforeTax: roundMoney(summary.purchaseReceivedBeforeTax),
-      purchaseReceivedHistoricalWithoutBreakdown: roundMoney(summary.purchaseReceivedHistoricalWithoutBreakdown),
-      purchasePaidTotal: roundMoney(summary.purchasePaidTotal),
-      committedProfitEstimate,
-      receivedProfitEstimate,
-      cashFlowNet,
-      marginPercent,
+      linkedSalesCount: snapshot.linkedSalesCount,
+      linkedPurchasesCount: snapshot.linkedPurchasesCount,
+      linkedDraftPurchasesCount: snapshot.linkedDraftPurchasesCount,
+      revenueBeforeTax: snapshot.salesBeforeTax,
+      revenueHistoricalWithoutBreakdown: snapshot.salesHistoricalWithoutTaxBreakdown,
+      taxCollected: snapshot.taxCollected,
+      revenueGrossTotal: snapshot.salesFinalTotal,
+      cashCollectedTotal: snapshot.salesPaidTotal,
+      purchaseCommittedBeforeTax: snapshot.purchasesCommittedBeforeTax,
+      purchaseCommittedHistoricalWithoutBreakdown: snapshot.purchasesCommittedHistoricalWithoutTaxBreakdown,
+      purchaseReceivedBeforeTax: snapshot.purchasesReceivedBeforeTax,
+      purchaseReceivedHistoricalWithoutBreakdown: snapshot.purchasesReceivedHistoricalWithoutTaxBreakdown,
+      purchasePaidTotal: snapshot.purchasePaidTotal,
+      committedProfitEstimate: snapshot.profit ?? 0,
+      receivedProfitEstimate: snapshot.profit ?? 0,
+      cashFlowNet: snapshot.cashFlowNet,
+      marginPercent: snapshot.marginPercent,
+      salesBeforeTax: snapshot.salesBeforeTax,
+      salesFinalTotal: snapshot.salesFinalTotal,
+      salesPaidTotal: snapshot.salesPaidTotal,
+      accountsReceivable: snapshot.accountsReceivable,
+      cogsTotal: snapshot.cogsTotal,
+      purchasesCommittedTotal: snapshot.purchasesCommittedTotal,
+      accountsPayable: snapshot.accountsPayable,
+      accountsPayablePurchases: snapshot.accountsPayablePurchases,
+      accountsPayableOtherExpenses: snapshot.accountsPayableOtherExpenses,
+      obligationBeforeTax: snapshot.obligationBeforeTax,
+      obligationTotal: snapshot.obligationTotal,
+      obligationTaxTotal: snapshot.obligationTaxTotal,
+      obligationPaidTotal: snapshot.obligationPaidTotal,
+      directManualIncome: snapshot.directManualIncome,
+      directManualExpenses: snapshot.directManualExpenses,
+      accruedCommissions: snapshot.accruedCommissions,
+      cashIn: snapshot.cashIn,
+      cashOut: snapshot.cashOut,
+      profit: snapshot.profit,
+      profitIsComplete: snapshot.profitIsComplete,
     };
   }
 
@@ -10867,56 +10933,6 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
-  private computeCommercialProjectSummaryFromLists(
-    sales: BranchCommercialProjectLinkedSaleRow[],
-    purchases: BranchCommercialProjectLinkedPurchaseRow[],
-  ): BranchCommercialProjectSummaryRow {
-    const summary = this.createEmptyCommercialProjectSummary();
-    summary.linkedSalesCount = sales.length;
-    summary.linkedPurchasesCount = purchases.filter((purchase) => purchase.status !== "cancelled").length;
-    summary.linkedDraftPurchasesCount = purchases.filter((purchase) => purchase.status === "draft").length;
-
-    for (const sale of sales) {
-      const isActiveSale = sale.status === "completed" && !sale.cancelledAt;
-      if (!isActiveSale) continue;
-      const hasBreakdown = hasStoredCommercialTaxBreakdown(sale);
-      if (hasBreakdown) {
-        summary.revenueBeforeTax += sale.taxableSubtotal ?? sale.totalAmount;
-        summary.taxCollected += sale.taxTotal ?? 0;
-      } else {
-        summary.revenueHistoricalWithoutBreakdown += sale.totalAmount;
-      }
-      summary.revenueGrossTotal += hasBreakdown ? (sale.grandTotal ?? sale.totalAmount) : sale.totalAmount;
-      summary.cashCollectedTotal += sale.paidAmount;
-    }
-
-    for (const purchase of purchases) {
-      const countsForCommittedCost = purchase.status === "ordered" || purchase.status === "partially_received" || purchase.status === "received";
-      const countsForReceivedCost = purchase.status === "partially_received" || purchase.status === "received";
-      const countsForCash = purchase.status !== "cancelled";
-      const hasBreakdown = hasStoredCommercialTaxBreakdown(purchase);
-      if (countsForCommittedCost && !purchase.cancelledAt) {
-        if (hasBreakdown) {
-          summary.purchaseCommittedBeforeTax += purchase.taxableSubtotal ?? purchase.totalAmount;
-        } else {
-          summary.purchaseCommittedHistoricalWithoutBreakdown += purchase.totalAmount;
-        }
-      }
-      if (countsForReceivedCost && !purchase.cancelledAt) {
-        if (hasBreakdown) {
-          summary.purchaseReceivedBeforeTax += purchase.taxableSubtotal ?? purchase.totalAmount;
-        } else {
-          summary.purchaseReceivedHistoricalWithoutBreakdown += purchase.totalAmount;
-        }
-      }
-      if (countsForCash && !purchase.cancelledAt) {
-        summary.purchasePaidTotal += purchase.paidAmount;
-      }
-    }
-
-    return this.finalizeCommercialProjectSummary(summary);
-  }
-
   private async getBranchCommercialProjectSummaryMap(
     branchId: string,
     projectIds: string[],
@@ -10928,7 +10944,45 @@ export class DatabaseStorage implements IStorage {
       summaryMap.set(projectId, this.createEmptyCommercialProjectSummary());
     }
 
-    const [salesRows, purchaseRows] = await Promise.all([
+    const saleHasReliableFiscalSnapshot = sql<boolean>`(
+      ${branchSales.taxMode} IN ('tax_exempt', 'tax_included', 'tax_added')
+      AND ${branchSales.taxRate} IS NOT NULL
+      AND ${branchSales.taxableSubtotal} IS NOT NULL
+      AND ${branchSales.taxTotal} IS NOT NULL
+      AND ${branchSales.grandTotal} IS NOT NULL
+      AND ${branchSales.taxableSubtotal} >= 0
+      AND ${branchSales.taxTotal} >= 0
+      AND ${branchSales.grandTotal} > 0
+      AND ABS((${branchSales.taxableSubtotal} + ${branchSales.taxTotal}) - ${branchSales.grandTotal}) <= 0.01
+      AND (${branchSales.taxMode} <> 'tax_exempt' OR ${branchSales.taxTotal} = 0)
+    )`;
+    const purchaseHasReliableFiscalSnapshot = sql<boolean>`(
+      ${branchPurchases.taxMode} IN ('tax_exempt', 'tax_included', 'tax_added')
+      AND ${branchPurchases.taxRate} IS NOT NULL
+      AND ${branchPurchases.taxableSubtotal} IS NOT NULL
+      AND ${branchPurchases.taxTotal} IS NOT NULL
+      AND ${branchPurchases.grandTotal} IS NOT NULL
+      AND ${branchPurchases.taxableSubtotal} >= 0
+      AND ${branchPurchases.taxTotal} >= 0
+      AND ${branchPurchases.grandTotal} > 0
+      AND ABS((${branchPurchases.taxableSubtotal} + ${branchPurchases.taxTotal}) - ${branchPurchases.grandTotal}) <= 0.01
+      AND (${branchPurchases.taxMode} <> 'tax_exempt' OR ${branchPurchases.taxTotal} = 0)
+    )`;
+
+    const [
+      salesRows,
+      cogsRows,
+      purchaseRows,
+      obligationRows,
+      obligationPaymentRows,
+      manualFinanceRows,
+      commissionAccrualRows,
+      saleCashRows,
+      saleCancellationCashRows,
+      purchaseCashRows,
+      obligationCashRows,
+      commissionCashRows,
+    ] = await Promise.all([
       db
         .select({
           projectId: branchSales.projectId,
@@ -10936,45 +10990,30 @@ export class DatabaseStorage implements IStorage {
           revenueBeforeTax: sql<number>`COALESCE(SUM(CASE
             WHEN ${branchSales.status} = 'completed'
               AND ${branchSales.cancelledAt} IS NULL
-              AND (
-                ${branchSales.taxMode} IS NOT NULL
-                OR ${branchSales.subtotalBeforeTax} IS NOT NULL
-                OR ${branchSales.taxableSubtotal} IS NOT NULL
-                OR ${branchSales.taxTotal} IS NOT NULL
-                OR ${branchSales.grandTotal} IS NOT NULL
-              )
+              AND ${saleHasReliableFiscalSnapshot}
             THEN COALESCE(${branchSales.taxableSubtotal}, ${branchSales.totalAmount})
             ELSE 0
           END), 0)`.as("revenue_before_tax"),
           revenueHistoricalWithoutBreakdown: sql<number>`COALESCE(SUM(CASE
             WHEN ${branchSales.status} = 'completed'
               AND ${branchSales.cancelledAt} IS NULL
-              AND NOT (
-                ${branchSales.taxMode} IS NOT NULL
-                OR ${branchSales.subtotalBeforeTax} IS NOT NULL
-                OR ${branchSales.taxableSubtotal} IS NOT NULL
-                OR ${branchSales.taxTotal} IS NOT NULL
-                OR ${branchSales.grandTotal} IS NOT NULL
-              )
+              AND NOT ${saleHasReliableFiscalSnapshot}
             THEN COALESCE(${branchSales.totalAmount}, 0)
             ELSE 0
           END), 0)`.as("revenue_historical_without_breakdown"),
           taxCollected: sql<number>`COALESCE(SUM(CASE
             WHEN ${branchSales.status} = 'completed'
               AND ${branchSales.cancelledAt} IS NULL
-              AND (
-                ${branchSales.taxMode} IS NOT NULL
-                OR ${branchSales.subtotalBeforeTax} IS NOT NULL
-                OR ${branchSales.taxableSubtotal} IS NOT NULL
-                OR ${branchSales.taxTotal} IS NOT NULL
-                OR ${branchSales.grandTotal} IS NOT NULL
-              )
+              AND ${saleHasReliableFiscalSnapshot}
             THEN COALESCE(${branchSales.taxTotal}, 0)
             ELSE 0
           END), 0)`.as("tax_collected"),
           revenueGrossTotal: sql<number>`COALESCE(SUM(CASE
             WHEN ${branchSales.status} = 'completed' AND ${branchSales.cancelledAt} IS NULL
-            THEN COALESCE(${branchSales.grandTotal}, ${branchSales.totalAmount})
+            THEN CASE
+              WHEN ${saleHasReliableFiscalSnapshot} THEN ${branchSales.grandTotal}
+              ELSE ${branchSales.totalAmount}
+            END
             ELSE 0
           END), 0)`.as("revenue_gross_total"),
           cashCollectedTotal: sql<number>`COALESCE(SUM(CASE
@@ -10991,58 +11030,65 @@ export class DatabaseStorage implements IStorage {
         .groupBy(branchSales.projectId),
       db
         .select({
+          projectId: branchSales.projectId,
+          cogsTotal: sql<number>`COALESCE(SUM(
+            CASE
+              WHEN ${branchSales.status} = 'completed' AND ${branchSales.cancelledAt} IS NULL
+              THEN ${branchSaleItems.costAmountSnapshot} * ${branchSaleItems.quantity}
+              ELSE 0
+            END
+          ), 0)`.as("cogs_total"),
+        })
+        .from(branchSaleItems)
+        .innerJoin(branchSales, and(
+          eq(branchSales.id, branchSaleItems.saleId),
+          eq(branchSales.branchId, branchSaleItems.branchId),
+        ))
+        .where(and(
+          eq(branchSaleItems.branchId, branchId),
+          eq(branchSales.branchId, branchId),
+          inArray(branchSales.projectId, projectIds),
+        ))
+        .groupBy(branchSales.projectId),
+      db
+        .select({
           projectId: branchPurchases.projectId,
           linkedPurchasesCount: sql<number>`COUNT(*) FILTER (WHERE ${branchPurchases.status} <> 'cancelled')`.as("linked_purchases_count"),
           linkedDraftPurchasesCount: sql<number>`COUNT(*) FILTER (WHERE ${branchPurchases.status} = 'draft')`.as("linked_draft_purchases_count"),
           purchaseCommittedBeforeTax: sql<number>`COALESCE(SUM(CASE
             WHEN ${branchPurchases.status} IN ('ordered', 'partially_received', 'received')
               AND ${branchPurchases.cancelledAt} IS NULL
-              AND (
-                ${branchPurchases.taxMode} IS NOT NULL
-                OR ${branchPurchases.subtotalBeforeTax} IS NOT NULL
-                OR ${branchPurchases.taxableSubtotal} IS NOT NULL
-                OR ${branchPurchases.taxTotal} IS NOT NULL
-                OR ${branchPurchases.grandTotal} IS NOT NULL
-              )
+              AND ${purchaseHasReliableFiscalSnapshot}
             THEN COALESCE(${branchPurchases.taxableSubtotal}, ${branchPurchases.totalAmount})
             ELSE 0
           END), 0)`.as("purchase_committed_before_tax"),
           purchaseCommittedHistoricalWithoutBreakdown: sql<number>`COALESCE(SUM(CASE
             WHEN ${branchPurchases.status} IN ('ordered', 'partially_received', 'received')
               AND ${branchPurchases.cancelledAt} IS NULL
-              AND NOT (
-                ${branchPurchases.taxMode} IS NOT NULL
-                OR ${branchPurchases.subtotalBeforeTax} IS NOT NULL
-                OR ${branchPurchases.taxableSubtotal} IS NOT NULL
-                OR ${branchPurchases.taxTotal} IS NOT NULL
-                OR ${branchPurchases.grandTotal} IS NOT NULL
-              )
+              AND NOT ${purchaseHasReliableFiscalSnapshot}
             THEN COALESCE(${branchPurchases.totalAmount}, 0)
             ELSE 0
           END), 0)`.as("purchase_committed_historical_without_breakdown"),
+          purchaseCommittedTotal: sql<number>`COALESCE(SUM(CASE
+            WHEN ${branchPurchases.status} IN ('ordered', 'partially_received', 'received')
+              AND ${branchPurchases.cancelledAt} IS NULL
+            THEN CASE
+              WHEN ${purchaseHasReliableFiscalSnapshot} THEN ${branchPurchases.grandTotal}
+              ELSE ${branchPurchases.totalAmount}
+            END
+            ELSE 0
+          END), 0)`.as("purchase_committed_total"),
           purchaseReceivedBeforeTax: sql<number>`COALESCE(SUM(CASE
             WHEN ${branchPurchases.status} IN ('partially_received', 'received')
               AND ${branchPurchases.cancelledAt} IS NULL
-              AND (
-                ${branchPurchases.taxMode} IS NOT NULL
-                OR ${branchPurchases.subtotalBeforeTax} IS NOT NULL
-                OR ${branchPurchases.taxableSubtotal} IS NOT NULL
-                OR ${branchPurchases.taxTotal} IS NOT NULL
-                OR ${branchPurchases.grandTotal} IS NOT NULL
-              )
+              AND ${purchaseHasReliableFiscalSnapshot}
             THEN COALESCE(${branchPurchases.taxableSubtotal}, ${branchPurchases.totalAmount})
             ELSE 0
           END), 0)`.as("purchase_received_before_tax"),
           purchaseReceivedHistoricalWithoutBreakdown: sql<number>`COALESCE(SUM(CASE
             WHEN ${branchPurchases.status} IN ('partially_received', 'received')
               AND ${branchPurchases.cancelledAt} IS NULL
-              AND NOT (
-                ${branchPurchases.taxMode} IS NOT NULL
-                OR ${branchPurchases.subtotalBeforeTax} IS NOT NULL
-                OR ${branchPurchases.taxableSubtotal} IS NOT NULL
-                OR ${branchPurchases.taxTotal} IS NOT NULL
-                OR ${branchPurchases.grandTotal} IS NOT NULL
-              )
+              AND NOT ${purchaseHasReliableFiscalSnapshot}
             THEN COALESCE(${branchPurchases.totalAmount}, 0)
             ELSE 0
           END), 0)`.as("purchase_received_historical_without_breakdown"),
@@ -11058,41 +11104,245 @@ export class DatabaseStorage implements IStorage {
           inArray(branchPurchases.projectId, projectIds),
         ))
         .groupBy(branchPurchases.projectId),
+      db
+        .select({
+          projectId: branchExpenseObligations.projectId,
+          obligationBeforeTax: sql<number>`COALESCE(SUM(${branchExpenseObligations.taxableSubtotal}), 0)`.as("obligation_before_tax"),
+          obligationTotal: sql<number>`COALESCE(SUM(${branchExpenseObligations.grandTotal}), 0)`.as("obligation_total"),
+          obligationTaxTotal: sql<number>`COALESCE(SUM(${branchExpenseObligations.taxTotal}), 0)`.as("obligation_tax_total"),
+        })
+        .from(branchExpenseObligations)
+        .where(and(
+          eq(branchExpenseObligations.branchId, branchId),
+          inArray(branchExpenseObligations.projectId, projectIds),
+          eq(branchExpenseObligations.documentStatus, "open"),
+        ))
+        .groupBy(branchExpenseObligations.projectId),
+      db
+        .select({
+          projectId: branchExpenseObligations.projectId,
+          obligationPaidTotal: sql<number>`COALESCE(SUM(${branchExpenseObligationPayments.amount}), 0)`.as("obligation_paid_total"),
+        })
+        .from(branchExpenseObligationPayments)
+        .innerJoin(branchExpenseObligations, and(
+          eq(branchExpenseObligationPayments.branchId, branchExpenseObligations.branchId),
+          eq(branchExpenseObligationPayments.obligationId, branchExpenseObligations.id),
+        ))
+        .where(and(
+          eq(branchExpenseObligationPayments.branchId, branchId),
+          inArray(branchExpenseObligations.projectId, projectIds),
+          eq(branchExpenseObligations.documentStatus, "open"),
+        ))
+        .groupBy(branchExpenseObligations.projectId),
+      db
+        .select({
+          projectId: branchFinanceEntries.projectId,
+          directManualIncome: sql<number>`COALESCE(SUM(CASE WHEN ${branchFinanceEntries.type} = 'income' THEN ${branchFinanceEntries.amount} ELSE 0 END), 0)`.as("direct_manual_income"),
+          directManualExpenses: sql<number>`COALESCE(SUM(CASE WHEN ${branchFinanceEntries.type} = 'expense' THEN ${branchFinanceEntries.amount} ELSE 0 END), 0)`.as("direct_manual_expenses"),
+          cashIn: sql<number>`COALESCE(SUM(CASE WHEN ${branchFinanceEntries.type} = 'income' THEN ${branchFinanceEntries.amount} ELSE 0 END), 0)`.as("cash_in"),
+          cashOut: sql<number>`COALESCE(SUM(CASE WHEN ${branchFinanceEntries.type} = 'expense' THEN ${branchFinanceEntries.amount} ELSE 0 END), 0)`.as("cash_out"),
+        })
+        .from(branchFinanceEntries)
+        .where(and(
+          eq(branchFinanceEntries.branchId, branchId),
+          inArray(branchFinanceEntries.projectId, projectIds),
+          isNull(branchFinanceEntries.deletedAt),
+          or(
+            isNull(branchFinanceEntries.source),
+            sql`btrim(${branchFinanceEntries.source}) = ''`,
+          ),
+        ))
+        .groupBy(branchFinanceEntries.projectId),
+      db
+        .select({
+          projectId: branchSales.projectId,
+          accruedCommissions: sql<number>`COALESCE(SUM(${branchCommissionAccruals.commissionAmount}), 0)`.as("accrued_commissions"),
+        })
+        .from(branchCommissionAccruals)
+        .innerJoin(branchSales, and(
+          eq(branchSales.id, branchCommissionAccruals.saleId),
+          eq(branchSales.branchId, branchCommissionAccruals.branchId),
+        ))
+        .where(and(
+          eq(branchCommissionAccruals.branchId, branchId),
+          eq(branchSales.branchId, branchId),
+          inArray(branchSales.projectId, projectIds),
+          eq(branchSales.status, "completed"),
+          isNull(branchSales.cancelledAt),
+          eq(branchCommissionAccruals.accrualType, "sale"),
+          inArray(branchCommissionAccruals.status, ["accrued", "approved", "partially_paid", "paid"]),
+          isNull(branchCommissionAccruals.reversedAt),
+        ))
+        .groupBy(branchSales.projectId),
+      db
+        .select({
+          projectId: branchSales.projectId,
+          cashIn: sql<number>`COALESCE(SUM(CASE WHEN ${branchFinanceEntries.type} = 'income' THEN ${branchFinanceEntries.amount} ELSE 0 END), 0)`.as("cash_in"),
+          cashOut: sql<number>`COALESCE(SUM(CASE WHEN ${branchFinanceEntries.type} = 'expense' THEN ${branchFinanceEntries.amount} ELSE 0 END), 0)`.as("cash_out"),
+        })
+        .from(branchFinanceEntries)
+        .innerJoin(branchSalePayments, and(
+          eq(branchSalePayments.id, branchFinanceEntries.sourceId),
+          eq(branchSalePayments.branchId, branchFinanceEntries.branchId),
+        ))
+        .innerJoin(branchSales, and(
+          eq(branchSales.id, branchSalePayments.saleId),
+          eq(branchSales.branchId, branchSalePayments.branchId),
+        ))
+        .where(and(
+          eq(branchFinanceEntries.branchId, branchId),
+          eq(branchFinanceEntries.source, "commercial_sale"),
+          isNull(branchFinanceEntries.deletedAt),
+          inArray(branchSales.projectId, projectIds),
+        ))
+        .groupBy(branchSales.projectId),
+      db
+        .select({
+          projectId: branchSales.projectId,
+          cashIn: sql<number>`COALESCE(SUM(CASE WHEN ${branchFinanceEntries.type} = 'income' THEN ${branchFinanceEntries.amount} ELSE 0 END), 0)`.as("cash_in"),
+          cashOut: sql<number>`COALESCE(SUM(CASE WHEN ${branchFinanceEntries.type} = 'expense' THEN ${branchFinanceEntries.amount} ELSE 0 END), 0)`.as("cash_out"),
+        })
+        .from(branchFinanceEntries)
+        .innerJoin(branchSales, and(
+          eq(branchSales.id, branchFinanceEntries.sourceId),
+          eq(branchSales.branchId, branchFinanceEntries.branchId),
+        ))
+        .where(and(
+          eq(branchFinanceEntries.branchId, branchId),
+          eq(branchFinanceEntries.source, "commercial_sale_cancellation"),
+          isNull(branchFinanceEntries.deletedAt),
+          inArray(branchSales.projectId, projectIds),
+        ))
+        .groupBy(branchSales.projectId),
+      db
+        .select({
+          projectId: branchPurchases.projectId,
+          cashIn: sql<number>`COALESCE(SUM(CASE WHEN ${branchFinanceEntries.type} = 'income' THEN ${branchFinanceEntries.amount} ELSE 0 END), 0)`.as("cash_in"),
+          cashOut: sql<number>`COALESCE(SUM(CASE WHEN ${branchFinanceEntries.type} = 'expense' THEN ${branchFinanceEntries.amount} ELSE 0 END), 0)`.as("cash_out"),
+        })
+        .from(branchFinanceEntries)
+        .innerJoin(branchPurchasePayments, and(
+          eq(branchPurchasePayments.id, branchFinanceEntries.sourceId),
+          eq(branchPurchasePayments.branchId, branchFinanceEntries.branchId),
+        ))
+        .innerJoin(branchPurchases, and(
+          eq(branchPurchases.id, branchPurchasePayments.purchaseId),
+          eq(branchPurchases.branchId, branchPurchasePayments.branchId),
+        ))
+        .where(and(
+          eq(branchFinanceEntries.branchId, branchId),
+          eq(branchFinanceEntries.source, "purchase_payment"),
+          isNull(branchFinanceEntries.deletedAt),
+          inArray(branchPurchases.projectId, projectIds),
+        ))
+        .groupBy(branchPurchases.projectId),
+      db
+        .select({
+          projectId: branchExpenseObligations.projectId,
+          cashOut: sql<number>`COALESCE(SUM(${branchFinanceEntries.amount}), 0)`.as("cash_out"),
+        })
+        .from(branchFinanceEntries)
+        .innerJoin(branchExpenseObligationPayments, and(
+          eq(branchExpenseObligationPayments.id, branchFinanceEntries.sourceId),
+          eq(branchExpenseObligationPayments.branchId, branchFinanceEntries.branchId),
+          eq(branchExpenseObligationPayments.financeEntryId, branchFinanceEntries.id),
+        ))
+        .innerJoin(branchExpenseObligations, and(
+          eq(branchExpenseObligations.id, branchExpenseObligationPayments.obligationId),
+          eq(branchExpenseObligations.branchId, branchExpenseObligationPayments.branchId),
+        ))
+        .where(and(
+          eq(branchFinanceEntries.branchId, branchId),
+          eq(branchFinanceEntries.source, "expense_obligation_payment"),
+          isNull(branchFinanceEntries.deletedAt),
+          inArray(branchExpenseObligations.projectId, projectIds),
+        ))
+        .groupBy(branchExpenseObligations.projectId),
+      db
+        .select({
+          projectId: branchSales.projectId,
+          cashIn: sql<number>`COALESCE(SUM(CASE WHEN ${branchFinanceEntries.type} = 'income' THEN ${branchCommissionPaymentAllocations.amountAllocated} ELSE 0 END), 0)`.as("cash_in"),
+          cashOut: sql<number>`COALESCE(SUM(CASE WHEN ${branchFinanceEntries.type} = 'expense' THEN ${branchCommissionPaymentAllocations.amountAllocated} ELSE 0 END), 0)`.as("cash_out"),
+        })
+        .from(branchFinanceEntries)
+        .innerJoin(branchCommissionPayments, and(
+          eq(branchCommissionPayments.id, branchFinanceEntries.sourceId),
+          eq(branchCommissionPayments.branchId, branchFinanceEntries.branchId),
+        ))
+        .innerJoin(branchCommissionPaymentAllocations, and(
+          eq(branchCommissionPaymentAllocations.commissionPaymentId, branchCommissionPayments.id),
+          eq(branchCommissionPaymentAllocations.branchId, branchCommissionPayments.branchId),
+        ))
+        .innerJoin(branchCommissionAccruals, and(
+          eq(branchCommissionAccruals.id, branchCommissionPaymentAllocations.commissionAccrualId),
+          eq(branchCommissionAccruals.branchId, branchCommissionPaymentAllocations.branchId),
+        ))
+        .innerJoin(branchSales, and(
+          eq(branchSales.id, branchCommissionAccruals.saleId),
+          eq(branchSales.branchId, branchCommissionAccruals.branchId),
+        ))
+        .where(and(
+          eq(branchFinanceEntries.branchId, branchId),
+          eq(branchFinanceEntries.source, "sales_commission_payment"),
+          isNull(branchFinanceEntries.deletedAt),
+          inArray(branchSales.projectId, projectIds),
+        ))
+        .groupBy(branchSales.projectId),
     ]);
 
+    const contributions: ProjectProfitabilityContribution[] = [];
+    const append = (row: Record<string, any>) => {
+      if (!row.projectId) return;
+      contributions.push({
+        projectId: row.projectId,
+        ...Object.fromEntries(
+          Object.entries(row)
+            .filter(([key]) => key !== "projectId")
+            .map(([key, value]) => [key, Number(value ?? 0)]),
+        ),
+      });
+    };
+
     for (const row of salesRows) {
-      if (!row.projectId) continue;
-      const current = summaryMap.get(row.projectId) ?? this.createEmptyCommercialProjectSummary();
-      summaryMap.set(row.projectId, {
-        ...current,
-        linkedSalesCount: Number(row.linkedSalesCount ?? 0),
-        revenueBeforeTax: toFinanceAmount(row.revenueBeforeTax),
-        revenueHistoricalWithoutBreakdown: toFinanceAmount((row as any).revenueHistoricalWithoutBreakdown),
-        taxCollected: toFinanceAmount(row.taxCollected),
-        revenueGrossTotal: toFinanceAmount(row.revenueGrossTotal),
-        cashCollectedTotal: toFinanceAmount(row.cashCollectedTotal),
+      append({
+        projectId: row.projectId,
+        linkedSalesCount: row.linkedSalesCount,
+        salesBeforeTax: row.revenueBeforeTax,
+        salesHistoricalWithoutTaxBreakdown: row.revenueHistoricalWithoutBreakdown,
+        taxCollected: row.taxCollected,
+        salesFinalTotal: row.revenueGrossTotal,
+        salesPaidTotal: row.cashCollectedTotal,
       });
     }
-
+    for (const row of cogsRows) append(row);
     for (const row of purchaseRows) {
-      if (!row.projectId) continue;
-      const current = summaryMap.get(row.projectId) ?? this.createEmptyCommercialProjectSummary();
-      summaryMap.set(row.projectId, {
-        ...current,
-        linkedPurchasesCount: Number(row.linkedPurchasesCount ?? 0),
-        linkedDraftPurchasesCount: Number(row.linkedDraftPurchasesCount ?? 0),
-        purchaseCommittedBeforeTax: toFinanceAmount((row as any).purchaseCommittedBeforeTax),
-        purchaseCommittedHistoricalWithoutBreakdown: toFinanceAmount((row as any).purchaseCommittedHistoricalWithoutBreakdown),
-        purchaseReceivedBeforeTax: toFinanceAmount((row as any).purchaseReceivedBeforeTax),
-        purchaseReceivedHistoricalWithoutBreakdown: toFinanceAmount((row as any).purchaseReceivedHistoricalWithoutBreakdown),
-        purchasePaidTotal: toFinanceAmount(row.purchasePaidTotal),
+      append({
+        projectId: row.projectId,
+        linkedPurchasesCount: row.linkedPurchasesCount,
+        linkedDraftPurchasesCount: row.linkedDraftPurchasesCount,
+        purchasesCommittedBeforeTax: row.purchaseCommittedBeforeTax,
+        purchasesCommittedHistoricalWithoutTaxBreakdown: row.purchaseCommittedHistoricalWithoutBreakdown,
+        purchasesCommittedTotal: row.purchaseCommittedTotal,
+        purchasesReceivedBeforeTax: row.purchaseReceivedBeforeTax,
+        purchasesReceivedHistoricalWithoutTaxBreakdown: row.purchaseReceivedHistoricalWithoutBreakdown,
+        purchasePaidTotal: row.purchasePaidTotal,
       });
     }
+    for (const row of manualFinanceRows) append(row);
+    for (const row of obligationRows) append(row);
+    for (const row of obligationPaymentRows) append(row);
+    for (const row of commissionAccrualRows) append(row);
+    for (const row of saleCashRows) append(row);
+    for (const row of saleCancellationCashRows) append(row);
+    for (const row of purchaseCashRows) append(row);
+    for (const row of obligationCashRows) append(row);
+    for (const row of commissionCashRows) append(row);
 
-    summaryMap.forEach((summary, projectId) => {
-      summaryMap.set(projectId, this.finalizeCommercialProjectSummary(summary));
-    });
-
+    const snapshots = buildProjectProfitabilitySnapshots(projectIds, contributions);
+    for (const projectId of projectIds) {
+      const snapshot = snapshots.get(projectId);
+      if (snapshot) summaryMap.set(projectId, this.mapCommercialProjectProfitability(snapshot));
+    }
     return summaryMap;
   }
 
@@ -11554,7 +11804,7 @@ export class DatabaseStorage implements IStorage {
     const project = await this.getBranchCommercialProjectRowById(branchId, projectId);
     if (!project) return undefined;
 
-    const [salesRows, purchaseRows] = await Promise.all([
+    const [salesRows, purchaseRows, manualFinanceRows] = await Promise.all([
       db
         .select({
           id: branchSales.id,
@@ -11613,6 +11863,33 @@ export class DatabaseStorage implements IStorage {
           eq(branchPurchases.projectId, projectId),
         ))
         .orderBy(desc(branchPurchases.purchaseDate), desc(branchPurchases.createdAt)),
+      db
+        .select({
+          id: branchFinanceEntries.id,
+          type: branchFinanceEntries.type,
+          category: branchFinanceEntries.category,
+          concept: branchFinanceEntries.concept,
+          amount: branchFinanceEntries.amount,
+          paymentMethod: branchFinanceEntries.paymentMethod,
+          clientName: branchFinanceEntries.clientName,
+          linkedClientName: users.name,
+          linkedClientLastName: users.lastName,
+          notes: branchFinanceEntries.notes,
+          entryDate: branchFinanceEntries.entryDate,
+          createdAt: branchFinanceEntries.createdAt,
+        })
+        .from(branchFinanceEntries)
+        .leftJoin(users, eq(branchFinanceEntries.clientUserId, users.id))
+        .where(and(
+          eq(branchFinanceEntries.branchId, branchId),
+          eq(branchFinanceEntries.projectId, projectId),
+          isNull(branchFinanceEntries.deletedAt),
+          or(
+            isNull(branchFinanceEntries.source),
+            sql`btrim(${branchFinanceEntries.source}) = ''`,
+          ),
+        ))
+        .orderBy(desc(branchFinanceEntries.entryDate), desc(branchFinanceEntries.createdAt)),
     ]);
 
     const sales = salesRows.map((row) => ({
@@ -11658,11 +11935,26 @@ export class DatabaseStorage implements IStorage {
       createdAt: row.createdAt,
     }));
 
+    const manualFinanceEntries = manualFinanceRows.map((row) => ({
+      id: row.id,
+      type: row.type as "income" | "expense",
+      category: row.category ?? null,
+      concept: row.concept,
+      amount: toFinanceAmount(row.amount),
+      paymentMethod: row.paymentMethod ?? null,
+      clientDisplayName: [row.linkedClientName, row.linkedClientLastName].filter(Boolean).join(" ").trim()
+        || row.clientName
+        || null,
+      notes: row.notes ?? null,
+      entryDate: typeof row.entryDate === "string" ? row.entryDate : String(row.entryDate).slice(0, 10),
+      createdAt: row.createdAt,
+    }));
+
     return {
       ...project,
-      summary: this.computeCommercialProjectSummaryFromLists(sales, purchases),
       sales,
       purchases,
+      manualFinanceEntries,
     };
   }
 
@@ -17053,6 +17345,10 @@ export class DatabaseStorage implements IStorage {
     return {
       id: row.id,
       branchId: row.branchId,
+      projectId: row.projectId ?? null,
+      projectCode: row.projectCode ?? null,
+      projectName: row.projectName ?? null,
+      projectStatus: row.projectStatus ?? null,
       type: row.type,
       category: row.category ?? null,
       concept: row.concept,
@@ -17095,6 +17391,10 @@ export class DatabaseStorage implements IStorage {
       .select({
         id: branchFinanceEntries.id,
         branchId: branchFinanceEntries.branchId,
+        projectId: branchFinanceEntries.projectId,
+        projectCode: branchCommercialProjects.code,
+        projectName: branchCommercialProjects.name,
+        projectStatus: branchCommercialProjects.status,
         type: branchFinanceEntries.type,
         category: branchFinanceEntries.category,
         concept: branchFinanceEntries.concept,
@@ -17127,6 +17427,10 @@ export class DatabaseStorage implements IStorage {
       })
       .from(branchFinanceEntries)
       .leftJoin(users, eq(branchFinanceEntries.clientUserId, users.id))
+      .leftJoin(branchCommercialProjects, and(
+        eq(branchCommercialProjects.id, branchFinanceEntries.projectId),
+        eq(branchCommercialProjects.branchId, branchFinanceEntries.branchId),
+      ))
       .leftJoin(branchChargeEvents, and(
         eq(branchChargeEvents.financeEntryId, branchFinanceEntries.id),
         eq(branchChargeEvents.branchId, branchFinanceEntries.branchId),
@@ -17168,6 +17472,10 @@ export class DatabaseStorage implements IStorage {
       .select({
         id: branchFinanceEntries.id,
         branchId: branchFinanceEntries.branchId,
+        projectId: branchFinanceEntries.projectId,
+        projectCode: branchCommercialProjects.code,
+        projectName: branchCommercialProjects.name,
+        projectStatus: branchCommercialProjects.status,
         type: branchFinanceEntries.type,
         category: branchFinanceEntries.category,
         concept: branchFinanceEntries.concept,
@@ -17200,6 +17508,10 @@ export class DatabaseStorage implements IStorage {
       })
       .from(branchFinanceEntries)
       .leftJoin(users, eq(branchFinanceEntries.clientUserId, users.id))
+      .leftJoin(branchCommercialProjects, and(
+        eq(branchCommercialProjects.id, branchFinanceEntries.projectId),
+        eq(branchCommercialProjects.branchId, branchFinanceEntries.branchId),
+      ))
       .leftJoin(branchChargeEvents, and(
         eq(branchChargeEvents.financeEntryId, branchFinanceEntries.id),
         eq(branchChargeEvents.branchId, branchFinanceEntries.branchId),
@@ -17229,6 +17541,7 @@ export class DatabaseStorage implements IStorage {
         .insert(branchFinanceEntries)
         .values({
           ...data,
+          projectId: normalizeOptionalTextValue(data.source) ? null : (data.projectId ?? null),
           amount: String(data.amount),
         })
         .returning({
@@ -17643,6 +17956,10 @@ export class DatabaseStorage implements IStorage {
         .select({
           id: branchFinanceEntries.id,
           branchId: branchFinanceEntries.branchId,
+          projectId: branchFinanceEntries.projectId,
+          projectCode: branchCommercialProjects.code,
+          projectName: branchCommercialProjects.name,
+          projectStatus: branchCommercialProjects.status,
           type: branchFinanceEntries.type,
           category: branchFinanceEntries.category,
           concept: branchFinanceEntries.concept,
@@ -17675,6 +17992,10 @@ export class DatabaseStorage implements IStorage {
         })
         .from(branchFinanceEntries)
         .leftJoin(users, eq(branchFinanceEntries.clientUserId, users.id))
+        .leftJoin(branchCommercialProjects, and(
+          eq(branchCommercialProjects.id, branchFinanceEntries.projectId),
+          eq(branchCommercialProjects.branchId, branchFinanceEntries.branchId),
+        ))
         .leftJoin(branchChargeEvents, and(
           eq(branchChargeEvents.financeEntryId, branchFinanceEntries.id),
           eq(branchChargeEvents.branchId, branchFinanceEntries.branchId),
@@ -17724,6 +18045,10 @@ export class DatabaseStorage implements IStorage {
       .select({
         id: branchFinanceEntries.id,
         branchId: branchFinanceEntries.branchId,
+        projectId: branchFinanceEntries.projectId,
+        projectCode: branchCommercialProjects.code,
+        projectName: branchCommercialProjects.name,
+        projectStatus: branchCommercialProjects.status,
         type: branchFinanceEntries.type,
         category: branchFinanceEntries.category,
         concept: branchFinanceEntries.concept,
@@ -17756,6 +18081,10 @@ export class DatabaseStorage implements IStorage {
       })
       .from(branchFinanceEntries)
       .leftJoin(users, eq(branchFinanceEntries.clientUserId, users.id))
+      .leftJoin(branchCommercialProjects, and(
+        eq(branchCommercialProjects.id, branchFinanceEntries.projectId),
+        eq(branchCommercialProjects.branchId, branchFinanceEntries.branchId),
+      ))
       .leftJoin(branchChargeEvents, and(
         eq(branchChargeEvents.financeEntryId, branchFinanceEntries.id),
         eq(branchChargeEvents.branchId, branchFinanceEntries.branchId),
@@ -17773,6 +18102,94 @@ export class DatabaseStorage implements IStorage {
 
   async getBranchFinanceEntry(branchId: string, entryId: string): Promise<BranchFinanceEntryRow | undefined> {
     return this.getBranchFinanceEntryById(branchId, entryId);
+  }
+
+  private isManualFinanceSource(source: string | null | undefined) {
+    return classifyFinanceSource(source) === "manual";
+  }
+
+  private async validateManualFinanceProjectTx(
+    tx: any,
+    branchId: string,
+    projectId: string | null,
+    options?: { preserveProjectId?: string | null },
+  ): Promise<string | null> {
+    const normalizedProjectId = normalizeOptionalTextValue(projectId);
+    if (!normalizedProjectId) return null;
+
+    const [project] = await tx
+      .select({ id: branchCommercialProjects.id, status: branchCommercialProjects.status })
+      .from(branchCommercialProjects)
+      .where(and(
+        eq(branchCommercialProjects.id, normalizedProjectId),
+        eq(branchCommercialProjects.branchId, branchId),
+        isNull(branchCommercialProjects.deletedAt),
+      ))
+      .for("update")
+      .limit(1);
+    if (!project) {
+      throw new Error("BRANCH_FINANCE_PROJECT_INVALID");
+    }
+
+    const isPreservedProject = normalizedProjectId === normalizeOptionalTextValue(options?.preserveProjectId);
+    if (!isPreservedProject && !["draft", "active"].includes(project.status)) {
+      throw new Error("BRANCH_FINANCE_PROJECT_NOT_ASSIGNABLE");
+    }
+    return project.id;
+  }
+
+  private async validateManualFinanceClientTx(
+    tx: any,
+    branchId: string,
+    clientUserId: string | null,
+  ) {
+    if (!clientUserId) return;
+    const [membership] = await tx
+      .select({ userId: memberships.userId })
+      .from(memberships)
+      .where(and(
+        eq(memberships.branchId, branchId),
+        eq(memberships.userId, clientUserId),
+      ))
+      .limit(1);
+    if (!membership) {
+      throw new Error("BRANCH_FINANCE_CLIENT_INVALID");
+    }
+  }
+
+  async createManualBranchFinanceEntry(
+    branchId: string,
+    actorUserId: string,
+    data: BranchManualFinanceEntryInput,
+  ): Promise<BranchFinanceEntryRow> {
+    return db.transaction(async (tx) => {
+      await this.validateManualFinanceClientTx(tx, branchId, data.clientUserId);
+      const projectId = await this.validateManualFinanceProjectTx(tx, branchId, data.projectId);
+      const outcome = await this.createBranchFinanceEntryTx(tx, {
+        ...data,
+        branchId,
+        projectId,
+        source: null,
+        sourceId: null,
+        metadata: null,
+        createdBy: actorUserId,
+      } as InsertBranchFinanceEntry);
+
+      await this.createAuditLogTx(tx, {
+        actorUserId,
+        action: "CREATE_FINANCE_ENTRY",
+        branchId,
+        metadata: {
+          entryId: outcome.entry.id,
+          type: outcome.entry.type,
+          amount: outcome.entry.amount,
+          entryDate: outcome.entry.entryDate,
+          projectId: outcome.entry.projectId,
+        },
+      });
+
+      return outcome.entry;
+    });
   }
 
   async createBranchFinanceEntry(data: InsertBranchFinanceEntry): Promise<BranchFinanceEntryRow> {
@@ -18198,70 +18615,127 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
-  async updateBranchFinanceEntry(branchId: string, entryId: string, data: Partial<InsertBranchFinanceEntry>): Promise<BranchFinanceEntryRow | undefined> {
-    if (isProtectedFinanceSource(data.source)) return undefined;
+  async updateManualBranchFinanceEntry(
+    branchId: string,
+    entryId: string,
+    actorUserId: string,
+    data: Partial<BranchManualFinanceEntryInput>,
+  ): Promise<BranchFinanceEntryRow | undefined> {
+    return db.transaction(async (tx) => {
+      const [existing] = await tx
+        .select({
+          id: branchFinanceEntries.id,
+          source: branchFinanceEntries.source,
+          projectId: branchFinanceEntries.projectId,
+        })
+        .from(branchFinanceEntries)
+        .where(and(
+          eq(branchFinanceEntries.id, entryId),
+          eq(branchFinanceEntries.branchId, branchId),
+          isNull(branchFinanceEntries.deletedAt),
+        ))
+        .for("update")
+        .limit(1);
 
-    const updateData: Record<string, any> = {
-      updatedAt: new Date(),
-    };
+      if (!existing || !this.isManualFinanceSource(existing.source)) return undefined;
+      if (data.clientUserId !== undefined) {
+        await this.validateManualFinanceClientTx(tx, branchId, data.clientUserId);
+      }
 
-    if (data.type !== undefined) updateData.type = data.type;
-    if (data.category !== undefined) updateData.category = data.category;
-    if (data.concept !== undefined) updateData.concept = data.concept;
-    if (data.amount !== undefined) {
-      updateData.amount = String(data.amount);
-    }
-    if (data.paymentMethod !== undefined) updateData.paymentMethod = data.paymentMethod;
-    if (data.clientUserId !== undefined) updateData.clientUserId = data.clientUserId;
-    if (data.clientName !== undefined) updateData.clientName = data.clientName;
-    if (data.notes !== undefined) updateData.notes = data.notes;
-    if (data.entryDate !== undefined) updateData.entryDate = data.entryDate;
-    if (data.source !== undefined) updateData.source = data.source;
-    if (data.sourceId !== undefined) updateData.sourceId = data.sourceId;
-    if (data.metadata !== undefined) updateData.metadata = data.metadata;
-    if (data.createdBy !== undefined) updateData.createdBy = data.createdBy;
+      let projectId = existing.projectId ?? null;
+      if (data.projectId !== undefined) {
+        projectId = await this.validateManualFinanceProjectTx(tx, branchId, data.projectId, {
+          preserveProjectId: existing.projectId,
+        });
+      }
 
-    const [updated] = await db
-      .update(branchFinanceEntries)
-      .set(updateData)
-      .where(and(
-        eq(branchFinanceEntries.id, entryId),
-        eq(branchFinanceEntries.branchId, branchId),
-        isNull(branchFinanceEntries.deletedAt),
-        or(
-          isNull(branchFinanceEntries.source),
-          notInArray(branchFinanceEntries.source, [...protectedFinanceSourceValues]),
-        ),
-      ))
-      .returning({
-        id: branchFinanceEntries.id,
+      const updateData: Record<string, any> = {
+        source: null,
+        sourceId: null,
+        metadata: null,
+        projectId,
+        updatedAt: new Date(),
+      };
+      if (data.type !== undefined) updateData.type = data.type;
+      if (data.category !== undefined) updateData.category = data.category;
+      if (data.concept !== undefined) updateData.concept = data.concept;
+      if (data.amount !== undefined) updateData.amount = String(data.amount);
+      if (data.paymentMethod !== undefined) updateData.paymentMethod = data.paymentMethod;
+      if (data.clientUserId !== undefined) updateData.clientUserId = data.clientUserId;
+      if (data.clientName !== undefined) updateData.clientName = data.clientName;
+      if (data.notes !== undefined) updateData.notes = data.notes;
+      if (data.entryDate !== undefined) updateData.entryDate = data.entryDate;
+
+      const [updated] = await tx
+        .update(branchFinanceEntries)
+        .set(updateData)
+        .where(and(
+          eq(branchFinanceEntries.id, entryId),
+          eq(branchFinanceEntries.branchId, branchId),
+          isNull(branchFinanceEntries.deletedAt),
+        ))
+        .returning({ id: branchFinanceEntries.id });
+      if (!updated) return undefined;
+
+      const entry = await this.getBranchFinanceEntryByIdTx(tx, branchId, updated.id);
+      if (!entry) return undefined;
+      await this.createAuditLogTx(tx, {
+        actorUserId,
+        action: "UPDATE_FINANCE_ENTRY",
+        branchId,
+        metadata: {
+          entryId: entry.id,
+          type: entry.type,
+          amount: entry.amount,
+          entryDate: entry.entryDate,
+          projectId: entry.projectId,
+        },
       });
-
-    if (!updated) return undefined;
-    return this.getBranchFinanceEntryById(branchId, updated.id);
+      return entry;
+    });
   }
 
-  async softDeleteBranchFinanceEntry(branchId: string, entryId: string): Promise<boolean> {
-    const [deleted] = await db
-      .update(branchFinanceEntries)
-      .set({
-        deletedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(and(
-        eq(branchFinanceEntries.id, entryId),
-        eq(branchFinanceEntries.branchId, branchId),
-        isNull(branchFinanceEntries.deletedAt),
-        or(
-          isNull(branchFinanceEntries.source),
-          notInArray(branchFinanceEntries.source, [...protectedFinanceSourceValues]),
-        ),
-      ))
-      .returning({
-        id: branchFinanceEntries.id,
-      });
+  async softDeleteManualBranchFinanceEntry(
+    branchId: string,
+    entryId: string,
+    actorUserId: string,
+  ): Promise<boolean> {
+    return db.transaction(async (tx) => {
+      const [existing] = await tx
+        .select({
+          id: branchFinanceEntries.id,
+          source: branchFinanceEntries.source,
+          projectId: branchFinanceEntries.projectId,
+        })
+        .from(branchFinanceEntries)
+        .where(and(
+          eq(branchFinanceEntries.id, entryId),
+          eq(branchFinanceEntries.branchId, branchId),
+          isNull(branchFinanceEntries.deletedAt),
+        ))
+        .for("update")
+        .limit(1);
 
-    return !!deleted;
+      if (!existing || !this.isManualFinanceSource(existing.source)) return false;
+      const [deleted] = await tx
+        .update(branchFinanceEntries)
+        .set({ deletedAt: new Date(), updatedAt: new Date() })
+        .where(and(
+          eq(branchFinanceEntries.id, entryId),
+          eq(branchFinanceEntries.branchId, branchId),
+          isNull(branchFinanceEntries.deletedAt),
+        ))
+        .returning({ id: branchFinanceEntries.id });
+      if (!deleted) return false;
+
+      await this.createAuditLogTx(tx, {
+        actorUserId,
+        action: "DELETE_FINANCE_ENTRY",
+        branchId,
+        metadata: { entryId, projectId: existing.projectId ?? null },
+      });
+      return true;
+    });
   }
 
   async getBranchRecurringExpenses(branchId: string): Promise<BranchRecurringExpenseRow[]> {

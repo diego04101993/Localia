@@ -16,7 +16,8 @@ import {
   ShoppingCart,
   Truck,
 } from "lucide-react";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, fetchJson } from "@/lib/queryClient";
+import GastosCuentasPanel from "@/components/gastos-cuentas-panel";
 import { invalidateBranchCommercialQueries } from "@/lib/branch-dashboard-cache";
 import { useToast } from "@/hooks/use-toast";
 import { Badge } from "@/components/ui/badge";
@@ -40,7 +41,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 type ProjectStatus = "draft" | "active" | "completed" | "cancelled" | "archived";
 
@@ -70,6 +73,26 @@ type ProjectSummary = {
   receivedProfitEstimate: number;
   cashFlowNet: number;
   marginPercent: number | null;
+  salesBeforeTax: number;
+  salesFinalTotal: number;
+  salesPaidTotal: number;
+  accountsReceivable: number;
+  cogsTotal: number;
+  purchasesCommittedTotal: number;
+  accountsPayable: number;
+  accountsPayablePurchases: number;
+  accountsPayableOtherExpenses: number;
+  obligationBeforeTax: number;
+  obligationTotal: number;
+  obligationTaxTotal: number;
+  obligationPaidTotal: number;
+  directManualIncome: number;
+  directManualExpenses: number;
+  accruedCommissions: number;
+  cashIn: number;
+  cashOut: number;
+  profit: number | null;
+  profitIsComplete: boolean;
 };
 
 type PaginationMeta = {
@@ -142,9 +165,45 @@ type LinkedPurchase = {
   createdAt: string;
 };
 
+type PurchasePaymentDetail = {
+  legacyPaidAmount: number;
+  hasLegacyPaidAmount: boolean;
+  payments: Array<{ id: string; amount: number; entryDate: string; paymentMethod: string }>;
+};
+
+function PurchasePaymentHistory({ purchaseId }: { purchaseId: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const url = `/api/branch/purchases/${purchaseId}`;
+  const detail = useQuery<PurchasePaymentDetail>({
+    queryKey: [url],
+    enabled: expanded,
+    queryFn: async ({ signal }) => (await fetchJson<PurchasePaymentDetail>(url, { signal }))!,
+  });
+
+  return <div className="mt-3 border-t border-border/60 pt-3">
+    <Button type="button" variant="ghost" size="sm" onClick={() => setExpanded(!expanded)}>{expanded ? "Ocultar pagos" : "Ver pagos verificables"}</Button>
+    {expanded && (detail.isLoading ? <p className="text-xs text-muted-foreground">Cargando pagos...</p> : detail.isError ? <p className="text-xs text-rose-700">No pudimos cargar los pagos.</p> : <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+      {detail.data?.payments.length ? detail.data.payments.map((payment) => <p key={payment.id}>{payment.entryDate} · {payment.paymentMethod} · {formatCurrencyMx(payment.amount)}</p>) : <p>No hay pagos nuevos registrados en el ledger.</p>}
+      {detail.data?.hasLegacyPaidAmount && <p>Saldo histórico pagado: {formatCurrencyMx(detail.data.legacyPaidAmount)}. No se inventan fecha ni método.</p>}
+    </div>)}
+  </div>;
+}
+
 type ProjectDetail = ProjectRow & {
   sales: LinkedSale[];
   purchases: LinkedPurchase[];
+  manualFinanceEntries: Array<{
+    id: string;
+    type: "income" | "expense";
+    category: string | null;
+    concept: string;
+    amount: number;
+    paymentMethod: string | null;
+    clientDisplayName: string | null;
+    notes: string | null;
+    entryDate: string;
+    createdAt: string;
+  }>;
 };
 
 type LinkableSale = {
@@ -366,6 +425,17 @@ function hasHistoricalBreakdownGaps(summary: ProjectSummary) {
     || summary.purchaseReceivedHistoricalWithoutBreakdown > 0;
 }
 
+function purchaseDocumentTax(purchases: LinkedPurchase[]) {
+  let cents = 0;
+  let incomplete = false;
+  for (const purchase of purchases) {
+    if (purchase.cancelledAt || !["ordered", "partially_received", "received"].includes(purchase.status)) continue;
+    if (hasFiscalBreakdown(purchase)) cents += Math.round(purchase.taxTotal! * 100);
+    else incomplete = true;
+  }
+  return { amount: cents / 100, incomplete };
+}
+
 function hasFiscalBreakdown(row: {
   taxMode?: string | null;
   taxableSubtotal: number | null;
@@ -373,9 +443,9 @@ function hasFiscalBreakdown(row: {
   grandTotal: number | null;
 }) {
   return row.taxMode != null
-    || row.taxableSubtotal != null
-    || row.taxTotal != null
-    || row.grandTotal != null;
+    && row.taxableSubtotal != null
+    && row.taxTotal != null
+    && row.grandTotal != null;
 }
 
 export default function ProyectosTab() {
@@ -386,6 +456,7 @@ export default function ProyectosTab() {
   const [editingProject, setEditingProject] = useState<ProjectRow | null>(null);
   const [projectForm, setProjectForm] = useState<ProjectFormState>(createInitialProjectFormState());
   const [detailProjectId, setDetailProjectId] = useState<string | null>(null);
+  const [expensePanelProject, setExpensePanelProject] = useState<{ id: string; name: string } | null>(null);
   const [linkSaleProject, setLinkSaleProject] = useState<ProjectRow | null>(null);
   const [linkPurchaseProject, setLinkPurchaseProject] = useState<ProjectRow | null>(null);
   const [page, setPage] = useState(1);
@@ -739,41 +810,33 @@ export default function ProyectosTab() {
                 ) : null}
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                   <Card className="border-border/60 bg-muted/20">
                     <CardContent className="p-4">
-                      <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Ingresos con desglose fiscal</p>
-                      <p className="mt-2 text-lg font-semibold">{formatCurrencyMx(project.summary.revenueBeforeTax)}</p>
+                      <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Ventas</p>
+                      <p className="mt-2 text-lg font-semibold">{formatCurrencyMx(project.summary.salesFinalTotal)}</p>
                     </CardContent>
                   </Card>
                   <Card className="border-border/60 bg-muted/20">
                     <CardContent className="p-4">
-                      <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Costos comprometidos</p>
-                      <p className="mt-2 text-lg font-semibold">{formatCurrencyMx(project.summary.purchaseCommittedBeforeTax)}</p>
+                      <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Cobrado</p>
+                      <p className="mt-2 text-lg font-semibold">{formatCurrencyMx(project.summary.salesPaidTotal)}</p>
                     </CardContent>
                   </Card>
                   <Card className="border-border/60 bg-muted/20">
                     <CardContent className="p-4">
-                      <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Costos recibidos</p>
-                      <p className="mt-2 text-lg font-semibold">{formatCurrencyMx(project.summary.purchaseReceivedBeforeTax)}</p>
+                      <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Utilidad</p>
+                      <p className="mt-2 text-lg font-semibold">
+                        {project.summary.profit == null ? "—" : formatCurrencyMx(project.summary.profit)}
+                      </p>
                     </CardContent>
                   </Card>
                   <Card className="border-border/60 bg-muted/20">
                     <CardContent className="p-4">
-                      <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Pagos a proveedores</p>
-                      <p className="mt-2 text-lg font-semibold">{formatCurrencyMx(project.summary.purchasePaidTotal)}</p>
-                    </CardContent>
-                  </Card>
-                  <Card className="border-border/60 bg-muted/20">
-                    <CardContent className="p-4">
-                      <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Rentabilidad estimada comprometida</p>
-                      <p className="mt-2 text-lg font-semibold">{formatCurrencyMx(project.summary.committedProfitEstimate)}</p>
-                    </CardContent>
-                  </Card>
-                  <Card className="border-border/60 bg-muted/20">
-                    <CardContent className="p-4">
-                      <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Flujo cobrado/pagado</p>
-                      <p className="mt-2 text-lg font-semibold">{formatCurrencyMx(project.summary.cashFlowNet)}</p>
+                      <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Margen</p>
+                      <p className="mt-2 text-lg font-semibold">
+                        {project.summary.marginPercent == null ? "—" : `${project.summary.marginPercent.toFixed(2)}%`}
+                      </p>
                     </CardContent>
                   </Card>
                 </div>
@@ -783,9 +846,9 @@ export default function ProyectosTab() {
                     <div className="flex items-start gap-3">
                       <AlertTriangle className="mt-0.5 h-4 w-4 text-amber-600" />
                       <div className="space-y-2">
-                        <p className="font-medium">Rentabilidad sin IVA parcialmente estimada</p>
+                        <p className="font-medium">Historial fiscal incompleto</p>
                         <p className="text-muted-foreground">
-                          Algunas operaciones antiguas no cuentan con desglose fiscal. Se muestran por separado y no se suman a las métricas estrictas sin IVA.
+                          Algunas operaciones antiguas no cuentan con desglose fiscal. No se inventa su base antes de IVA y, cuando afecta ventas, la utilidad se muestra como no disponible.
                         </p>
                         <div className="grid gap-2 md:grid-cols-3">
                           <p><span className="text-muted-foreground">Ingresos históricos:</span> {formatCurrencyMx(project.summary.revenueHistoricalWithoutBreakdown)}</p>
@@ -811,9 +874,9 @@ export default function ProyectosTab() {
                     <p className="mt-1 font-semibold">{project.summary.linkedDraftPurchasesCount}</p>
                   </div>
                   <div>
-                    <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Rentabilidad sobre recibido</p>
+                    <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Flujo neto</p>
                     <p className="mt-1 font-semibold">
-                      {formatCurrencyMx(project.summary.receivedProfitEstimate)}
+                      {formatCurrencyMx(project.summary.cashFlowNet)}
                     </p>
                   </div>
                 </div>
@@ -1024,6 +1087,8 @@ export default function ProyectosTab() {
         </DialogContent>
       </Dialog>
 
+      <GastosCuentasPanel open={!!expensePanelProject} onOpenChange={(open) => !open && setExpensePanelProject(null)} initialProjectId={expensePanelProject?.id} initialProjectName={expensePanelProject?.name} />
+
       <Dialog open={!!detailProjectId} onOpenChange={(open) => !open && setDetailProjectId(null)}>
         <DialogContent className="max-h-[100dvh] overflow-y-auto sm:max-w-5xl">
           <DialogHeader>
@@ -1058,17 +1123,17 @@ export default function ProyectosTab() {
                 </CardContent>
               </Card>
 
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                <Card className="border-border/60 bg-muted/20"><CardContent className="p-4"><p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Ingresos con desglose fiscal</p><p className="mt-2 text-lg font-semibold">{formatCurrencyMx(detailProject.summary.revenueBeforeTax)}</p></CardContent></Card>
-                <Card className="border-border/60 bg-muted/20"><CardContent className="p-4"><p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">IVA cobrado</p><p className="mt-2 text-lg font-semibold">{formatCurrencyMx(detailProject.summary.taxCollected)}</p></CardContent></Card>
-                <Card className="border-border/60 bg-muted/20"><CardContent className="p-4"><p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Total cobrado</p><p className="mt-2 text-lg font-semibold">{formatCurrencyMx(detailProject.summary.revenueGrossTotal)}</p></CardContent></Card>
-                <Card className="border-border/60 bg-muted/20"><CardContent className="p-4"><p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Costos comprometidos sin IVA</p><p className="mt-2 text-lg font-semibold">{formatCurrencyMx(detailProject.summary.purchaseCommittedBeforeTax)}</p></CardContent></Card>
-                <Card className="border-border/60 bg-muted/20"><CardContent className="p-4"><p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Costos recibidos sin IVA</p><p className="mt-2 text-lg font-semibold">{formatCurrencyMx(detailProject.summary.purchaseReceivedBeforeTax)}</p></CardContent></Card>
-                <Card className="border-border/60 bg-muted/20"><CardContent className="p-4"><p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Pagos a proveedores</p><p className="mt-2 text-lg font-semibold">{formatCurrencyMx(detailProject.summary.purchasePaidTotal)}</p></CardContent></Card>
-                <Card className="border-border/60 bg-muted/20"><CardContent className="p-4"><p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Rentabilidad estimada comprometida</p><p className="mt-2 text-lg font-semibold">{formatCurrencyMx(detailProject.summary.committedProfitEstimate)}</p></CardContent></Card>
-                <Card className="border-border/60 bg-muted/20"><CardContent className="p-4"><p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Rentabilidad sobre recibido</p><p className="mt-2 text-lg font-semibold">{formatCurrencyMx(detailProject.summary.receivedProfitEstimate)}</p></CardContent></Card>
-                <Card className="border-border/60 bg-muted/20"><CardContent className="p-4"><p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Flujo cobrado/pagado</p><p className="mt-2 text-lg font-semibold">{formatCurrencyMx(detailProject.summary.cashFlowNet)}</p></CardContent></Card>
-              </div>
+              <Tabs defaultValue="summary" className="space-y-4">
+                <TabsList className="grid w-full grid-cols-2 sm:w-72"><TabsTrigger value="summary">Resumen</TabsTrigger><TabsTrigger value="administration">Administración</TabsTrigger></TabsList>
+                <TabsContent value="summary" className="space-y-4">
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    <Card className="border-border/70"><CardHeader className="pb-3"><CardTitle className="text-base">Venta del proyecto</CardTitle><CardDescription>Ventas vinculadas al proyecto, no solo al cliente del encabezado.</CardDescription></CardHeader><CardContent className="grid gap-3 sm:grid-cols-2"><div><p className="text-xs text-muted-foreground">Venta antes de IVA</p><p className="font-semibold">{formatCurrencyMx(detailProject.summary.salesBeforeTax)}</p></div><div><p className="text-xs text-muted-foreground">IVA documental</p><p className="font-semibold">{formatCurrencyMx(detailProject.summary.taxCollected)}</p></div><div><p className="text-xs text-muted-foreground">Total vendido</p><p className="font-semibold">{formatCurrencyMx(detailProject.summary.salesFinalTotal)}</p></div><div><p className="text-xs text-muted-foreground">Cobrado</p><p className="font-semibold">{formatCurrencyMx(detailProject.summary.salesPaidTotal)}</p></div><div><p className="text-xs text-muted-foreground">Pendiente de cobrar</p><p className="font-semibold">{formatCurrencyMx(detailProject.summary.accountsReceivable)}</p></div></CardContent></Card>
+                    <Card className="border-border/70"><CardHeader className="pb-3"><CardTitle className="text-base">Costos del proyecto</CardTitle><CardDescription>Se muestran por separado para no contar una compra dos veces.</CardDescription></CardHeader><CardContent className="grid gap-3 sm:grid-cols-2"><div><p className="text-xs text-muted-foreground">Costo de mercancía</p><p className="font-semibold">{formatCurrencyMx(detailProject.summary.cogsTotal)}</p></div><div><Tooltip><TooltipTrigger asChild><button type="button" className="cursor-help text-left text-xs text-muted-foreground underline decoration-dotted">Gastos directos</button></TooltipTrigger><TooltipContent>Gastos adicionales del proyecto, separados del costo de mercancía.</TooltipContent></Tooltip><p className="font-semibold">{formatCurrencyMx(detailProject.summary.directManualExpenses)}</p></div><div><p className="text-xs text-muted-foreground">Otros gastos antes de IVA</p><p className="font-semibold">{formatCurrencyMx(detailProject.summary.obligationBeforeTax)}</p></div><div><p className="text-xs text-muted-foreground">Comisiones</p><p className="font-semibold">{formatCurrencyMx(detailProject.summary.accruedCommissions)}</p></div><div className="border-t pt-2 sm:col-span-2"><p className="text-xs text-muted-foreground">Total operativo estimado</p><p className="font-semibold">{formatCurrencyMx(detailProject.summary.cogsTotal + detailProject.summary.directManualExpenses + detailProject.summary.obligationBeforeTax + detailProject.summary.accruedCommissions)}</p></div></CardContent></Card>
+                    <Card className="border-border/70"><CardHeader className="pb-3"><CardTitle className="text-base">Resultado</CardTitle><CardDescription>La utilidad puede no estar disponible cuando falta un desglose histórico.</CardDescription></CardHeader><CardContent className="grid gap-3 sm:grid-cols-2"><div><Tooltip><TooltipTrigger asChild><button type="button" className="cursor-help text-left text-xs text-muted-foreground underline decoration-dotted">Utilidad operativa estimada</button></TooltipTrigger><TooltipContent>Estimación operativa. No sustituye conciliación fiscal.</TooltipContent></Tooltip><p className="text-lg font-semibold">{detailProject.summary.profit == null ? "—" : formatCurrencyMx(detailProject.summary.profit)}</p></div><div><p className="text-xs text-muted-foreground">Margen</p><p className="text-lg font-semibold">{detailProject.summary.marginPercent == null ? "—" : detailProject.summary.marginPercent.toFixed(2) + "%"}</p></div></CardContent></Card>
+                    <Card className="border-border/70"><CardHeader className="pb-3"><CardTitle className="text-base">Dinero real</CardTitle><CardDescription>Solo movimientos reales de Caja.</CardDescription></CardHeader><CardContent className="space-y-3"><div className="flex justify-between gap-3"><span className="text-sm text-muted-foreground">Dinero que entró</span><strong className="text-emerald-700">{formatCurrencyMx(detailProject.summary.cashIn)}</strong></div><div className="flex justify-between gap-3"><span className="text-sm text-muted-foreground">Dinero que salió</span><strong className="text-rose-700">{formatCurrencyMx(detailProject.summary.cashOut)}</strong></div><div className="flex justify-between gap-3 border-t pt-3"><span className="font-medium">Flujo neto</span><strong>{formatCurrencyMx(detailProject.summary.cashFlowNet)}</strong></div><p className="text-xs text-muted-foreground">Dinero real que entró menos dinero real que salió.</p></CardContent></Card>
+                    <Card className="border-border/70"><CardHeader className="pb-3"><CardTitle className="text-base">Proveedores y deudas</CardTitle><CardDescription>Importes registrados en WebCool. Los pagos históricos sin detalle se conservan sin inventar fechas ni métodos.</CardDescription></CardHeader><CardContent className="space-y-3"><div className="flex justify-between gap-3"><span className="text-sm text-muted-foreground">Compras pendientes</span><strong>{formatCurrencyMx(detailProject.summary.accountsPayablePurchases)}</strong></div><div className="flex justify-between gap-3"><span className="text-sm text-muted-foreground">Otros gastos pendientes</span><strong>{formatCurrencyMx(detailProject.summary.accountsPayableOtherExpenses)}</strong></div><div className="flex justify-between gap-3 border-t pt-3"><span className="font-medium">Total pendiente de pagar</span><strong>{formatCurrencyMx(detailProject.summary.accountsPayable)}</strong></div></CardContent></Card>
+                    <Card className="border-border/70"><CardHeader className="pb-3"><CardTitle className="text-base">IVA registrado</CardTitle><CardDescription>Importes documentales pendientes de conciliación fiscal.</CardDescription></CardHeader><CardContent className="space-y-3"><div className="flex justify-between gap-3"><span className="text-sm text-muted-foreground">En ventas</span><strong>{formatCurrencyMx(detailProject.summary.taxCollected)}</strong></div><div className="flex justify-between gap-3"><span className="text-sm text-muted-foreground">En compras</span><strong>{formatCurrencyMx(purchaseDocumentTax(detailProject.purchases).amount)}</strong></div>{purchaseDocumentTax(detailProject.purchases).incomplete && <p className="text-xs text-amber-700">Algunas compras no tienen desglose fiscal histórico; este importe puede ser parcial.</p>}<div className="flex justify-between gap-3"><span className="text-sm text-muted-foreground">En otros gastos</span><strong>{formatCurrencyMx(detailProject.summary.obligationTaxTotal)}</strong></div></CardContent></Card>
+                  </div>
 
               {hasHistoricalBreakdownGaps(detailProject.summary) ? (
                 <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm">
@@ -1077,22 +1142,48 @@ export default function ProyectosTab() {
                     <div className="space-y-2">
                       <p className="font-medium">Algunas operaciones antiguas no cuentan con desglose fiscal</p>
                       <p className="text-muted-foreground">
-                        La rentabilidad sin IVA puede ser aproximada. Estos importes se muestran por separado y no se consideran dentro de las métricas estrictas sin IVA.
+                        WebCool no reconstruye IVA histórico con datos actuales. Si faltan snapshots de venta, la utilidad y el margen se muestran como no disponibles.
                       </p>
                       <div className="grid gap-2 md:grid-cols-3">
-                        <p><span className="text-muted-foreground">Ingresos historicos sin desglose:</span> {formatCurrencyMx(detailProject.summary.revenueHistoricalWithoutBreakdown)}</p>
-                        <p><span className="text-muted-foreground">Costos comprometidos historicos:</span> {formatCurrencyMx(detailProject.summary.purchaseCommittedHistoricalWithoutBreakdown)}</p>
-                        <p><span className="text-muted-foreground">Costos recibidos historicos:</span> {formatCurrencyMx(detailProject.summary.purchaseReceivedHistoricalWithoutBreakdown)}</p>
+                        <p><span className="text-muted-foreground">Ventas históricas sin desglose:</span> {formatCurrencyMx(detailProject.summary.revenueHistoricalWithoutBreakdown)}</p>
+                        <p><span className="text-muted-foreground">Compras comprometidas históricas:</span> {formatCurrencyMx(detailProject.summary.purchaseCommittedHistoricalWithoutBreakdown)}</p>
+                        <p><span className="text-muted-foreground">Compras recibidas históricas:</span> {formatCurrencyMx(detailProject.summary.purchaseReceivedHistoricalWithoutBreakdown)}</p>
                       </div>
                     </div>
                   </div>
                 </div>
               ) : null}
 
+                </TabsContent>
+                <TabsContent value="administration" className="space-y-4">
+                  <Card className="border-border/70">
+                    <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
+                      <div><CardTitle className="text-base">Gastos y cuentas por pagar</CardTitle><CardDescription>Documentos, pagos y deudas separados de los movimientos manuales.</CardDescription></div>
+                      <Button variant="outline" onClick={() => { setDetailProjectId(null); setExpensePanelProject({ id: detailProject.id, name: detailProject.name }); }}>Ver gastos y cuentas por pagar</Button>
+                    </CardHeader>
+                    <CardContent className="grid gap-3 sm:grid-cols-3">
+                      <div><p className="text-xs text-muted-foreground">Base de otros gastos</p><p className="font-semibold">{formatCurrencyMx(detailProject.summary.obligationBeforeTax)}</p></div>
+                      <div><p className="text-xs text-muted-foreground">Total de gastos registrados</p><p className="font-semibold">{formatCurrencyMx(detailProject.summary.obligationTotal)}</p></div>
+                      <div><p className="text-xs text-muted-foreground">Dinero ya pagado</p><p className="font-semibold">{formatCurrencyMx(detailProject.summary.obligationPaidTotal)}</p></div>
+                    </CardContent>
+                  </Card>
+
+                  <Card className="border-border/70">
+                    <CardHeader><CardTitle className="flex items-center gap-2 text-base"><BadgeDollarSign className="h-4 w-4" />Movimientos manuales relacionados</CardTitle><CardDescription>Ingresos y gastos atribuidos directamente desde Caja.</CardDescription></CardHeader>
+                    <CardContent className="space-y-3">
+                      {(detailProject.manualFinanceEntries || []).length === 0 ? <p className="text-sm text-muted-foreground">Aún no hay movimientos manuales relacionados.</p> : (detailProject.manualFinanceEntries || []).map((entry) => (
+                        <div key={entry.id} className="rounded-2xl border border-border/70 bg-muted/20 p-4">
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"><div><p className="font-medium">{entry.concept}</p><p className="text-sm text-muted-foreground">{formatShortDate(entry.entryDate)} · {entry.clientDisplayName || "Sin cliente"}</p></div><div className="text-right"><Badge variant={entry.type === "income" ? "default" : "destructive"}>{entry.type === "income" ? "Ingreso" : "Gasto"}</Badge><p className="mt-1 font-semibold">{formatCurrencyMx(entry.amount)}</p></div></div>
+                          {entry.notes && <p className="mt-2 text-sm text-muted-foreground">{entry.notes}</p>}
+                        </div>
+                      ))}
+                    </CardContent>
+                  </Card>
+
               <div className="grid gap-4 xl:grid-cols-2">
                 <Card className="border-border/70">
                   <CardHeader>
-                    <CardTitle className="flex items-center gap-2 text-base"><Receipt className="h-4 w-4" />Ventas vinculadas</CardTitle>
+                    <CardTitle className="flex items-center gap-2 text-base"><Receipt className="h-4 w-4" />Ventas del proyecto</CardTitle>
                     <CardDescription>Se leen sin duplicar el ingreso que ya existe en Caja.</CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-3">
@@ -1117,6 +1208,12 @@ export default function ProyectosTab() {
                         {sale.cancelledAt ? (
                           <Badge variant="destructive" className="mt-3">Venta cancelada</Badge>
                         ) : null}
+                        <div className="mt-3 grid gap-1 border-t border-border/60 pt-3 text-xs text-muted-foreground sm:grid-cols-2">
+                          <span>Subtotal {formatCurrencyMx(sale.subtotalAmount)} · Descuento {formatCurrencyMx(sale.discountAmount)}</span>
+                          <span>{hasFiscalBreakdown(sale) ? `Base después del descuento ${formatCurrencyMx(sale.taxableSubtotal!)} · IVA documental ${formatCurrencyMx(sale.taxTotal!)}` : "Base e IVA documentales no disponibles"}</span>
+                          <span>Total {formatCurrencyMx(sale.grandTotal ?? sale.totalAmount)}</span>
+                          <span>Cobrado {formatCurrencyMx(sale.paidAmount)} · Pendiente {formatCurrencyMx(Math.max(0, (sale.grandTotal ?? sale.totalAmount) - sale.paidAmount))}</span>
+                        </div>
                       </div>
                     ))}
                   </CardContent>
@@ -1150,11 +1247,20 @@ export default function ProyectosTab() {
                           <Badge variant="outline">{purchase.status}</Badge>
                           <Badge variant="secondary">{purchase.paymentStatus}</Badge>
                         </div>
+                        <div className="mt-3 grid gap-1 border-t border-border/60 pt-3 text-xs text-muted-foreground sm:grid-cols-2">
+                          <span>Subtotal {formatCurrencyMx(purchase.subtotalAmount)} · Descuento {formatCurrencyMx(purchase.discountAmount)}</span>
+                          <span>{hasFiscalBreakdown(purchase) ? `Base después del descuento ${formatCurrencyMx(purchase.taxableSubtotal!)} · IVA documental ${formatCurrencyMx(purchase.taxTotal!)}` : "Base e IVA documentales no disponibles"}</span>
+                          <span>Total {formatCurrencyMx(purchase.grandTotal ?? purchase.totalAmount)}</span>
+                          <span>Pagado {formatCurrencyMx(purchase.paidAmount)} · Pendiente {formatCurrencyMx(Math.max(0, (purchase.grandTotal ?? purchase.totalAmount) - purchase.paidAmount))}</span>
+                        </div>
+                        <PurchasePaymentHistory purchaseId={purchase.id} />
                       </div>
                     ))}
                   </CardContent>
                 </Card>
               </div>
+                </TabsContent>
+              </Tabs>
             </div>
           )}
         </DialogContent>

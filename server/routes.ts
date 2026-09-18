@@ -8,6 +8,14 @@ import fs from "fs";
 import multer from "multer";
 import sharp from "sharp";
 import { storage } from "./storage";
+import {
+  createExpenseObligation,
+  ExpenseObligationError,
+  getExpenseObligationDetail,
+  listExpenseObligations,
+  payExpenseObligation,
+  transitionExpenseObligation,
+} from "./expense-obligation-storage";
 import { db } from "./db";
 import { and, count, eq, ne, or } from "drizzle-orm";
 import {
@@ -76,7 +84,7 @@ import {
   computeMembershipPlanChargeSnapshot,
   resolveMembershipPlanTaxConfig,
 } from "@shared/membership-plan-tax";
-import { isProtectedFinanceSource } from "@shared/finance-source";
+import { classifyFinanceSource } from "@shared/finance-source";
 import {
   calculateLeaseQuote,
   leaseQuoteRequestSchema,
@@ -4705,23 +4713,11 @@ if (!user) {
 
     try {
       const data = parsed.data;
-      const source = normalizeOptionalText(data.source) ?? null;
-      if (isProtectedFinanceSource(source)) {
-        return res.status(409).json({ message: "Este origen se administra automáticamente y no puede crearse manualmente desde Caja" });
-      }
-      let clientUserId = normalizeOptionalText(data.clientUserId) ?? null;
+      const clientUserId = normalizeOptionalText(data.clientUserId) ?? null;
       let clientName = normalizeOptionalText(data.clientName) ?? null;
+      if (clientUserId) clientName = null;
 
-      if (clientUserId) {
-        const clientProfile = await storage.getClientProfile(clientUserId, user.branchId);
-        if (!clientProfile) {
-          return res.status(400).json({ message: "Cliente no encontrado en esta sucursal" });
-        }
-        clientName = null;
-      }
-
-      const created = await storage.createBranchFinanceEntry({
-        branchId: user.branchId,
+      const created = await storage.createManualBranchFinanceEntry(user.branchId, user.id, {
         type: data.type,
         category: normalizeOptionalText(data.category) ?? null,
         concept: data.concept.trim(),
@@ -4731,21 +4727,20 @@ if (!user) {
         clientName,
         notes: normalizeOptionalText(data.notes) ?? null,
         entryDate: data.entryDate,
-        source,
-        sourceId: normalizeOptionalText(data.sourceId) ?? null,
-        metadata: data.metadata ?? null,
-        createdBy: user.id,
-      } as any);
-
-      await storage.createAuditLog({
-        actorUserId: user.id,
-        action: "CREATE_FINANCE_ENTRY",
-        branchId: user.branchId,
-        metadata: { entryId: created.id, type: created.type, amount: created.amount, entryDate: created.entryDate },
+        projectId: normalizeOptionalText(data.projectId) ?? null,
       });
 
       res.status(201).json(created);
     } catch (err: any) {
+      if (err instanceof Error && err.message === "BRANCH_FINANCE_CLIENT_INVALID") {
+        return res.status(400).json({ message: "Cliente no encontrado en esta sucursal" });
+      }
+      if (err instanceof Error && err.message === "BRANCH_FINANCE_PROJECT_INVALID") {
+        return res.status(400).json({ message: "El proyecto seleccionado no pertenece a esta sucursal" });
+      }
+      if (err instanceof Error && err.message === "BRANCH_FINANCE_PROJECT_NOT_ASSIGNABLE") {
+        return res.status(409).json({ message: "Solo puedes atribuir movimientos nuevos a proyectos en borrador o activos" });
+      }
       console.error("[BRANCH_FINANCE_CREATE]", err.stack || err);
       res.status(500).json({ message: "Error al crear movimiento de caja" });
     }
@@ -4765,27 +4760,16 @@ if (!user) {
       if (!existingEntry) {
         return res.status(404).json({ message: "Movimiento no encontrado" });
       }
-      if (isProtectedFinanceSource(existingEntry.source)) {
+      if (classifyFinanceSource(existingEntry.source) !== "manual") {
         return res.status(409).json({ message: PROTECTED_FINANCE_ENTRY_MUTATION_MESSAGE });
       }
 
       const data = parsed.data;
-      const source = data.source === undefined ? undefined : (normalizeOptionalText(data.source) ?? null);
-      if (isProtectedFinanceSource(source)) {
-        return res.status(409).json({ message: "Este origen se administra automáticamente y no puede asignarse manualmente desde Caja" });
-      }
-      let clientUserId = data.clientUserId === undefined ? undefined : (normalizeOptionalText(data.clientUserId) ?? null);
+      const clientUserId = data.clientUserId === undefined ? undefined : (normalizeOptionalText(data.clientUserId) ?? null);
       let clientName = data.clientName === undefined ? undefined : (normalizeOptionalText(data.clientName) ?? null);
+      if (clientUserId) clientName = null;
 
-      if (clientUserId) {
-        const clientProfile = await storage.getClientProfile(clientUserId, user.branchId);
-        if (!clientProfile) {
-          return res.status(400).json({ message: "Cliente no encontrado en esta sucursal" });
-        }
-        clientName = null;
-      }
-
-      const updated = await storage.updateBranchFinanceEntry(user.branchId, entryId, {
+      const updated = await storage.updateManualBranchFinanceEntry(user.branchId, entryId, user.id, {
         ...(data.type !== undefined ? { type: data.type } : {}),
         ...(data.category !== undefined ? { category: normalizeOptionalText(data.category) ?? null } : {}),
         ...(data.concept !== undefined ? { concept: data.concept.trim() } : {}),
@@ -4795,24 +4779,24 @@ if (!user) {
         ...(data.clientName !== undefined ? { clientName } : {}),
         ...(data.notes !== undefined ? { notes: normalizeOptionalText(data.notes) ?? null } : {}),
         ...(data.entryDate !== undefined ? { entryDate: data.entryDate } : {}),
-        ...(source !== undefined ? { source } : {}),
-        ...(data.sourceId !== undefined ? { sourceId: normalizeOptionalText(data.sourceId) ?? null } : {}),
-        ...(data.metadata !== undefined ? { metadata: data.metadata ?? null } : {}),
-      } as any);
+        ...(data.projectId !== undefined ? { projectId: normalizeOptionalText(data.projectId) ?? null } : {}),
+      });
 
       if (!updated) {
         return res.status(404).json({ message: "Movimiento no encontrado" });
       }
 
-      await storage.createAuditLog({
-        actorUserId: user.id,
-        action: "UPDATE_FINANCE_ENTRY",
-        branchId: user.branchId,
-        metadata: { entryId: updated.id, type: updated.type, amount: updated.amount, entryDate: updated.entryDate },
-      });
-
       res.json(updated);
     } catch (err: any) {
+      if (err instanceof Error && err.message === "BRANCH_FINANCE_CLIENT_INVALID") {
+        return res.status(400).json({ message: "Cliente no encontrado en esta sucursal" });
+      }
+      if (err instanceof Error && err.message === "BRANCH_FINANCE_PROJECT_INVALID") {
+        return res.status(400).json({ message: "El proyecto seleccionado no pertenece a esta sucursal" });
+      }
+      if (err instanceof Error && err.message === "BRANCH_FINANCE_PROJECT_NOT_ASSIGNABLE") {
+        return res.status(409).json({ message: "Solo puedes atribuir movimientos nuevos a proyectos en borrador o activos" });
+      }
       console.error("[BRANCH_FINANCE_UPDATE]", err.stack || err);
       res.status(500).json({ message: "Error al actualizar movimiento de caja" });
     }
@@ -4826,21 +4810,14 @@ if (!user) {
       if (!existingEntry) {
         return res.status(404).json({ message: "Movimiento no encontrado" });
       }
-      if (isProtectedFinanceSource(existingEntry.source)) {
+      if (classifyFinanceSource(existingEntry.source) !== "manual") {
         return res.status(409).json({ message: PROTECTED_FINANCE_ENTRY_MUTATION_MESSAGE });
       }
 
-      const deleted = await storage.softDeleteBranchFinanceEntry(user.branchId, entryId);
+      const deleted = await storage.softDeleteManualBranchFinanceEntry(user.branchId, entryId, user.id);
       if (!deleted) {
         return res.status(404).json({ message: "Movimiento no encontrado" });
       }
-
-      await storage.createAuditLog({
-        actorUserId: user.id,
-        action: "DELETE_FINANCE_ENTRY",
-        branchId: user.branchId,
-        metadata: { entryId },
-      });
 
       res.json({ success: true });
     } catch (err: any) {
@@ -9214,6 +9191,146 @@ if (!user) {
       res.status(500).json({ message: "Error al vincular la compra al proyecto" });
     }
   });
+
+  const expenseMoneySchema = z.string().regex(/^(0|[1-9]\d*)(?:\.\d{1,2})?$/);
+  const expenseDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
+    const date = new Date(`${value}T00:00:00Z`);
+    return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+  });
+  const expensePaymentSchema = z.object({
+    amount: expenseMoneySchema,
+    paymentMethod: z.enum(["efectivo", "tarjeta", "transferencia", "mercado_pago", "otro"]),
+    entryDate: expenseDateSchema,
+    reference: z.string().max(300).nullable().optional(),
+    notes: z.string().max(2000).nullable().optional(),
+  }).strict();
+  const expenseDocumentSchema = z.object({
+    projectId: z.string().uuid().nullable().optional(),
+    supplierId: z.string().uuid().nullable().optional(),
+    beneficiaryName: z.string().max(160).nullable().optional(),
+    concept: z.string().min(1).max(160),
+    category: z.string().max(120).nullable().optional(),
+    documentReference: z.string().max(300).nullable().optional(),
+    issueDate: expenseDateSchema,
+    dueDate: expenseDateSchema.nullable().optional(),
+    notes: z.string().max(2000).nullable().optional(),
+    documentStatus: z.enum(["draft", "open"]),
+    subtotalAmount: expenseMoneySchema,
+    discountAmount: expenseMoneySchema,
+    taxMode: z.enum(["tax_exempt", "tax_added", "tax_included"]),
+    taxRate: z.string().regex(/^(0|[1-9]\d*)(?:\.\d{1,4})?$/),
+  }).strict();
+
+  function sendExpenseError(res: any, err: unknown) {
+    const code = err instanceof ExpenseObligationError ? err.code : err instanceof Error ? err.message : "";
+    const messages: Record<string, [number, string]> = {
+      EXPENSE_OPERATION_KEY_CONFLICT: [409, "Esta clave ya fue usada con datos distintos."],
+      EXPENSE_INCOMPLETE_REPLAY: [409, "La operación previa no puede verificarse; solicita ayuda antes de reintentar."],
+      EXPENSE_OVERPAYMENT: [409, "El pago excede el saldo pendiente."],
+      EXPENSE_DOCUMENT_HAS_PAYMENTS: [409, "Este documento ya tiene pagos y su historial está protegido."],
+      EXPENSE_DOCUMENT_CANCELLED: [409, "Este documento está cancelado."],
+      EXPENSE_DOCUMENT_NOT_OPEN: [409, "Confirma el documento antes de registrar pagos."],
+      EXPENSE_INVALID_TRANSITION: [409, "El cambio de estado solicitado no es válido."],
+      EXPENSE_PROJECT_REASSIGN_REQUIRED: [409, "Para cambiar de proyecto usa la acción explícita de reasignación."],
+      EXPENSE_DOCUMENT_NOT_FOUND: [404, "Documento no encontrado en esta sucursal."],
+      EXPENSE_PROJECT_INVALID: [400, "El proyecto no pertenece a esta sucursal o no está disponible."],
+      EXPENSE_SUPPLIER_INVALID: [400, "El proveedor no pertenece a esta sucursal o no está activo."],
+      EXPENSE_BENEFICIARY_REQUIRED: [400, "Indica un beneficiario válido."],
+      EXPENSE_CONCEPT_INVALID: [400, "Indica un concepto válido."],
+      EXPENSE_DRAFT_CANNOT_BE_PAID: [400, "Un borrador no admite pagos."],
+      EXPENSE_PAYMENT_METHOD_INVALID: [400, "Selecciona un método de pago válido."],
+      EXPENSE_PAYMENT_AMOUNT_INVALID: [400, "El pago debe ser mayor a cero."],
+      EXPENSE_OBLIGATION_INVALID_AMOUNT: [400, "El importe no es válido."],
+      EXPENSE_OBLIGATION_AMOUNT_OVERFLOW: [400, "El importe supera el límite permitido."],
+      EXPENSE_OBLIGATION_INVALID_DISCOUNT: [400, "El descuento debe ser menor que el importe."],
+      EXPENSE_OBLIGATION_INVALID_TAX_RATE: [400, "La tasa de IVA no es válida."],
+      EXPENSE_OBLIGATION_OPERATION_KEY_INVALID: [400, "La clave de operación no es válida."],
+    };
+    const known = messages[code];
+    if (known) return res.status(known[0]).json({ code, message: known[1] });
+    console.error("[EXPENSE_OBLIGATIONS] Unexpected error", err instanceof Error ? err.name : "unknown");
+    return res.status(500).json({ message: "No pudimos completar esta operación. Intenta nuevamente." });
+  }
+
+  app.get("/api/branch/expense-obligations", requireBranchAdmin, requireRole("BRANCH_ADMIN"), async (req, res) => {
+    const actor = req.user as { branchId: string };
+    try {
+      const page = await listExpenseObligations(actor.branchId, {
+        page: Number(req.query.page ?? 1), pageSize: Number(req.query.pageSize ?? 25),
+        projectId: typeof req.query.projectId === "string" ? req.query.projectId : null,
+        status: typeof req.query.status === "string" ? req.query.status : null,
+      });
+      res.json(page);
+    } catch (err) { sendExpenseError(res, err); }
+  });
+
+  app.get("/api/branch/expense-obligations/:id", requireBranchAdmin, requireRole("BRANCH_ADMIN"), async (req, res) => {
+    const actor = req.user as { branchId: string };
+    try {
+      const detail = await getExpenseObligationDetail(actor.branchId, getStringParam(req.params.id), Number(req.query.paymentPage ?? 1));
+      if (!detail) return res.status(404).json({ message: "Documento no encontrado." });
+      res.json(detail);
+    } catch (err) { sendExpenseError(res, err); }
+  });
+
+  app.post("/api/branch/expense-obligations", requireBranchAdmin, requireRole("BRANCH_ADMIN"), async (req, res) => {
+    const actor = req.user as { id: string; branchId: string };
+    const parsed = z.object({ operationKey: z.string(), document: expenseDocumentSchema, initialPayment: expensePaymentSchema.nullable().optional() }).strict().safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Revisa los datos del documento y el pago." });
+    try {
+      const outcome = await createExpenseObligation({
+        branchId: actor.branchId, actorUserId: actor.id,
+        operationKey: parsed.data.operationKey, document: parsed.data.document,
+        initialPayment: parsed.data.initialPayment,
+      });
+      const detail = await getExpenseObligationDetail(actor.branchId, outcome.id);
+      res.status(outcome.replayed ? 200 : 201).json({ document: detail, replayed: outcome.replayed });
+    } catch (err) { sendExpenseError(res, err); }
+  });
+
+  app.post("/api/branch/expense-obligations/:id/pay", requireBranchAdmin, requireRole("BRANCH_ADMIN"), async (req, res) => {
+    const actor = req.user as { id: string; branchId: string };
+    const parsed = expensePaymentSchema.extend({ operationKey: z.string() }).safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Revisa los datos del pago." });
+    try {
+      const outcome = await payExpenseObligation({
+        branchId: actor.branchId, actorUserId: actor.id,
+        obligationId: getStringParam(req.params.id), payment: parsed.data,
+      });
+      const detail = await getExpenseObligationDetail(actor.branchId, outcome.obligationId);
+      res.status(outcome.replayed ? 200 : 201).json({ document: detail, paymentId: outcome.paymentId, replayed: outcome.replayed });
+    } catch (err) { sendExpenseError(res, err); }
+  });
+
+  app.patch("/api/branch/expense-obligations/:id", requireBranchAdmin, requireRole("BRANCH_ADMIN"), async (req, res) => {
+    const actor = req.user as { id: string; branchId: string };
+    const parsed = expenseDocumentSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Revisa los datos del documento." });
+    try {
+      const outcome = await transitionExpenseObligation({ branchId: actor.branchId, actorUserId: actor.id, obligationId: getStringParam(req.params.id), action: "edit", changes: parsed.data });
+      res.json(await getExpenseObligationDetail(actor.branchId, outcome.id));
+    } catch (err) { sendExpenseError(res, err); }
+  });
+
+  app.post("/api/branch/expense-obligations/:id/reassign-project", requireBranchAdmin, requireRole("BRANCH_ADMIN"), async (req, res) => {
+    const actor = req.user as { id: string; branchId: string };
+    const parsed = z.object({ projectId: z.string().uuid().nullable() }).strict().safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Selecciona un proyecto válido." });
+    try {
+      const outcome = await transitionExpenseObligation({ branchId: actor.branchId, actorUserId: actor.id, obligationId: getStringParam(req.params.id), action: "reassign", projectId: parsed.data.projectId });
+      res.json(await getExpenseObligationDetail(actor.branchId, outcome.id));
+    } catch (err) { sendExpenseError(res, err); }
+  });
+
+  for (const action of ["confirm", "cancel"] as const) {
+    app.post(`/api/branch/expense-obligations/:id/${action}`, requireBranchAdmin, requireRole("BRANCH_ADMIN"), async (req, res) => {
+      const actor = req.user as { id: string; branchId: string };
+      try {
+        const outcome = await transitionExpenseObligation({ branchId: actor.branchId, actorUserId: actor.id, obligationId: getStringParam(req.params.id), action });
+        res.json(await getExpenseObligationDetail(actor.branchId, outcome.id));
+      } catch (err) { sendExpenseError(res, err); }
+    });
+  }
 
   app.get("/api/branch/purchases", requireBranchAdmin, async (req, res) => {
     const actor = req.user as any;

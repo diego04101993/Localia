@@ -28,7 +28,8 @@ import {
   branchRecurringExpenseCategoryValues,
   branchRecurringExpenseFrequencyValues,
 } from "@shared/schema";
-import { isProtectedFinanceSource } from "@shared/finance-source";
+import { classifyFinanceSource } from "@shared/finance-source";
+import GastosCuentasPanel from "@/components/gastos-cuentas-panel";
 import { apiRequest } from "@/lib/queryClient";
 import { downloadAuthenticatedFile } from "@/lib/download-file";
 import {
@@ -104,6 +105,10 @@ interface BranchFinanceSummary {
 interface BranchFinanceEntry {
   id: string;
   branchId: string;
+  projectId: string | null;
+  projectCode: string | null;
+  projectName: string | null;
+  projectStatus: string | null;
   type: FinanceEntryType;
   category: string | null;
   concept: string;
@@ -150,6 +155,14 @@ interface FinanceFormState {
   clientName: string;
   notes: string;
   entryDate: string;
+  projectId: string;
+}
+
+interface BranchCommercialProjectOption {
+  id: string;
+  code: string;
+  name: string;
+  status: string;
 }
 
 interface BranchRecurringExpense {
@@ -356,6 +369,7 @@ const SOURCE_LABELS: Record<string, string> = {
   commercial_sale_cancellation: "Cancelación de venta",
   sales_commission_payment: "Pago de comisión",
   lease_installment_payment: "Mensualidad de arrendamiento",
+  expense_obligation_payment: "Pago de obligación de gasto",
 };
 
 const ALL_CATEGORY_OPTIONS = Array.from(
@@ -529,6 +543,7 @@ function createInitialFormState(): FinanceFormState {
     clientName: "",
     notes: "",
     entryDate: getTodayDateString(),
+    projectId: "",
   };
 }
 
@@ -748,6 +763,10 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
     queryKey: ["/api/branch/clients"],
   });
 
+  const { data: projectOptions = [] } = useQuery<BranchCommercialProjectOption[]>({
+    queryKey: ["/api/branch/commercial-projects/options"],
+  });
+
   const { data: recurringExpenses = [], isLoading: recurringExpensesLoading } = useQuery<BranchRecurringExpense[]>({
     queryKey: ["/api/branch/finance/fixed-expenses"],
   });
@@ -873,6 +892,16 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
     );
   });
 
+  const financeProjectOptions = editingEntry?.projectId
+    && !projectOptions.some((project) => project.id === editingEntry.projectId)
+    ? [{
+      id: editingEntry.projectId,
+      code: editingEntry.projectCode || "Proyecto",
+      name: editingEntry.projectName || "Proyecto histórico",
+      status: editingEntry.projectStatus || "completed",
+    }, ...projectOptions]
+    : projectOptions;
+
   const activeStaffMembers = staffMembers.filter((member) => member.isActive);
 
   const saveMutation = useMutation({
@@ -892,6 +921,7 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
         clientName: form.clientUserId ? null : (form.clientName.trim() || null),
         notes: form.notes.trim() || null,
         entryDate: form.entryDate,
+        projectId: form.projectId || null,
       };
 
       if (editingEntry) {
@@ -903,7 +933,10 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
       return response.json();
     },
     onSuccess: async () => {
-      await invalidateBranchFinanceQueries();
+      await Promise.all([
+        invalidateBranchFinanceQueries(),
+        invalidateBranchCommercialQueries({ projectId: form.projectId || editingEntry?.projectId || null }),
+      ]);
       toast({ title: editingEntry ? "Movimiento actualizado" : "Movimiento registrado" });
       setEditingEntry(null);
       setForm(createInitialFormState());
@@ -923,7 +956,11 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
       await apiRequest("DELETE", `/api/branch/finance/entries/${entryId}`);
     },
     onSuccess: async (_data, entryId) => {
-      await invalidateBranchFinanceQueries();
+      const deletedProjectId = editingEntry?.id === entryId ? editingEntry.projectId : null;
+      await Promise.all([
+        invalidateBranchFinanceQueries(),
+        invalidateBranchCommercialQueries({ projectId: deletedProjectId }),
+      ]);
       toast({ title: "Movimiento eliminado" });
       if (editingEntry?.id === entryId) {
         setEditingEntry(null);
@@ -1137,7 +1174,7 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
   }
 
   function handleEditEntry(entry: BranchFinanceEntry) {
-    if (isProtectedFinanceSource(entry.source)) {
+    if (classifyFinanceSource(entry.source) !== "manual") {
       toast({
         title: "Movimiento automático",
         description: "Este movimiento se administra desde su origen y no puede editarse manualmente.",
@@ -1157,6 +1194,7 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
       clientName: entry.clientUserId ? "" : (entry.clientName || ""),
       notes: entry.notes || "",
       entryDate: entry.entryDate,
+      projectId: entry.projectId || "",
     });
     setClientSearch(entry.clientDisplayName || "");
     scrollSectionIntoView(financeFormRef);
@@ -1335,9 +1373,12 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
             Control simple de ingresos, gastos y ganancias de tu sucursal.
           </p>
         </div>
-        <Badge variant="outline" className="w-fit">
-          Esto no sustituye contabilidad fiscal
-        </Badge>
+        <div className="flex flex-wrap items-center gap-2">
+          <GastosCuentasPanel showTrigger />
+          <Badge variant="outline" className="w-fit">
+            Esto no sustituye contabilidad fiscal
+          </Badge>
+        </div>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -2354,6 +2395,29 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
                 onChange={(event) => setForm((current) => ({ ...current, entryDate: event.target.value }))}
               />
             </div>
+            <div className="space-y-2">
+              <Label>Proyecto relacionado</Label>
+              <Select
+                value={form.projectId || "none"}
+                onValueChange={(value) => setForm((current) => ({ ...current, projectId: value === "none" ? "" : value }))}
+              >
+                <SelectTrigger><SelectValue placeholder="Sin proyecto" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Sin proyecto</SelectItem>
+                  {financeProjectOptions.map((project) => (
+                    <SelectItem
+                      key={project.id}
+                      value={project.id}
+                      disabled={!['draft', 'active'].includes(project.status) && project.id !== editingEntry?.projectId}
+                    >
+                      {project.code} · {project.name}
+                      {!['draft', 'active'].includes(project.status) ? " · Histórico" : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">Solo los movimientos manuales pueden atribuirse directamente.</p>
+            </div>
             <div className="space-y-2 lg:col-span-2">
               <Label>Notas</Label>
               <Textarea
@@ -2446,7 +2510,7 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
                         <Badge variant="outline" className="text-[10px]">
                           {getFinanceSourceLabel(entry.source)}
                         </Badge>
-                        {isProtectedFinanceSource(entry.source) ? (
+                        {classifyFinanceSource(entry.source) !== "manual" ? (
                           <Badge
                             variant="secondary"
                             className="gap-1 text-[10px]"
@@ -2464,11 +2528,14 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
                         {entry.clientEmail ? <p className="break-all text-xs text-muted-foreground">{entry.clientEmail}</p> : null}
                         {getFinanceEntryFiscalCaption(entry) ? <p className="break-words text-xs text-muted-foreground">{getFinanceEntryFiscalCaption(entry)}</p> : null}
                         <p className="text-muted-foreground">Método: {getPaymentMethodLabel(entry.paymentMethod)}</p>
+                        {entry.projectName ? (
+                          <p className="break-words text-xs text-muted-foreground">Proyecto: {entry.projectCode} · {entry.projectName}</p>
+                        ) : null}
                         {getFinanceEntrySecondaryConcept(entry) ? <p className="break-words text-xs text-muted-foreground">{getFinanceEntrySecondaryConcept(entry)}</p> : null}
                         {entry.notes ? <p className="break-words text-xs text-muted-foreground">{entry.notes}</p> : null}
                       </div>
                       <div className="mt-3 flex flex-col gap-2">
-                        {isProtectedFinanceSource(entry.source) ? (
+                        {classifyFinanceSource(entry.source) !== "manual" ? (
                           <>
                             {canOpenFinanceEntryOrigin(entry) ? (
                               <Button
@@ -2581,7 +2648,7 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
                               <Badge variant="outline" className="text-[10px]">
                                 {getFinanceSourceLabel(entry.source)}
                               </Badge>
-                              {isProtectedFinanceSource(entry.source) ? (
+                              {classifyFinanceSource(entry.source) !== "manual" ? (
                                 <Badge
                                   variant="secondary"
                                   className="gap-1 text-[10px]"
@@ -2594,6 +2661,9 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
                             </div>
                             {getFinanceEntrySecondaryConcept(entry) ? (
                               <p className="break-words text-xs text-muted-foreground">{getFinanceEntrySecondaryConcept(entry)}</p>
+                            ) : null}
+                            {entry.projectName ? (
+                              <p className="break-words text-xs text-muted-foreground">Proyecto: {entry.projectCode} · {entry.projectName}</p>
                             ) : null}
                             {entry.notes ? <p className="line-clamp-2 break-words text-xs text-muted-foreground">{entry.notes}</p> : null}
                           </div>
@@ -2613,7 +2683,7 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
                         </TableCell>
                         <TableCell className={`sticky right-0 z-[14] align-top shadow-[-8px_0_12px_-10px_rgba(15,23,42,0.18)] ${editingEntry?.id === entry.id ? "bg-primary/5" : "bg-background group-hover:bg-muted/50"}`}>
                           <div className="flex justify-end gap-2">
-                            {isProtectedFinanceSource(entry.source) ? (
+                            {classifyFinanceSource(entry.source) !== "manual" ? (
                               canOpenFinanceEntryOrigin(entry) ? (
                                 <Button
                                   variant="outline"
