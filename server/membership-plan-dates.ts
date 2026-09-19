@@ -1,3 +1,5 @@
+import { addPlanDuration, type PlanDurationFields } from "@shared/membership-plan-duration";
+
 export function parseMxIsoDateInput(value: string): Date | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     return null;
@@ -54,9 +56,12 @@ function addCalendarMonthsFromMxIsoDate(value: string, months: number): Date | n
 }
 
 export function calculatePlanExpirationDate(
-  plan: { cycleMonths: number | null; durationDays?: number | null },
+  plan: PlanDurationFields,
   from = new Date(),
 ): Date {
+  if (plan.durationUnit != null || plan.durationValue != null) {
+    return addPlanDuration(plan, from);
+  }
   if ((plan.cycleMonths ?? 1) === 0) {
     const result = new Date(from);
     result.setDate(result.getDate() + Math.max(plan.durationDays ?? 1, 1));
@@ -67,11 +72,15 @@ export function calculatePlanExpirationDate(
 }
 
 export function calculatePlanExpirationDateFromMxIsoDate(
-  plan: { cycleMonths: number | null; durationDays?: number | null },
+  plan: PlanDurationFields,
   startDate: string,
 ): Date | null {
   const parsed = parseMxIsoDateInput(startDate);
   if (!parsed) return null;
+
+  if (plan.durationUnit != null || plan.durationValue != null) {
+    return addPlanDuration(plan, parsed);
+  }
 
   if ((plan.cycleMonths ?? 1) === 0) {
     const result = new Date(parsed.getTime());

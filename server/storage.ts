@@ -189,6 +189,18 @@ import {
 import { normalizeSearchText } from "./search-utils";
 import { computeMembershipPlanChargeSnapshot } from "@shared/membership-plan-tax";
 import {
+  getMembershipBillingRequestFingerprint,
+  matchesMembershipBillingRequestFingerprint,
+} from "@shared/membership-billing-operation";
+import {
+  calculateRenewalCoverage,
+  classifyEffectivePaymentDate,
+  createMembershipCoverageSnapshot,
+  isSingleSessionPlan,
+  resolvePlanDuration,
+  type PlanDurationUnit,
+} from "@shared/membership-plan-duration";
+import {
   addLeaseContractDays,
   calculateLeaseContractAnniversaryDate,
   calculateLeaseContractEndDate,
@@ -5745,6 +5757,8 @@ export class DatabaseStorage implements IStorage {
         membershipEndDate: memberships.membershipEndDate,
         planName: membershipPlans.name,
         cycleMonths: membershipPlans.cycleMonths,
+        durationUnit: membershipPlans.durationUnit,
+        durationValue: membershipPlans.durationValue,
       })
       .from(memberships)
       .innerJoin(users, eq(memberships.userId, users.id))
@@ -6305,6 +6319,12 @@ export class DatabaseStorage implements IStorage {
           chargeEventId: string;
           eventType: string;
           chargedAt: Date;
+          createdAt: Date;
+          paymentEffectiveDate: string | null;
+          coverageStartAt: Date | null;
+          coverageEndAt: Date | null;
+          durationUnitSnapshot: string | null;
+          durationValueSnapshot: number | null;
           planNameSnapshot: string;
           basePriceCents: number;
           taxMode: string | null;
@@ -6321,6 +6341,12 @@ export class DatabaseStorage implements IStorage {
         chargeEventId: branchChargeEvents.id,
         eventType: branchChargeEvents.eventType,
         chargedAt: branchChargeEvents.chargedAt,
+        createdAt: branchChargeEvents.createdAt,
+        paymentEffectiveDate: branchChargeEvents.paymentEffectiveDate,
+        coverageStartAt: branchChargeEvents.coverageStartAt,
+        coverageEndAt: branchChargeEvents.coverageEndAt,
+        durationUnitSnapshot: branchChargeEvents.durationUnitSnapshot,
+        durationValueSnapshot: branchChargeEvents.durationValueSnapshot,
         planNameSnapshot: branchChargeEvents.planNameSnapshot,
         basePriceCents: branchChargeEvents.basePriceCents,
         taxMode: branchChargeEvents.taxMode,
@@ -6336,6 +6362,12 @@ export class DatabaseStorage implements IStorage {
             chargeEventId: string;
             eventType: string;
             chargedAt: Date;
+            createdAt: Date;
+            paymentEffectiveDate: string | null;
+            coverageStartAt: Date | null;
+            coverageEndAt: Date | null;
+            durationUnitSnapshot: string | null;
+            durationValueSnapshot: number | null;
             planNameSnapshot: string;
             basePriceCents: number;
             taxMode: string | null;
@@ -6361,6 +6393,20 @@ export class DatabaseStorage implements IStorage {
           .limit(1);
       }
 
+      if (!matchedChargeEvent && membership.expiresAt) {
+        [matchedChargeEvent] = await db
+          .select(chargeEventSelection)
+          .from(branchChargeEvents)
+          .where(and(
+            eq(branchChargeEvents.branchId, branchId),
+            eq(branchChargeEvents.membershipId, membership.id),
+            eq(branchChargeEvents.planId, membership.planId),
+            eq(branchChargeEvents.coverageEndAt, membership.expiresAt),
+          ))
+          .orderBy(desc(branchChargeEvents.createdAt))
+          .limit(1);
+      }
+
       if (!matchedChargeEvent) {
         [matchedChargeEvent] = await db
           .select(chargeEventSelection)
@@ -6379,6 +6425,12 @@ export class DatabaseStorage implements IStorage {
           chargeEventId: matchedChargeEvent.chargeEventId,
           eventType: matchedChargeEvent.eventType,
           chargedAt: matchedChargeEvent.chargedAt,
+          createdAt: matchedChargeEvent.createdAt,
+          paymentEffectiveDate: matchedChargeEvent.paymentEffectiveDate,
+          coverageStartAt: matchedChargeEvent.coverageStartAt,
+          coverageEndAt: matchedChargeEvent.coverageEndAt,
+          durationUnitSnapshot: matchedChargeEvent.durationUnitSnapshot,
+          durationValueSnapshot: matchedChargeEvent.durationValueSnapshot,
           planNameSnapshot: matchedChargeEvent.planNameSnapshot,
           basePriceCents: matchedChargeEvent.basePriceCents,
           taxMode: matchedChargeEvent.taxMode,
@@ -7740,6 +7792,11 @@ export class DatabaseStorage implements IStorage {
     taxTotalCents: number | null;
     finalTotalCents: number;
     chargedAt: Date;
+    paymentEffectiveDate: string;
+    coverageStartAt: Date;
+    coverageEndAt: Date;
+    durationUnitSnapshot: PlanDurationUnit;
+    durationValueSnapshot: number;
     contextJson?: any;
     createdBy: string;
   }): Promise<{ created: boolean; chargeEvent: BranchChargeEvent }> {
@@ -7764,6 +7821,11 @@ export class DatabaseStorage implements IStorage {
         finalTotalCents: data.finalTotalCents,
         currencyCode: "MXN",
         chargedAt: data.chargedAt,
+        paymentEffectiveDate: data.paymentEffectiveDate,
+        coverageStartAt: data.coverageStartAt,
+        coverageEndAt: data.coverageEndAt,
+        durationUnitSnapshot: data.durationUnitSnapshot,
+        durationValueSnapshot: data.durationValueSnapshot,
         snapshotVersion: 1,
         contextJson: data.contextJson ?? null,
         createdBy: data.createdBy,
@@ -9049,7 +9111,15 @@ export class DatabaseStorage implements IStorage {
       if (!startDateValue || !expiresAt) {
         throw new Error("START_DATE_INVALID");
       }
-
+      const coverageSnapshot = createMembershipCoverageSnapshot(plan, effectiveStartDate, startDateValue, expiresAt);
+      const requestFingerprint = getMembershipBillingRequestFingerprint({
+        branchId: data.branchId,
+        membershipId: membership.id,
+        planId: plan.id,
+        eventType: "assign",
+        paymentEffectiveDate: effectiveStartDate,
+        paymentMethod: normalizedPaymentMethod,
+      });
       const chargeClaim = await this.claimMembershipChargeEventTx(tx, {
         branchId: data.branchId,
         eventType: "assign",
@@ -9066,7 +9136,9 @@ export class DatabaseStorage implements IStorage {
         taxTotalCents: taxSnapshot.taxTotalCents,
         finalTotalCents: taxSnapshot.finalTotalCents,
         chargedAt: startDateValue,
+        ...coverageSnapshot,
         contextJson: {
+          requestFingerprint,
           legacyRequest: isLegacyRequest,
           paymentMethod: normalizedPaymentMethod,
           startDate: effectiveStartDate,
@@ -9081,6 +9153,7 @@ export class DatabaseStorage implements IStorage {
           || chargeClaim.chargeEvent.eventType !== "assign"
           || chargeClaim.chargeEvent.membershipId !== membership.id
           || chargeClaim.chargeEvent.planId !== plan.id
+          || !matchesMembershipBillingRequestFingerprint(chargeClaim.chargeEvent.contextJson, requestFingerprint)
         ) {
           throw new Error("MEMBERSHIP_OPERATION_KEY_CONFLICT");
         }
@@ -9162,6 +9235,9 @@ export class DatabaseStorage implements IStorage {
           taxTotalCents: taxSnapshot.taxTotalCents,
           finalTotalCents: taxSnapshot.finalTotalCents,
           startDate: effectiveStartDate,
+          paymentEffectiveDate: effectiveStartDate,
+          coverageStartAt: startDateValue.toISOString(),
+          coverageEndAt: expiresAt.toISOString(),
           expiresAt: updatedMembership.expiresAt ? new Date(updatedMembership.expiresAt).toISOString() : null,
           cancelledBookings,
         },
@@ -9216,7 +9292,8 @@ export class DatabaseStorage implements IStorage {
       if (!plan.leaseEnabled) {
         throw new Error("LEASE_ASSIGNMENT_REQUIRES_CONTRACT");
       }
-      if ((plan.cycleMonths ?? 1) !== 1) {
+      const leasePlanDuration = resolvePlanDuration(plan);
+      if (leasePlanDuration.unit !== "month" || leasePlanDuration.value !== 1) {
         throw new Error("LEASE_PLAN_REQUIRES_MONTHLY_CYCLE");
       }
 
@@ -9368,6 +9445,9 @@ export class DatabaseStorage implements IStorage {
       let financeEntryId: string | null = null;
 
       if (chargeNow) {
+        if (!operationalStartDate || !operationalEndDate || operationalEndDate <= operationalStartDate) {
+          throw new Error("LEASE_OPERATIONAL_COVERAGE_INVALID");
+        }
         const chargeClaim = await this.claimMembershipChargeEventTx(tx, {
           branchId: data.branchId,
           eventType: "assign",
@@ -9385,6 +9465,11 @@ export class DatabaseStorage implements IStorage {
           taxTotalCents: taxSnapshot.taxTotalCents,
           finalTotalCents: taxSnapshot.finalTotalCents,
           chargedAt: chargeTimestamp!,
+          paymentEffectiveDate: getMxLocalDate(),
+          coverageStartAt: operationalStartDate,
+          coverageEndAt: operationalEndDate,
+          durationUnitSnapshot: "month",
+          durationValueSnapshot: 1,
           contextJson: {
             legacyRequest: isLegacyRequest,
             paymentMethod: normalizedPaymentMethod,
@@ -16325,6 +16410,7 @@ export class DatabaseStorage implements IStorage {
     classesRemaining: number | null,
     classesTotal: number | null,
     expiresAt: Date,
+    coverageStart: Date,
     paidAt: Date,
   ): Promise<Membership | undefined> {
     const [membership] = await executor
@@ -16335,7 +16421,7 @@ export class DatabaseStorage implements IStorage {
         classesRemaining,
         classesTotal,
         expiresAt,
-        membershipStartDate: paidAt,
+        membershipStartDate: coverageStart,
         membershipEndDate: expiresAt,
         paidAt,
       })
@@ -16353,6 +16439,7 @@ export class DatabaseStorage implements IStorage {
       classesTotal,
       expiresAt,
       paidAt,
+      paidAt,
     );
   }
 
@@ -16360,6 +16447,7 @@ export class DatabaseStorage implements IStorage {
     branchId: string;
     membershipId: string;
     paymentMethod?: string | null;
+    paymentEffectiveDate?: string | null;
     idempotencyKey?: string | null;
     actorUserId: string;
   }): Promise<MembershipBillingOperationResult> {
@@ -16390,8 +16478,22 @@ export class DatabaseStorage implements IStorage {
         taxRate: plan.taxRate,
       });
 
-      const paidAt = new Date();
-      const expiresAt = calculatePlanExpirationDate(plan, paidAt);
+      const effectiveDate = normalizeOptionalTextValue(data.paymentEffectiveDate) ?? getMxLocalDate();
+      const paymentDateStatus = classifyEffectivePaymentDate(effectiveDate, getMxLocalDate());
+      if (paymentDateStatus === "invalid") throw new Error("PAYMENT_DATE_INVALID");
+      if (paymentDateStatus === "future") throw new Error("PAYMENT_DATE_IN_FUTURE");
+      const coverage = calculateRenewalCoverage(plan, membership.expiresAt, effectiveDate);
+      if (!coverage) throw new Error("PAYMENT_DATE_INVALID");
+      const coverageSnapshot = createMembershipCoverageSnapshot(plan, effectiveDate, coverage.coverageStart, coverage.coverageEnd);
+      const requestFingerprint = getMembershipBillingRequestFingerprint({
+        branchId: data.branchId,
+        membershipId: membership.id,
+        planId: plan.id,
+        eventType: "renew",
+        paymentEffectiveDate: effectiveDate,
+        paymentMethod: normalizedPaymentMethod,
+      });
+      const captureTimestamp = new Date();
 
       const chargeClaim = await this.claimMembershipChargeEventTx(tx, {
         branchId: data.branchId,
@@ -16408,8 +16510,10 @@ export class DatabaseStorage implements IStorage {
         taxableSubtotalCents: taxSnapshot.taxableSubtotalCents,
         taxTotalCents: taxSnapshot.taxTotalCents,
         finalTotalCents: taxSnapshot.finalTotalCents,
-        chargedAt: paidAt,
+        chargedAt: captureTimestamp,
+        ...coverageSnapshot,
         contextJson: {
+          requestFingerprint,
           legacyRequest: isLegacyRequest,
           paymentMethod: normalizedPaymentMethod,
           taxConfigured: !taxSnapshot.isLegacy,
@@ -16423,6 +16527,7 @@ export class DatabaseStorage implements IStorage {
           || chargeClaim.chargeEvent.eventType !== "renew"
           || chargeClaim.chargeEvent.membershipId !== membership.id
           || chargeClaim.chargeEvent.planId !== plan.id
+          || !matchesMembershipBillingRequestFingerprint(chargeClaim.chargeEvent.contextJson, requestFingerprint)
         ) {
           throw new Error("MEMBERSHIP_OPERATION_KEY_CONFLICT");
         }
@@ -16450,8 +16555,9 @@ export class DatabaseStorage implements IStorage {
         plan.id,
         classesRemaining,
         classesTotal,
-        expiresAt,
-        paidAt,
+        coverage.coverageEnd,
+        coverage.coverageStart,
+        captureTimestamp,
       );
 
       if (!renewedMembership) {
@@ -16467,7 +16573,7 @@ export class DatabaseStorage implements IStorage {
           planId: plan.id,
           planName: plan.name,
           amountCents: taxSnapshot.finalTotalCents,
-          paidAt: renewedMembership.paidAt,
+          paidAt: effectiveDate,
           expiresAt: renewedMembership.expiresAt,
           paymentMethod: normalizedPaymentMethod,
           createdBy: data.actorUserId,
@@ -16501,8 +16607,10 @@ export class DatabaseStorage implements IStorage {
           taxableSubtotalCents: taxSnapshot.taxableSubtotalCents,
           taxTotalCents: taxSnapshot.taxTotalCents,
           finalTotalCents: taxSnapshot.finalTotalCents,
-          paidAt: paidAt.toISOString(),
-          expiresAt: expiresAt.toISOString(),
+          paidAt: captureTimestamp.toISOString(),
+          paymentEffectiveDate: effectiveDate,
+          coverageStartAt: coverage.coverageStart.toISOString(),
+          expiresAt: coverage.coverageEnd.toISOString(),
         },
       });
 
@@ -18354,7 +18462,7 @@ export class DatabaseStorage implements IStorage {
         if (!plan.isActive) {
           throw new Error("QUICK_CHARGE_PLAN_INACTIVE");
         }
-        if ((plan.cycleMonths ?? 1) !== 0) {
+        if (!isSingleSessionPlan(plan)) {
           throw new Error("QUICK_CHARGE_PLAN_NOT_SINGLE_SESSION");
         }
         if (plan.price <= 0) {

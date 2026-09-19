@@ -82,6 +82,7 @@ import {
   computeMembershipPlanChargeSnapshot,
   type MembershipPlanTaxMode,
 } from "@shared/membership-plan-tax";
+import { addPlanDuration, calculateRenewalCoverage, getPlanDurationLabel, isSingleSessionPlan, parsePlanDateOnly, type PlanDurationFields } from "@shared/membership-plan-duration";
 
 type ClientIdentityControl = {
   originType: "manual" | "counter" | "app";
@@ -115,6 +116,8 @@ interface BranchClient {
   planName: string | null;
   planStatus: "active" | "expired" | "deleted" | null;
   cycleMonths: number | null;
+  durationUnit: string | null;
+  durationValue: number | null;
   classesRemaining: number | null;
   classesTotal: number | null;
   expiresAt: string | null;
@@ -145,6 +148,8 @@ interface MembershipPlan {
   durationDays: number | null;
   classLimit: number | null;
   cycleMonths: number;
+  durationUnit: string | null;
+  durationValue: number | null;
   leaseEnabled: boolean;
   defaultLeaseTermMonths: number | null;
   defaultLeasedItemDescription: string | null;
@@ -185,6 +190,8 @@ interface ClientProfile {
     expiresAt: string | null;
     paidAt: string | null;
     planName: string | null;
+    membershipStartDate: string | null;
+    membershipEndDate: string | null;
   };
   planStatus: "active" | "expired" | "deleted" | null;
   planNameSnapshot: string | null;
@@ -197,6 +204,8 @@ interface ClientProfile {
     durationDays: number | null;
     classLimit: number | null;
     cycleMonths: number;
+    durationUnit: string | null;
+    durationValue: number | null;
     leaseEnabled: boolean;
     defaultLeaseTermMonths: number | null;
     defaultLeasedItemDescription: string | null;
@@ -205,6 +214,12 @@ interface ClientProfile {
     chargeEventId: string;
     eventType: "assign" | "renew";
     chargedAt: string;
+    createdAt: string;
+    paymentEffectiveDate: string | null;
+    coverageStartAt: string | null;
+    coverageEndAt: string | null;
+    durationUnitSnapshot: string | null;
+    durationValueSnapshot: number | null;
     planNameSnapshot: string;
     basePriceCents: number;
     taxMode: MembershipPlanTaxMode | null;
@@ -692,13 +707,15 @@ function getClientPlanPriceDisplay(profile: Pick<ClientProfile, "plan" | "planCh
   };
 }
 
-function cycleLabel(cycleMonths: number | null | undefined): string {
-  if (cycleMonths === 0) return "Servicio individual";
-  if (!cycleMonths || cycleMonths === 1) return "Plan mensual";
-  if (cycleMonths === 3) return "Plan trimestral";
-  if (cycleMonths === 6) return "Plan semestral";
-  if (cycleMonths === 12) return "Anualidad";
-  return `${cycleMonths} meses`;
+function cycleLabel(plan: PlanDurationFields): string {
+  if (plan.durationUnit == null && plan.durationValue == null) {
+    if (plan.cycleMonths === 0) return "Servicio individual";
+    if (!plan.cycleMonths || plan.cycleMonths === 1) return "Plan mensual";
+    if (plan.cycleMonths === 3) return "Plan trimestral";
+    if (plan.cycleMonths === 6) return "Plan semestral";
+    if (plan.cycleMonths === 12) return "Anualidad";
+  }
+  return getPlanDurationLabel(plan);
 }
 
 function leaseDerivedStatusLabel(status: ClientLeaseContractSummary["derivedStatus"]) {
@@ -714,10 +731,10 @@ function leaseDerivedStatusBadgeVariant(status: ClientLeaseContractSummary["deri
   return "default" as const;
 }
 
-function usageSummaryLabel(classLimit: number | null, cycleMonths: number | null | undefined): string {
-  if (cycleMonths === 0) return "1 uso";
-  if (classLimit === null || classLimit === undefined) return "Uso ilimitado";
-  return `${classLimit} usos`;
+function usageSummaryLabel(plan: MembershipPlan): string {
+  if (isSingleSessionPlan(plan)) return "1 uso";
+  if (plan.classLimit === null || plan.classLimit === undefined) return "Uso ilimitado";
+  return `${plan.classLimit} usos`;
 }
 
 function clientStatusLabel(s: string): string {
@@ -797,34 +814,14 @@ function parseIsoDateToStableDate(value: string): Date | null {
   return parsed;
 }
 
-function addCalendarMonthsStable(date: Date, months: number): Date {
-  if (months === 0) {
-    return new Date(date.getTime());
-  }
-  const result = new Date(date.getTime());
-  const dayOfMonth = result.getUTCDate();
-  result.setUTCMonth(result.getUTCMonth() + months);
-  if (result.getUTCDate() !== dayOfMonth) {
-    result.setUTCDate(0);
-  }
-  return result;
-}
-
 function calculatePlanExpirationPreview(
-  plan: Pick<MembershipPlan, "cycleMonths" | "durationDays"> | null | undefined,
+  plan: MembershipPlan | null | undefined,
   startDate: string,
 ): Date | null {
   if (!plan) return null;
-  const parsed = parseIsoDateToStableDate(startDate);
+  const parsed = parsePlanDateOnly(startDate);
   if (!parsed) return null;
-
-  if ((plan.cycleMonths ?? 1) === 0) {
-    const result = new Date(parsed.getTime());
-    result.setUTCDate(result.getUTCDate() + Math.max(plan.durationDays ?? 1, 1));
-    return result;
-  }
-
-  return addCalendarMonthsStable(parsed, plan.cycleMonths ?? 1);
+  return addPlanDuration(plan, parsed);
 }
 
 function formatCalendarPreview(date: Date | null) {
@@ -2290,6 +2287,8 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
   const [showAllNotes, setShowAllNotes] = useState(false);
   const [showPlanSelect, setShowPlanSelect] = useState(false);
   const [assignmentStartDate, setAssignmentStartDate] = useState(getMxTodayIsoDate());
+  const [renewDialogOpen, setRenewDialogOpen] = useState(false);
+  const [renewEffectiveDate, setRenewEffectiveDate] = useState(getMxTodayIsoDate());
   const [selectedAssignPlanId, setSelectedAssignPlanId] = useState("");
   const [membershipPaymentMethod, setMembershipPaymentMethod] =
     useState<(typeof FINANCE_PAYMENT_METHOD_OPTIONS)[number]["value"]>("efectivo");
@@ -2364,6 +2363,8 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
       setShowAllNotes(false);
       setShowPlanSelect(false);
       setAssignmentStartDate(getMxTodayIsoDate());
+      setRenewDialogOpen(false);
+      setRenewEffectiveDate(getMxTodayIsoDate());
       setSelectedAssignPlanId("");
       setMembershipPaymentMethod("efectivo");
       setCommercialHistoryFilter("all");
@@ -2380,6 +2381,8 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
     setCommercialHistoryFilter("all");
     setCommercialHistoryPage(1);
     setAssignmentStartDate(getMxTodayIsoDate());
+    setRenewDialogOpen(false);
+    setRenewEffectiveDate(getMxTodayIsoDate());
     setSelectedAssignPlanId("");
     setAccessDialogOpen(false);
     setAccessConfirmationOpen(false);
@@ -2498,15 +2501,17 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
   });
 
   const renewMutation = useMutation({
-    mutationFn: async ({ idempotencyKey }: { idempotencyKey: string }) => {
+    mutationFn: async ({ idempotencyKey, paymentEffectiveDate, paymentMethod }: { idempotencyKey: string; paymentEffectiveDate: string; paymentMethod: string }) => {
       const resp = await apiRequest("POST", `/api/branch/memberships/${profile!.membership.id}/renew`, {
-        paymentMethod: membershipPaymentMethod,
+        paymentMethod,
+        paymentEffectiveDate,
         idempotencyKey,
       });
       return resp.json();
     },
     onSuccess: async () => {
       await invalidateBranchMembershipQueries(clientId);
+      setRenewDialogOpen(false);
       toast({ title: "Servicio o plan renovado" });
     },
     onError: (err: any) => {
@@ -2589,6 +2594,9 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
   const assignPlanPreviewExpiresAt = calculatePlanExpirationPreview(selectedAssignPlan, assignmentStartDate);
   const activePlanChargeSnapshot = profile?.plan ? getMembershipPlanChargeSnapshot(profile.plan) : null;
   const activePlanPriceDisplay = profile ? getClientPlanPriceDisplay(profile) : null;
+  const renewalPreview = profile?.plan && renewEffectiveDate <= todayAssignmentDate
+    ? calculateRenewalCoverage(profile.plan, profile.membership.expiresAt, renewEffectiveDate)
+    : null;
   const openLeaseContracts = profile?.openLeaseContracts ?? [];
   const activeLeaseContractsCount = profile?.activeLeaseContractsCount ?? openLeaseContracts.length;
   const activePlanExpirationLabel = profile?.membership.expiresAt
@@ -2677,13 +2685,13 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
   useEffect(() => {
     assignPlanOperation.reset();
     renewPlanOperation.reset();
-  }, [open, clientId, assignPlanOperation, renewPlanOperation]);
+  }, [open, clientId, assignPlanOperation.reset, renewPlanOperation.reset]);
 
   useEffect(() => {
     if (!showPlanSelect) {
       assignPlanOperation.reset();
     }
-  }, [showPlanSelect, assignPlanOperation]);
+  }, [showPlanSelect, assignPlanOperation.reset]);
 
   async function handleAssignPlanSubmit() {
     if (!selectedAssignPlan || !profile?.membership.id || !assignmentStartDate) {
@@ -2716,13 +2724,15 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
   }
 
   async function handleRenewPlanSubmit() {
-    if (!profile?.membership.id) {
+    if (!profile?.membership.id || !profile.plan || !renewalPreview || renewMutation.isPending) {
       return;
     }
 
     const fingerprint = JSON.stringify({
       membershipId: profile.membership.id,
+      planId: profile.plan.id,
       paymentMethod: membershipPaymentMethod,
+      paymentEffectiveDate: renewEffectiveDate,
     });
 
     const attempt = renewPlanOperation.begin(fingerprint);
@@ -2733,6 +2743,8 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
     try {
       await renewMutation.mutateAsync({
         idempotencyKey: attempt.key,
+        paymentEffectiveDate: renewEffectiveDate,
+        paymentMethod: membershipPaymentMethod,
       });
       renewPlanOperation.markSuccess(fingerprint);
     } catch {
@@ -2870,7 +2882,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                   <span className="text-xs text-muted-foreground">${(plan.price / 100).toFixed(2)} MXN</span>
                 </div>
                 <div className="mt-0.5 text-xs text-muted-foreground">
-                  {cycleLabel(plan.cycleMonths)} · {usageSummaryLabel(plan.classLimit, plan.cycleMonths)}
+                  {cycleLabel(plan)} · {usageSummaryLabel(plan)}
                 </div>
                 {getMembershipPlanChargeLabel(plan) ? (
                   <div className="mt-0.5 text-[11px] text-muted-foreground">
@@ -3348,7 +3360,7 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                   <div className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
                     <div className="bg-background rounded-md p-2">
                       <div className="text-muted-foreground mb-0.5">Forma de venta</div>
-                      <div className="font-medium" data-testid="text-billing-cycle">{cycleLabel(profile.plan.cycleMonths)}</div>
+                      <div className="font-medium" data-testid="text-billing-cycle">{cycleLabel(profile.plan)}</div>
                     </div>
                     <div className="bg-background rounded-md p-2">
                       <div className="text-muted-foreground mb-0.5">{activePlanPriceDisplay?.title || "Precio"}</div>
@@ -3364,9 +3376,18 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                     <div className="bg-background rounded-md p-2">
                       <div className="text-muted-foreground mb-0.5">Pagado el</div>
                       <div className="font-medium" data-testid="text-paid-at">
-                        {profile.membership.paidAt ? formatDate(profile.membership.paidAt) : "—"}
+                        {profile.planChargeSnapshot?.paymentEffectiveDate
+                          ? formatDate(profile.planChargeSnapshot.paymentEffectiveDate)
+                          : profile.membership.paidAt ? formatDate(profile.membership.paidAt) : "—"}
                       </div>
                     </div>
+                    {profile.planChargeSnapshot?.coverageStartAt && profile.planChargeSnapshot.coverageEndAt && (
+                      <div className="bg-background rounded-md p-2 sm:col-span-2">
+                        <div className="text-muted-foreground mb-0.5">Vigencia</div>
+                        <div className="font-medium">{formatDate(profile.planChargeSnapshot.coverageStartAt)} → {formatDate(profile.planChargeSnapshot.coverageEndAt)}</div>
+                        <div className="mt-1 text-muted-foreground">Registrado en WebCool: {formatDate(profile.planChargeSnapshot.createdAt)}</div>
+                      </div>
+                    )}
                     <div className="bg-background rounded-md p-2">
                       <div className="text-muted-foreground mb-0.5">Vence el</div>
                       <div className={`font-medium ${profile.planStatus === "expired" ? "text-red-500" : ""}`} data-testid="text-plan-expires">
@@ -3391,51 +3412,18 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                     )}
                   </div>
 
-                  {profile.planStatus === "expired" && (
-                    isLeaseManagedRenewBlocked ? (
+                  {isLeaseManagedRenewBlocked && profile.planStatus === "expired" ? (
                       <div className="rounded-md border border-orange-300 bg-orange-50 px-3 py-2 text-xs text-orange-700">
                         {leaseRenewGuardMessage}
                       </div>
-                    ) : (
-                      <div className="space-y-2 pt-1">
-                        <div className="space-y-1">
-                          <Label className="text-xs">Método de pago</Label>
-                          <Select value={membershipPaymentMethod} onValueChange={(value) => setMembershipPaymentMethod(value as (typeof FINANCE_PAYMENT_METHOD_OPTIONS)[number]["value"])}>
-                          <SelectTrigger className="h-9 text-xs sm:h-8"><SelectValue /></SelectTrigger>
-                            <SelectContent>
-                              {FINANCE_PAYMENT_METHOD_OPTIONS.map((option) => (
-                                <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        {activePlanChargeSnapshot && !activePlanChargeSnapshot.isLegacy ? (
-                          <div className="rounded-md border bg-background px-3 py-2 text-xs text-muted-foreground" data-testid="renew-tax-preview">
-                            <p className="font-medium text-foreground">Resumen del cobro</p>
-                            <div className="mt-2 grid grid-cols-1 gap-1 sm:grid-cols-2">
-                              {activePlanChargeSnapshot.taxMode === "tax_added" ? (
-                                <>
-                                  <span>Precio base: <strong className="text-foreground">{formatCurrencyMx(activePlanChargeSnapshot.basePriceCents / 100)}</strong></span>
-                                  <span>IVA {formatTaxRateLabel(activePlanChargeSnapshot.taxRate)}: <strong className="text-foreground">{formatCurrencyMx((activePlanChargeSnapshot.taxTotalCents ?? 0) / 100)}</strong></span>
-                                  <span className="sm:col-span-2">Total a cobrar: <strong className="text-foreground">{formatCurrencyMx(activePlanChargeSnapshot.finalTotalCents / 100)}</strong></span>
-                                </>
-                              ) : activePlanChargeSnapshot.taxMode === "tax_included" ? (
-                                <>
-                                  <span>Precio final: <strong className="text-foreground">{formatCurrencyMx(activePlanChargeSnapshot.finalTotalCents / 100)}</strong></span>
-                                  <span>Subtotal: <strong className="text-foreground">{formatCurrencyMx((activePlanChargeSnapshot.subtotalBeforeTaxCents ?? 0) / 100)}</strong></span>
-                                  <span className="sm:col-span-2">IVA incluido {formatTaxRateLabel(activePlanChargeSnapshot.taxRate)}: <strong className="text-foreground">{formatCurrencyMx((activePlanChargeSnapshot.taxTotalCents ?? 0) / 100)}</strong></span>
-                                </>
-                              ) : (
-                                <span className="sm:col-span-2">Sin IVA: <strong className="text-foreground">{formatCurrencyMx(activePlanChargeSnapshot.finalTotalCents / 100)}</strong></span>
-                              )}
-                            </div>
-                          </div>
-                        ) : null}
+                  ) : !isLeaseManagedRenewBlocked && (
+                      <div className="pt-1">
                         <Button
                           size="sm"
                           className="h-10 w-full sm:h-9"
                           onClick={() => {
-                            void handleRenewPlanSubmit();
+                            setRenewEffectiveDate(getMxTodayIsoDate());
+                            setRenewDialogOpen(true);
                           }}
                           disabled={renewMutation.isPending}
                           data-testid="button-renew-plan"
@@ -3444,7 +3432,6 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
                           Renovar vigencia
                         </Button>
                       </div>
-                    )
                   )}
                 </div>
               ) : profile.planStatus === "deleted" ? (
@@ -3973,6 +3960,55 @@ function ClientProfileDialog({ clientId, open, onOpenChange, onEdit, onDelete, o
         )}
         </div>
         </div>
+      </DialogContent>
+    </Dialog>
+    <Dialog open={renewDialogOpen} onOpenChange={(nextOpen) => {
+      if (!renewMutation.isPending) setRenewDialogOpen(nextOpen);
+    }}>
+      <DialogContent className="z-[130] max-h-[90dvh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Renovar vigencia</DialogTitle>
+          <DialogDescription>Revisa la fecha real del pago y la nueva cobertura antes de cobrar.</DialogDescription>
+        </DialogHeader>
+        {profile?.plan && (
+          <div className="space-y-4 text-sm">
+            <div className="rounded-md bg-muted/50 p-3">
+              <p className="font-medium">{profile.plan.name} · {getPlanDurationLabel(profile.plan)}</p>
+              <p>Precio: {formatCurrencyMx((activePlanChargeSnapshot?.finalTotalCents ?? profile.plan.price) / 100)}</p>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="renew-payment-method">Método de pago</Label>
+              <Select value={membershipPaymentMethod} onValueChange={(value) => setMembershipPaymentMethod(value as (typeof FINANCE_PAYMENT_METHOD_OPTIONS)[number]["value"])}>
+                <SelectTrigger id="renew-payment-method"><SelectValue /></SelectTrigger>
+                <SelectContent className="z-[140]">
+                  {FINANCE_PAYMENT_METHOD_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="renew-effective-date">Fecha real del pago</Label>
+              <Input id="renew-effective-date" type="date" max={todayAssignmentDate} value={renewEffectiveDate} onChange={(event) => setRenewEffectiveDate(event.target.value)} data-testid="input-renew-effective-date" />
+              {!renewalPreview && <p className="text-xs text-destructive">Selecciona una fecha válida que no sea futura.</p>}
+            </div>
+            <div className="grid gap-2 rounded-md border p-3 text-xs sm:grid-cols-2">
+              <div><p className="text-muted-foreground">Vigencia actual</p><p>{profile.membership.membershipStartDate ? formatDate(profile.membership.membershipStartDate) : "Sin inicio registrado"} → {profile.membership.expiresAt ? formatDate(profile.membership.expiresAt) : "Sin vencimiento registrado"}</p></div>
+              <div><p className="text-muted-foreground">Nueva vigencia prevista</p><p data-testid="renew-coverage-preview">{renewalPreview ? `${formatCalendarPreview(renewalPreview.coverageStart)} → ${formatCalendarPreview(renewalPreview.coverageEnd)}` : "—"}</p></div>
+            </div>
+            {renewalPreview && profile.membership.expiresAt && new Date(profile.membership.expiresAt) > renewalPreview.paymentAt && (
+              <p className="text-xs text-muted-foreground">Tu cliente conserva los días restantes. La nueva vigencia comienza al terminar la actual.</p>
+            )}
+            <p className="text-xs text-muted-foreground">Se registrará hoy en WebCool, pero el pago quedará con fecha {renewEffectiveDate ? formatDate(renewEffectiveDate) : "—"}.</p>
+          </div>
+        )}
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => setRenewDialogOpen(false)} disabled={renewMutation.isPending}>Cancelar</Button>
+          <Button type="button" onClick={() => void handleRenewPlanSubmit()} disabled={!renewalPreview || renewMutation.isPending} data-testid="button-confirm-renew-plan">
+            {renewMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Renovar vigencia
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
     <AlertDialog
@@ -4784,7 +4820,7 @@ export default function ClientesTab({
                           {client.planStatus !== "deleted" && (
                             <>
                               <Badge variant="secondary" className="text-[10px] px-1.5 py-0" data-testid={`badge-cycle-${client.userId}`}>
-                                {cycleLabel(client.cycleMonths)}
+                                {cycleLabel(client)}
                               </Badge>
                               {client.classesRemaining !== null && client.classesTotal !== null ? (
                                 <span className="text-[10px] text-muted-foreground" data-testid={`text-classes-${client.userId}`}>

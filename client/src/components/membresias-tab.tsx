@@ -45,6 +45,7 @@ import {
   resolveMembershipPlanTaxConfig,
 } from "@shared/membership-plan-tax";
 import { serializeQuickChargeCanonicalPayload } from "@shared/quick-charge";
+import { getPlanDurationLabel, isSingleSessionPlan } from "@shared/membership-plan-duration";
 
 interface MembershipPlan {
   id: string;
@@ -57,6 +58,8 @@ interface MembershipPlan {
   durationDays: number | null;
   classLimit: number | null;
   cycleMonths: number;
+  durationUnit: string | null;
+  durationValue: number | null;
   leaseEnabled: boolean;
   defaultLeaseTermMonths: number | null;
   defaultLeasedItemDescription: string | null;
@@ -68,6 +71,7 @@ type PlanTaxSelectValue = MembershipPlanTaxMode | "legacy";
 
 const CYCLE_OPTIONS = [
   { value: "0", label: "Clase suelta / sesión única", months: 0 },
+  { value: "weekly", label: "Semanal", months: -1 },
   { value: "1", label: "Mensual", months: 1 },
   { value: "3", label: "Trimestral", months: 3 },
   { value: "6", label: "Semestral", months: 6 },
@@ -159,16 +163,18 @@ function PlanFormDialog({
 
   const editCycleMonths = editPlan?.cycleMonths ?? 1;
   const isPresetCycle = [0, 1, 3, 6, 12].includes(editCycleMonths);
-  const initialCycleSelect = isPresetCycle ? String(editCycleMonths) : "custom";
+  const initialCycleSelect = editPlan?.durationUnit === "week" ? "weekly" : isPresetCycle ? String(editCycleMonths) : "custom";
   const [name, setName] = useState(editPlan?.name || "");
   const [description, setDescription] = useState(editPlan?.description || "");
   const [priceStr, setPriceStr] = useState(editPlan ? (editPlan.price / 100).toString() : "");
   const [classLimitStr, setClassLimitStr] = useState(editPlan?.classLimit?.toString() || "");
   const [unlimitedClasses, setUnlimitedClasses] = useState(editPlan ? !editPlan.classLimit : false);
   const [cycleSelect, setCycleSelect] = useState(initialCycleSelect);
+  const [durationChanged, setDurationChanged] = useState(false);
   const [customMonthsStr, setCustomMonthsStr] = useState(
     !isPresetCycle && editCycleMonths > 0 ? String(editCycleMonths) : ""
   );
+  const [weeklyDurationStr, setWeeklyDurationStr] = useState(String(editPlan?.durationUnit === "week" ? editPlan.durationValue ?? 1 : 1));
   const [taxModeSelection, setTaxModeSelection] = useState<PlanTaxSelectValue>(() => {
     if (editPlan?.taxMode) return editPlan.taxMode;
     return isEdit ? "legacy" : "tax_exempt";
@@ -184,13 +190,15 @@ function PlanFormDialog({
   });
 
   const isDropIn = cycleSelect === "0";
+  const isWeekly = cycleSelect === "weekly";
+  const weeklyDuration = Number(weeklyDurationStr);
   const isLegacyTaxConfig = taxModeSelection === "legacy";
   const activeTaxMode = isLegacyTaxConfig ? null : taxModeSelection;
 
   const cycleMonths =
     cycleSelect === "custom"
       ? parseInt(customMonthsStr || "1")
-      : parseInt(cycleSelect || "1");
+      : isWeekly ? 1 : parseInt(cycleSelect || "1");
 
   const priceValue = parseFloat(priceStr || "0");
   const classesValue = parseInt(classLimitStr || "0");
@@ -199,7 +207,13 @@ function PlanFormDialog({
   const isValidClasses = isDropIn || unlimitedClasses || (classesValue >= 1 && classesValue <= 999);
   const isValidName = name.trim().length > 0 && name.length <= 60;
   const isValidDesc = description.length <= 200;
-  const isValidCycle = isDropIn || (cycleMonths >= 1 && cycleMonths <= 36);
+  const isValidCycle = isWeekly
+    ? Number.isInteger(weeklyDuration) && weeklyDuration >= 1 && weeklyDuration <= 156
+    : isDropIn || (cycleMonths >= 1 && cycleMonths <= 36);
+  const selectedDurationLabel = isEdit && !durationChanged
+    ? getPlanDurationLabel(editPlan)
+    : isWeekly ? weeklyDuration === 1 ? "1 semana" : `${weeklyDuration} semanas`
+    : getCycleLabel(cycleMonths);
   let resolvedTaxConfig: ReturnType<typeof resolveMembershipPlanTaxConfig> | null = null;
   let taxConfigError: string | null = null;
 
@@ -254,8 +268,14 @@ function PlanFormDialog({
     if (!canSubmit) return;
 
     const price = Math.round(priceValue * 100);
-    const durationDays = isDropIn ? 1 : cycleMonths * 30;
+    const durationDays = isDropIn ? 1 : isWeekly ? weeklyDuration * 7 : cycleMonths * 30;
     const classLimit = isDropIn ? 1 : unlimitedClasses ? null : classesValue;
+    const durationUnit = isEdit && !durationChanged
+      ? editPlan.durationUnit
+      : isWeekly ? "week" : isDropIn ? "day" : cycleMonths === 12 ? "year" : "month";
+    const durationValue = isEdit && !durationChanged
+      ? editPlan.durationValue
+      : isWeekly ? weeklyDuration : isDropIn || cycleMonths === 12 ? 1 : cycleMonths;
 
     mutation.mutate({
       name: name.trim(),
@@ -266,6 +286,8 @@ function PlanFormDialog({
       durationDays,
       classLimit,
       cycleMonths,
+      durationUnit,
+      durationValue,
       leaseEnabled: isEdit ? editPlan?.leaseEnabled ?? false : false,
       defaultLeaseTermMonths: isEdit ? editPlan?.defaultLeaseTermMonths ?? null : null,
       defaultLeasedItemDescription: isEdit ? editPlan?.defaultLeasedItemDescription ?? null : null,
@@ -348,6 +370,7 @@ function PlanFormDialog({
                 value={cycleSelect}
                 onValueChange={(val) => {
                   setCycleSelect(val);
+                  setDurationChanged(true);
                   if (val !== "custom") setCustomMonthsStr("");
                 }}
               >
@@ -369,7 +392,7 @@ function PlanFormDialog({
                     min="1"
                     max="36"
                     value={customMonthsStr}
-                    onChange={(e) => setCustomMonthsStr(e.target.value)}
+                    onChange={(e) => { setCustomMonthsStr(e.target.value); setDurationChanged(true); }}
                     placeholder="Número de meses"
                     className="pr-16"
                     data-testid="input-custom-months"
@@ -379,6 +402,20 @@ function PlanFormDialog({
               )}
               {cycleSelect === "custom" && customMonthsStr && !isValidCycle && (
                 <p className="text-[10px] text-red-500">Entre 1 y 36 meses</p>
+              )}
+              {isWeekly && (
+                <div className="space-y-2">
+                  <Label htmlFor="plan-weekly-duration">Duración en semanas</Label>
+                  <div className="flex flex-wrap gap-2">
+                    {[1, 2, 3].map((weeks) => (
+                      <Button key={weeks} type="button" variant={weeklyDuration === weeks ? "default" : "outline"} size="sm" onClick={() => { setWeeklyDurationStr(String(weeks)); setDurationChanged(true); }}>
+                        {weeks} {weeks === 1 ? "semana" : "semanas"}
+                      </Button>
+                    ))}
+                  </div>
+                  <Input id="plan-weekly-duration" type="number" min="1" max="156" step="1" value={weeklyDurationStr} onChange={(event) => { setWeeklyDurationStr(event.target.value); setDurationChanged(true); }} data-testid="input-plan-weekly-duration" />
+                  {!isValidCycle && <p className="text-xs text-red-500">Elige entre 1 y 156 semanas.</p>}
+                </div>
               )}
             </div>
 
@@ -464,7 +501,7 @@ function PlanFormDialog({
                   <p className="text-[10px] text-red-500">Entre 1 y 999 usos</p>
                 )}
                 <p className="text-[10px] text-muted-foreground">
-                  Total de clases que el cliente puede tomar durante todo el ciclo de {cycleMonths >= 1 ? getCycleLabel(cycleMonths).toLowerCase() : "—"}
+                  Total de clases que el cliente puede tomar durante todo el ciclo de {selectedDurationLabel.toLowerCase()}
                 </p>
               </div>
             )}
@@ -478,11 +515,11 @@ function PlanFormDialog({
                 <p className="font-medium mb-1">Resumen de venta</p>
                 <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
                   <span>Precio: <strong className="text-foreground">${priceValue.toFixed(2)} MXN</strong></span>
-                  <span>Tipo: <strong className="text-foreground">{isDropIn ? "Pago por clase (1 día)" : getCycleLabel(cycleMonths)}</strong></span>
+                  <span>Tipo: <strong className="text-foreground">{isDropIn ? "Pago por clase (1 día)" : selectedDurationLabel}</strong></span>
                   {!isDropIn && (
                     <span>Usos incluidos: <strong className="text-foreground">{unlimitedClasses ? "Ilimitado" : `${classesValue}`}</strong></span>
                   )}
-                  {!isDropIn && cycleMonths > 1 && (
+                  {!isDropIn && !isWeekly && cycleMonths > 1 && (
                     <span>Equivalente mensual: <strong className="text-foreground">${(priceValue / cycleMonths).toFixed(2)} MXN</strong></span>
                   )}
                 </div>
@@ -904,9 +941,9 @@ export default function MembresiasTab() {
                   <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
                     <span className="flex items-center gap-1">
                       <Calendar className="h-3 w-3" />
-                      {getCycleLabel(plan.cycleMonths ?? 1)}
+                      {getPlanDurationLabel(plan)}
                     </span>
-                    {(plan.cycleMonths ?? 1) !== 0 && (
+                    {!isSingleSessionPlan(plan) && (
                       <span className="flex items-center gap-1">
                         <Hash className="h-3 w-3" />
                         {plan.classLimit ? `${plan.classLimit} usos incluidos` : (
@@ -918,20 +955,20 @@ export default function MembresiasTab() {
                     )}
                   </div>
                   <div className="flex flex-wrap gap-1">
-                    {(plan.cycleMonths ?? 1) === 0 && (
+                    {isSingleSessionPlan(plan) && (
                       <Badge variant="secondary" className="text-[10px] bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300" data-testid={`badge-dropin-${plan.id}`}>Clase suelta</Badge>
                     )}
-                    {!plan.classLimit && (plan.cycleMonths ?? 1) !== 0 && (
+                    {!plan.classLimit && !isSingleSessionPlan(plan) && (
                       <Badge variant="secondary" className="text-[10px]" data-testid={`badge-unlimited-${plan.id}`}>Ilimitado</Badge>
                     )}
-                    {(plan.cycleMonths ?? 1) > 1 && (
+                    {!isSingleSessionPlan(plan) && (plan.durationUnit === "week" ? (plan.durationValue ?? 1) > 1 : (plan.cycleMonths ?? 1) > 1) && (
                       <Badge variant="secondary" className="text-[10px]" data-testid={`badge-cycle-${plan.id}`}>
-                        {getCycleLabel(plan.cycleMonths)}
+                        {getPlanDurationLabel(plan)}
                       </Badge>
                     )}
                   </div>
                   <div className="grid grid-cols-2 gap-2 pt-1 sm:flex sm:flex-wrap sm:items-center">
-                    {(plan.cycleMonths ?? 1) === 0 && plan.isActive && (
+                    {isSingleSessionPlan(plan) && plan.isActive && (
                       <Button
                         size="sm"
                         className="w-full sm:w-auto"
@@ -955,7 +992,7 @@ export default function MembresiasTab() {
                     <Button
                       variant="ghost"
                       size="sm"
-                      className={`${(plan.cycleMonths ?? 1) === 0 ? "col-span-2" : ""} w-full sm:w-auto`}
+                      className={`${isSingleSessionPlan(plan) ? "col-span-2" : ""} w-full sm:w-auto`}
                       onClick={() => deactivateMutation.mutate(plan.id)}
                       disabled={deactivateMutation.isPending}
                       data-testid={`button-deactivate-plan-${plan.id}`}
@@ -987,7 +1024,7 @@ export default function MembresiasTab() {
                         <Badge variant="secondary" data-testid={`badge-plan-status-${plan.id}`}>Desactivado</Badge>
                       </div>
                       <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-                        <span>{getCycleLabel(plan.cycleMonths ?? 1)}</span>
+                        <span>{getPlanDurationLabel(plan)}</span>
                         <span>{plan.classLimit ? `${plan.classLimit} usos incluidos` : "Ilimitado"}</span>
                       </div>
                       <Button

@@ -8,6 +8,7 @@ import fs from "fs";
 import multer from "multer";
 import sharp from "sharp";
 import { storage } from "./storage";
+import { getCompatibilityDurationFields, isValidPlanDuration } from "@shared/membership-plan-duration";
 import {
   createExpenseObligation,
   ExpenseObligationError,
@@ -203,6 +204,7 @@ const membershipBillingIdempotencyKeySchema = z.string().trim().min(8, "Idempote
 const membershipIdParamSchema = z.string().trim().min(1, "ID de membresia invalido").max(36, "ID de membresia invalido");
 const membershipFinancePayloadSchema = z.object({
   paymentMethod: z.enum(branchFinancePaymentMethodValues).nullable().optional(),
+  paymentEffectiveDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "La fecha real del pago no es válida").nullable().optional(),
   idempotencyKey: membershipBillingIdempotencyKeySchema,
 });
 const leaseAssignmentModeValues = [
@@ -1114,6 +1116,15 @@ function handleMembershipBillingRouteError(
   }
   if (code === "START_DATE_INVALID") {
     return res.status(400).json({ message: "La fecha de inicio no es válida" });
+  }
+  if (code === "PAYMENT_DATE_INVALID") {
+    return res.status(400).json({ message: "La fecha real del pago no es válida" });
+  }
+  if (code === "PAYMENT_DATE_IN_FUTURE") {
+    return res.status(400).json({ message: "La fecha real del pago no puede ser futura" });
+  }
+  if (code === "PLAN_DURATION_INVALID" || code === "PLAN_DURATION_SNAPSHOT_UNSUPPORTED" || code === "MEMBERSHIP_COVERAGE_SNAPSHOT_INVALID") {
+    return res.status(409).json({ message: "El plazo de este plan necesita revisión antes de cobrar" });
   }
   if (code === "MEMBERSHIP_OPERATION_KEY_CONFLICT") {
     return res.status(409).json({ message: "Esta operación ya fue usada para otra acción de membresía" });
@@ -6775,8 +6786,18 @@ if (!user) {
         taxRate: data.taxRate,
       });
       const cm = data.cycleMonths ?? 1;
+      const hasDuration = data.durationUnit != null || data.durationValue != null;
+      if (hasDuration && (data.durationUnit == null || data.durationValue == null || !isValidPlanDuration(data.durationUnit, data.durationValue))) {
+        throw new Error("PLAN_DURATION_INVALID");
+      }
+      if (data.leaseEnabled && hasDuration && (data.durationUnit !== "month" || data.durationValue !== 1)) {
+        throw new Error("LEASE_PLAN_REQUIRES_MONTHLY_CYCLE");
+      }
+      const compatibility = hasDuration
+        ? getCompatibilityDurationFields(data.durationUnit!, data.durationValue!)
+        : { cycleMonths: cm, durationDays: cm === 0 ? 1 : cm * 30 };
       const leaseTemplate = normalizeLeaseTemplateInput({
-        cycleMonths: cm,
+        cycleMonths: compatibility.cycleMonths,
         leaseEnabled: data.leaseEnabled,
         defaultLeaseTermMonths: data.defaultLeaseTermMonths,
         defaultLeasedItemDescription: data.defaultLeasedItemDescription ?? null,
@@ -6788,9 +6809,11 @@ if (!user) {
         price: data.price,
         taxMode: resolvedTaxConfig.taxMode,
         taxRate: resolvedTaxConfig.taxRate == null ? null : resolvedTaxConfig.taxRate.toFixed(4),
-        durationDays: cm === 0 ? 1 : cm * 30,
+        durationDays: compatibility.durationDays,
+        durationUnit: data.durationUnit ?? null,
+        durationValue: data.durationValue ?? null,
         classLimit: data.classLimit ?? null,
-        cycleMonths: cm,
+        cycleMonths: compatibility.cycleMonths,
         leaseEnabled: leaseTemplate.leaseEnabled,
         defaultLeaseTermMonths: leaseTemplate.defaultLeaseTermMonths,
         defaultLeasedItemDescription: leaseTemplate.defaultLeasedItemDescription,
@@ -6828,10 +6851,13 @@ if (!user) {
           "TAX_RATE_NOT_ALLOWED_FOR_TAX_EXEMPT",
           "LEASE_PLAN_REQUIRES_MONTHLY_CYCLE",
           "LEASE_CONTRACT_TERM_INVALID",
+          "PLAN_DURATION_INVALID",
         ].includes(err.message)
       ) {
         return res.status(400).json({
-          message: err.message.startsWith("LEASE_")
+          message: err.message === "PLAN_DURATION_INVALID"
+            ? "La duración del plan no es válida"
+            : err.message.startsWith("LEASE_")
             ? err.message === "LEASE_PLAN_REQUIRES_MONTHLY_CYCLE"
               ? "Un arrendamiento solo puede usarse en un plan mensual"
               : "La configuración del arrendamiento no es válida"
@@ -6859,9 +6885,22 @@ if (!user) {
         taxRate: data.taxRate !== undefined ? data.taxRate : existing.taxRate,
       });
       const resolvedCycleMonths = data.cycleMonths ?? existing.cycleMonths ?? 1;
+      const resolvedDurationUnit = data.durationUnit !== undefined ? data.durationUnit : existing.durationUnit;
+      const resolvedDurationValue = data.durationValue !== undefined ? data.durationValue : existing.durationValue;
+      const hasDuration = resolvedDurationUnit != null || resolvedDurationValue != null;
+      if (hasDuration && (resolvedDurationUnit == null || resolvedDurationValue == null || !isValidPlanDuration(resolvedDurationUnit, resolvedDurationValue))) {
+        throw new Error("PLAN_DURATION_INVALID");
+      }
+      const compatibility = hasDuration
+        ? getCompatibilityDurationFields(resolvedDurationUnit!, resolvedDurationValue!)
+        : { cycleMonths: resolvedCycleMonths, durationDays: resolvedCycleMonths === 0 ? 1 : resolvedCycleMonths * 30 };
+      const resolvedLeaseEnabled = data.leaseEnabled !== undefined ? data.leaseEnabled : existing.leaseEnabled;
+      if (resolvedLeaseEnabled && hasDuration && (resolvedDurationUnit !== "month" || resolvedDurationValue !== 1)) {
+        throw new Error("LEASE_PLAN_REQUIRES_MONTHLY_CYCLE");
+      }
       const leaseTemplate = normalizeLeaseTemplateInput({
-        cycleMonths: resolvedCycleMonths,
-        leaseEnabled: data.leaseEnabled !== undefined ? data.leaseEnabled : existing.leaseEnabled,
+        cycleMonths: compatibility.cycleMonths,
+        leaseEnabled: resolvedLeaseEnabled,
         defaultLeaseTermMonths: data.defaultLeaseTermMonths !== undefined ? data.defaultLeaseTermMonths : existing.defaultLeaseTermMonths,
         defaultLeasedItemDescription: data.defaultLeasedItemDescription !== undefined ? data.defaultLeasedItemDescription : existing.defaultLeasedItemDescription,
       });
@@ -6871,7 +6910,12 @@ if (!user) {
         ...(data.price !== undefined && { price: data.price }),
         taxMode: resolvedTaxConfig.taxMode,
         taxRate: resolvedTaxConfig.taxRate == null ? null : resolvedTaxConfig.taxRate.toFixed(4),
-        ...(data.cycleMonths !== undefined && { cycleMonths: data.cycleMonths, durationDays: data.cycleMonths === 0 ? 1 : (data.cycleMonths ?? 1) * 30 }),
+        ...((data.cycleMonths !== undefined || data.durationUnit !== undefined || data.durationValue !== undefined) && {
+          cycleMonths: compatibility.cycleMonths,
+          durationDays: compatibility.durationDays,
+          durationUnit: resolvedDurationUnit ?? null,
+          durationValue: resolvedDurationValue ?? null,
+        }),
         ...(data.classLimit !== undefined && { classLimit: data.classLimit ?? null }),
         ...(data.isActive !== undefined && { isActive: data.isActive }),
         leaseEnabled: leaseTemplate.leaseEnabled,
@@ -6911,10 +6955,13 @@ if (!user) {
           "TAX_RATE_NOT_ALLOWED_FOR_TAX_EXEMPT",
           "LEASE_PLAN_REQUIRES_MONTHLY_CYCLE",
           "LEASE_CONTRACT_TERM_INVALID",
+          "PLAN_DURATION_INVALID",
         ].includes(err.message)
       ) {
         return res.status(400).json({
-          message: err.message.startsWith("LEASE_")
+          message: err.message === "PLAN_DURATION_INVALID"
+            ? "La duración del plan no es válida"
+            : err.message.startsWith("LEASE_")
             ? err.message === "LEASE_PLAN_REQUIRES_MONTHLY_CYCLE"
               ? "Un arrendamiento solo puede usarse en un plan mensual"
               : "La configuración del arrendamiento no es válida"
@@ -7155,12 +7202,13 @@ if (!user) {
     const actor = req.user as any;
     const membershipId = req.params.id as string;
     try {
-      const { paymentMethod, idempotencyKey } = membershipFinancePayloadSchema.parse(req.body ?? {});
+      const { paymentMethod, paymentEffectiveDate, idempotencyKey } = membershipFinancePayloadSchema.parse(req.body ?? {});
       try {
         const result = await storage.commitRenewMembershipBillingOperation({
           branchId: actor.branchId,
           membershipId,
           paymentMethod: normalizeOptionalText(paymentMethod) ?? null,
+          paymentEffectiveDate,
           idempotencyKey: idempotencyKey ?? null,
           actorUserId: actor.id,
         });
