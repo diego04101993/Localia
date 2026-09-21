@@ -17,7 +17,11 @@ const MONEY_FIELDS = [
   "obligationPaidTotal",
   "directManualIncome",
   "directManualExpenses",
+  "shippingExpenses",
+  "otherOperatingExpenses",
   "accruedCommissions",
+  "paidCommissions",
+  "pendingCommissions",
   "cashIn",
   "cashOut",
 ] as const;
@@ -40,6 +44,8 @@ export interface ProjectProfitabilitySnapshot extends Record<ProjectMoneyField |
   accountsPayable: number;
   accountsPayablePurchases: number;
   accountsPayableOtherExpenses: number;
+  accountsPayableCommissions: number;
+  totalPendingPayable: number;
   cashFlowNet: number;
   profit: number | null;
   profitIsComplete: boolean;
@@ -78,13 +84,19 @@ function createEmptySnapshot(): ProjectProfitabilitySnapshot {
     obligationPaidTotal: 0,
     directManualIncome: 0,
     directManualExpenses: 0,
+    shippingExpenses: 0,
+    otherOperatingExpenses: 0,
     accruedCommissions: 0,
+    paidCommissions: 0,
+    pendingCommissions: 0,
     cashIn: 0,
     cashOut: 0,
     accountsReceivable: 0,
     accountsPayable: 0,
     accountsPayablePurchases: 0,
     accountsPayableOtherExpenses: 0,
+    accountsPayableCommissions: 0,
+    totalPendingPayable: 0,
     cashFlowNet: 0,
     profit: 0,
     profitIsComplete: true,
@@ -127,6 +139,7 @@ export function buildProjectProfitabilitySnapshots(
     const receivableCents = Math.max(0, cents.salesFinalTotal - cents.salesPaidTotal);
     const purchasePayableCents = Math.max(0, cents.purchasesCommittedTotal - cents.purchasePaidTotal);
     const otherPayableCents = Math.max(0, cents.obligationTotal - cents.obligationPaidTotal);
+    const commissionPayableCents = Math.max(0, cents.pendingCommissions);
     const cashFlowCents = cents.cashIn - cents.cashOut;
     const profitIsComplete = cents.salesHistoricalWithoutTaxBreakdown === 0;
     const profitCents = cents.salesBeforeTax
@@ -139,6 +152,8 @@ export function buildProjectProfitabilitySnapshots(
     snapshot.accountsPayablePurchases = centsToMoney(purchasePayableCents);
     snapshot.accountsPayableOtherExpenses = centsToMoney(otherPayableCents);
     snapshot.accountsPayable = centsToMoney(purchasePayableCents + otherPayableCents);
+    snapshot.accountsPayableCommissions = centsToMoney(commissionPayableCents);
+    snapshot.totalPendingPayable = centsToMoney(purchasePayableCents + otherPayableCents + commissionPayableCents);
     snapshot.cashFlowNet = centsToMoney(cashFlowCents);
     snapshot.profitIsComplete = profitIsComplete;
     snapshot.profit = profitIsComplete ? centsToMoney(profitCents) : null;
@@ -148,4 +163,15 @@ export function buildProjectProfitabilitySnapshots(
   }
 
   return snapshots;
+}
+
+export function isProjectShippingCategory(value: string | null | undefined): boolean {
+  if (!value) return false;
+  const tokens = value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  return tokens.some((token) => ["envio", "envios", "logistica", "flete", "fletes"].includes(token));
 }

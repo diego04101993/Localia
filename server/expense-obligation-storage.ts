@@ -25,6 +25,7 @@ import {
   type ExpenseObligationTaxMode,
   type ExpensePaymentCanonicalInput,
 } from "@shared/expense-obligation";
+import { resolveAuditLogAttribution } from "./audit-context";
 
 type ExpenseTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 const PAYMENT_SOURCE = "expense_obligation_payment";
@@ -143,7 +144,7 @@ function validateDocument(input: ExpenseDocumentInput) {
 }
 
 async function audit(tx: ExpenseTx, actorUserId: string, branchId: string, action: string, metadata: Record<string, unknown>) {
-  await tx.insert(auditLogs).values({ actorUserId, branchId, action, metadata });
+  await tx.insert(auditLogs).values(resolveAuditLogAttribution({ actorUserId, branchId, action, metadata }));
 }
 
 async function verifyPaymentLink(tx: ExpenseTx, branchId: string, payment: BranchExpenseObligationPayment) {

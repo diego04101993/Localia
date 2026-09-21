@@ -1002,6 +1002,7 @@ export const branchSales = pgTable("branch_sales", {
   taxTotal: numeric("tax_total", { precision: 12, scale: 2 }),
   grandTotal: numeric("grand_total", { precision: 12, scale: 2 }),
   idempotencyKey: varchar("idempotency_key", { length: 120 }),
+  idempotencyFingerprint: varchar("idempotency_fingerprint", { length: 64 }),
   notes: text("notes"),
   createdBy: varchar("created_by", { length: 36 }).references(() => users.id, { onDelete: "set null" }),
   cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
@@ -1166,6 +1167,7 @@ export const branchCommissionPayments = pgTable("branch_commission_payments", {
   amount: numeric("amount", { precision: 12, scale: 2 }).notNull().default("0"),
   paymentMethod: text("payment_method").notNull(),
   idempotencyKey: varchar("idempotency_key", { length: 120 }),
+  idempotencyFingerprint: varchar("idempotency_fingerprint", { length: 64 }),
   reference: text("reference"),
   notes: text("notes"),
   periodStart: date("period_start"),
@@ -2014,6 +2016,10 @@ export const branchLeaseContracts = pgTable("branch_lease_contracts", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   completedAt: timestamp("completed_at", { withTimezone: true }),
   cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+  cancelledByUserId: varchar("cancelled_by_user_id", { length: 36 }).references(() => users.id, { onDelete: "set null" }),
+  cancellationReason: text("cancellation_reason"),
+  cancellationOperationKey: varchar("cancellation_operation_key", { length: 120 }),
+  cancellationFingerprint: varchar("cancellation_fingerprint", { length: 64 }),
 }, (table) => [
   index("branch_lease_contracts_branch_membership_created_idx").on(table.branchId, table.membershipId, table.createdAt),
   index("branch_lease_contracts_branch_client_created_idx").on(table.branchId, table.clientUserId, table.createdAt),
@@ -2195,6 +2201,8 @@ export const branchStaffClassLogs = pgTable("branch_staff_class_logs", {
   classDate: date("class_date").notNull(),
   notes: text("notes"),
   financeEntryId: varchar("finance_entry_id", { length: 36 }).references(() => branchFinanceEntries.id),
+  operationKey: varchar("operation_key", { length: 120 }),
+  operationFingerprint: varchar("operation_fingerprint", { length: 64 }),
   createdBy: varchar("created_by", { length: 36 }).references(() => users.id),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
@@ -2621,6 +2629,7 @@ export const createBranchStaffClassLogSchema = z.object({
   classDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Formato YYYY-MM-DD"),
   paymentMethod: z.enum(branchFinancePaymentMethodValues).nullable().optional(),
   notes: z.string().max(500, "Maximo 500 caracteres").nullable().optional(),
+  operationKey: z.string().trim().min(8, "Clave de operación inválida").max(120, "Máximo 120 caracteres"),
 });
 
 export const createBranchSalespersonSchema = z.object({
@@ -2715,7 +2724,7 @@ export const updateBranchCommissionRuleSchema = branchCommissionRuleSchemaBase.p
 export const createBranchCommissionPaymentSchema = z.object({
   amount: z.coerce.number().positive("El pago debe ser mayor a 0"),
   paymentMethod: z.enum(branchFinancePaymentMethodValues),
-  idempotencyKey: z.string().trim().min(8, "Idempotency key invalida").max(120, "Maximo 120 caracteres").optional(),
+  idempotencyKey: z.string().trim().min(8, "Idempotency key invalida").max(120, "Maximo 120 caracteres"),
   reference: z.string().max(160, "Maximo 160 caracteres").nullable().optional(),
   notes: z.string().max(500, "Maximo 500 caracteres").nullable().optional(),
   periodStart: branchCommissionRuleDateSchema.nullable().optional(),
@@ -2833,7 +2842,7 @@ export const createBranchSaleProductSchema = z.object({
   sellerId: z.string().min(1).nullable().optional(),
   projectId: z.string().min(1).nullable().optional(),
   paymentMethod: z.enum(branchFinancePaymentMethodValues),
-  idempotencyKey: z.string().trim().min(8, "Idempotency key invalida").max(120, "Maximo 120 caracteres").optional(),
+  idempotencyKey: z.string().trim().min(8, "Idempotency key invalida").max(120, "Maximo 120 caracteres"),
   discountAmount: z.coerce.number().min(0, "El descuento no puede ser negativo").default(0),
   taxMode: z.enum(branchSaleTaxModeValues).default("tax_exempt"),
   taxRate: z.coerce.number().min(0, "La tasa de IVA no puede ser negativa").max(100, "La tasa de IVA no puede ser mayor a 100").default(16),

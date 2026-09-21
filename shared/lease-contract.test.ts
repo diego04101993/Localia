@@ -7,6 +7,7 @@ import {
   calculateLeaseContractEndDate,
   calculateLeaseContractMetrics,
   calculateLeaseOperationalMembershipWindow,
+  getLeaseCancellationBalanceStatus,
   getLeaseInstallmentAlertKind,
   getLeaseInstallmentPaymentOperationKey,
 } from "./lease-contract";
@@ -243,6 +244,25 @@ test("calculateLeaseContractMetrics keeps cancelled contracts cancelled even whe
   assert.equal(metrics.pendingInstallments, 0);
   assert.equal(metrics.derivedStatus, "CANCELLED");
   assert.equal(metrics.isOpenForLifecycleGuards, false);
+});
+
+test("getLeaseCancellationBalanceStatus distinguishes cancelled debt from liquidation", () => {
+  assert.equal(getLeaseCancellationBalanceStatus({
+    cancelledAt: null,
+    pendingBalanceCents: 50_000,
+  }), null);
+  assert.equal(getLeaseCancellationBalanceStatus({
+    cancelledAt: "2026-09-18T12:00:00.000Z",
+    pendingBalanceCents: 50_000,
+  }), "BALANCE_DUE");
+  assert.equal(getLeaseCancellationBalanceStatus({
+    cancelledAt: "2026-09-18T12:00:00.000Z",
+    pendingBalanceCents: 0,
+  }), "LIQUIDATED");
+  assert.throws(() => getLeaseCancellationBalanceStatus({
+    cancelledAt: "2026-09-18T12:00:00.000Z",
+    pendingBalanceCents: -1,
+  }), /INVALID_PENDING_BALANCE_CENTS/);
 });
 
 test("calculateLeaseContractMetrics clamps pending payments at zero when paid count exceeds term", () => {

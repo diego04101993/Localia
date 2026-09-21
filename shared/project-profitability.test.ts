@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   buildProjectProfitabilitySnapshots,
+  isProjectShippingCategory,
   type ProjectProfitabilityContribution,
 } from "../server/project-profitability";
 import { createBranchFinanceEntrySchema, updateBranchFinanceEntrySchema } from "./schema";
@@ -169,7 +170,12 @@ test("23. a multi-project commission payment is split without duplication", () =
 });
 
 test("24. monthly bonus accruals are excluded from project commission", () => {
-  assert.match(storageSource, /eq\(branchCommissionAccruals\.accrualType, "sale"\)/);
+  const summarySection = storageSource.slice(
+    storageSource.indexOf("private async getBranchCommercialProjectSummaryMap"),
+    storageSource.indexOf("private async getBranchCommercialProjectRowById"),
+  );
+  const saleOnlyCommissionFilters = summarySection.match(/eq\(branchCommissionAccruals\.accrualType, "sale"\)/g) ?? [];
+  assert.equal(saleOnlyCommissionFilters.length, 2);
 });
 
 test("25. project profit follows the approved formula", () => {
@@ -320,4 +326,87 @@ test("41. document and payment aggregates do not multiply one another", () => {
   assert.match(section, /obligationBeforeTax: sql<number>`COALESCE\(SUM\(\$\{branchExpenseObligations\.taxableSubtotal\}\)/);
   assert.match(section, /obligationPaidTotal: sql<number>`COALESCE\(SUM\(\$\{branchExpenseObligationPayments\.amount\}\)/);
   assert.match(section, /eq\(branchFinanceEntries\.source, "expense_obligation_payment"\)/);
+});
+
+test("42. shipping categories are separated with normalized Spanish labels", () => {
+  for (const category of ["Envío", "envios", "Logística", "Flete", "Envío / logística"]) {
+    assert.equal(isProjectShippingCategory(category), true);
+  }
+  assert.equal(isProjectShippingCategory("Publicidad"), false);
+  assert.equal(isProjectShippingCategory(null), false);
+});
+
+test("43. Liverpool profitability excludes VAT and does not subtract purchases twice", () => {
+  const result = getSnapshot([
+    contribution({
+      salesBeforeTax: 500_000,
+      salesFinalTotal: 580_000,
+      taxCollected: 80_000,
+      cogsTotal: 320_000,
+    }),
+    contribution({
+      purchasesCommittedBeforeTax: 320_000,
+      purchasesCommittedTotal: 371_200,
+      purchasePaidTotal: 371_200,
+      cashOut: 371_200,
+    }),
+    contribution({
+      obligationBeforeTax: 20_000,
+      obligationTotal: 23_200,
+      obligationTaxTotal: 3_200,
+      obligationPaidTotal: 23_200,
+      shippingExpenses: 15_000,
+      otherOperatingExpenses: 5_000,
+      cashOut: 23_200,
+    }),
+    contribution({
+      accruedCommissions: 20_000,
+      paidCommissions: 20_000,
+      pendingCommissions: 0,
+      cashOut: 20_000,
+    }),
+    contribution({ cashIn: 580_000 }),
+  ]);
+
+  assert.equal(result.profit, 140_000);
+  assert.equal(result.shippingExpenses, 15_000);
+  assert.equal(result.otherOperatingExpenses, 5_000);
+  assert.equal(result.taxCollected, 80_000);
+  assert.equal(result.purchasesCommittedBeforeTax, 320_000);
+  assert.equal(result.cashOut, 414_400);
+  assert.equal(result.cashFlowNet, 165_600);
+});
+
+test("44. shipping breakout is presentational and never reduces profit twice", () => {
+  const result = getSnapshot([contribution({
+    salesBeforeTax: 100,
+    obligationBeforeTax: 15,
+    shippingExpenses: 15,
+    otherOperatingExpenses: 0,
+  })]);
+  assert.equal(result.profit, 85);
+});
+
+test("45. commission debt is separate and the combined payable names every component", () => {
+  const result = getSnapshot([
+    contribution({ purchasesCommittedTotal: 500, purchasePaidTotal: 200 }),
+    contribution({ obligationTotal: 300, obligationPaidTotal: 100 }),
+    contribution({ accruedCommissions: 90, paidCommissions: 30, pendingCommissions: 60 }),
+  ]);
+  assert.equal(result.accountsPayable, 500);
+  assert.equal(result.accountsPayableCommissions, 60);
+  assert.equal(result.totalPendingPayable, 560);
+});
+
+test("46. project UI exposes the approved operating cost and commission labels", () => {
+  for (const label of [
+    "Envíos y logística",
+    "Comisiones devengadas",
+    "Comisiones pagadas",
+    "Comisiones pendientes",
+    "Total pendiente de pagar",
+  ]) {
+    assert.match(projectUiSource, new RegExp(label));
+  }
+  assert.match(projectUiSource, /cogsTotal \+ detailProject\.summary\.shippingExpenses \+ detailProject\.summary\.accruedCommissions \+ detailProject\.summary\.otherOperatingExpenses/);
 });

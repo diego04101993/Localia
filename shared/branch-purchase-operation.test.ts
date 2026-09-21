@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { beginStableOperationAttempt } from "../client/src/lib/stable-operation-key";
 import {
   branchPurchaseMoneyToCents,
+  deriveBranchPurchaseReferenceUnitCostCents,
   deriveBranchPurchasePaymentStatus,
   getBranchPurchaseCancellationBlockReason,
   getBranchPurchaseLegacyPaidCents,
@@ -473,6 +474,41 @@ test("24. reference cost update rolls back with purchase failure", async () => {
   assert.equal(harness.getState().productReferenceCosts.get("product-1"), 2500);
 });
 
+test("reference cost keeps a tax-added unit cost before recoverable VAT", () => {
+  assert.deepEqual(deriveBranchPurchaseReferenceUnitCostCents({
+    taxableSubtotal: 1000,
+    items: [{ quantityOrdered: 1, unitCost: 1000 }],
+  }), [100_000]);
+});
+
+test("reference cost removes included VAT from the catalog cost", () => {
+  assert.deepEqual(deriveBranchPurchaseReferenceUnitCostCents({
+    taxableSubtotal: 1000,
+    items: [{ quantityOrdered: 1, unitCost: 1160 }],
+  }), [100_000]);
+});
+
+test("reference cost allocates purchase discount before tax", () => {
+  assert.deepEqual(deriveBranchPurchaseReferenceUnitCostCents({
+    taxableSubtotal: 900,
+    items: [{ quantityOrdered: 1, unitCost: 1000 }],
+  }), [90_000]);
+  assert.deepEqual(deriveBranchPurchaseReferenceUnitCostCents({
+    taxableSubtotal: 900,
+    items: [{ quantityOrdered: 1, unitCost: 1160 }],
+  }), [90_000]);
+});
+
+test("reference cost distributes the persisted economic subtotal proportionally", () => {
+  assert.deepEqual(deriveBranchPurchaseReferenceUnitCostCents({
+    taxableSubtotal: 90,
+    items: [
+      { quantityOrdered: 1, unitCost: 40 },
+      { quantityOrdered: 1, unitCost: 60 },
+    ],
+  }), [3600, 5400]);
+});
+
 test("25. sale cancellation restores inventory under ordered row locks", () => {
   const storage = readFileSync(path.join(repositoryRoot, "server/storage.ts"), "utf8");
   const start = storage.indexOf("const restorableMovements = inventoryMovementRows");
@@ -582,4 +618,6 @@ test("cross-branch commercial products are rejected before reference-cost writes
 
   assert.match(lookupBlock, /eq\(branchCommercialProducts\.branchId, data\.branchId\)/);
   assert.match(updateBlock, /eq\(branchCommercialProducts\.branchId, data\.branchId\)/);
+  assert.match(storage, /deriveBranchPurchaseReferenceUnitCostCents/);
+  assert.match(updateBlock, /referenceUnitCostCents\[index\]/);
 });

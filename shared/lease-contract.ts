@@ -233,6 +233,21 @@ export function isLeaseContractOpenForLifecycleGuards(params: {
   return !params.cancelledAt && !params.completedAt;
 }
 
+export type LeaseCancellationBalanceStatus = "LIQUIDATED" | "BALANCE_DUE" | null;
+
+export function getLeaseCancellationBalanceStatus(params: {
+  cancelledAt?: string | Date | null;
+  pendingBalanceCents: number;
+}): LeaseCancellationBalanceStatus {
+  if (!params.cancelledAt) {
+    return null;
+  }
+  if (!Number.isInteger(params.pendingBalanceCents) || params.pendingBalanceCents < 0) {
+    throw new Error("INVALID_PENDING_BALANCE_CENTS");
+  }
+  return params.pendingBalanceCents === 0 ? "LIQUIDATED" : "BALANCE_DUE";
+}
+
 export function calculateElapsedCalendarMonths(params: {
   contractStartDate: string;
   contractTermMonths: number;

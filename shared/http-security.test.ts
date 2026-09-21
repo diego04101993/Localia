@@ -79,6 +79,8 @@ async function withRealViteServer(
     assert.ok(address && typeof address === "object");
     await run(`http://127.0.0.1:${address.port}`, () => readinessCheckCount);
   } finally {
+    // Drain background transforms before Vite closes the watcher they can add to.
+    await Promise.all(Object.values(vite.environments).map((environment) => environment.close()));
     await vite.close();
     await new Promise<void>((resolve, reject) => {
       server.close((error) => error ? reject(error) : resolve());

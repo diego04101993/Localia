@@ -42,6 +42,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { useHorizontalScrollNav } from "@/hooks/use-horizontal-scroll-nav";
 import { useAuth } from "@/lib/auth";
+import { useStableOperationKey } from "@/lib/stable-operation-key";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
@@ -706,6 +707,7 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
   const [staffForm, setStaffForm] = useState<StaffFormState>(createInitialStaffFormState());
   const [editingStaffMember, setEditingStaffMember] = useState<BranchStaffMember | null>(null);
   const [staffClassLogForm, setStaffClassLogForm] = useState<StaffClassLogFormState>(createInitialStaffClassLogFormState());
+  const staffClassLogOperation = useStableOperationKey();
   const [saleDetailId, setSaleDetailId] = useState<string | null>(null);
   const [commissionPaymentDetailId, setCommissionPaymentDetailId] = useState<string | null>(null);
   const [saleCancellationReason, setSaleCancellationReason] = useState("");
@@ -1119,27 +1121,20 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
   });
 
   const staffClassLogMutation = useMutation({
-    mutationFn: async () => {
-      const classesCount = Number(staffClassLogForm.classesCount);
-      if (!Number.isFinite(classesCount) || classesCount <= 0) {
-        throw new Error("Captura un número de clases válido");
-      }
-
+    mutationFn: async ({ payload }: { payload: Record<string, unknown>; fingerprint: string }) => {
       const response = await apiRequest("POST", "/api/branch/finance/staff/class-logs", {
-        staffId: staffClassLogForm.staffId,
-        classesCount,
-        classDate: staffClassLogForm.classDate,
-        paymentMethod: staffClassLogForm.paymentMethod || null,
-        notes: staffClassLogForm.notes.trim() || null,
+        ...payload,
       });
       return response.json();
     },
-    onSuccess: async () => {
+    onSuccess: async (_data, variables) => {
+      staffClassLogOperation.markSuccess(variables.fingerprint);
       await invalidateBranchStaffFinanceQueries();
       toast({ title: "Clases registradas en Caja" });
       setStaffClassLogForm(createInitialStaffClassLogFormState());
     },
-    onError: (error: any) => {
+    onError: (error: any, variables) => {
+      staffClassLogOperation.markError(variables.fingerprint);
       toast({
         title: "Error",
         description: error.message || "No se pudo registrar la clase impartida",
@@ -1147,6 +1142,34 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
       });
     },
   });
+
+  function handleStaffClassLogSubmit() {
+    const classesCount = Number(staffClassLogForm.classesCount);
+    if (!Number.isFinite(classesCount) || classesCount <= 0) {
+      toast({
+        title: "Datos inválidos",
+        description: "Captura un número de clases válido",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const payload = {
+      staffId: staffClassLogForm.staffId,
+      classesCount,
+      classDate: staffClassLogForm.classDate,
+      paymentMethod: staffClassLogForm.paymentMethod || null,
+      notes: staffClassLogForm.notes.trim() || null,
+    };
+    const fingerprint = JSON.stringify(payload);
+    const attempt = staffClassLogOperation.begin(fingerprint);
+    if (!attempt.allowed) return;
+
+    staffClassLogMutation.mutate({
+      payload: { ...payload, operationKey: attempt.key },
+      fingerprint,
+    });
+  }
 
   function handleQuickRangeChange(preset: Exclude<RangePreset, "custom" | "calendar_month">) {
     const range = getQuickRange(preset);
@@ -2219,7 +2242,7 @@ export default function CajaTab({ focusRequest }: { focusRequest?: CajaFocusRequ
                 </p>
                 <Button
                   className="w-full justify-center md:w-auto"
-                  onClick={() => staffClassLogMutation.mutate()}
+                  onClick={handleStaffClassLogSubmit}
                   disabled={staffClassLogMutation.isPending || !staffClassLogForm.staffId || !staffClassLogForm.classesCount}
                 >
                   {staffClassLogMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ReceiptText className="mr-2 h-4 w-4" />}

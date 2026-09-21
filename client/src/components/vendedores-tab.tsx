@@ -55,6 +55,11 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  buildSalespersonSaleCommissionDetail,
+  getCommissionValueSnapshot,
+  type HistoricalCommissionAccrualSnapshot,
+} from "@shared/sales-commission-view";
 
 type Salesperson = {
   id: string;
@@ -93,9 +98,20 @@ type SalespersonSummary = {
   bonusGeneratedAmount: number;
 };
 
+type SaleItem = {
+  id: string;
+  nameSnapshot: string;
+  categorySnapshot: string | null;
+  quantity: number;
+  lineTotalAmount: number;
+};
+
 type Sale = {
   id: string;
   branchId: string;
+  projectId: string | null;
+  projectCode: string | null;
+  projectName: string | null;
   folio: string;
   clientUserId: string | null;
   clientDisplayName: string | null;
@@ -105,7 +121,17 @@ type Sale = {
   sellerNameSnapshot: string | null;
   channel: string;
   status: string;
+  subtotalAmount: number;
+  discountAmount: number;
   totalAmount: number;
+  paidAmount: number;
+  taxMode: string | null;
+  taxRate: number | null;
+  subtotalBeforeTax: number | null;
+  taxableSubtotal: number | null;
+  taxTotal: number | null;
+  grandTotal: number | null;
+  items: SaleItem[];
   createdAt: string;
 };
 
@@ -459,6 +485,17 @@ function getPendingCommissionAmount(accrual: CommissionAccrual) {
   return Math.max(0, Number((accrual.commissionAmount - accrual.paidAmount).toFixed(2)));
 }
 
+function formatCommissionValue(accrual: HistoricalCommissionAccrualSnapshot) {
+  const snapshot = getCommissionValueSnapshot(accrual);
+  if (snapshot.value == null) return "Valor no disponible";
+  if (snapshot.kind === "percentage") {
+    return `${new Intl.NumberFormat("es-MX", { maximumFractionDigits: 4 }).format(snapshot.value)}%`;
+  }
+  if (snapshot.kind === "fixed_per_unit") return `${formatCurrencyMx(snapshot.value)} por unidad`;
+  if (snapshot.kind === "fixed_per_sale") return `${formatCurrencyMx(snapshot.value)} por venta`;
+  return formatCurrencyMx(snapshot.value);
+}
+
 function summarizeRuleTarget(rule: CommissionRule, productMap: Map<string, CommercialProduct>) {
   if (rule.ruleType === "percentage_product" || rule.ruleType === "fixed_product") {
     const product = rule.commercialProductId ? productMap.get(rule.commercialProductId) : null;
@@ -582,6 +619,14 @@ export default function VendedoresTab({ focusRequest }: { focusRequest?: Salespe
   const commercialProductMap = useMemo(
     () => new Map(commercialProducts.map((product) => [product.id, product])),
     [commercialProducts],
+  );
+
+  const saleCommissionDetails = useMemo(
+    () => new Map((salesQuery.data ?? []).map((sale) => [
+      sale.id,
+      buildSalespersonSaleCommissionDetail(sale, commissionsQuery.data ?? []),
+    ])),
+    [commissionsQuery.data, salesQuery.data],
   );
 
   const commissionTotals = useMemo(() => {
@@ -1202,7 +1247,7 @@ export default function VendedoresTab({ focusRequest }: { focusRequest?: Salespe
                     <div className="rounded-2xl border border-dashed border-border/80 bg-muted/20 p-6 text-center text-sm text-muted-foreground">
                       Selecciona un vendedor para ver sus ventas.
                     </div>
-                  ) : salesQuery.isLoading ? (
+                  ) : salesQuery.isLoading || commissionsQuery.isLoading ? (
                     <div className="space-y-3">
                       <Skeleton className="h-24 w-full rounded-2xl" />
                       <Skeleton className="h-24 w-full rounded-2xl" />
@@ -1213,55 +1258,85 @@ export default function VendedoresTab({ focusRequest }: { focusRequest?: Salespe
                       <p className="mt-1 text-sm text-muted-foreground">Las ventas nuevas desde Productos pueden asignarse opcionalmente a este vendedor.</p>
                     </div>
                   ) : (
-                    <>
-                      <div className="space-y-3 md:hidden">
-                        {(salesQuery.data ?? []).map((sale) => (
-                          <Card key={sale.id} className="border-border/60">
-                            <CardContent className="space-y-3 p-4">
-                              <div className="flex items-start justify-between gap-3">
+                    <div className="space-y-4">
+                      {(salesQuery.data ?? []).map((sale) => {
+                        const detail = saleCommissionDetails.get(sale.id);
+                        if (!detail) return null;
+                        return (
+                          <Card key={sale.id} className="overflow-hidden border-border/70">
+                            <CardHeader className="border-b border-border/60 bg-muted/20 pb-4">
+                              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                                 <div className="min-w-0">
-                                  <p className="font-medium">{sale.folio}</p>
-                                  <p className="truncate text-sm text-muted-foreground">{sale.clientDisplayName || "Venta sin cliente"}</p>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <CardTitle className="text-base">{sale.folio}</CardTitle>
+                                    <Badge variant="outline">{sale.status}</Badge>
+                                    <Badge variant={sale.projectId ? "secondary" : "outline"}>
+                                      {sale.projectName
+                                        ? `${sale.projectCode ? `${sale.projectCode} · ` : ""}${sale.projectName}`
+                                        : "Sin proyecto"}
+                                    </Badge>
+                                  </div>
+                                  <CardDescription className="mt-2">
+                                    {sale.clientDisplayName || "Venta sin cliente"} · {formatDateTime(sale.createdAt)}
+                                  </CardDescription>
                                 </div>
-                                <Badge variant="outline">{sale.status}</Badge>
+                                <div className="text-left sm:text-right">
+                                  <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Vendedor</p>
+                                  <p className="font-medium">{detail.sellerNameSnapshot || "Sin snapshot"}</p>
+                                </div>
                               </div>
-                              <div className="grid gap-1 text-sm text-muted-foreground">
-                                <p>{formatDateTime(sale.createdAt)}</p>
-                                <p>{sale.sellerNameSnapshot || "Sin snapshot"}</p>
+                            </CardHeader>
+                            <CardContent className="space-y-4 p-4 sm:p-5">
+                              <div className="space-y-3">
+                                {detail.items.map((item) => (
+                                  <div key={item.id} className="rounded-xl border border-border/60 p-3">
+                                    <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                                      <p className="font-medium">{item.quantity} × {item.nameSnapshot}</p>
+                                      <p className="text-sm font-medium">{formatCurrencyMx(item.lineTotalAmount)}</p>
+                                    </div>
+                                    {item.categorySnapshot ? <p className="text-xs text-muted-foreground">{item.categorySnapshot}</p> : null}
+                                    {item.commissions.length > 0 ? (
+                                      <div className="mt-3 grid gap-2">
+                                        {item.commissions.map((accrual) => (
+                                          <div key={accrual.id} className="flex flex-col gap-1 rounded-lg bg-muted/50 px-3 py-2 text-sm sm:flex-row sm:items-center sm:justify-between">
+                                            <span>{accrual.ruleNameSnapshot || "Comisión específica"} · {formatCommissionValue(accrual)}</span>
+                                            <span className="font-medium">{formatCurrencyMx(accrual.commissionAmount)}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    ) : (
+                                      <p className="mt-2 text-xs text-muted-foreground">Sin comisión específica para este producto.</p>
+                                    )}
+                                  </div>
+                                ))}
                               </div>
-                              <p className="text-lg font-semibold">{formatCurrencyMx(sale.totalAmount)}</p>
+
+                              {detail.generalCommissions.length > 0 ? (
+                                <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3">
+                                  <p className="text-sm font-medium">Comisión general de la venta</p>
+                                  <p className="mt-1 text-xs text-muted-foreground">Se conserva a nivel venta; WebCool no la reparte artificialmente entre productos.</p>
+                                  <div className="mt-2 space-y-2">
+                                    {detail.generalCommissions.map((accrual) => (
+                                      <div key={accrual.id} className="flex flex-col gap-1 text-sm sm:flex-row sm:items-center sm:justify-between">
+                                        <span>{accrual.ruleNameSnapshot || "Regla general"} · {formatCommissionValue(accrual)}</span>
+                                        <span className="font-medium">{formatCurrencyMx(accrual.commissionAmount)}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : null}
+
+                              <div className="grid gap-3 border-t pt-4 sm:grid-cols-2 xl:grid-cols-4">
+                                <div><p className="text-xs text-muted-foreground">Venta neta antes de IVA</p><p className="font-semibold">{detail.netBeforeTax == null ? "No disponible en histórico" : formatCurrencyMx(detail.netBeforeTax)}</p></div>
+                                <div><p className="text-xs text-muted-foreground">Comisión generada</p><p className="font-semibold">{formatCurrencyMx(detail.generatedCommission)}</p></div>
+                                <div><p className="text-xs text-muted-foreground">Pagada</p><p className="font-semibold">{formatCurrencyMx(detail.paidCommission)}</p></div>
+                                <div><p className="text-xs text-muted-foreground">Pendiente</p><p className="font-semibold">{formatCurrencyMx(detail.pendingCommission)}</p></div>
+                              </div>
                             </CardContent>
                           </Card>
-                        ))}
-                      </div>
-
-                      <div className="hidden overflow-hidden rounded-2xl border border-border/70 md:block">
-                        <Table>
-                          <TableHeader>
-                            <TableRow>
-                              <TableHead>Folio</TableHead>
-                              <TableHead>Cliente</TableHead>
-                              <TableHead>Vendedor</TableHead>
-                              <TableHead>Canal</TableHead>
-                              <TableHead>Fecha</TableHead>
-                              <TableHead>Total</TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {(salesQuery.data ?? []).map((sale) => (
-                              <TableRow key={sale.id}>
-                                <TableCell className="font-medium">{sale.folio}</TableCell>
-                                <TableCell>{sale.clientDisplayName || "Venta sin cliente"}</TableCell>
-                                <TableCell>{sale.sellerNameSnapshot || "Sin vendedor"}</TableCell>
-                                <TableCell>{sale.channel}</TableCell>
-                                <TableCell>{formatDateTime(sale.createdAt)}</TableCell>
-                                <TableCell>{formatCurrencyMx(sale.totalAmount)}</TableCell>
-                              </TableRow>
-                            ))}
-                          </TableBody>
-                        </Table>
-                      </div>
-                    </>
+                        );
+                      })}
+                    </div>
                   )}
                 </TabsContent>
 
@@ -1484,7 +1559,7 @@ export default function VendedoresTab({ focusRequest }: { focusRequest?: Salespe
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                       <p className="font-medium">Pagos registrados</p>
-                      <p className="text-sm text-muted-foreground">En esta fase solo se registran en el ledger de comisiones. No se duplican automaticamente en Caja.</p>
+                      <p className="text-sm text-muted-foreground">El pago de comisión se registra automáticamente en Caja. No lo captures de nuevo como gasto manual.</p>
                     </div>
                     <Button onClick={() => setPaymentDialogOpen(true)} disabled={!selectedId}>
                       <Plus className="mr-2 h-4 w-4" />

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Ban,
   Check,
   ChevronsUpDown,
   CreditCard,
@@ -66,6 +67,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { downloadAuthenticatedFileRequest } from "@/lib/download-file";
 import { invalidateBranchFinanceQueries } from "@/lib/branch-dashboard-cache";
 import { apiRequest } from "@/lib/queryClient";
+import { useStableOperationKey } from "@/lib/stable-operation-key";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import {
@@ -160,8 +162,12 @@ type LeaseContractSummary = {
   canEditFinancialTerms: boolean;
   canEditAdministrativeDetails: boolean;
   canDelete: boolean;
+  canCancel: boolean;
   completedAt: string | null;
   cancelledAt: string | null;
+  cancelledByUserId: string | null;
+  cancellationReason: string | null;
+  cancellationBalanceStatus: "LIQUIDATED" | "BALANCE_DUE" | null;
   createdAt: string;
   updatedAt: string;
   installments?: BranchLeaseInstallmentSummary[];
@@ -229,6 +235,16 @@ type LeaseInstallmentPaymentResponse = {
   financeEntryId: string;
   idempotentReplay: boolean;
   completedAt: string | null;
+  leaseContract: LeaseContractSummary;
+};
+
+type LeaseCancellationResponse = {
+  leaseContractId: string;
+  idempotentReplay: boolean;
+  cancelledAt: string;
+  pendingInstallments: number;
+  pendingBalanceCents: number;
+  notificationsClosed: number;
   leaseContract: LeaseContractSummary;
 };
 
@@ -322,10 +338,17 @@ function formatTaxRateLabel(rate: number | null) {
   return `${rate.toFixed(2).replace(/\.00$/, "")}%`;
 }
 
-function getLeaseStatusLabel(status: LeaseContractStatus) {
+function getLeaseStatusLabel(
+  status: LeaseContractStatus,
+  cancellationBalanceStatus: LeaseContractSummary["cancellationBalanceStatus"] = null,
+) {
   if (status === "COMPLETED") return "Completado";
   if (status === "EXPIRED") return "Vencido";
-  if (status === "CANCELLED") return "Cancelado";
+  if (status === "CANCELLED") {
+    if (cancellationBalanceStatus === "LIQUIDATED") return "Cancelado · Liquidado";
+    if (cancellationBalanceStatus === "BALANCE_DUE") return "Cancelado · Saldo pendiente";
+    return "Cancelado";
+  }
   return "Activo";
 }
 
@@ -339,11 +362,14 @@ function getLeaseDeletionProtectionMessage(contract: LeaseContractSummary) {
   if (!contract.hasInstallmentSchedule) {
     return "Contrato con historial legacy protegido.";
   }
-  if (contract.hasFinancialHistory) {
-    return "Este arrendamiento tiene pagos registrados y no puede eliminarse. Debe cancelarse conservando su historial.";
-  }
   if (contract.derivedStatus === "CANCELLED") {
     return "Este arrendamiento está cancelado y conserva su historial.";
+  }
+  if (contract.derivedStatus === "COMPLETED") {
+    return "Este arrendamiento está liquidado y conserva su historial financiero.";
+  }
+  if (contract.hasFinancialHistory) {
+    return "Este arrendamiento tiene pagos registrados y no puede eliminarse. Debe cancelarse conservando su historial.";
   }
   return null;
 }
@@ -507,7 +533,7 @@ function createQuoteFormStateFromContract(contract: LeaseContractSummary): Lease
 }
 
 function getLeaseCollectionBadge(contract: LeaseContractSummary) {
-  if (!contract.hasInstallmentSchedule || !contract.nextPendingInstallment) {
+  if (contract.derivedStatus === "CANCELLED" || !contract.hasInstallmentSchedule || !contract.nextPendingInstallment) {
     return null;
   }
 
@@ -626,6 +652,7 @@ function LeaseDetailDialog({
   onRegisterPayment,
   onEdit,
   onDelete,
+  onCancel,
 }: {
   leaseContractId: string | null;
   open: boolean;
@@ -633,6 +660,7 @@ function LeaseDetailDialog({
   onRegisterPayment: (target: LeasePaymentTarget) => void;
   onEdit: (contract: LeaseContractSummary) => void;
   onDelete: (contract: LeaseContractSummary) => void;
+  onCancel: (contract: LeaseContractSummary) => void;
 }) {
   const detailQueryKey = leaseContractId ? [`/api/branch/lease-contracts/${leaseContractId}`] : [];
   const { data, isLoading, error } = useQuery<LeaseContractSummary>({
@@ -643,14 +671,12 @@ function LeaseDetailDialog({
   const breakdown = data ? getMonthlyBreakdown(data) : null;
   const assetValueForDisplay = data?.assetValueCents ?? data?.capturedPriceCents ?? 0;
   const contractFinalForDisplay = data?.contractFinalTotalCents ?? null;
-  const nextPendingInstallment = data?.derivedStatus !== "CANCELLED"
-    ? data?.installments
-      ?.filter((installment) => installment.paymentSource === null)
-      .sort((left, right) => (
-        left.dueDate.localeCompare(right.dueDate)
-        || left.installmentNumber - right.installmentNumber
-      ))[0] ?? null
-    : null;
+  const nextPendingInstallment = data?.installments
+    ?.filter((installment) => installment.paymentSource === null)
+    .sort((left, right) => (
+      left.dueDate.localeCompare(right.dueDate)
+      || left.installmentNumber - right.installmentNumber
+    ))[0] ?? null;
   const deletionProtectionMessage = data ? getLeaseDeletionProtectionMessage(data) : null;
 
   return (
@@ -676,6 +702,11 @@ function LeaseDetailDialog({
                 <Button variant="outline" size="sm" onClick={() => onDelete(data)}>
                   <Trash2 className="mr-2 h-4 w-4" />
                   Eliminar
+                </Button>
+              ) : data.canCancel ? (
+                <Button variant="outline" size="sm" onClick={() => onCancel(data)}>
+                  <Ban className="mr-2 h-4 w-4" />
+                  Cancelar contrato
                 </Button>
               ) : deletionProtectionMessage ? (
                 <span title={deletionProtectionMessage} className="inline-flex cursor-not-allowed">
@@ -721,7 +752,7 @@ function LeaseDetailDialog({
                   <p className="mt-1 break-words text-sm text-muted-foreground">{data.leasedItemDescription}</p>
                 </div>
                 <Badge variant={getLeaseStatusBadgeVariant(data.derivedStatus)} className="self-start">
-                  {getLeaseStatusLabel(data.derivedStatus)}
+                  {getLeaseStatusLabel(data.derivedStatus, data.cancellationBalanceStatus)}
                 </Badge>
               </div>
               <div className="mt-4 grid gap-3 sm:grid-cols-3">
@@ -763,7 +794,7 @@ function LeaseDetailDialog({
               <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Pendientes</p><p className="mt-1 font-medium">{data.pendingInstallments}</p></CardContent></Card>
               <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Meses transcurridos</p><p className="mt-1 font-medium">{data.elapsedCalendarMonths}</p></CardContent></Card>
               <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Meses restantes</p><p className="mt-1 font-medium">{data.remainingCalendarMonths}</p></CardContent></Card>
-              <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Estado</p><p className="mt-1 font-medium">{getLeaseStatusLabel(data.derivedStatus)}</p></CardContent></Card>
+              <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Estado</p><p className="mt-1 font-medium">{getLeaseStatusLabel(data.derivedStatus, data.cancellationBalanceStatus)}</p></CardContent></Card>
             </div>
 
             <Card>
@@ -776,6 +807,7 @@ function LeaseDetailDialog({
                 <p><span className="font-medium text-foreground">Creado:</span> {formatDateTime(data.createdAt)}</p>
                 {data.completedAt ? <p><span className="font-medium text-foreground">Completado:</span> {formatDateTime(data.completedAt)}</p> : null}
                 {data.cancelledAt ? <p><span className="font-medium text-foreground">Cancelado:</span> {formatDateTime(data.cancelledAt)}</p> : null}
+                {data.cancellationReason ? <p><span className="font-medium text-foreground">Motivo de cancelación:</span> {data.cancellationReason}</p> : null}
                 {breakdown?.hint ? <p>{breakdown.hint}</p> : null}
               </CardContent>
             </Card>
@@ -822,7 +854,7 @@ function LeaseDetailDialog({
                               ) : <span className="text-xs text-muted-foreground">—</span>}
                             </TableCell>
                             <TableCell className="text-right">
-                              {installment.paymentSource === null && data.derivedStatus !== "CANCELLED" ? (
+                              {installment.paymentSource === null ? (
                                 <Button
                                   variant="outline"
                                   size="sm"
@@ -1767,7 +1799,10 @@ export default function ArrendamientosTab({ focusRequest }: { focusRequest?: Lea
   const [quoteDialogOpen, setQuoteDialogOpen] = useState(false);
   const [editContract, setEditContract] = useState<LeaseContractSummary | null>(null);
   const [deleteContract, setDeleteContract] = useState<LeaseContractSummary | null>(null);
+  const [cancelContract, setCancelContract] = useState<LeaseContractSummary | null>(null);
+  const [cancellationReason, setCancellationReason] = useState("");
   const [paymentTarget, setPaymentTarget] = useState<LeasePaymentTarget | null>(null);
+  const cancellationOperation = useStableOperationKey();
 
   const { data: contracts = [], isLoading, error } = useQuery<LeaseContractSummary[]>({
     queryKey: LEASE_CONTRACTS_QUERY_KEY,
@@ -1776,6 +1811,17 @@ export default function ArrendamientosTab({ focusRequest }: { focusRequest?: Lea
   const deleteLeaseMutation = useMutation({
     mutationFn: async (leaseContractId: string) => {
       await apiRequest("DELETE", `/api/branch/lease-contracts/${leaseContractId}`);
+    },
+  });
+
+  const cancelLeaseMutation = useMutation({
+    mutationFn: async (request: { leaseContractId: string; reason: string; operationKey: string }) => {
+      const response = await apiRequest(
+        "POST",
+        `/api/branch/lease-contracts/${request.leaseContractId}/cancel`,
+        { reason: request.reason, operationKey: request.operationKey },
+      );
+      return response.json() as Promise<LeaseCancellationResponse>;
     },
   });
 
@@ -1836,7 +1882,7 @@ export default function ArrendamientosTab({ focusRequest }: { focusRequest?: Lea
   }
 
   function openNextPayment(contract: LeaseContractSummary) {
-    if (!contract.hasInstallmentSchedule || !contract.nextPendingInstallment || contract.derivedStatus === "CANCELLED") {
+    if (!contract.hasInstallmentSchedule || !contract.nextPendingInstallment) {
       return;
     }
     setPaymentTarget({
@@ -1857,6 +1903,14 @@ export default function ArrendamientosTab({ focusRequest }: { focusRequest?: Lea
     setDeleteContract(contract);
   }
 
+  function openCancel(contract: LeaseContractSummary) {
+    setDetailOpen(false);
+    setDetailLeaseId(null);
+    setCancellationReason("");
+    cancellationOperation.reset();
+    setCancelContract(contract);
+  }
+
   async function handleDeleteLeaseContract() {
     if (!deleteContract) {
       return;
@@ -1875,6 +1929,61 @@ export default function ArrendamientosTab({ focusRequest }: { focusRequest?: Lea
       toast({
         title: "No pudimos eliminar el arrendamiento",
         description: error?.message || "El contrato conserva su historial y no se eliminó nada.",
+        variant: "destructive",
+      });
+    }
+  }
+
+  async function handleCancelLeaseContract() {
+    if (!cancelContract || cancelLeaseMutation.isPending) {
+      return;
+    }
+    const reason = cancellationReason.trim();
+    if (reason.length < 3) {
+      toast({
+        title: "Motivo requerido",
+        description: "Explica brevemente por qué se cancela el contrato.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const fingerprint = JSON.stringify({ leaseContractId: cancelContract.id, reason });
+    const attempt = cancellationOperation.begin(fingerprint);
+    if (!attempt.allowed) {
+      return;
+    }
+
+    try {
+      const result = await cancelLeaseMutation.mutateAsync({
+        leaseContractId: cancelContract.id,
+        reason,
+        operationKey: attempt.key,
+      });
+      cancellationOperation.markSuccess(fingerprint);
+      queryClient.setQueryData(
+        [`/api/branch/lease-contracts/${cancelContract.id}`],
+        result.leaseContract,
+      );
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: LEASE_CONTRACTS_QUERY_KEY }),
+        queryClient.invalidateQueries({ queryKey: [`/api/branch/lease-contracts/${cancelContract.id}`] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/notifications"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/notifications/summary"] }),
+      ]);
+      toast({
+        title: result.idempotentReplay ? "Cancelación ya registrada" : "Arrendamiento cancelado",
+        description: result.pendingBalanceCents > 0
+          ? `El historial permanece intacto y el saldo pendiente es ${formatCurrencyMxFromCents(result.pendingBalanceCents)}.`
+          : "El historial permanece intacto y el contrato está liquidado.",
+      });
+      setCancelContract(null);
+      setCancellationReason("");
+    } catch (error: any) {
+      cancellationOperation.markError(fingerprint);
+      toast({
+        title: "No pudimos cancelar el arrendamiento",
+        description: error?.message || "No se modificó el contrato ni su historial financiero.",
         variant: "destructive",
       });
     }
@@ -1978,7 +2087,7 @@ export default function ArrendamientosTab({ focusRequest }: { focusRequest?: Lea
                           <p className="mt-1 break-words text-sm text-muted-foreground">{contract.leasedItemDescription}</p>
                         </div>
                         <Badge variant={getLeaseStatusBadgeVariant(contract.derivedStatus)} className="shrink-0">
-                          {getLeaseStatusLabel(contract.derivedStatus)}
+                          {getLeaseStatusLabel(contract.derivedStatus, contract.cancellationBalanceStatus)}
                         </Badge>
                       </div>
 
@@ -2017,7 +2126,7 @@ export default function ArrendamientosTab({ focusRequest }: { focusRequest?: Lea
                             <Eye className="mr-2 h-4 w-4" />
                             Ver
                           </Button>
-                          {contract.nextPendingInstallment && contract.derivedStatus !== "CANCELLED" ? (
+                          {contract.nextPendingInstallment ? (
                             <Button className="w-full" onClick={() => openNextPayment(contract)} data-testid={`button-register-next-lease-payment-${contract.id}`}>
                               <CreditCard className="mr-2 h-4 w-4" />
                               Registrar pago
@@ -2045,6 +2154,11 @@ export default function ArrendamientosTab({ focusRequest }: { focusRequest?: Lea
                           <Button variant="outline" size="sm" onClick={() => openDelete(contract)} data-testid={`button-delete-lease-${contract.id}`}>
                             <Trash2 className="mr-2 h-4 w-4" />
                             Eliminar
+                          </Button>
+                        ) : contract.canCancel ? (
+                          <Button variant="outline" size="sm" onClick={() => openCancel(contract)} data-testid={`button-cancel-lease-${contract.id}`}>
+                            <Ban className="mr-2 h-4 w-4" />
+                            Cancelar
                           </Button>
                         ) : getLeaseDeletionProtectionMessage(contract) ? (
                           <span title={getLeaseDeletionProtectionMessage(contract) ?? undefined} className="inline-flex cursor-not-allowed">
@@ -2117,7 +2231,7 @@ export default function ArrendamientosTab({ focusRequest }: { focusRequest?: Lea
                         <TableCell>
                           <div className="flex min-w-[110px] flex-col items-start gap-1">
                             <Badge variant={getLeaseStatusBadgeVariant(contract.derivedStatus)}>
-                              {getLeaseStatusLabel(contract.derivedStatus)}
+                              {getLeaseStatusLabel(contract.derivedStatus, contract.cancellationBalanceStatus)}
                             </Badge>
                             {getLeaseCollectionBadge(contract) ? (
                               <Badge variant={getLeaseCollectionBadge(contract)!.variant} className="text-[10px]">
@@ -2132,7 +2246,7 @@ export default function ArrendamientosTab({ focusRequest }: { focusRequest?: Lea
                               <Eye className="mr-2 h-4 w-4" />
                               Ver
                             </Button>
-                            {contract.nextPendingInstallment && contract.derivedStatus !== "CANCELLED" ? (
+                            {contract.nextPendingInstallment ? (
                               <Button size="sm" onClick={() => openNextPayment(contract)} data-testid={`button-register-next-lease-payment-${contract.id}`}>
                                 <CreditCard className="mr-2 h-4 w-4" />
                                 Registrar pago
@@ -2148,6 +2262,11 @@ export default function ArrendamientosTab({ focusRequest }: { focusRequest?: Lea
                               <Button variant="outline" size="sm" onClick={() => openDelete(contract)} data-testid={`button-delete-lease-${contract.id}`}>
                                 <Trash2 className="mr-2 h-4 w-4" />
                                 Eliminar
+                              </Button>
+                            ) : contract.canCancel ? (
+                              <Button variant="outline" size="sm" onClick={() => openCancel(contract)} data-testid={`button-cancel-lease-${contract.id}`}>
+                                <Ban className="mr-2 h-4 w-4" />
+                                Cancelar
                               </Button>
                             ) : getLeaseDeletionProtectionMessage(contract) ? (
                               <span title={getLeaseDeletionProtectionMessage(contract) ?? undefined} className="inline-flex cursor-not-allowed">
@@ -2212,6 +2331,7 @@ export default function ArrendamientosTab({ focusRequest }: { focusRequest?: Lea
         onRegisterPayment={setPaymentTarget}
         onEdit={openEdit}
         onDelete={openDelete}
+        onCancel={openCancel}
       />
 
       <LeasePaymentDialog
@@ -2250,6 +2370,62 @@ export default function ArrendamientosTab({ focusRequest }: { focusRequest?: Lea
             >
               {deleteLeaseMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Trash2 className="mr-2 h-4 w-4" />}
               Eliminar definitivamente
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!cancelContract} onOpenChange={(open) => {
+        if (!open && !cancelLeaseMutation.isPending) {
+          setCancelContract(null);
+          setCancellationReason("");
+          cancellationOperation.reset();
+        }
+      }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Cancelar arrendamiento?</AlertDialogTitle>
+            <AlertDialogDescription>
+              El contrato y todo su historial se conservarán. Las mensualidades impagas seguirán formando el saldo por cobrar y podrán pagarse después. Esta acción no genera movimientos en Caja.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {cancelContract ? (
+            <div className="space-y-3">
+              <div className="rounded-xl border bg-muted/30 p-3 text-sm">
+                <p className="font-medium">{cancelContract.leasedItemDescription}</p>
+                <p className="mt-1 text-muted-foreground">{cancelContract.clientDisplayName}</p>
+                <p className="mt-2 text-sm font-medium">
+                  Saldo pendiente: {formatCurrencyMxFromCents(cancelContract.pendingContractBalanceCents)}
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="lease-cancellation-reason">Motivo de cancelación</Label>
+                <Textarea
+                  id="lease-cancellation-reason"
+                  value={cancellationReason}
+                  onChange={(event) => setCancellationReason(event.target.value)}
+                  maxLength={500}
+                  rows={3}
+                  disabled={cancelLeaseMutation.isPending}
+                  placeholder="Describe brevemente el motivo"
+                  data-testid="textarea-lease-cancellation-reason"
+                />
+              </div>
+            </div>
+          ) : null}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={cancelLeaseMutation.isPending}>Regresar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(event) => {
+                event.preventDefault();
+                void handleCancelLeaseContract();
+              }}
+              disabled={cancelLeaseMutation.isPending || cancellationReason.trim().length < 3}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              data-testid="button-confirm-cancel-lease"
+            >
+              {cancelLeaseMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Ban className="mr-2 h-4 w-4" />}
+              Cancelar contrato
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

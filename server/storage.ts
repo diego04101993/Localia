@@ -206,6 +206,7 @@ import {
   calculateLeaseContractEndDate,
   calculateLeaseContractMetrics,
   calculateLeaseOperationalMembershipWindow,
+  getLeaseCancellationBalanceStatus,
   getLeaseInstallmentAlertKind,
   getLeaseInstallmentPaymentOperationKey,
 } from "@shared/lease-contract";
@@ -233,6 +234,11 @@ import {
   QUICK_CHARGE_OPERATION_KEY_CONFLICT,
   QUICK_CHARGE_LEGACY_OPERATION_KEY_CONFLICT,
 } from "./quick-charge-operation";
+import { resolveAuditLogAttribution } from "./audit-context";
+import {
+  assertCriticalOperationReplay,
+  createCriticalOperationFingerprint,
+} from "./critical-operation-integrity";
 import {
   commitLockedMembershipPlanRemoval,
   MembershipPlanRemovalError,
@@ -244,6 +250,7 @@ import {
   BRANCH_PURCHASE_PAYMENT_OPERATION,
   branchPurchaseCentsToFixed,
   branchPurchaseMoneyToCents,
+  deriveBranchPurchaseReferenceUnitCostCents,
   deriveBranchPurchasePaymentStatus,
   getBranchPurchaseCancellationBlockReason,
   getBranchPurchaseLegacyPaidCents,
@@ -260,6 +267,7 @@ import {
 } from "./branch-purchase-operation";
 import {
   buildProjectProfitabilitySnapshots,
+  isProjectShippingCategory,
   type ProjectProfitabilityContribution,
   type ProjectProfitabilitySnapshot,
 } from "./project-profitability";
@@ -376,8 +384,12 @@ export interface BranchLeaseContractSummary {
   canEditFinancialTerms: boolean;
   canEditAdministrativeDetails: boolean;
   canDelete: boolean;
+  canCancel: boolean;
   completedAt: Date | null;
   cancelledAt: Date | null;
+  cancelledByUserId: string | null;
+  cancellationReason: string | null;
+  cancellationBalanceStatus: "LIQUIDATED" | "BALANCE_DUE" | null;
   createdAt: Date;
   updatedAt: Date;
   installments?: BranchLeaseInstallmentSummary[];
@@ -425,6 +437,15 @@ export interface BranchLeaseInstallmentPaymentResult {
   financeEntryId: string;
   idempotentReplay: boolean;
   completedAt: Date | null;
+}
+
+export interface BranchLeaseCancellationResult {
+  leaseContractId: string;
+  idempotentReplay: boolean;
+  cancelledAt: Date;
+  pendingInstallments: number;
+  pendingBalanceCents: number;
+  notificationsClosed: number;
 }
 
 export interface LeaseInstallmentAlertCandidate {
@@ -1389,6 +1410,7 @@ export interface BranchStaffClassLogRow {
   createdBy: string | null;
   createdAt: Date | string;
   updatedAt: Date | string;
+  idempotentReplay: boolean;
 }
 
 export interface BranchServiceSaleOptionRow {
@@ -1557,6 +1579,7 @@ export interface BranchCommissionPaymentRow {
   createdBy: string | null;
   createdAt: Date | string;
   allocations?: BranchCommissionPaymentAllocationRow[];
+  idempotentReplay: boolean;
 }
 
 export interface BranchSalespersonCommissionSummaryRow {
@@ -1643,6 +1666,7 @@ export interface BranchSaleRow {
   updatedAt: Date | string;
   items: BranchSaleItemRow[];
   payments: BranchSalePaymentRow[];
+  idempotentReplay: boolean;
 }
 
 export interface BranchInventoryBalanceRow {
@@ -1767,7 +1791,13 @@ export interface BranchCommercialProjectSummaryRow {
   obligationPaidTotal: number;
   directManualIncome: number;
   directManualExpenses: number;
+  shippingExpenses: number;
+  otherOperatingExpenses: number;
   accruedCommissions: number;
+  paidCommissions: number;
+  pendingCommissions: number;
+  accountsPayableCommissions: number;
+  totalPendingPayable: number;
   cashIn: number;
   cashOut: number;
   profit: number | null;
@@ -2411,7 +2441,7 @@ export interface IStorage {
   getUserMemberships(userId: string): Promise<(Membership & { branch: Branch })[]>;
   createMembership(data: InsertMembership): Promise<Membership>;
   updateMembership(id: string, data: Partial<InsertMembership>): Promise<Membership | undefined>;
-  createAuditLog(data: { actorUserId: string; action: string; branchId?: string; metadata?: any }): Promise<AuditLog>;
+  createAuditLog(data: { actorUserId: string; action: string; branchId?: string | null; metadata?: any }): Promise<AuditLog>;
   findAuditLogByReference(params: { action: string; branchId?: string | null; referenceId: string }): Promise<AuditLog | undefined>;
   getAuditLogs(limit?: number): Promise<(AuditLog & { actorEmail?: string | null })[]>;
   createSystemEvent(data: { eventType: string; branchId?: string | null; userId?: string | null; payload?: any; status?: string }): Promise<SystemEvent>;
@@ -2452,7 +2482,8 @@ export interface IStorage {
     classDate: string;
     paymentMethod?: string | null;
     notes?: string | null;
-    createdBy?: string | null;
+    createdBy: string;
+    operationKey: string;
   }): Promise<BranchStaffClassLogRow>;
   getBranchClients(branchId: string, includeLeft?: boolean): Promise<any[]>;
   getBranchClientCommercialHistory(
@@ -2498,8 +2529,7 @@ export interface IStorage {
   getBranchPlans(branchId: string): Promise<MembershipPlan[]>;
   createPlan(data: InsertMembershipPlan): Promise<MembershipPlan>;
   updatePlan(id: string, data: Partial<InsertMembershipPlan>): Promise<MembershipPlan | undefined>;
-  deactivatePlan(id: string): Promise<MembershipPlan | undefined>;
-  detachPlanFromMemberships(planId: string, planNameSnapshot: string | null): Promise<number>;
+  deactivatePlan(data: { branchId: string; planId: string; actorUserId: string }): Promise<MembershipPlan | undefined>;
   getPlan(id: string): Promise<MembershipPlan | undefined>;
   hasOpenLeaseContractsForPlan(branchId: string, planId: string): Promise<boolean>;
   getOpenLeaseContractForMembership(branchId: string, membershipId: string): Promise<BranchLeaseContract | undefined>;
@@ -2527,6 +2557,13 @@ export interface IStorage {
     actorUserId: string;
     leaseContractId: string;
   }): Promise<void>;
+  cancelBranchLeaseContract(data: {
+    branchId: string;
+    actorUserId: string;
+    leaseContractId: string;
+    reason: string;
+    operationKey: string;
+  }): Promise<BranchLeaseCancellationResult>;
   recordBranchLeaseInstallmentPayment(data: {
     branchId: string;
     actorUserId: string;
@@ -2737,14 +2774,14 @@ export interface IStorage {
     salespersonId: string;
     amount: number;
     paymentMethod: string;
-    idempotencyKey?: string | null;
+    idempotencyKey: string;
     reference?: string | null;
     notes?: string | null;
     periodStart?: string | null;
     periodEnd?: string | null;
     accrualIds?: string[] | null;
     paidAt?: Date | null;
-    createdBy?: string | null;
+    createdBy: string;
   }): Promise<BranchCommissionPaymentRow>;
   getBranchSuppliers(branchId: string): Promise<BranchSupplierRow[]>;
   getBranchSupplierById(branchId: string, supplierId: string): Promise<BranchSupplierRow | undefined>;
@@ -2796,6 +2833,11 @@ export interface IStorage {
       notes?: string | null;
       metadata?: any;
     }> | null;
+    audit?: {
+      actorUserId: string;
+      action: string;
+      metadata: Record<string, unknown>;
+    };
   }): Promise<BranchSaleRow>;
   getBranchCommercialProductInventory(branchId: string, productId: string): Promise<BranchInventorySummaryRow>;
   getBranchCommercialProductInventoryMovements(branchId: string, productId: string, limit?: number): Promise<BranchInventoryMovementRow[]>;
@@ -3068,7 +3110,7 @@ export class DatabaseStorage implements IStorage {
         .where(eq(users.id, userId))
         .returning();
 
-      await tx.insert(auditLogs).values({
+      await this.createAuditLogTx(tx, {
         actorUserId: userId,
         action: "CONFIRM_LEGACY_LOCAL_ACCESS",
         branchId: updatedUser.localAccessProvisionedByBranchId ?? null,
@@ -3269,7 +3311,7 @@ export class DatabaseStorage implements IStorage {
 
         const sessionsInvalidated = await invalidateUserSessionsTx(tx, user.id);
 
-        const auditLogEntry: typeof auditLogs.$inferInsert = {
+        const auditLogEntry = {
           actorUserId: user.id,
           action: "PUBLIC_PASSWORD_RESET",
           branchId: user.localAccessProvisionedByBranchId ?? null,
@@ -3280,7 +3322,7 @@ export class DatabaseStorage implements IStorage {
             sessionsInvalidated,
           },
         };
-        await tx.insert(auditLogs).values(auditLogEntry);
+        await this.createAuditLogTx(tx, auditLogEntry);
 
         return {
           ok: true,
@@ -3501,7 +3543,7 @@ export class DatabaseStorage implements IStorage {
 
         const sessionsInvalidated = await invalidateUserSessionsTx(tx, params.clientId);
 
-        await tx.insert(auditLogs).values({
+        await this.createAuditLogTx(tx, {
           actorUserId: params.actorUserId,
           action,
           branchId: params.branchId,
@@ -3737,7 +3779,7 @@ export class DatabaseStorage implements IStorage {
 
         const sessionsInvalidated = await invalidateUserSessionsTx(tx, params.clientId);
 
-        await tx.insert(auditLogs).values({
+        await this.createAuditLogTx(tx, {
           actorUserId: params.actorUserId,
           action,
           branchId: params.branchId,
@@ -5129,18 +5171,19 @@ export class DatabaseStorage implements IStorage {
 
   private async createAuditLogTx(
     executor: any,
-    data: { actorUserId: string; action: string; branchId?: string; metadata?: any },
+    data: { actorUserId: string; action: string; branchId?: string | null; metadata?: any },
   ): Promise<AuditLog> {
+    const attributed = resolveAuditLogAttribution(data);
     const [log] = await executor.insert(auditLogs).values({
-      actorUserId: data.actorUserId,
-      action: data.action,
-      branchId: data.branchId || null,
-      metadata: data.metadata || null,
+      actorUserId: attributed.actorUserId,
+      action: attributed.action,
+      branchId: attributed.branchId || null,
+      metadata: attributed.metadata || null,
     }).returning();
     return log;
   }
 
-  async createAuditLog(data: { actorUserId: string; action: string; branchId?: string; metadata?: any }): Promise<AuditLog> {
+  async createAuditLog(data: { actorUserId: string; action: string; branchId?: string | null; metadata?: any }): Promise<AuditLog> {
     return this.createAuditLogTx(db, data);
   }
 
@@ -7089,22 +7132,43 @@ export class DatabaseStorage implements IStorage {
     return plan;
   }
 
-  async deactivatePlan(id: string): Promise<MembershipPlan | undefined> {
-    const [plan] = await db
-      .update(membershipPlans)
-      .set({ isActive: false })
-      .where(eq(membershipPlans.id, id))
-      .returning();
-    return plan;
-  }
+  async deactivatePlan(data: { branchId: string; planId: string; actorUserId: string }): Promise<MembershipPlan | undefined> {
+    return db.transaction(async (tx) => {
+      const [existing] = await tx
+        .select()
+        .from(membershipPlans)
+        .where(and(
+          eq(membershipPlans.id, data.planId),
+          eq(membershipPlans.branchId, data.branchId),
+        ))
+        .for("update")
+        .limit(1);
+      if (!existing) return undefined;
+      if (!existing.isActive) return existing;
 
-  async detachPlanFromMemberships(planId: string, planNameSnapshot: string | null): Promise<number> {
-    const affected = await db
-      .update(memberships)
-      .set({ planId: null, planNameSnapshot })
-      .where(and(eq(memberships.planId, planId), eq(memberships.status, "active")))
-      .returning({ id: memberships.id });
-    return affected.length;
+      const [plan] = await tx
+        .update(membershipPlans)
+        .set({ isActive: false })
+        .where(and(
+          eq(membershipPlans.id, data.planId),
+          eq(membershipPlans.branchId, data.branchId),
+          eq(membershipPlans.isActive, true),
+        ))
+        .returning();
+      if (!plan) return undefined;
+
+      await this.createAuditLogTx(tx, {
+        actorUserId: data.actorUserId,
+        action: "DEACTIVATE_PLAN",
+        branchId: data.branchId,
+        metadata: {
+          planId: plan.id,
+          name: plan.name,
+          membershipsPreserved: true,
+        },
+      });
+      return plan;
+    });
   }
 
   async getPlan(id: string): Promise<MembershipPlan | undefined> {
@@ -7504,6 +7568,16 @@ export class DatabaseStorage implements IStorage {
     const canEditFinancialTerms = hasInstallmentSchedule && !hasFinancialHistory && !contract.cancelledAt;
     const canEditAdministrativeDetails = true;
     const canDelete = hasInstallmentSchedule && !hasFinancialHistory && !contract.cancelledAt;
+    const canCancel = hasInstallmentSchedule
+      && hasFinancialHistory
+      && !contract.cancelledAt
+      && !contract.completedAt;
+    const cancellationBalanceStatus = hasInstallmentSchedule
+      ? getLeaseCancellationBalanceStatus({
+          cancelledAt: contract.cancelledAt,
+          pendingBalanceCents: pendingContractBalanceCents,
+        })
+      : null;
 
     return {
       id: contract.id,
@@ -7572,8 +7646,12 @@ export class DatabaseStorage implements IStorage {
       canEditFinancialTerms,
       canEditAdministrativeDetails,
       canDelete,
+      canCancel,
       completedAt: contract.completedAt ?? null,
       cancelledAt: contract.cancelledAt ?? null,
+      cancelledByUserId: contract.cancelledByUserId ?? null,
+      cancellationReason: contract.cancellationReason ?? null,
+      cancellationBalanceStatus,
       createdAt: contract.createdAt,
       updatedAt: contract.updatedAt,
     };
@@ -8458,6 +8536,161 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
+  async cancelBranchLeaseContract(data: {
+    branchId: string;
+    actorUserId: string;
+    leaseContractId: string;
+    reason: string;
+    operationKey: string;
+  }): Promise<BranchLeaseCancellationResult> {
+    const reason = data.reason.trim();
+    const operationKey = data.operationKey.trim();
+    if (reason.length < 3 || reason.length > 500) {
+      throw new Error("LEASE_CONTRACT_CANCELLATION_REASON_INVALID");
+    }
+    if (operationKey.length < 8 || operationKey.length > 120) {
+      throw new Error("LEASE_CONTRACT_CANCELLATION_OPERATION_KEY_INVALID");
+    }
+
+    const cancellationFingerprint = createCriticalOperationFingerprint({
+      branchId: data.branchId,
+      leaseContractId: data.leaseContractId,
+      reason,
+    });
+
+    try {
+      return await db.transaction(async (tx) => {
+        await tx.execute(sql.raw("SET LOCAL lock_timeout = '5s'"));
+        await tx.execute(sql.raw("SET LOCAL statement_timeout = '20s'"));
+
+        const leaseContract = await this.lockBranchLeaseContractTx(tx, data.branchId, data.leaseContractId);
+        if (!leaseContract) {
+          throw new Error("LEASE_CONTRACT_NOT_FOUND");
+        }
+
+        const installments = await this.lockBranchLeaseInstallmentsForContractTx(
+          tx,
+          data.branchId,
+          leaseContract.id,
+        );
+        const pendingRows = installments.filter((installment) => installment.paymentSource === null);
+        const pendingBalanceCents = pendingRows.reduce(
+          (total, installment) => total + installment.finalTotalCents,
+          0,
+        );
+
+        if (leaseContract.cancelledAt) {
+          assertCriticalOperationReplay(
+            leaseContract.cancellationFingerprint,
+            cancellationFingerprint,
+            {
+              legacy: "LEASE_CONTRACT_CANCELLATION_LEGACY_CONFLICT",
+              conflict: "LEASE_CONTRACT_CANCELLATION_OPERATION_KEY_CONFLICT",
+            },
+          );
+          if (leaseContract.cancellationOperationKey !== operationKey) {
+            throw new Error("LEASE_CONTRACT_CANCELLATION_OPERATION_KEY_CONFLICT");
+          }
+          return {
+            leaseContractId: leaseContract.id,
+            idempotentReplay: true,
+            cancelledAt: leaseContract.cancelledAt,
+            pendingInstallments: pendingRows.length,
+            pendingBalanceCents,
+            notificationsClosed: 0,
+          };
+        }
+        if (leaseContract.completedAt) {
+          throw new Error("LEASE_CONTRACT_COMPLETED");
+        }
+        if (installments.length === 0) {
+          throw new Error("LEASE_CONTRACT_LEGACY_NOT_CANCELLABLE");
+        }
+        if (!await this.hasLeaseContractFinancialHistoryTx(tx, data.branchId, leaseContract.id, installments)) {
+          throw new Error("LEASE_CONTRACT_CANCELLATION_REQUIRES_HISTORY");
+        }
+
+        const cancellationTimestamp = new Date();
+        const [cancelledContract] = await tx
+          .update(branchLeaseContracts)
+          .set({
+            cancelledAt: cancellationTimestamp,
+            cancelledByUserId: data.actorUserId,
+            cancellationReason: reason,
+            cancellationOperationKey: operationKey,
+            cancellationFingerprint,
+            updatedAt: cancellationTimestamp,
+          })
+          .where(and(
+            eq(branchLeaseContracts.id, leaseContract.id),
+            eq(branchLeaseContracts.branchId, data.branchId),
+            isNull(branchLeaseContracts.cancelledAt),
+          ))
+          .returning({ cancelledAt: branchLeaseContracts.cancelledAt });
+        if (!cancelledContract?.cancelledAt) {
+          throw new Error("LEASE_CONTRACT_CANCELLATION_FAILED");
+        }
+
+        const linkedAlerts = await tx
+          .select({ notificationId: branchLeaseInstallmentAlerts.notificationId })
+          .from(branchLeaseInstallmentAlerts)
+          .where(and(
+            eq(branchLeaseInstallmentAlerts.branchId, data.branchId),
+            eq(branchLeaseInstallmentAlerts.leaseContractId, leaseContract.id),
+          ));
+        const notificationIds = Array.from(new Set(
+          linkedAlerts
+            .map((alert: { notificationId: string | null }) => alert.notificationId)
+            .filter((notificationId: string | null): notificationId is string => Boolean(notificationId)),
+        ));
+        let notificationsClosed = 0;
+        if (notificationIds.length > 0) {
+          const closedNotifications = await tx
+            .update(notifications)
+            .set({ isRead: true, readAt: cancellationTimestamp })
+            .where(and(
+              eq(notifications.branchId, data.branchId),
+              eq(notifications.isRead, false),
+              inArray(notifications.id, notificationIds),
+            ))
+            .returning({ id: notifications.id });
+          notificationsClosed = closedNotifications.length;
+        }
+
+        await this.createAuditLogTx(tx, {
+          actorUserId: data.actorUserId,
+          action: "CANCEL_LEASE_CONTRACT",
+          branchId: data.branchId,
+          metadata: {
+            leaseContractId: leaseContract.id,
+            clientUserId: leaseContract.clientUserId ?? null,
+            cancellationReason: reason,
+            pendingInstallments: pendingRows.length,
+            pendingBalanceCents,
+            notificationsClosed,
+          },
+        });
+
+        return {
+          leaseContractId: leaseContract.id,
+          idempotentReplay: false,
+          cancelledAt: cancelledContract.cancelledAt,
+          pendingInstallments: pendingRows.length,
+          pendingBalanceCents,
+          notificationsClosed,
+        };
+      });
+    } catch (error: any) {
+      if (error?.code === "55P03" || error?.code === "57014") {
+        throw new Error("LEASE_CONTRACT_CANCELLATION_BUSY");
+      }
+      if (isPgUniqueViolation(error)) {
+        throw new Error("LEASE_CONTRACT_CANCELLATION_OPERATION_KEY_CONFLICT");
+      }
+      throw error;
+    }
+  }
+
   async getLeaseInstallmentAlertCandidates(
     branchId: string,
     today: string,
@@ -8771,9 +9004,6 @@ export class DatabaseStorage implements IStorage {
       const leaseContract = await this.lockBranchLeaseContractTx(tx, data.branchId, data.leaseContractId);
       if (!leaseContract) {
         throw new Error("LEASE_CONTRACT_NOT_FOUND");
-      }
-      if (leaseContract.cancelledAt) {
-        throw new Error("LEASE_CONTRACT_CANCELLED");
       }
 
       const installment = await this.lockBranchLeaseInstallmentTx(
@@ -10454,6 +10684,7 @@ export class DatabaseStorage implements IStorage {
       createdBy: row.createdBy ?? null,
       createdAt: row.createdAt,
       allocations,
+      idempotentReplay: false,
     };
   }
 
@@ -10843,15 +11074,19 @@ export class DatabaseStorage implements IStorage {
       updatedAt: sale.updatedAt,
       items: itemRows.map((row) => this.mapBranchSaleItemRow(row)),
       payments: paymentRows.map((row) => this.mapBranchSalePaymentRow(row)),
+      idempotentReplay: false,
     };
   }
 
   private async getBranchSaleByIdempotencyKey(
     branchId: string,
     idempotencyKey: string,
-  ): Promise<BranchSaleRow | undefined> {
+  ): Promise<{ sale: BranchSaleRow; fingerprint: string | null } | undefined> {
     const [sale] = await db
-      .select({ id: branchSales.id })
+      .select({
+        id: branchSales.id,
+        fingerprint: branchSales.idempotencyFingerprint,
+      })
       .from(branchSales)
       .where(and(
         eq(branchSales.branchId, branchId),
@@ -10860,7 +11095,8 @@ export class DatabaseStorage implements IStorage {
       .limit(1);
 
     if (!sale) return undefined;
-    return this.getBranchSaleById(branchId, sale.id);
+    const detail = await this.getBranchSaleById(branchId, sale.id);
+    return detail ? { sale: detail, fingerprint: sale.fingerprint ?? null } : undefined;
   }
 
   private async getBranchSaleByCancellationIdempotencyKey(
@@ -10880,11 +11116,12 @@ export class DatabaseStorage implements IStorage {
     return this.getBranchSaleById(branchId, sale.id);
   }
 
-  private async getBranchCommissionPaymentByIdempotencyKey(
+  private async getBranchCommissionPaymentByIdempotencyKeyTx(
+    executor: any,
     branchId: string,
     idempotencyKey: string,
-  ): Promise<BranchCommissionPaymentRow | undefined> {
-    const [paymentRow] = await db
+  ): Promise<{ payment: BranchCommissionPaymentRow; fingerprint: string | null } | undefined> {
+    const [paymentRow] = await executor
       .select()
       .from(branchCommissionPayments)
       .where(and(
@@ -10895,7 +11132,7 @@ export class DatabaseStorage implements IStorage {
 
     if (!paymentRow) return undefined;
 
-    const allocationRows = await db
+    const allocationRows = await executor
       .select()
       .from(branchCommissionPaymentAllocations)
       .where(and(
@@ -10903,10 +11140,13 @@ export class DatabaseStorage implements IStorage {
         eq(branchCommissionPaymentAllocations.commissionPaymentId, paymentRow.id),
       ));
 
-    return this.mapBranchCommissionPaymentRow(
-      paymentRow,
-      allocationRows.map((row) => this.mapBranchCommissionPaymentAllocationRow(row)),
-    );
+    return {
+      payment: this.mapBranchCommissionPaymentRow(
+        paymentRow,
+        allocationRows.map((row: BranchCommissionPaymentAllocation) => this.mapBranchCommissionPaymentAllocationRow(row)),
+      ),
+      fingerprint: paymentRow.idempotencyFingerprint ?? null,
+    };
   }
 
   private buildBranchSaleFinanceConcept(
@@ -10964,7 +11204,13 @@ export class DatabaseStorage implements IStorage {
       obligationPaidTotal: snapshot.obligationPaidTotal,
       directManualIncome: snapshot.directManualIncome,
       directManualExpenses: snapshot.directManualExpenses,
+      shippingExpenses: snapshot.shippingExpenses,
+      otherOperatingExpenses: snapshot.otherOperatingExpenses,
       accruedCommissions: snapshot.accruedCommissions,
+      paidCommissions: snapshot.paidCommissions,
+      pendingCommissions: snapshot.pendingCommissions,
+      accountsPayableCommissions: snapshot.accountsPayableCommissions,
+      totalPendingPayable: snapshot.totalPendingPayable,
       cashIn: snapshot.cashIn,
       cashOut: snapshot.cashOut,
       profit: snapshot.profit,
@@ -11192,6 +11438,7 @@ export class DatabaseStorage implements IStorage {
       db
         .select({
           projectId: branchExpenseObligations.projectId,
+          category: branchExpenseObligations.category,
           obligationBeforeTax: sql<number>`COALESCE(SUM(${branchExpenseObligations.taxableSubtotal}), 0)`.as("obligation_before_tax"),
           obligationTotal: sql<number>`COALESCE(SUM(${branchExpenseObligations.grandTotal}), 0)`.as("obligation_total"),
           obligationTaxTotal: sql<number>`COALESCE(SUM(${branchExpenseObligations.taxTotal}), 0)`.as("obligation_tax_total"),
@@ -11202,7 +11449,7 @@ export class DatabaseStorage implements IStorage {
           inArray(branchExpenseObligations.projectId, projectIds),
           eq(branchExpenseObligations.documentStatus, "open"),
         ))
-        .groupBy(branchExpenseObligations.projectId),
+        .groupBy(branchExpenseObligations.projectId, branchExpenseObligations.category),
       db
         .select({
           projectId: branchExpenseObligations.projectId,
@@ -11222,6 +11469,7 @@ export class DatabaseStorage implements IStorage {
       db
         .select({
           projectId: branchFinanceEntries.projectId,
+          category: branchFinanceEntries.category,
           directManualIncome: sql<number>`COALESCE(SUM(CASE WHEN ${branchFinanceEntries.type} = 'income' THEN ${branchFinanceEntries.amount} ELSE 0 END), 0)`.as("direct_manual_income"),
           directManualExpenses: sql<number>`COALESCE(SUM(CASE WHEN ${branchFinanceEntries.type} = 'expense' THEN ${branchFinanceEntries.amount} ELSE 0 END), 0)`.as("direct_manual_expenses"),
           cashIn: sql<number>`COALESCE(SUM(CASE WHEN ${branchFinanceEntries.type} = 'income' THEN ${branchFinanceEntries.amount} ELSE 0 END), 0)`.as("cash_in"),
@@ -11237,11 +11485,13 @@ export class DatabaseStorage implements IStorage {
             sql`btrim(${branchFinanceEntries.source}) = ''`,
           ),
         ))
-        .groupBy(branchFinanceEntries.projectId),
+        .groupBy(branchFinanceEntries.projectId, branchFinanceEntries.category),
       db
         .select({
           projectId: branchSales.projectId,
           accruedCommissions: sql<number>`COALESCE(SUM(${branchCommissionAccruals.commissionAmount}), 0)`.as("accrued_commissions"),
+          paidCommissions: sql<number>`COALESCE(SUM(LEAST(${branchCommissionAccruals.paidAmount}, ${branchCommissionAccruals.commissionAmount})), 0)`.as("paid_commissions"),
+          pendingCommissions: sql<number>`COALESCE(SUM(GREATEST(${branchCommissionAccruals.commissionAmount} - ${branchCommissionAccruals.paidAmount}, 0)), 0)`.as("pending_commissions"),
         })
         .from(branchCommissionAccruals)
         .innerJoin(branchSales, and(
@@ -11371,6 +11621,7 @@ export class DatabaseStorage implements IStorage {
           eq(branchFinanceEntries.source, "sales_commission_payment"),
           isNull(branchFinanceEntries.deletedAt),
           inArray(branchSales.projectId, projectIds),
+          eq(branchCommissionAccruals.accrualType, "sale"),
         ))
         .groupBy(branchSales.projectId),
     ]);
@@ -11413,8 +11664,31 @@ export class DatabaseStorage implements IStorage {
         purchasePaidTotal: row.purchasePaidTotal,
       });
     }
-    for (const row of manualFinanceRows) append(row);
-    for (const row of obligationRows) append(row);
+    for (const row of manualFinanceRows) {
+      const directManualExpenses = Number(row.directManualExpenses ?? 0);
+      const shipping = isProjectShippingCategory(row.category);
+      append({
+        projectId: row.projectId,
+        directManualIncome: row.directManualIncome,
+        directManualExpenses,
+        shippingExpenses: shipping ? directManualExpenses : 0,
+        otherOperatingExpenses: shipping ? 0 : directManualExpenses,
+        cashIn: row.cashIn,
+        cashOut: row.cashOut,
+      });
+    }
+    for (const row of obligationRows) {
+      const obligationBeforeTax = Number(row.obligationBeforeTax ?? 0);
+      const shipping = isProjectShippingCategory(row.category);
+      append({
+        projectId: row.projectId,
+        obligationBeforeTax,
+        obligationTotal: row.obligationTotal,
+        obligationTaxTotal: row.obligationTaxTotal,
+        shippingExpenses: shipping ? obligationBeforeTax : 0,
+        otherOperatingExpenses: shipping ? 0 : obligationBeforeTax,
+      });
+    }
     for (const row of obligationPaymentRows) append(row);
     for (const row of commissionAccrualRows) append(row);
     for (const row of saleCashRows) append(row);
@@ -14035,14 +14309,14 @@ export class DatabaseStorage implements IStorage {
     salespersonId: string;
     amount: number;
     paymentMethod: string;
-    idempotencyKey?: string | null;
+    idempotencyKey: string;
     reference?: string | null;
     notes?: string | null;
     periodStart?: string | null;
     periodEnd?: string | null;
     accrualIds?: string[] | null;
     paidAt?: Date | null;
-    createdBy?: string | null;
+    createdBy: string;
   }): Promise<BranchCommissionPaymentRow> {
     const salesperson = await this.getBranchSalespersonById(data.branchId, data.salespersonId);
     if (!salesperson) {
@@ -14050,15 +14324,61 @@ export class DatabaseStorage implements IStorage {
     }
 
     const idempotencyKey = normalizeOptionalTextValue(data.idempotencyKey);
-    if (idempotencyKey) {
-      const existingPayment = await this.getBranchCommissionPaymentByIdempotencyKey(data.branchId, idempotencyKey);
-      if (existingPayment) {
-        return existingPayment;
-      }
+    if (!idempotencyKey) {
+      throw new Error("BRANCH_COMMISSION_PAYMENT_OPERATION_KEY_REQUIRED");
+    }
+    const idempotencyFingerprint = createCriticalOperationFingerprint({
+      branchId: data.branchId,
+      salespersonId: data.salespersonId,
+      amount: toFinanceAmount(data.amount).toFixed(2),
+      paymentMethod: data.paymentMethod,
+      reference: normalizeOptionalTextValue(data.reference),
+      notes: normalizeOptionalTextValue(data.notes),
+      periodStart: data.periodStart ?? null,
+      periodEnd: data.periodEnd ?? null,
+      accrualIds: data.accrualIds?.length ? [...data.accrualIds].sort() : null,
+      paidAt: data.paidAt ?? null,
+    });
+    const existingPayment = await this.getBranchCommissionPaymentByIdempotencyKeyTx(db, data.branchId, idempotencyKey);
+    if (existingPayment) {
+      assertCriticalOperationReplay(
+        existingPayment.fingerprint,
+        idempotencyFingerprint,
+        {
+          legacy: "BRANCH_COMMISSION_PAYMENT_LEGACY_OPERATION_CONFLICT",
+          conflict: "BRANCH_COMMISSION_PAYMENT_OPERATION_KEY_CONFLICT",
+        },
+      );
+      return { ...existingPayment.payment, idempotentReplay: true };
     }
 
     try {
       const payment = await db.transaction(async (tx) => {
+        await tx.execute(sql`SET LOCAL statement_timeout = '20s'`);
+        await tx.execute(sql`
+          SELECT pg_advisory_xact_lock(
+            hashtext(${data.branchId}),
+            hashtext(${`commission-payment:${idempotencyKey}`})
+          )
+        `);
+
+        const operationReplay = await this.getBranchCommissionPaymentByIdempotencyKeyTx(
+          tx,
+          data.branchId,
+          idempotencyKey,
+        );
+        if (operationReplay) {
+          assertCriticalOperationReplay(
+            operationReplay.fingerprint,
+            idempotencyFingerprint,
+            {
+              legacy: "BRANCH_COMMISSION_PAYMENT_LEGACY_OPERATION_CONFLICT",
+              conflict: "BRANCH_COMMISSION_PAYMENT_OPERATION_KEY_CONFLICT",
+            },
+          );
+          return { ...operationReplay.payment, idempotentReplay: true };
+        }
+
         const whereClauses = [
           eq(branchCommissionAccruals.branchId, data.branchId),
           eq(branchCommissionAccruals.salespersonId, data.salespersonId),
@@ -14145,6 +14465,7 @@ export class DatabaseStorage implements IStorage {
             amount: String(toFinanceAmount(data.amount)),
             paymentMethod: data.paymentMethod,
             idempotencyKey,
+            idempotencyFingerprint,
             reference: normalizeOptionalTextValue(data.reference),
             notes: normalizeOptionalTextValue(data.notes),
             periodStart: data.periodStart ?? null,
@@ -14203,6 +14524,25 @@ export class DatabaseStorage implements IStorage {
           createdBy: data.createdBy ?? null,
         } as any);
 
+        if (!data.createdBy) {
+          throw new Error("BRANCH_COMMISSION_PAYMENT_ACTOR_REQUIRED");
+        }
+        await this.createAuditLogTx(tx, {
+          actorUserId: data.createdBy,
+          action: "CREATE_BRANCH_COMMISSION_PAYMENT",
+          branchId: data.branchId,
+          metadata: {
+            salespersonId: data.salespersonId,
+            paymentId: paymentRow.id,
+            amount: toFinanceAmount(data.amount),
+            paymentMethod: data.paymentMethod,
+            allocations: allocationsToCreate.map((allocation) => ({
+              accrualId: allocation.commissionAccrualId,
+              amountAllocated: Number(allocation.amountAllocated),
+            })),
+          },
+        });
+
         const createdAllocations = await tx
           .select()
           .from(branchCommissionPaymentAllocations)
@@ -14219,10 +14559,18 @@ export class DatabaseStorage implements IStorage {
 
       return payment;
     } catch (error: any) {
-      if (idempotencyKey && isPgUniqueViolation(error)) {
-        const existingPayment = await this.getBranchCommissionPaymentByIdempotencyKey(data.branchId, idempotencyKey);
+      if (isPgUniqueViolation(error)) {
+        const existingPayment = await this.getBranchCommissionPaymentByIdempotencyKeyTx(db, data.branchId, idempotencyKey);
         if (existingPayment) {
-          return existingPayment;
+          assertCriticalOperationReplay(
+            existingPayment.fingerprint,
+            idempotencyFingerprint,
+            {
+              legacy: "BRANCH_COMMISSION_PAYMENT_LEGACY_OPERATION_CONFLICT",
+              conflict: "BRANCH_COMMISSION_PAYMENT_OPERATION_KEY_CONFLICT",
+            },
+          );
+          return { ...existingPayment.payment, idempotentReplay: true };
         }
       }
       throw error;
@@ -14760,6 +15108,13 @@ export class DatabaseStorage implements IStorage {
         const totalCents = branchPurchaseMoneyToCents(taxSnapshot.grandTotal);
         if (totalCents < 0) throw new Error("BRANCH_PURCHASE_TOTAL_NEGATIVE");
         if (initialPaymentCents > totalCents) throw new Error("BRANCH_PURCHASE_PAID_EXCEEDS_TOTAL");
+        const referenceUnitCostCents = deriveBranchPurchaseReferenceUnitCostCents({
+          taxableSubtotal: taxSnapshot.taxableSubtotal,
+          items: normalizedItems.map((item) => ({
+            quantityOrdered: item.quantityOrdered,
+            unitCost: branchPurchaseCentsToFixed(item.unitCostCents),
+          })),
+        });
 
         const paymentStatus = deriveBranchPurchasePaymentStatus(initialPaymentCents, totalCents);
         const [purchaseRow] = await tx
@@ -14809,11 +15164,12 @@ export class DatabaseStorage implements IStorage {
           },
         })) as any);
 
-        for (const item of normalizedItems) {
+        for (let index = 0; index < normalizedItems.length; index += 1) {
+          const item = normalizedItems[index];
           if (!item.updateReferenceCost) continue;
           await tx
             .update(branchCommercialProducts)
-            .set({ costAmount: branchPurchaseCentsToFixed(item.unitCostCents), updatedAt: new Date() })
+            .set({ costAmount: branchPurchaseCentsToFixed(referenceUnitCostCents[index]), updatedAt: new Date() })
             .where(and(
               eq(branchCommercialProducts.id, item.product.id),
               eq(branchCommercialProducts.branchId, data.branchId),
@@ -15752,6 +16108,11 @@ export class DatabaseStorage implements IStorage {
       notes?: string | null;
       metadata?: any;
     }> | null;
+    audit?: {
+      actorUserId: string;
+      action: string;
+      metadata: Record<string, unknown>;
+    };
   }): Promise<BranchSaleRow> {
     if (!data.items.length) {
       throw new Error("BRANCH_SALE_REQUIRES_ITEMS");
@@ -15760,11 +16121,78 @@ export class DatabaseStorage implements IStorage {
       throw new Error("BRANCH_SALE_REQUIRES_PAYMENTS");
     }
     const idempotencyKey = normalizeOptionalTextValue((data.sale as any).idempotencyKey);
-    if (idempotencyKey) {
-      const existingSale = await this.getBranchSaleByIdempotencyKey(data.sale.branchId, idempotencyKey);
-      if (existingSale) {
-        return existingSale;
-      }
+    if (!idempotencyKey) {
+      throw new Error("BRANCH_SALE_OPERATION_KEY_REQUIRED");
+    }
+    const idempotencyFingerprint = createCriticalOperationFingerprint({
+      branchId: data.sale.branchId,
+      sale: {
+        projectId: normalizeOptionalTextValue((data.sale as any).projectId),
+        clientUserId: data.sale.clientUserId ?? null,
+        sellerId: data.sale.sellerId ?? null,
+        channel: data.sale.channel,
+        status: data.sale.status,
+        subtotalAmount: toFinanceAmount(data.sale.subtotalAmount).toFixed(2),
+        discountAmount: toFinanceAmount(data.sale.discountAmount).toFixed(2),
+        totalAmount: toFinanceAmount(data.sale.totalAmount).toFixed(2),
+        paidAmount: toFinanceAmount(data.sale.paidAmount).toFixed(2),
+        taxMode: (data.sale as any).taxMode ?? null,
+        taxRate: (data.sale as any).taxRate == null ? null : Number((data.sale as any).taxRate).toFixed(4),
+        subtotalBeforeTax: (data.sale as any).subtotalBeforeTax == null ? null : toFinanceAmount((data.sale as any).subtotalBeforeTax).toFixed(2),
+        taxableSubtotal: (data.sale as any).taxableSubtotal == null ? null : toFinanceAmount((data.sale as any).taxableSubtotal).toFixed(2),
+        taxTotal: (data.sale as any).taxTotal == null ? null : toFinanceAmount((data.sale as any).taxTotal).toFixed(2),
+        grandTotal: (data.sale as any).grandTotal == null ? null : toFinanceAmount((data.sale as any).grandTotal).toFixed(2),
+        notes: normalizeOptionalTextValue(data.sale.notes),
+      },
+      items: data.items.map((item) => ({
+        itemType: item.itemType,
+        commercialProductId: item.commercialProductId ?? null,
+        serviceId: item.serviceId ?? null,
+        planId: item.planId ?? null,
+        nameSnapshot: item.nameSnapshot,
+        categorySnapshot: item.categorySnapshot ?? null,
+        quantity: item.quantity,
+        unitPriceAmount: toFinanceAmount(item.unitPriceAmount).toFixed(2),
+        discountAmount: toFinanceAmount(item.discountAmount).toFixed(2),
+        costAmountSnapshot: toFinanceAmount(item.costAmountSnapshot).toFixed(2),
+        lineTotalAmount: toFinanceAmount(item.lineTotalAmount).toFixed(2),
+        metadata: item.metadata ?? null,
+      })),
+      payments: data.payments.map((payment) => ({
+        paymentMethod: payment.paymentMethod,
+        amount: toFinanceAmount(payment.amount).toFixed(2),
+        reference: normalizeOptionalTextValue(payment.reference),
+      })),
+      finance: data.finance ? {
+        source: data.finance.source,
+        category: data.finance.category ?? null,
+        notes: data.finance.notes ?? null,
+        entryDate: data.finance.entryDate ?? null,
+        metadata: data.finance.metadata ?? null,
+        clientName: data.finance.clientName ?? null,
+      } : null,
+      inventoryAdjustments: [
+        ...(data.inventoryAdjustments ?? []),
+        ...(data.inventoryAdjustment ? [data.inventoryAdjustment] : []),
+      ].map((adjustment) => ({
+        commercialProductId: adjustment.commercialProductId,
+        quantity: adjustment.quantity,
+        unitCostSnapshot: adjustment.unitCostSnapshot == null ? null : toFinanceAmount(adjustment.unitCostSnapshot).toFixed(2),
+        notes: adjustment.notes ?? null,
+        metadata: adjustment.metadata ?? null,
+      })),
+    });
+    const existingSale = await this.getBranchSaleByIdempotencyKey(data.sale.branchId, idempotencyKey);
+    if (existingSale) {
+      assertCriticalOperationReplay(
+        existingSale.fingerprint,
+        idempotencyFingerprint,
+        {
+          legacy: "BRANCH_SALE_LEGACY_OPERATION_CONFLICT",
+          conflict: "BRANCH_SALE_OPERATION_KEY_CONFLICT",
+        },
+      );
+      return { ...existingSale.sale, idempotentReplay: true };
     }
 
     const inventoryAdjustments = [
@@ -15831,6 +16259,7 @@ export class DatabaseStorage implements IStorage {
           .values({
             ...data.sale,
             idempotencyKey,
+            idempotencyFingerprint,
             projectId,
             sellerId,
             sellerUserId,
@@ -15974,15 +16403,37 @@ export class DatabaseStorage implements IStorage {
           }
         }
 
+        if (data.audit) {
+          await this.createAuditLogTx(tx, {
+            actorUserId: data.audit.actorUserId,
+            action: data.audit.action,
+            branchId: saleRow.branchId,
+            metadata: {
+              ...data.audit.metadata,
+              saleId: saleRow.id,
+              folio: saleRow.folio,
+              sellerNameSnapshot,
+            },
+          });
+        }
+
         return saleRow;
       });
 
       return (await this.getBranchSaleById(created.branchId, created.id))!;
     } catch (error: any) {
-      if (idempotencyKey && isPgUniqueViolation(error)) {
+      if (isPgUniqueViolation(error)) {
         const existingSale = await this.getBranchSaleByIdempotencyKey(data.sale.branchId, idempotencyKey);
         if (existingSale) {
-          return existingSale;
+          assertCriticalOperationReplay(
+            existingSale.fingerprint,
+            idempotencyFingerprint,
+            {
+              legacy: "BRANCH_SALE_LEGACY_OPERATION_CONFLICT",
+              conflict: "BRANCH_SALE_OPERATION_KEY_CONFLICT",
+            },
+          );
+          return { ...existingSale.sale, idempotentReplay: true };
         }
       }
       throw error;
@@ -17777,8 +18228,12 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
-  private async getBranchStaffClassLogById(branchId: string, classLogId: string): Promise<BranchStaffClassLogRow | undefined> {
-    const [row] = await db
+  private async getBranchStaffClassLogByIdTx(
+    executor: any,
+    branchId: string,
+    classLogId: string,
+  ): Promise<BranchStaffClassLogRow | undefined> {
+    const [row] = await executor
       .select({
         id: branchStaffClassLogs.id,
         branchId: branchStaffClassLogs.branchId,
@@ -17819,6 +18274,7 @@ export class DatabaseStorage implements IStorage {
       createdBy: row.createdBy ?? null,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
+      idempotentReplay: false,
     };
   }
 
@@ -19091,6 +19547,7 @@ export class DatabaseStorage implements IStorage {
       createdBy: row.createdBy ?? null,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
+      idempotentReplay: false,
     }));
   }
 
@@ -19101,70 +19558,133 @@ export class DatabaseStorage implements IStorage {
     classDate: string;
     paymentMethod?: string | null;
     notes?: string | null;
-    createdBy?: string | null;
+    createdBy: string;
+    operationKey: string;
   }): Promise<BranchStaffClassLogRow> {
-    const [staff] = await db
-      .select()
-      .from(branchStaffMembers)
-      .where(and(
-        eq(branchStaffMembers.id, data.staffId),
-        eq(branchStaffMembers.branchId, data.branchId),
-        isNull(branchStaffMembers.deletedAt),
-      ))
-      .limit(1);
-
-    if (!staff) {
-      throw new Error("PROFESSOR_NOT_FOUND");
-    }
-
-    const payPerClass = toFinanceAmount(staff.payPerClass);
-    const paymentTotal = Number((payPerClass * data.classesCount).toFixed(2));
-
-    const financeEntry = await this.createBranchFinanceEntry({
+    const operationKey = data.operationKey.trim();
+    const operationFingerprint = createCriticalOperationFingerprint({
       branchId: data.branchId,
-      type: "expense",
-      category: "profesor",
-      concept: `${staff.name} · ${data.classesCount} clase${data.classesCount === 1 ? "" : "s"}`,
-      amount: paymentTotal,
+      staffId: data.staffId,
+      classesCount: data.classesCount,
+      classDate: data.classDate,
       paymentMethod: data.paymentMethod ?? null,
-      clientUserId: null,
-      clientName: null,
       notes: data.notes ?? null,
-      entryDate: data.classDate,
-      source: "staff_class_log",
-      sourceId: null,
-      metadata: {
-        staffId: staff.id,
-        staffName: staff.name,
-        payPerClass,
-        classesCount: data.classesCount,
-      },
-      createdBy: data.createdBy ?? null,
-    } as any);
+    });
 
-    const [created] = await db
-      .insert(branchStaffClassLogs)
-      .values({
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL statement_timeout = '20s'`);
+      await tx.execute(sql`
+        SELECT pg_advisory_xact_lock(
+          hashtext(${data.branchId}),
+          hashtext(${`staff-class-log:${operationKey}`})
+        )
+      `);
+
+      const [existingOperation] = await tx
+        .select({
+          id: branchStaffClassLogs.id,
+          operationFingerprint: branchStaffClassLogs.operationFingerprint,
+        })
+        .from(branchStaffClassLogs)
+        .where(and(
+          eq(branchStaffClassLogs.branchId, data.branchId),
+          eq(branchStaffClassLogs.operationKey, operationKey),
+        ))
+        .limit(1);
+      if (existingOperation) {
+        assertCriticalOperationReplay(
+          existingOperation.operationFingerprint,
+          operationFingerprint,
+          {
+            legacy: "STAFF_CLASS_LOG_LEGACY_OPERATION_CONFLICT",
+            conflict: "STAFF_CLASS_LOG_OPERATION_KEY_CONFLICT",
+          },
+        );
+        const replay = await this.getBranchStaffClassLogByIdTx(tx, data.branchId, existingOperation.id);
+        if (!replay?.financeEntryId) {
+          throw new Error("STAFF_CLASS_LOG_INCOMPLETE_REPLAY");
+        }
+        return { ...replay, idempotentReplay: true };
+      }
+
+      const [staff] = await tx
+        .select()
+        .from(branchStaffMembers)
+        .where(and(
+          eq(branchStaffMembers.id, data.staffId),
+          eq(branchStaffMembers.branchId, data.branchId),
+          isNull(branchStaffMembers.deletedAt),
+        ))
+        .for("update")
+        .limit(1);
+      if (!staff) {
+        throw new Error("PROFESSOR_NOT_FOUND");
+      }
+
+      const payPerClass = toFinanceAmount(staff.payPerClass);
+      const paymentTotal = Number((payPerClass * data.classesCount).toFixed(2));
+      const classLogId = crypto.randomUUID();
+      const financeEntryResult = await this.createBranchFinanceEntryTx(tx, {
         branchId: data.branchId,
-        staffId: staff.id,
-        classesCount: data.classesCount,
-        paymentTotal: String(paymentTotal),
-        classDate: data.classDate,
+        type: "expense",
+        category: "profesor",
+        concept: `${staff.name} · ${data.classesCount} clase${data.classesCount === 1 ? "" : "s"}`,
+        amount: String(paymentTotal),
+        paymentMethod: data.paymentMethod ?? null,
+        clientUserId: null,
+        clientName: null,
         notes: data.notes ?? null,
-        financeEntryId: financeEntry.id,
-        createdBy: data.createdBy ?? null,
-      })
-      .returning({ id: branchStaffClassLogs.id });
+        entryDate: data.classDate,
+        source: "staff_class_log",
+        sourceId: classLogId,
+        metadata: {
+          staffId: staff.id,
+          staffName: staff.name,
+          payPerClass,
+          classesCount: data.classesCount,
+          operationKey,
+          operationFingerprint,
+        },
+        createdBy: data.createdBy,
+      } as any);
+      if (!financeEntryResult.created) {
+        throw new Error("STAFF_CLASS_LOG_INCOMPLETE_REPLAY");
+      }
 
-    await db
-      .update(branchFinanceEntries)
-      .set({
-        sourceId: created.id,
-        updatedAt: new Date(),
-      })
-      .where(eq(branchFinanceEntries.id, financeEntry.id));
+      await tx
+        .insert(branchStaffClassLogs)
+        .values({
+          id: classLogId,
+          branchId: data.branchId,
+          staffId: staff.id,
+          classesCount: data.classesCount,
+          paymentTotal: String(paymentTotal),
+          classDate: data.classDate,
+          notes: data.notes ?? null,
+          financeEntryId: financeEntryResult.entry.id,
+          operationKey,
+          operationFingerprint,
+          createdBy: data.createdBy,
+        });
 
-    return (await this.getBranchStaffClassLogById(data.branchId, created.id))!;
+      await this.createAuditLogTx(tx, {
+        actorUserId: data.createdBy,
+        action: "REGISTER_STAFF_CLASSES_IN_FINANCE",
+        branchId: data.branchId,
+        metadata: {
+          staffId: staff.id,
+          classLogId,
+          financeEntryId: financeEntryResult.entry.id,
+          paymentTotal,
+        },
+      });
+
+      const created = await this.getBranchStaffClassLogByIdTx(tx, data.branchId, classLogId);
+      if (!created) {
+        throw new Error("STAFF_CLASS_LOG_CREATE_FAILED");
+      }
+      return created;
+    });
   }
 
   private async createMembershipFinanceEntryTx(executor: any, data: {

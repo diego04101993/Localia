@@ -88,6 +88,94 @@ export function branchPurchaseCentsToFixed(cents: number): string {
   return (cents / 100).toFixed(2);
 }
 
+function multiplyPositiveIntegerStrings(left: number, right: number): string {
+  const leftDigits = String(left).split("").map(Number).reverse();
+  const rightDigits = String(right).split("").map(Number).reverse();
+  const result = Array(leftDigits.length + rightDigits.length).fill(0) as number[];
+
+  for (let leftIndex = 0; leftIndex < leftDigits.length; leftIndex += 1) {
+    for (let rightIndex = 0; rightIndex < rightDigits.length; rightIndex += 1) {
+      result[leftIndex + rightIndex] += leftDigits[leftIndex] * rightDigits[rightIndex];
+    }
+  }
+  for (let index = 0; index < result.length - 1; index += 1) {
+    result[index + 1] += Math.floor(result[index] / 10);
+    result[index] %= 10;
+  }
+  while (result.length > 1 && result[result.length - 1] === 0) result.pop();
+  return result.reverse().join("");
+}
+
+function incrementPositiveIntegerString(value: string): string {
+  const digits = value.split("").map(Number);
+  for (let index = digits.length - 1; index >= 0; index -= 1) {
+    if (digits[index] < 9) {
+      digits[index] += 1;
+      return digits.join("");
+    }
+    digits[index] = 0;
+  }
+  return `1${digits.join("")}`;
+}
+
+function dividePositiveIntegerStringRounded(numerator: string, denominator: number): number {
+  let remainder = 0;
+  let quotient = "";
+  for (const character of numerator) {
+    remainder = (remainder * 10) + Number(character);
+    const digit = Math.floor(remainder / denominator);
+    quotient += String(digit);
+    remainder -= digit * denominator;
+  }
+  quotient = quotient.replace(/^0+(?=\d)/, "");
+  if (remainder * 2 >= denominator) quotient = incrementPositiveIntegerString(quotient);
+  const result = Number(quotient);
+  if (!Number.isSafeInteger(result)) throw new Error("BRANCH_PURCHASE_INVALID_REFERENCE_COST_INPUT");
+  return result;
+}
+
+export function deriveBranchPurchaseReferenceUnitCostCents(input: {
+  taxableSubtotal: number | string;
+  items: Array<{
+    quantityOrdered: number;
+    unitCost: number | string;
+  }>;
+}): number[] {
+  const taxableSubtotalCents = branchPurchaseMoneyToCents(input.taxableSubtotal);
+  if (!Number.isSafeInteger(taxableSubtotalCents) || taxableSubtotalCents < 0) {
+    throw new Error("BRANCH_PURCHASE_INVALID_TAXABLE_SUBTOTAL");
+  }
+
+  const normalizedItems = input.items.map((item) => {
+    const quantity = Number(item.quantityOrdered);
+    const unitCostCents = branchPurchaseMoneyToCents(item.unitCost);
+    if (!Number.isSafeInteger(quantity) || quantity <= 0 || !Number.isSafeInteger(unitCostCents) || unitCostCents < 0) {
+      throw new Error("BRANCH_PURCHASE_INVALID_REFERENCE_COST_INPUT");
+    }
+    return { quantity, unitCostCents };
+  });
+
+  const grossSubtotalCents = normalizedItems.reduce((total, item) => {
+    const lineTotalCents = item.unitCostCents * item.quantity;
+    if (!Number.isSafeInteger(lineTotalCents) || !Number.isSafeInteger(total + lineTotalCents)) {
+      throw new Error("BRANCH_PURCHASE_INVALID_REFERENCE_COST_INPUT");
+    }
+    return total + lineTotalCents;
+  }, 0);
+  if (grossSubtotalCents > Number.MAX_SAFE_INTEGER / 10) {
+    throw new Error("BRANCH_PURCHASE_INVALID_REFERENCE_COST_INPUT");
+  }
+  if (grossSubtotalCents === 0) {
+    if (taxableSubtotalCents !== 0) throw new Error("BRANCH_PURCHASE_INVALID_TAXABLE_SUBTOTAL");
+    return normalizedItems.map(() => 0);
+  }
+
+  return normalizedItems.map((item) => dividePositiveIntegerStringRounded(
+    multiplyPositiveIntegerStrings(taxableSubtotalCents, item.unitCostCents),
+    grossSubtotalCents,
+  ));
+}
+
 export function deriveBranchPurchasePaymentStatus(
   paidCents: number,
   totalCents: number,

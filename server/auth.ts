@@ -8,6 +8,7 @@ import { storage } from "./storage";
 import { pool } from "./db";
 import { supportsLocalPasswordAuth } from "./branch-client-identity";
 import { shouldEnableSessionStoreMaintenance } from "./runtime-safety";
+import { canAccessRequestedRoles } from "./authorization-policy";
 
 const PgSession = connectPgSimple(session);
 export const CUSTOMER_BLOCKED_MESSAGE = "Tu cuenta ha sido bloqueada. Contacta a soporte.";
@@ -318,14 +319,14 @@ export function requireRole(...roles: string[]) {
     const sess = req.session as any;
     const impersonating = !!(sess.impersonating && sess.originalUserId);
 
-    if (impersonating) {
-      if (roles.includes("SUPER_ADMIN") || roles.includes(user.role)) {
-        return next();
+    if (!canAccessRequestedRoles({
+      effectiveRole: user.role,
+      requestedRoles: roles,
+      impersonating,
+    })) {
+      if (impersonating && roles.length > 0 && roles.every((role) => role === "SUPER_ADMIN")) {
+        return res.status(403).json({ message: "Finaliza el modo soporte para usar funciones exclusivas de Super Admin" });
       }
-      return res.status(403).json({ message: "Acceso denegado" });
-    }
-
-    if (!roles.includes(user.role)) {
       return res.status(403).json({ message: "Acceso denegado" });
     }
     next();

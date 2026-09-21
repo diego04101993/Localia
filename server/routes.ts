@@ -98,6 +98,7 @@ import {
   verifyFirebaseIdToken,
 } from "./firebase-admin";
 import { seedDatabase } from "./seed";
+import { auditAttributionMiddleware, resolveAuditLogAttribution } from "./audit-context";
 import {
   loginSchema,
   publicCustomerRegisterSchema,
@@ -232,6 +233,10 @@ const leaseContractAdministrativeUpdateSchema = z.object({
 }).strict().refine((data) => Object.keys(data).length > 0, {
   message: "Debes enviar al menos un dato administrativo",
 });
+const cancelLeaseContractSchema = z.object({
+  reason: z.string().trim().min(3, "El motivo debe tener al menos 3 caracteres").max(500, "El motivo no puede exceder 500 caracteres"),
+  operationKey: z.string().trim().min(8, "Clave de operación inválida").max(120, "La clave de operación no puede exceder 120 caracteres"),
+}).strict();
 const leaseContractFinancialRequestFields = new Set([
   "clientUserId",
   "startDate",
@@ -835,11 +840,12 @@ async function createAuditLogTx(
     metadata?: Record<string, unknown>;
   },
 ) {
+  const attributed = resolveAuditLogAttribution(data);
   await tx.insert(auditLogs).values({
-    actorUserId: data.actorUserId,
-    action: data.action,
-    branchId: data.branchId ?? null,
-    metadata: data.metadata ?? null,
+    actorUserId: attributed.actorUserId,
+    action: attributed.action,
+    branchId: attributed.branchId ?? null,
+    metadata: attributed.metadata ?? null,
   });
 }
 
@@ -1621,9 +1627,6 @@ function getLeaseInstallmentPaymentMessage(err: unknown): { status: number; mess
   if (code === "LEASE_CONTRACT_NOT_FOUND" || code === "LEASE_INSTALLMENT_NOT_FOUND") {
     return { status: 404, message: "No encontramos la mensualidad en el arrendamiento actual." };
   }
-  if (code === "LEASE_CONTRACT_CANCELLED") {
-    return { status: 409, message: "No puedes registrar pagos en un contrato cancelado." };
-  }
   if (code === "LEASE_CONTRACT_COMPLETED") {
     return { status: 409, message: "Este contrato ya está completado." };
   }
@@ -1677,6 +1680,30 @@ function getLeaseContractMutationMessage(err: unknown): { status: number; messag
   }
   if (code === "LEASE_CONTRACT_UPDATE_PAYLOAD_INVALID") {
     return { status: 400, message: "Los datos para actualizar el arrendamiento no son válidos." };
+  }
+  if (code === "LEASE_CONTRACT_COMPLETED") {
+    return { status: 409, message: "Un contrato completado no puede cancelarse." };
+  }
+  if (code === "LEASE_CONTRACT_LEGACY_NOT_CANCELLABLE") {
+    return { status: 409, message: "Este contrato histórico no tiene una corrida verificable para cancelar de forma automática." };
+  }
+  if (code === "LEASE_CONTRACT_CANCELLATION_REQUIRES_HISTORY") {
+    return { status: 409, message: "Este arrendamiento no tiene pagos registrados. Puedes eliminarlo de forma segura en lugar de cancelarlo." };
+  }
+  if (code === "LEASE_CONTRACT_CANCELLATION_REASON_INVALID" || code === "LEASE_CONTRACT_CANCELLATION_OPERATION_KEY_INVALID") {
+    return { status: 400, message: "El motivo o la clave de la cancelación no son válidos." };
+  }
+  if (
+    code === "LEASE_CONTRACT_CANCELLATION_LEGACY_CONFLICT"
+    || code === "LEASE_CONTRACT_CANCELLATION_OPERATION_KEY_CONFLICT"
+  ) {
+    return { status: 409, message: "La clave de operación ya fue usada para una cancelación diferente o histórica." };
+  }
+  if (code === "LEASE_CONTRACT_CANCELLATION_BUSY") {
+    return { status: 423, message: "Este arrendamiento está siendo actualizado. Intenta nuevamente en un momento." };
+  }
+  if (code === "LEASE_CONTRACT_CANCELLATION_FAILED") {
+    return { status: 409, message: "No pudimos confirmar la cancelación de forma segura." };
   }
   return null;
 }
@@ -1893,6 +1920,7 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
   setupAuth(app);
+  app.use(auditAttributionMiddleware);
 
   const express = (await import("express")).default;
   app.use("/uploads", express.static(uploadsDir, {
@@ -4241,7 +4269,7 @@ if (!user) {
     }
   });
 
-  app.get("/api/branch/stats", requireAuth, async (req, res) => {
+  app.get("/api/branch/stats", requireBranchAdmin, async (req, res) => {
     const user = req.user as any;
     if (!user.branchId) return res.status(400).json({ message: "No hay sucursal asignada" });
     try {
@@ -5172,19 +5200,23 @@ if (!user) {
         paymentMethod: normalizeOptionalText(parsed.data.paymentMethod) ?? null,
         notes: normalizeOptionalText(parsed.data.notes) ?? null,
         createdBy: user.id,
+        operationKey: parsed.data.operationKey,
       });
 
-      await storage.createAuditLog({
-        actorUserId: user.id,
-        action: "REGISTER_STAFF_CLASSES_IN_FINANCE",
-        branchId: user.branchId,
-        metadata: { staffId: log.staffId, classLogId: log.id, paymentTotal: log.paymentTotal },
-      });
-
-      res.status(201).json(log);
+      res.status(log.idempotentReplay ? 200 : 201).json(log);
     } catch (err: any) {
       if (err instanceof Error && err.message === "PROFESSOR_NOT_FOUND") {
         return res.status(404).json({ message: "Profesor o empleado no encontrado" });
+      }
+      if (
+        err instanceof Error
+        && [
+          "STAFF_CLASS_LOG_LEGACY_OPERATION_CONFLICT",
+          "STAFF_CLASS_LOG_OPERATION_KEY_CONFLICT",
+          "STAFF_CLASS_LOG_INCOMPLETE_REPLAY",
+        ].includes(err.message)
+      ) {
+        return res.status(409).json({ message: "La clave de operación ya fue usada con datos distintos o incompletos. No se registró otro gasto." });
       }
       console.error("[BRANCH_FINANCE_STAFF_CLASS_LOG_CREATE]", err.stack || err);
       res.status(500).json({ message: "Error al registrar clases impartidas" });
@@ -6704,6 +6736,41 @@ if (!user) {
     }
   });
 
+  app.post("/api/branch/lease-contracts/:id/cancel", requireBranchAdmin, async (req, res) => {
+    const actor = req.user as any;
+    const leaseContractId = getStringParam(req.params.id);
+    const parsed = cancelLeaseContractSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        message: parsed.error.issues[0]?.message || "Datos de cancelación inválidos",
+      });
+    }
+
+    try {
+      const cancellation = await storage.cancelBranchLeaseContract({
+        branchId: actor.branchId,
+        actorUserId: actor.id,
+        leaseContractId,
+        reason: parsed.data.reason,
+        operationKey: parsed.data.operationKey,
+      });
+      const leaseContract = await storage.getBranchLeaseContract(actor.branchId, leaseContractId);
+      if (!leaseContract) {
+        throw new Error("LEASE_CONTRACT_NOT_FOUND");
+      }
+
+      res.setHeader("Cache-Control", "no-store");
+      return res.status(200).json({ ...cancellation, leaseContract });
+    } catch (err: any) {
+      const mutationMessage = getLeaseContractMutationMessage(err);
+      if (mutationMessage) {
+        return res.status(mutationMessage.status).json({ message: mutationMessage.message });
+      }
+      console.error("[LEASE_CONTRACT_CANCEL]", err?.stack || err);
+      return res.status(500).json({ message: "No pudimos cancelar el arrendamiento." });
+    }
+  });
+
   app.delete("/api/branch/lease-contracts/:id", requireBranchAdmin, async (req, res) => {
     const actor = req.user as any;
     const leaseContractId = getStringParam(req.params.id);
@@ -6982,20 +7049,16 @@ if (!user) {
         return res.status(404).json({ message: "Plan no encontrado" });
       }
 
-      const plan = await storage.deactivatePlan(planId);
-      const detached = await storage.detachPlanFromMemberships(
-        planId,
-        existing.leaseEnabled ? null : existing.name,
-      );
-
-      await storage.createAuditLog({
-        actorUserId: actor.id,
-        action: "DEACTIVATE_PLAN",
+      const plan = await storage.deactivatePlan({
         branchId: actor.branchId,
-        metadata: { planId, name: existing.name, detachedClients: detached },
+        planId,
+        actorUserId: actor.id,
       });
+      if (!plan) {
+        return res.status(404).json({ message: "Plan no encontrado" });
+      }
 
-      console.log(`[PLAN] Deactivated "${existing.name}" by ${actor.email}, detached ${detached} client(s)`);
+      console.log(`[PLAN] Deactivated "${existing.name}" by ${actor.email}; existing memberships preserved`);
       res.json(plan);
     } catch (err: any) {
       console.error(`[PLAN] Error deactivating:`, err.stack || err);
@@ -8756,7 +8819,7 @@ if (!user) {
         salespersonId,
         amount: parsed.data.amount,
         paymentMethod: parsed.data.paymentMethod,
-        idempotencyKey: normalizeOptionalText(parsed.data.idempotencyKey) ?? null,
+        idempotencyKey: parsed.data.idempotencyKey,
         reference: normalizeOptionalText(parsed.data.reference) ?? null,
         notes: normalizeOptionalText(parsed.data.notes) ?? null,
         periodStart: parsed.data.periodStart ?? null,
@@ -8765,23 +8828,7 @@ if (!user) {
         createdBy: actor.id,
       });
 
-      await storage.createAuditLog({
-        actorUserId: actor.id,
-        action: "CREATE_BRANCH_COMMISSION_PAYMENT",
-        branchId: actor.branchId,
-        metadata: {
-          salespersonId,
-          paymentId: payment.id,
-          amount: payment.amount,
-          paymentMethod: payment.paymentMethod,
-          allocations: payment.allocations?.map((allocation) => ({
-            accrualId: allocation.commissionAccrualId,
-            amountAllocated: allocation.amountAllocated,
-          })) ?? [],
-        },
-      });
-
-      res.status(201).json(payment);
+      res.status(payment.idempotentReplay ? 200 : 201).json(payment);
     } catch (err: any) {
       if (err instanceof Error) {
         if (err.message === "BRANCH_SALESPERSON_NOT_FOUND") {
@@ -8795,6 +8842,14 @@ if (!user) {
         }
         if (err.message === "BRANCH_COMMISSION_PAYMENT_ALLOCATION_INCOMPLETE") {
           return res.status(409).json({ message: "No se pudo asignar completamente el pago a comisiones pendientes" });
+        }
+        if (
+          [
+            "BRANCH_COMMISSION_PAYMENT_LEGACY_OPERATION_CONFLICT",
+            "BRANCH_COMMISSION_PAYMENT_OPERATION_KEY_CONFLICT",
+          ].includes(err.message)
+        ) {
+          return res.status(409).json({ message: "La clave de operación ya fue usada con un pago distinto o histórico. No se registró otro gasto." });
         }
       }
 
@@ -10338,35 +10393,31 @@ if (!user) {
           },
           clientName: clientDisplayName,
         },
-      });
-
-      await storage.createAuditLog({
-        actorUserId: actor.id,
-        action: "CREATE_BRANCH_CHECKOUT_SALE",
-        branchId: actor.branchId,
-        metadata: {
-          saleId: sale.id,
-          folio: sale.folio,
-          clientUserId: parsed.data.clientUserId ?? null,
-          sellerId: normalizeOptionalText(parsed.data.sellerId) ?? null,
-          subtotalAmount,
-          discountAmount,
-          subtotalBeforeTax: taxSnapshot.subtotalBeforeTax,
-          taxableSubtotal: taxSnapshot.taxableSubtotal,
-          taxTotal: taxSnapshot.taxTotal,
-          grandTotal: taxSnapshot.grandTotal,
-          totalAmount: grandTotal,
-          paymentTotal,
-          itemCount: items.length,
-          paymentCount: parsed.data.payments.length,
-          financeLinked: true,
-          taxMode: taxSnapshot.taxMode,
-          taxRate: taxSnapshot.taxRate,
-          idempotencyKey: parsed.data.idempotencyKey,
+        audit: {
+          actorUserId: actor.id,
+          action: "CREATE_BRANCH_CHECKOUT_SALE",
+          metadata: {
+            clientUserId: parsed.data.clientUserId ?? null,
+            sellerId: normalizeOptionalText(parsed.data.sellerId) ?? null,
+            subtotalAmount,
+            discountAmount,
+            subtotalBeforeTax: taxSnapshot.subtotalBeforeTax,
+            taxableSubtotal: taxSnapshot.taxableSubtotal,
+            taxTotal: taxSnapshot.taxTotal,
+            grandTotal: taxSnapshot.grandTotal,
+            totalAmount: grandTotal,
+            paymentTotal,
+            itemCount: items.length,
+            paymentCount: parsed.data.payments.length,
+            financeLinked: true,
+            taxMode: taxSnapshot.taxMode,
+            taxRate: taxSnapshot.taxRate,
+            idempotencyKey: parsed.data.idempotencyKey,
+          },
         },
       });
 
-      res.status(201).json(sale);
+      res.status(sale.idempotentReplay ? 200 : 201).json(sale);
     } catch (err: any) {
       if (err instanceof Error) {
         if (err.message === "BRANCH_SALESPERSON_INVALID") {
@@ -10386,6 +10437,15 @@ if (!user) {
         }
         if (err.message === "INVENTORY_INSUFFICIENT_STOCK") {
           return res.status(409).json({ message: "No hay existencia suficiente para completar la venta" });
+        }
+        if (err.message === "BRANCH_SALE_OPERATION_KEY_REQUIRED") {
+          return res.status(400).json({ message: "La clave de operación de la venta es obligatoria" });
+        }
+        if (
+          err.message === "BRANCH_SALE_LEGACY_OPERATION_CONFLICT"
+          || err.message === "BRANCH_SALE_OPERATION_KEY_CONFLICT"
+        ) {
+          return res.status(409).json({ message: "La clave de operación ya fue usada con una venta distinta o histórica" });
         }
       }
 
@@ -10458,7 +10518,7 @@ if (!user) {
           taxableSubtotal: taxSnapshot.taxableSubtotal,
           taxTotal: taxSnapshot.taxTotal,
           grandTotal: taxSnapshot.grandTotal,
-          idempotencyKey: parsed.data.idempotencyKey ?? null,
+          idempotencyKey: parsed.data.idempotencyKey,
           notes,
           createdBy: actor.id,
         } as any,
@@ -10523,39 +10583,34 @@ if (!user) {
           },
           clientName: clientDisplayName,
         },
-      });
-
-      await storage.createAuditLog({
-        actorUserId: actor.id,
-        action: "CREATE_BRANCH_SALE",
-        branchId: actor.branchId,
-        metadata: {
-          saleId: sale.id,
-          folio: sale.folio,
-          productId: product.id,
-          productName: product.name,
-          quantity,
-          subtotalAmount,
-          discountAmount,
-          subtotalBeforeTax: taxSnapshot.subtotalBeforeTax,
-          taxableSubtotal: taxSnapshot.taxableSubtotal,
-          taxTotal: taxSnapshot.taxTotal,
-          grandTotal: taxSnapshot.grandTotal,
-          totalAmount,
-          paymentMethod: parsed.data.paymentMethod,
-          clientUserId: parsed.data.clientUserId ?? null,
-          sellerId: parsed.data.sellerId ?? null,
-          sellerNameSnapshot: sale.sellerNameSnapshot ?? null,
-          clientDisplayName,
-          channel: "dashboard_products",
-          financeLinked: true,
-          taxMode: taxSnapshot.taxMode,
-          taxRate: taxSnapshot.taxRate,
-          idempotencyKey: parsed.data.idempotencyKey ?? null,
+        audit: {
+          actorUserId: actor.id,
+          action: "CREATE_BRANCH_SALE",
+          metadata: {
+            productId: product.id,
+            productName: product.name,
+            quantity,
+            subtotalAmount,
+            discountAmount,
+            subtotalBeforeTax: taxSnapshot.subtotalBeforeTax,
+            taxableSubtotal: taxSnapshot.taxableSubtotal,
+            taxTotal: taxSnapshot.taxTotal,
+            grandTotal: taxSnapshot.grandTotal,
+            totalAmount,
+            paymentMethod: parsed.data.paymentMethod,
+            clientUserId: parsed.data.clientUserId ?? null,
+            sellerId: parsed.data.sellerId ?? null,
+            clientDisplayName,
+            channel: "dashboard_products",
+            financeLinked: true,
+            taxMode: taxSnapshot.taxMode,
+            taxRate: taxSnapshot.taxRate,
+            idempotencyKey: parsed.data.idempotencyKey,
+          },
         },
       });
 
-      res.status(201).json(sale);
+      res.status(sale.idempotentReplay ? 200 : 201).json(sale);
     } catch (err: any) {
       if (err instanceof Error) {
         if (err.message === "BRANCH_SALESPERSON_INVALID") {
@@ -10575,6 +10630,15 @@ if (!user) {
         }
         if (err.message === "INVENTORY_INSUFFICIENT_STOCK") {
           return res.status(409).json({ message: "No hay inventario suficiente para completar la venta" });
+        }
+        if (err.message === "BRANCH_SALE_OPERATION_KEY_REQUIRED") {
+          return res.status(400).json({ message: "La clave de operación de la venta es obligatoria" });
+        }
+        if (
+          err.message === "BRANCH_SALE_LEGACY_OPERATION_CONFLICT"
+          || err.message === "BRANCH_SALE_OPERATION_KEY_CONFLICT"
+        ) {
+          return res.status(409).json({ message: "La clave de operación ya fue usada con una venta distinta o histórica" });
         }
       }
       console.error("[COMMERCIAL_PRODUCTS_SALE_CREATE]", err.stack || err);
