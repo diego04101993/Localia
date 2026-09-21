@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import bcrypt from "bcryptjs";
 import { eq, and, sql, or, ne, isNull, count, desc, asc, gte, inArray, lte } from "drizzle-orm";
 import { db } from "./db";
 import {
@@ -245,6 +246,23 @@ import {
   MEMBERSHIP_PLAN_REMOVAL_BUSY,
   type MembershipPlanRemovalOperationResult,
 } from "./membership-plan-removal";
+import {
+  AccountSecurityError,
+  ACCOUNT_SECURITY_EMAIL_CONFLICT,
+  commitLocalEmailChange,
+  commitLocalPasswordChange,
+} from "./account-security-operation";
+import {
+  BRANCH_CLIENT_DUPLICATE,
+  BRANCH_CLIENT_NOT_FOUND,
+  BranchClientOperationError,
+  commitBranchClientEdit,
+  commitBranchClientSoftDelete,
+  normalizeBranchClientPhone,
+  type BranchClientCrmPatch,
+  type BranchClientGlobalPatch,
+  type BranchClientPrivatePatch,
+} from "./branch-client-operation";
 import {
   BRANCH_PURCHASE_CREATE_OPERATION,
   BRANCH_PURCHASE_PAYMENT_OPERATION,
@@ -505,10 +523,12 @@ function buildLocalAccessProvisioningPatch(
 async function invalidateUserSessionsTx(
   executor: { execute: typeof db.execute },
   userId: string,
+  preserveSessionId?: string | null,
 ): Promise<number> {
   const sessionDeleteResult = await executor.execute(sql`
     DELETE FROM session
     WHERE sess::json -> 'passport' ->> 'user' = ${userId}
+      ${preserveSessionId ? sql`AND sid <> ${preserveSessionId}` : sql``}
   `);
 
   return Number((sessionDeleteResult as any)?.rowCount ?? 0);
@@ -2289,6 +2309,18 @@ export interface IStorage {
   createUser(user: InsertUser): Promise<User>;
   deleteCustomerAccount(id: string): Promise<void>;
   updateUserPassword(id: string, passwordHash: string): Promise<User | undefined>;
+  changeOwnLocalPassword(params: {
+    userId: string;
+    currentPassword: string;
+    newPasswordHash: string;
+    currentSessionId: string;
+  }): Promise<{ user: User; sessionsInvalidated: number; resetTokensInvalidated: number }>;
+  changeOwnLocalEmail(params: {
+    userId: string;
+    currentPassword: string;
+    newEmail: string;
+    currentSessionId: string;
+  }): Promise<{ user: User; changed: boolean; sessionsInvalidated: number; resetTokensInvalidated: number }>;
   markLocalAccessProvisioned(
     id: string,
     options?: { branchId?: string | null; provisionedAt?: Date | string | null },
@@ -2900,9 +2932,23 @@ export interface IStorage {
   getClientsWithoutClasses(branchId: string): Promise<any[]>;
   getMembershipsAssignedToPlan(planId: string): Promise<number>;
   updateClient(userId: string, data: { name?: string; email?: string | null; lastName?: string | null; phone?: string | null; birthDate?: string | null; gender?: string | null; emergencyContactName?: string | null; emergencyContactPhone?: string | null; medicalNotes?: string | null; injuriesNotes?: string | null; medicalWarnings?: string | null; parqAccepted?: boolean; parqAcceptedDate?: string | null; avatarUrl?: string | null }): Promise<any>;
+  updateBranchClientTransactional(params: {
+    actorUserId: string;
+    branchId: string;
+    clientId: string;
+    globalPatch: BranchClientGlobalPatch;
+    privatePatch: BranchClientPrivatePatch;
+    crmPatch: BranchClientCrmPatch;
+    auditAction?: "UPDATE_CLIENT" | "UPDATE_CLIENT_CRM";
+  }): Promise<{ user: User | null; privateProfile: any | null }>;
   updateClientStatus(membershipId: string, clientStatus: string): Promise<any>;
   updateClientDebt(membershipId: string, hasDebt: boolean, debtAmount: number): Promise<any>;
   softDeleteMembership(membershipId: string): Promise<any>;
+  softDeleteBranchClientTransactional(params: {
+    actorUserId: string;
+    branchId: string;
+    clientId: string;
+  }): Promise<Membership>;
   getUpcomingBookingsForUser(branchId: string, userId: string, fromDate: string, limit?: number): Promise<any[]>;
   updateBranchWhatsappTemplates(branchId: string, templates: Record<string, string>): Promise<any>;
   updateBranchProfile(branchId: string, data: { name?: string | null; description?: string | null; address?: string | null; city?: string | null; googleMapsUrl?: string | null; operatingHours?: any; summaryHours?: string | null; category?: string | null; subcategory?: string | null; searchKeywords?: string | null; latitude?: number | null; longitude?: number | null; whatsappNumber?: string | null }): Promise<any>;
@@ -3058,6 +3104,116 @@ export class DatabaseStorage implements IStorage {
       .where(eq(users.id, id))
       .returning();
     return user;
+  }
+
+  async changeOwnLocalPassword(params: {
+    userId: string;
+    currentPassword: string;
+    newPasswordHash: string;
+    currentSessionId: string;
+  }): Promise<{ user: User; sessionsInvalidated: number; resetTokensInvalidated: number }> {
+    return commitLocalPasswordChange({
+      ...params,
+      transaction: (work) => db.transaction(async (tx: any) => {
+        await tx.execute(sql.raw(`SET LOCAL lock_timeout = '${BRANCH_CLIENT_ACCESS_LOCK_TIMEOUT_MS}ms'`));
+        await tx.execute(sql.raw(`SET LOCAL statement_timeout = '${BRANCH_CLIENT_ACCESS_STATEMENT_TIMEOUT_MS}ms'`));
+        return work(tx);
+      }),
+      lockUser: async (tx: any, userId) => {
+        const [user] = await tx.select().from(users).where(eq(users.id, userId)).for("update");
+        return user;
+      },
+      verifyCurrentPassword: (plainPassword, passwordHash) => bcrypt.compare(plainPassword, passwordHash),
+      updatePassword: async (tx: any, userId, passwordHash) => {
+        const [user] = await tx
+          .update(users)
+          .set({ passwordHash })
+          .where(eq(users.id, userId))
+          .returning();
+        return user;
+      },
+      invalidateResetTokens: async (tx: any, userId) => {
+        const rows = await tx
+          .update(passwordResetTokens)
+          .set({ used: true })
+          .where(and(eq(passwordResetTokens.userId, userId), eq(passwordResetTokens.used, false)))
+          .returning({ id: passwordResetTokens.id });
+        return rows.length;
+      },
+      revokeOtherSessions: (tx: any, userId, currentSessionId) => (
+        invalidateUserSessionsTx(tx, userId, currentSessionId)
+      ),
+      createAudit: async (tx: any, audit) => {
+        await this.createAuditLogTx(tx, audit);
+      },
+    });
+  }
+
+  async changeOwnLocalEmail(params: {
+    userId: string;
+    currentPassword: string;
+    newEmail: string;
+    currentSessionId: string;
+  }): Promise<{ user: User; changed: boolean; sessionsInvalidated: number; resetTokensInvalidated: number }> {
+    try {
+      return await commitLocalEmailChange({
+        ...params,
+        transaction: (work) => db.transaction(async (tx: any) => {
+          await tx.execute(sql.raw(`SET LOCAL lock_timeout = '${BRANCH_CLIENT_ACCESS_LOCK_TIMEOUT_MS}ms'`));
+          await tx.execute(sql.raw(`SET LOCAL statement_timeout = '${BRANCH_CLIENT_ACCESS_STATEMENT_TIMEOUT_MS}ms'`));
+          return work(tx);
+        }),
+        lockUser: async (tx: any, userId) => {
+          const [user] = await tx.select().from(users).where(eq(users.id, userId)).for("update");
+          return user;
+        },
+        verifyCurrentPassword: (plainPassword, passwordHash) => bcrypt.compare(plainPassword, passwordHash),
+        lockEmail: async (tx: any, normalizedEmail) => {
+          await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${'user-email:' + normalizedEmail}))`);
+        },
+        findUserByEmail: async (tx: any, normalizedEmail) => {
+          const [user] = await tx
+            .select()
+            .from(users)
+            .where(sql`lower(btrim(${users.email})) = ${normalizedEmail}`)
+            .limit(1);
+          return user;
+        },
+        updateEmail: async (tx: any, userId, normalizedEmail) => {
+          const [user] = await tx
+            .update(users)
+            .set({
+              email: normalizedEmail,
+              emailVerified: false,
+              emailVerifiedAt: null,
+              emailVerificationToken: null,
+              emailVerificationTokenExpiresAt: null,
+            })
+            .where(eq(users.id, userId))
+            .returning();
+          return user;
+        },
+        invalidateResetTokens: async (tx: any, userId) => {
+          const rows = await tx
+            .update(passwordResetTokens)
+            .set({ used: true })
+            .where(and(eq(passwordResetTokens.userId, userId), eq(passwordResetTokens.used, false)))
+            .returning({ id: passwordResetTokens.id });
+          return rows.length;
+        },
+        revokeOtherSessions: (tx: any, userId, currentSessionId) => (
+          invalidateUserSessionsTx(tx, userId, currentSessionId)
+        ),
+        createAudit: async (tx: any, audit) => {
+          await this.createAuditLogTx(tx, audit);
+        },
+      });
+    } catch (error: any) {
+      if (isPgUniqueViolation(error)) {
+        throw new AccountSecurityError(ACCOUNT_SECURITY_EMAIL_CONFLICT);
+      }
+      throw error;
+    }
   }
 
   async markLocalAccessProvisioned(
@@ -17109,6 +17265,128 @@ export class DatabaseStorage implements IStorage {
     return updated;
   }
 
+  async updateBranchClientTransactional(params: {
+    actorUserId: string;
+    branchId: string;
+    clientId: string;
+    globalPatch: BranchClientGlobalPatch;
+    privatePatch: BranchClientPrivatePatch;
+    crmPatch: BranchClientCrmPatch;
+    auditAction?: "UPDATE_CLIENT" | "UPDATE_CLIENT_CRM";
+  }): Promise<{ user: User | null; privateProfile: any | null }> {
+    try {
+      return await commitBranchClientEdit({
+        ...params,
+        transaction: (work) => db.transaction(async (tx) => {
+          await tx.execute(sql.raw(`SET LOCAL lock_timeout = '${BRANCH_CLIENT_ACCESS_LOCK_TIMEOUT_MS}ms'`));
+          await tx.execute(sql.raw(`SET LOCAL statement_timeout = '${BRANCH_CLIENT_ACCESS_STATEMENT_TIMEOUT_MS}ms'`));
+
+          const [actor] = await tx
+            .select({ role: users.role, branchId: users.branchId })
+            .from(users)
+            .where(eq(users.id, params.actorUserId))
+            .limit(1);
+          if (
+            !actor
+            || !["BRANCH_ADMIN", "SUPER_ADMIN"].includes(actor.role)
+            || actor.branchId !== params.branchId
+          ) {
+            throw new BranchClientOperationError(BRANCH_CLIENT_NOT_FOUND);
+          }
+          return work(tx);
+        }),
+        lockMembership: async (tx: any, branchId, clientId) => {
+          const [membership] = await tx
+            .select()
+            .from(memberships)
+            .where(and(eq(memberships.branchId, branchId), eq(memberships.userId, clientId)))
+            .for("update");
+          return membership;
+        },
+        lockUser: async (tx: any, clientId) => {
+          const [user] = await tx.select().from(users).where(eq(users.id, clientId)).for("update");
+          return user;
+        },
+        countOperationalBranches: async (tx: any, clientId) => {
+          const [row] = await tx
+            .select({ total: count() })
+            .from(memberships)
+            .where(and(
+              eq(memberships.userId, clientId),
+              eq(memberships.status, "active"),
+              inArray(memberships.clientStatus, [...ACTIVE_MEMBERSHIP_CLIENT_STATUSES]),
+            ));
+          return Number(row?.total ?? 0);
+        },
+        findUserByEmail: async (tx: any, normalizedEmail) => {
+          const [user] = await tx
+            .select()
+            .from(users)
+            .where(sql`lower(btrim(${users.email})) = ${normalizedEmail}`)
+            .limit(1);
+          return user;
+        },
+        findPhoneMatches: async (tx: any, branchId, normalizedPhone, excludedClientId) => {
+          await tx.execute(sql`
+            SELECT pg_advisory_xact_lock(
+              hashtext(${`branch-client-phone:${branchId}:${normalizedPhone}`})
+            )
+          `);
+          const rows = await tx
+            .select({
+              userId: users.id,
+              membershipId: memberships.id,
+              membershipStatus: memberships.status,
+              name: users.name,
+              lastName: users.lastName,
+              email: users.email,
+              phone: users.phone,
+            })
+            .from(memberships)
+            .innerJoin(users, eq(memberships.userId, users.id))
+            .where(and(eq(memberships.branchId, branchId), ne(users.id, excludedClientId)));
+          return rows.filter((row: any) => normalizeBranchClientPhone(row.phone) === normalizedPhone);
+        },
+        updateUser: async (tx: any, clientId, patch) => {
+          const [user] = await tx
+            .update(users)
+            .set(patch)
+            .where(eq(users.id, clientId))
+            .returning();
+          return user;
+        },
+        upsertBranchProfile: async (tx: any, branchId, clientId, patch, membership, initializePrivateProfile) => {
+          const crmEntry = await this.upsertBranchClientCrmTx(tx, branchId, clientId, {
+            ...patch,
+            ...(initializePrivateProfile ? { privateProfileInitialized: true } : {}),
+          });
+          const lastVisit = getLatestDate(crmEntry.lastVisit);
+          return {
+            emergencyContactName: crmEntry.emergencyContactName,
+            emergencyContactPhone: crmEntry.emergencyContactPhone,
+            medicalNotes: crmEntry.medicalNotes,
+            injuriesNotes: crmEntry.injuriesNotes,
+            medicalWarnings: crmEntry.medicalWarnings,
+            parqAccepted: crmEntry.parqAccepted,
+            parqAcceptedDate: crmEntry.parqAcceptedDate,
+            clientStatus: crmEntry.clientStatus,
+            crmClientStatus: resolveCrmClientStatus(crmEntry.clientStatus, lastVisit, membership.joinedAt || null),
+            lastVisit,
+            tags: crmEntry.tags,
+          };
+        },
+        createAudit: async (tx: any, audit) => {
+          await this.createAuditLogTx(tx, audit);
+        },
+      });
+    } catch (error: any) {
+      if (isPgUniqueViolation(error)) {
+        throw new BranchClientOperationError(BRANCH_CLIENT_DUPLICATE);
+      }
+      throw error;
+    }
+  }
+
   async updateClientDebt(membershipId: string, hasDebt: boolean, debtAmount: number): Promise<any> {
     const [updated] = await db
       .update(memberships)
@@ -17176,6 +17454,53 @@ export class DatabaseStorage implements IStorage {
       .where(eq(memberships.id, membershipId))
       .returning();
     return updated;
+  }
+
+  async softDeleteBranchClientTransactional(params: {
+    actorUserId: string;
+    branchId: string;
+    clientId: string;
+  }): Promise<Membership> {
+    return commitBranchClientSoftDelete({
+      ...params,
+      transaction: (work) => db.transaction(async (tx: any) => {
+        await tx.execute(sql.raw(`SET LOCAL lock_timeout = '${BRANCH_CLIENT_ACCESS_LOCK_TIMEOUT_MS}ms'`));
+        await tx.execute(sql.raw(`SET LOCAL statement_timeout = '${BRANCH_CLIENT_ACCESS_STATEMENT_TIMEOUT_MS}ms'`));
+
+        const [actor] = await tx
+          .select({ role: users.role, branchId: users.branchId })
+          .from(users)
+          .where(eq(users.id, params.actorUserId))
+          .limit(1);
+        if (
+          !actor
+          || !["BRANCH_ADMIN", "SUPER_ADMIN"].includes(actor.role)
+          || actor.branchId !== params.branchId
+        ) {
+          throw new BranchClientOperationError(BRANCH_CLIENT_NOT_FOUND);
+        }
+        return work(tx);
+      }),
+      lockMembership: async (tx: any, branchId, clientId) => {
+        const [membership] = await tx
+          .select()
+          .from(memberships)
+          .where(and(eq(memberships.branchId, branchId), eq(memberships.userId, clientId)))
+          .for("update");
+        return membership;
+      },
+      updateMembership: async (tx: any, membershipId, patch) => {
+        const [membership] = await tx
+          .update(memberships)
+          .set(patch)
+          .where(eq(memberships.id, membershipId))
+          .returning();
+        return membership;
+      },
+      createAudit: async (tx: any, audit) => {
+        await this.createAuditLogTx(tx, audit);
+      },
+    });
   }
 
   async getUpcomingBookingsForUser(branchId: string, userId: string, fromDate: string, limit: number = 5): Promise<any[]> {

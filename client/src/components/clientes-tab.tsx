@@ -1867,11 +1867,13 @@ function EditClientDialog({ clientId, open, onOpenChange }: { clientId: string |
         return payload ?? {};
       };
 
-      const clientResp = await requestJson(`/api/branch/clients/${clientId}`, data.client);
-      const crmResp = await requestJson(`/api/branch/client/${clientId}`, data.crm);
+      const clientResp = await requestJson(`/api/branch/clients/${clientId}`, {
+        ...data.client,
+        ...data.crm,
+      });
       return {
         client: clientResp,
-        crm: crmResp,
+        crm: clientResp.privateProfile,
       };
     },
     onSuccess: async () => {

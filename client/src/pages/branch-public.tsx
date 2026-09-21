@@ -46,7 +46,8 @@ import {
 import { useAuth } from "@/lib/auth";
 import { apiRequest, queryClient, getQueryFn } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { BRANCH_CATEGORIES, type Branch, type BranchPhoto, type BranchPost, type BranchProduct, type BranchVideo } from "@shared/schema";
+import { BRANCH_CATEGORIES, type BranchPhoto, type BranchPost, type BranchProduct, type BranchVideo } from "@shared/schema";
+import type { PublicBranchDto } from "@shared/public-branch";
 
 type MembershipInfo = { branchId: string; isFavorite: boolean; status: string };
 type BranchContent = {
@@ -1254,7 +1255,7 @@ export default function BranchPublicPage() {
   const { user, logout } = useAuth();
   const { toast } = useToast();
 
-  const { data: branch, isLoading, error } = useQuery<Branch>({
+  const { data: branch, isLoading, error } = useQuery<PublicBranchDto>({
     queryKey: [`/api/public/branch/${slug}`],
     enabled: !!slug,
   });

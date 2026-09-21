@@ -39,6 +39,29 @@ import {
   supportsLocalPasswordAuth,
 } from "./branch-client-identity";
 import {
+  AccountSecurityError,
+  ACCOUNT_SECURITY_ACCOUNT_BLOCKED,
+  ACCOUNT_SECURITY_AUTHENTICATION_FAILED,
+  ACCOUNT_SECURITY_EMAIL_CONFLICT,
+  ACCOUNT_SECURITY_LOCAL_AUTH_REQUIRED,
+} from "./account-security-operation";
+import {
+  BRANCH_CLIENT_ALREADY_DELETED,
+  BRANCH_CLIENT_AMBIGUOUS_DUPLICATE,
+  BRANCH_CLIENT_DUPLICATE,
+  BRANCH_CLIENT_IDENTITY_MANAGED_BY_APP,
+  BRANCH_CLIENT_INVALID_PHONE,
+  BRANCH_CLIENT_NOT_FOUND,
+  BRANCH_CLIENT_NO_CHANGES,
+  BRANCH_CLIENT_SHARED_IDENTITY,
+  BranchClientOperationError,
+} from "./branch-client-operation";
+import {
+  removeAvatarAfterDatabaseWrite,
+  replaceAvatarAfterDatabaseWrite,
+} from "./avatar-storage-operation";
+import { buildPublicBranchDto } from "@shared/public-branch";
+import {
   deleteAllNotifications,
   deleteNotification,
   deleteReadNotifications,
@@ -3037,21 +3060,42 @@ if (!user) {
       return res.status(403).json({ message: CUSTOMER_BLOCKED_MESSAGE });
     }
     const { currentPassword, newPassword } = req.body;
-    if (!currentPassword || !newPassword) {
+    if (typeof currentPassword !== "string" || !currentPassword || typeof newPassword !== "string" || !newPassword) {
       return res.status(400).json({ message: "Se requiere contraseña actual y nueva" });
     }
-    if (typeof newPassword !== "string" || newPassword.length < 6) {
+    if (newPassword.length < 6) {
       return res.status(400).json({ message: "La nueva contraseña debe tener al menos 6 caracteres" });
     }
     try {
-      const user = await storage.getUser(actor.id);
-      if (!user?.passwordHash) return res.status(400).json({ message: "Error de autenticación" });
-      const valid = await bcrypt.compare(currentPassword, user.passwordHash);
-      if (!valid) return res.status(400).json({ message: "Contraseña actual incorrecta" });
       const hash = await bcrypt.hash(newPassword, 10);
-      await storage.updateUserPassword(actor.id, hash);
-      res.json({ message: "Contraseña actualizada" });
+      const result = await storage.changeOwnLocalPassword({
+        userId: actor.id,
+        currentPassword,
+        newPasswordHash: hash,
+        currentSessionId: req.sessionID,
+      });
+      res.json({
+        message: "Contraseña actualizada",
+        sessionsRevoked: result.sessionsInvalidated,
+      });
     } catch (err: any) {
+      if (err instanceof AccountSecurityError) {
+        if (err.code === ACCOUNT_SECURITY_LOCAL_AUTH_REQUIRED) {
+          return res.status(409).json({
+            code: "EXTERNAL_PROVIDER_ACCOUNT",
+            message: "Esta cuenta administra su acceso con un proveedor externo.",
+          });
+        }
+        if (err.code === ACCOUNT_SECURITY_ACCOUNT_BLOCKED) {
+          return res.status(403).json({ message: CUSTOMER_BLOCKED_MESSAGE });
+        }
+        if (err.code === ACCOUNT_SECURITY_AUTHENTICATION_FAILED) {
+          return res.status(400).json({ message: "Contraseña actual incorrecta" });
+        }
+      }
+      if (err?.code === "55P03" || err?.code === "57014") {
+        return res.status(423).json({ message: "La cuenta está siendo actualizada. Intenta nuevamente." });
+      }
       console.error("[CHANGE-PASSWORD]", err.stack || err);
       res.status(500).json({ message: "Error al cambiar contraseña" });
     }
@@ -3064,25 +3108,46 @@ if (!user) {
       return res.status(403).json({ message: CUSTOMER_BLOCKED_MESSAGE });
     }
     const { currentPassword, newEmail } = req.body;
-    if (!currentPassword || !newEmail) {
+    if (typeof currentPassword !== "string" || !currentPassword || typeof newEmail !== "string" || !newEmail) {
       return res.status(400).json({ message: "Se requiere contraseña y nuevo correo" });
     }
-    if (typeof newEmail !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newEmail)) {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newEmail.trim())) {
       return res.status(400).json({ message: "Correo inválido" });
     }
     try {
-      const user = await storage.getUser(actor.id);
-      if (!user?.passwordHash) return res.status(400).json({ message: "Error de autenticación" });
-      const valid = await bcrypt.compare(currentPassword, user.passwordHash);
-      if (!valid) return res.status(400).json({ message: "Contraseña incorrecta" });
-      const existing = await storage.getUserByEmail(newEmail.toLowerCase().trim());
-      if (existing && existing.id !== actor.id) {
-        return res.status(400).json({ message: "Ese correo ya está en uso" });
-      }
-      const updated = await storage.updateUser(actor.id, { email: newEmail.toLowerCase().trim() });
+      const result = await storage.changeOwnLocalEmail({
+        userId: actor.id,
+        currentPassword,
+        newEmail,
+        currentSessionId: req.sessionID,
+      });
+      const updated = result.user;
       const { passwordHash, ...safeUser } = updated as any;
-      res.json(safeUser);
+      res.json({
+        ...safeUser,
+        sessionsRevoked: result.sessionsInvalidated,
+      });
     } catch (err: any) {
+      if (err instanceof AccountSecurityError) {
+        if (err.code === ACCOUNT_SECURITY_EMAIL_CONFLICT) {
+          return res.status(409).json({ code: "EMAIL_ALREADY_EXISTS", message: "Ese correo ya está en uso" });
+        }
+        if (err.code === ACCOUNT_SECURITY_LOCAL_AUTH_REQUIRED) {
+          return res.status(409).json({
+            code: "EXTERNAL_PROVIDER_ACCOUNT",
+            message: "Esta cuenta administra su acceso con un proveedor externo.",
+          });
+        }
+        if (err.code === ACCOUNT_SECURITY_ACCOUNT_BLOCKED) {
+          return res.status(403).json({ message: CUSTOMER_BLOCKED_MESSAGE });
+        }
+        if (err.code === ACCOUNT_SECURITY_AUTHENTICATION_FAILED) {
+          return res.status(400).json({ message: "Contraseña incorrecta" });
+        }
+      }
+      if (err?.code === "55P03" || err?.code === "57014") {
+        return res.status(423).json({ message: "La cuenta está siendo actualizada. Intenta nuevamente." });
+      }
       console.error("[CHANGE-EMAIL]", err.stack || err);
       res.status(500).json({ message: "Error al cambiar correo" });
     }
@@ -3106,18 +3171,25 @@ if (!user) {
         return res.status(400).json({ message: "No se proporcionó ningún archivo" });
       }
 
+      const avatarUrl = buildUploadPublicUrl(req.file.filename);
+      let replacementStarted = false;
       try {
         const existingUser = await storage.getUser(actor.id);
-        if (existingUser?.avatarUrl) {
-          deleteLocalUploadFiles([existingUser.avatarUrl]);
-        }
-
-        const avatarUrl = buildUploadPublicUrl(req.file.filename);
-        await storage.updateClient(actor.id, { avatarUrl });
+        replacementStarted = true;
+        await replaceAvatarAfterDatabaseWrite({
+          previousUrl: existingUser?.avatarUrl,
+          nextUrl: avatarUrl,
+          persistNextUrl: (nextUrl) => storage.updateClient(actor.id, { avatarUrl: nextUrl }),
+          deleteNewFile: () => deleteLocalUploadFiles([avatarUrl]),
+          deletePreviousFile: () => deleteLocalUploadFileIfUnreferenced(existingUser?.avatarUrl),
+        });
 
         console.log(`[AVATAR] Self-upload for user ${actor.id} (${actor.email})`);
         res.json({ avatarUrl });
       } catch (err: any) {
+        if (!replacementStarted) {
+          deleteLocalUploadFiles([avatarUrl]);
+        }
         console.error(`[AVATAR] Self-upload error:`, err.stack || err);
         res.status(500).json({ message: "Error al subir foto de perfil" });
       }
@@ -5325,7 +5397,7 @@ if (!user) {
       const accessState = getBranchClientAccessState(rawUser, profile.membership, accessEvidence);
       res.json({
         ...profile,
-        identityControl: getBranchClientIdentityControl(rawUser, profile.membership),
+        identityControl: getBranchClientIdentityControl(rawUser, profile.membership, accessEvidence),
         accessStatus: accessState.accessStatus,
         accessProvider: accessState.accessProvider,
         accessEmail: accessState.accessEmail,
@@ -5356,23 +5428,31 @@ if (!user) {
     }
 
     try {
-      const membership = await storage.getMembership(clientId, actor.branchId);
-      if (!membership) return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
-
-      const updated = await storage.updateBranchClientCrm(actor.branchId, clientId, {
-        ...(result.data.clientStatus !== undefined && { clientStatus: result.data.clientStatus }),
-        ...(result.data.tags !== undefined && { tags: normalizeTags(result.data.tags) }),
-      });
-
-      await storage.createAuditLog({
+      const updated = await storage.updateBranchClientTransactional({
         actorUserId: actor.id,
-        action: "UPDATE_CLIENT_CRM",
         branchId: actor.branchId,
-        metadata: { clientId, fields: Object.keys(result.data) },
+        clientId,
+        globalPatch: {},
+        privatePatch: {},
+        crmPatch: {
+          ...(result.data.clientStatus !== undefined && { clientStatus: result.data.clientStatus }),
+          ...(result.data.tags !== undefined && { tags: normalizeTags(result.data.tags) }),
+        },
+        auditAction: "UPDATE_CLIENT_CRM",
       });
-
-      res.json(updated);
+      res.json(updated.privateProfile);
     } catch (err: any) {
+      if (err instanceof BranchClientOperationError) {
+        if (err.code === BRANCH_CLIENT_NOT_FOUND) {
+          return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+        }
+        if (err.code === BRANCH_CLIENT_NO_CHANGES) {
+          return res.status(400).json({ message: "No hay cambios válidos para guardar" });
+        }
+      }
+      if (err?.code === "55P03" || err?.code === "57014") {
+        return res.status(423).json({ message: "El cliente está siendo actualizado. Intenta nuevamente." });
+      }
       console.error(`[CLIENT_CRM] Error:`, err.stack || err);
       res.status(500).json({ message: "Error al actualizar CRM del cliente" });
     }
@@ -5954,126 +6034,89 @@ if (!user) {
     const clientId = req.params.id as string;
     const privateResult = updateBranchClientPrivateSchema.safeParse(req.body);
     const globalResult = updateBranchClientGlobalSchema.safeParse(req.body);
+    const crmResult = updateBranchClientCrmSchema.safeParse({
+      clientStatus: req.body.clientStatus === "auto" ? null : req.body.clientStatus,
+      tags: req.body.tags,
+    });
     const result = {
       error: {
         flatten: () => ({
           private: privateResult.success ? null : privateResult.error.flatten(),
           global: globalResult.success ? null : globalResult.error.flatten(),
+          crm: crmResult.success ? null : crmResult.error.flatten(),
         }),
       },
     };
-    if (!privateResult.success || !globalResult.success) {
+    if (!privateResult.success || !globalResult.success || !crmResult.success) {
       return res.status(400).json({ message: "Datos inválidos", errors: result.error.flatten() });
     }
 
     try {
-      const membership = await storage.getMembership(clientId, actor.branchId);
-      if (!membership || membership.status !== "active") {
-        return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
-      }
-
-      const currentUser = await storage.getUser(clientId);
-      if (!currentUser) {
-        return res.status(404).json({ message: "Cliente no encontrado" });
-      }
-
       const globalPayload = globalResult.data;
       const privatePayload = privateResult.data;
-      const hasGlobalChanges = Object.keys(globalPayload).length > 0;
-      const hasPrivateChanges = Object.keys(privatePayload).length > 0;
-
-      if (!hasGlobalChanges && !hasPrivateChanges) {
-        return res.status(400).json({ message: "No hay cambios válidos para guardar" });
-      }
-
-      let updatedUser = null;
-      let updatedPrivateProfile = null;
-
-      if (hasGlobalChanges) {
-        const identityControl = getBranchClientIdentityControl(currentUser, membership);
-        if (!identityControl.canEditIdentity) {
-          return res.status(409).json({
-            code: "IDENTITY_MANAGED_BY_APP",
-            message: identityControl.reason,
-          });
-        }
-
-        const normalizedEmail = normalizeComparableEmail(globalPayload.email);
-
-        if (
-          globalPayload.email !== undefined &&
-          normalizedEmail !== normalizeComparableEmail(currentUser.email)
-        ) {
-          const existingByEmail = normalizedEmail ? await storage.getUserByEmail(normalizedEmail) : undefined;
-          if (existingByEmail && existingByEmail.id !== clientId) {
-            return res.status(409).json({
-              code: "DUPLICATE_CLIENT",
-              message: "Ese correo ya está registrado por otro usuario",
-            });
-          }
-        }
-
-        if (globalPayload.phone !== undefined) {
-          const normalizedPhone = normalizeMxPhone(globalPayload.phone);
-          if (globalPayload.phone && !normalizedPhone) {
-            return res.status(400).json({ message: "El teléfono no tiene un formato válido" });
-          }
-
-          const branchClients = await storage.getBranchClients(actor.branchId, true);
-          const phoneMatches = getBranchClientPhoneMatches(branchClients, normalizedPhone, clientId);
-          if (phoneMatches.length > 1) {
-            return res.status(409).json({
-              code: "AMBIGUOUS_DUPLICATE",
-              message: "Ya existen varios clientes con ese teléfono en esta sucursal. Revisa la base antes de guardarlo.",
-            });
-          }
-          if (phoneMatches.length === 1) {
-            return res.status(409).json({
-              code: "DUPLICATE_CLIENT",
-              candidate: buildBranchClientDuplicateSummary(phoneMatches[0]),
-              message: "Ese teléfono ya está registrado por otro cliente de esta sucursal.",
-            });
-          }
-        }
-
-        updatedUser = await storage.updateClient(clientId, {
-          ...(globalPayload.name !== undefined && { name: globalPayload.name }),
-          ...(globalPayload.email !== undefined && { email: normalizedEmail ?? null }),
-          ...(globalPayload.lastName !== undefined && { lastName: globalPayload.lastName }),
-          ...(globalPayload.phone !== undefined && { phone: globalPayload.phone }),
-          ...(globalPayload.birthDate !== undefined && { birthDate: globalPayload.birthDate }),
-          ...(globalPayload.gender !== undefined && { gender: globalPayload.gender }),
-        });
-      }
-
-      if (hasPrivateChanges) {
-        updatedPrivateProfile = await storage.updateBranchClientPrivateProfile(actor.branchId, clientId, privatePayload);
-      }
-      /*
-          return res.status(409).json({ message: "Ese email ya está registrado por otro usuario" });
-        }
-      }
-
-
-      */
-      await storage.createAuditLog({
+      const crmPayload = {
+        ...(crmResult.data.clientStatus !== undefined && { clientStatus: crmResult.data.clientStatus }),
+        ...(crmResult.data.tags !== undefined && { tags: normalizeTags(crmResult.data.tags) }),
+      };
+      const updated = await storage.updateBranchClientTransactional({
         actorUserId: actor.id,
-        action: "UPDATE_CLIENT",
         branchId: actor.branchId,
-        metadata: {
-          clientId,
-          globalFields: Object.keys(globalPayload),
-          privateFields: Object.keys(privatePayload),
-        },
+        clientId,
+        globalPatch: globalPayload,
+        privatePatch: privatePayload,
+        crmPatch: crmPayload,
       });
 
       console.log(`[UPDATE_CLIENT] Updated client ${clientId} by ${actor.email}`);
       res.json({
         success: true,
-        user: updatedUser,
-        privateProfile: updatedPrivateProfile,
+        user: updated.user,
+        privateProfile: updated.privateProfile,
       });
     } catch (err: any) {
+      if (err instanceof BranchClientOperationError) {
+        if (err.code === BRANCH_CLIENT_NOT_FOUND) {
+          return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+        }
+        if (err.code === BRANCH_CLIENT_NO_CHANGES) {
+          return res.status(400).json({ message: "No hay cambios válidos para guardar" });
+        }
+        if (err.code === BRANCH_CLIENT_INVALID_PHONE) {
+          return res.status(400).json({ message: "El teléfono no tiene un formato válido" });
+        }
+        if (err.code === BRANCH_CLIENT_IDENTITY_MANAGED_BY_APP) {
+          return res.status(409).json({
+            code: err.code,
+            message: "Este cliente administra sus datos desde la app.",
+          });
+        }
+        if (err.code === BRANCH_CLIENT_SHARED_IDENTITY) {
+          return res.status(409).json({
+            code: err.code,
+            message: "Esta identidad pertenece a más de una sucursal y sus datos globales no pueden editarse desde aquí.",
+          });
+        }
+        if (err.code === BRANCH_CLIENT_AMBIGUOUS_DUPLICATE) {
+          return res.status(409).json({
+            code: err.code,
+            message: "Ya existen varios clientes con ese teléfono en esta sucursal. Revisa la base antes de guardarlo.",
+          });
+        }
+        if (err.code === BRANCH_CLIENT_DUPLICATE) {
+          return res.status(409).json({
+            code: err.code,
+            ...(err.details?.candidate
+              ? { candidate: buildBranchClientDuplicateSummary(err.details.candidate) }
+              : {}),
+            message: err.details?.candidate
+              ? "Ese teléfono ya está registrado por otro cliente de esta sucursal."
+              : "Ese correo ya está registrado por otro usuario",
+          });
+        }
+      }
+      if (err?.code === "55P03" || err?.code === "57014") {
+        return res.status(423).json({ message: "El cliente está siendo actualizado. Intenta nuevamente." });
+      }
       console.error(`[UPDATE_CLIENT] Error:`, err.stack || err);
       res.status(500).json({ message: "Error al actualizar cliente" });
     }
@@ -6084,25 +6127,26 @@ if (!user) {
     const clientId = req.params.id as string;
 
     try {
-      const membership = await storage.getMembership(clientId, actor.branchId);
-      if (!membership) return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
-
-      if (membership.status === "left") {
-        return res.status(400).json({ message: "El cliente ya fue eliminado" });
-      }
-
-      await storage.softDeleteMembership(membership.id);
-
-      await storage.createAuditLog({
+      await storage.softDeleteBranchClientTransactional({
         actorUserId: actor.id,
-        action: "SOFT_DELETE_CLIENT",
         branchId: actor.branchId,
-        metadata: { clientId, membershipId: membership.id },
+        clientId,
       });
 
       console.log(`[DELETE_CLIENT] Soft deleted client ${clientId} by ${actor.email}`);
       res.json({ success: true });
     } catch (err: any) {
+      if (err instanceof BranchClientOperationError) {
+        if (err.code === BRANCH_CLIENT_NOT_FOUND) {
+          return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+        }
+        if (err.code === BRANCH_CLIENT_ALREADY_DELETED) {
+          return res.status(400).json({ message: "El cliente ya fue eliminado" });
+        }
+      }
+      if (err?.code === "55P03" || err?.code === "57014") {
+        return res.status(423).json({ message: "El cliente está siendo actualizado. Intenta nuevamente." });
+      }
       console.error(`[DELETE_CLIENT] Error:`, err.stack || err);
       res.status(500).json({ message: "Error al eliminar cliente" });
     }
@@ -6201,24 +6245,57 @@ if (!user) {
         return res.status(400).json({ message: "No se proporcionó ningún archivo" });
       }
 
+      const avatarUrl = buildUploadPublicUrl(req.file.filename);
+      let replacementStarted = false;
       try {
         const membership = await storage.getMembership(clientId, actor.branchId);
         if (!membership || membership.status !== "active") {
-          fs.unlinkSync(req.file.path);
+          deleteLocalUploadFiles([avatarUrl]);
           return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
         }
 
         const existingUser = await storage.getUser(clientId);
-        if (existingUser?.avatarUrl) {
-          deleteLocalUploadFiles([existingUser.avatarUrl]);
-        }
-
-        const avatarUrl = buildUploadPublicUrl(req.file.filename);
-        await storage.updateClient(clientId, { avatarUrl });
+        replacementStarted = true;
+        await replaceAvatarAfterDatabaseWrite({
+          previousUrl: existingUser?.avatarUrl,
+          nextUrl: avatarUrl,
+          persistNextUrl: async (nextUrl) => {
+            const updated = await storage.updateBranchClientTransactional({
+              actorUserId: actor.id,
+              branchId: actor.branchId,
+              clientId,
+              globalPatch: { avatarUrl: nextUrl },
+              privatePatch: {},
+              crmPatch: {},
+            });
+            return updated.user ?? undefined;
+          },
+          deleteNewFile: () => deleteLocalUploadFiles([avatarUrl]),
+          deletePreviousFile: () => deleteLocalUploadFileIfUnreferenced(existingUser?.avatarUrl),
+        });
 
         console.log(`[AVATAR] Uploaded for client ${clientId} by ${actor.email}`);
         res.json({ avatarUrl });
       } catch (err: any) {
+        if (!replacementStarted) {
+          deleteLocalUploadFiles([avatarUrl]);
+        }
+        if (err instanceof BranchClientOperationError) {
+          if (err.code === BRANCH_CLIENT_NOT_FOUND) {
+            return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+          }
+          if (err.code === BRANCH_CLIENT_IDENTITY_MANAGED_BY_APP || err.code === BRANCH_CLIENT_SHARED_IDENTITY) {
+            return res.status(409).json({
+              code: err.code,
+              message: err.code === BRANCH_CLIENT_SHARED_IDENTITY
+                ? "Esta identidad pertenece a más de una sucursal y su avatar global no puede editarse desde aquí."
+                : "Este cliente administra su avatar desde la app.",
+            });
+          }
+        }
+        if (err?.code === "55P03" || err?.code === "57014") {
+          return res.status(423).json({ message: "El cliente está siendo actualizado. Intenta nuevamente." });
+        }
         console.error(`[AVATAR] Error:`, err.stack || err);
         res.status(500).json({ message: "Error al subir avatar" });
       }
@@ -6240,15 +6317,41 @@ if (!user) {
       }
 
       const existingUser = await storage.getUser(clientId);
-      if (existingUser?.avatarUrl) {
-        deleteLocalUploadFiles([existingUser.avatarUrl]);
-      }
-
-      await storage.updateClient(clientId, { avatarUrl: null });
+      await removeAvatarAfterDatabaseWrite({
+        previousUrl: existingUser?.avatarUrl,
+        persistNull: async () => {
+          const updated = await storage.updateBranchClientTransactional({
+            actorUserId: actor.id,
+            branchId: actor.branchId,
+            clientId,
+            globalPatch: { avatarUrl: null },
+            privatePatch: {},
+            crmPatch: {},
+          });
+          return updated.user ?? undefined;
+        },
+        deletePreviousFile: () => deleteLocalUploadFileIfUnreferenced(existingUser?.avatarUrl),
+      });
 
       console.log(`[AVATAR] Removed for client ${clientId} by ${actor.email}`);
       res.json({ success: true });
     } catch (err: any) {
+      if (err instanceof BranchClientOperationError) {
+        if (err.code === BRANCH_CLIENT_NOT_FOUND) {
+          return res.status(404).json({ message: "Cliente no encontrado en esta sucursal" });
+        }
+        if (err.code === BRANCH_CLIENT_IDENTITY_MANAGED_BY_APP || err.code === BRANCH_CLIENT_SHARED_IDENTITY) {
+          return res.status(409).json({
+            code: err.code,
+            message: err.code === BRANCH_CLIENT_SHARED_IDENTITY
+              ? "Esta identidad pertenece a más de una sucursal y su avatar global no puede editarse desde aquí."
+              : "Este cliente administra su avatar desde la app.",
+          });
+        }
+      }
+      if (err?.code === "55P03" || err?.code === "57014") {
+        return res.status(423).json({ message: "El cliente está siendo actualizado. Intenta nuevamente." });
+      }
       console.error(`[AVATAR] Error:`, err.stack || err);
       res.status(500).json({ message: "Error al eliminar avatar" });
     }
@@ -11240,7 +11343,7 @@ if (!user) {
     if (branch.status !== "active") {
       return res.status(403).json({ message: "Servicio no activo" });
     }
-    res.json(branch);
+    res.json(buildPublicBranchDto(branch));
   });
 
   // --- Public: Schedule & Client Bookings ---

@@ -187,6 +187,7 @@ export function getBranchClientIdentityControl(
   membership: {
     source?: string | null;
   } | null | undefined,
+  evidence: BranchClientAccessEvidence = {},
 ): BranchClientIdentityControl {
   const membershipSource = membership?.source ?? null;
   const normalizedProvider = normalizeAuthProvider(user?.authProvider);
@@ -200,6 +201,15 @@ export function getBranchClientIdentityControl(
     !!user?.firebaseUid ||
     !!user?.acceptedTerms ||
     (normalizedProvider.length > 0 && !LOCAL_PASSWORD_AUTH_PROVIDERS.has(normalizedProvider));
+  const isSharedIdentity = Number(evidence.activeMembershipBranchCount ?? 1) > 1;
+
+  if (isSharedIdentity) {
+    return {
+      originType: hasAppSource || hasAppIdentity ? "app" : "manual",
+      canEditIdentity: false,
+      reason: "Esta identidad pertenece operativamente a más de una sucursal y sus datos globales requieren revisión central.",
+    };
+  }
 
   if (hasCounterEvidence) {
     if (isCrmPlaceholderEmail(user?.email) || normalizedProvider === "crm" || membershipSource === "quick_charge") {
